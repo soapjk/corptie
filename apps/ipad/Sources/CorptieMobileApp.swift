@@ -46,7 +46,7 @@ struct CorptieMobileApp: App {
                 } else if connection.connected {
                     PadAppShell(connection: connection)
                 } else if connection.restoringConnection {
-                    ProgressView("正在连接上次的 Mac…")
+                    CorptieBrandProgress("正在连接上次的 Mac…", prominent: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
                 } else {
@@ -74,6 +74,19 @@ struct PairingView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    HStack(spacing: 16) {
+                        CorptieBrandLogo()
+                            .frame(width: 64, height: 64)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Corptie").font(.title2.weight(.semibold))
+                            Text("连接你的 Mac，随时与 Agent 协作。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                }
                 Section("Corptie Cloud") {
                     if connection.cloudSignedIn {
                         Label(connection.cloudAccountStatus, systemImage: "person.crop.circle")
@@ -124,8 +137,8 @@ struct PairingView: View {
                         Text("登录后可在外网连接同账号下的 Mac。账号凭据保存在系统钥匙串，通信内容端到端加密。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                    if connection.busy { ProgressView("正在处理 Cloud 登录或连接…") }
-                    if connection.cloudSignInPreparing { ProgressView("正在检查登录服务…") }
+                    if connection.busy { CorptieBrandProgress("正在处理 Cloud 登录或连接…") }
+                    if connection.cloudSignInPreparing { CorptieBrandProgress("正在检查登录服务…") }
                     if !connection.cloudNotice.isEmpty {
                         Text(connection.cloudNotice)
                             .font(.footnote)
@@ -142,7 +155,7 @@ struct PairingView: View {
                         Button("重试申请配对") { Task { await connection.requestPairing() } }
                             .accessibilityIdentifier("pairing-retry-request")
                     }
-                    if connection.busy { ProgressView("正在连接 Mac…") }
+                    if connection.busy { CorptieBrandProgress("正在连接 Mac…") }
                     if !connection.notice.isEmpty {
                         Text(connection.notice)
                             .font(.footnote)
@@ -159,7 +172,7 @@ struct PairingView: View {
                 }
                 if connection.lanConnecting || !connection.lanConnectionNotice.isEmpty {
                     Section {
-                        if connection.lanConnecting { ProgressView("正在恢复局域网连接…") }
+                        if connection.lanConnecting { CorptieBrandProgress("正在恢复局域网连接…") }
                         if !connection.lanConnectionNotice.isEmpty {
                             Text(connection.lanConnectionNotice).font(.footnote)
                                 .foregroundStyle(.secondary)

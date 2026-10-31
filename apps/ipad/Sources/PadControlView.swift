@@ -1,5 +1,6 @@
 import SwiftUI
 import CorptieClientCore
+import CorptieConversation
 
 struct PadControlView: View {
     let tab: PadTab
@@ -69,7 +70,7 @@ struct PadControlView: View {
                 if let item = store.items[route.kind]?.first(where: { $0.id == route.id }) {
                     detail(item, kind: route.kind)
                 } else if store.items[route.kind] == nil || store.loading.contains(route.kind) {
-                    ProgressView("正在同步…")
+                    CorptieBrandProgress("正在同步…", prominent: true)
                 } else {
                     ContentUnavailableView("此项目已不在当前列表中", systemImage: "doc.questionmark")
                 }
