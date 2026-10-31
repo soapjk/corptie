@@ -5,6 +5,20 @@ import CorptieClientCore
 
 @Suite("iPad notification parity")
 struct PadNotificationTests {
+    @Test func startupAndHistoricalPaginationNeverNotify() throws {
+        var reducer = PadAutomationNotificationReducer()
+        #expect(reducer.events(for: []).isEmpty)
+        let items = try (0..<500).map { index in
+            try JSONDecoder().decode(ClientControlItem.self, from: Data("""
+            {"id":"automation:\(index)","name":"History","lastRunStatus":"completed","updatedAt":"2026-01-01T00:00:00Z"}
+            """.utf8))
+        }
+        #expect(reducer.events(for: Array(items.prefix(50))).isEmpty)
+        #expect(reducer.events(for: items).isEmpty)
+        #expect(reducer.events(for: []).isEmpty)
+        #expect(reducer.events(for: items).isEmpty)
+    }
+
     private let allEnabled = PadSessionNotificationConfiguration(
         notifyOnComplete: true,
         notifyOnBlocked: true,

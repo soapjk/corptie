@@ -10,6 +10,7 @@ import { ClientWorktreeManagementAPI } from "./clientWorktreeManagementAPI.mjs";
 import { ClientSessionAPI } from "./clientSessionAPI.mjs";
 import { pairedDeviceActor } from "./clientDeviceAuthority.mjs";
 import { TaskCreationSettingsService } from "./taskCreationSettingsService.mjs";
+import { readAutomationNotifications } from "../store/automationNotificationFeed.mjs";
 
 export function startClientDeviceGateway({
   store, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
@@ -28,6 +29,7 @@ export function startClientDeviceGateway({
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
     resourceWritesAllowed: !developmentPreview,
+    automationNotifications: (_identity, cursor) => readAutomationNotifications(store, environmentName, cursor),
     detailActionService, detailWritesAllowed: detailWritesAllowed === true && !developmentPreview,
     readAPI: new ClientReadAPI(store, { environmentName }),
     controlAPI: new ClientControlReadAPI({ resourceRevision: () => store.selectOne("SELECT revision FROM state_change_log WHERE entity_type = 'artifact' ORDER BY revision DESC LIMIT 1")?.revision ?? null, lists: {

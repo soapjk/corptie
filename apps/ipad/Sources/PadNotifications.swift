@@ -122,7 +122,7 @@ struct PadSessionNotificationReducer {
             let previousStatus = previousStatusesBySessionID[session.id]
             switch session.status {
             case .complete:
-                return session.needsUserAttention && previousAttentionBySessionID[session.id] != true
+                return session.needsUserAttention && previousAttentionBySessionID[session.id] == false
             case .blocked, .failed:
                 return previousStatus == .running
             case .running, .cancelled:
@@ -205,7 +205,7 @@ struct PadAutomationNotificationReducer {
         resourceIndex: NotificationResourceIndex = .init()
     ) -> [PadAutomationNotificationEvent] {
         let current = Dictionary(uniqueKeysWithValues: items.map { item in
-            (item.id, "\(item.lastRunStatus ?? ""):\(item.updatedAt ?? "")")
+            (item.id, item.lastRunStatus ?? item.status ?? "")
         })
         guard hasObservedInitialSnapshot else {
             fingerprintsByID = current
@@ -216,7 +216,9 @@ struct PadAutomationNotificationReducer {
 
         return items.compactMap { item in
             let fingerprint = current[item.id] ?? ""
-            guard fingerprintsByID[item.id] != fingerprint,
+            guard let previous = fingerprintsByID[item.id],
+                  ["running", "queued", "retry_wait", "active"].contains(previous),
+                  previous != fingerprint,
                   let kind = Self.kind(item.lastRunStatus, taskStatus: item.status) else { return nil }
             let id = kind == .completed && item.scheduleType == "interval"
                 ? "automation-periodic-completed:\(PadNotificationIdentity.stableDigest(item.id))"
@@ -344,6 +346,11 @@ final class PadNotificationManager {
     private let preferences = PadNotificationPreferences.shared
     private var sessionReducer = PadSessionNotificationReducer()
     private var automationReducer = PadAutomationNotificationReducer()
+    private var automationLedger = ClientAutomationNotificationLedger()
+    private var automationScope = ""
+    private var automationGeneration = UUID()
+    private var automationWorker: Task<Void, Never>?
+    private(set) var automationEventFeedAvailable = false
     private var sessionHistory = PadNotificationDeliveryHistory(
         key: "corptie.notifications.deliveredEventIds"
     )
@@ -356,6 +363,104 @@ final class PadNotificationManager {
     private(set) var visibleSessionID: String?
     private(set) var visibleTab: PadTab = .workspace
     private(set) var sceneIsActive = false
+
+    func configureAutomationScope(_ value: String) {
+        guard automationScope != value else { return }
+        automationWorker?.cancel(); automationWorker = nil
+        automationGeneration = UUID()
+        automationScope = value
+        automationEventFeedAvailable = false
+        let key = "corptie.notifications.automationFeed.v2.\(PadNotificationIdentity.stableDigest(value))"
+        automationLedger = UserDefaults.standard.data(forKey: key)
+            .flatMap { try? JSONDecoder().decode(ClientAutomationNotificationLedger.self, from: $0) }
+            ?? ClientAutomationNotificationLedger()
+        automationReducer = PadAutomationNotificationReducer()
+        Task { await migrateLegacyAutomationNotifications() }
+    }
+
+    var automationCursor: String? { automationLedger.cursor }
+
+    func setAutomationFeedAvailable(_ available: Bool) { automationEventFeedAvailable = available }
+
+    func consumeAutomationNotifications(_ batch: ClientAutomationNotificationBatch) {
+        if batch.reset {
+            automationGeneration = UUID()
+            automationWorker?.cancel(); automationWorker = nil
+        }
+        automationEventFeedAvailable = true
+        automationLedger.consume(batch, enabled: preferences.notifyOnAutomations)
+        persistAutomationLedger()
+        if !batch.hasMore { scheduleAutomationDelivery() }
+    }
+
+    private func persistAutomationLedger() {
+        guard !automationScope.isEmpty, let data = try? JSONEncoder().encode(automationLedger) else { return }
+        UserDefaults.standard.set(data, forKey: "corptie.notifications.automationFeed.v2.\(PadNotificationIdentity.stableDigest(automationScope))")
+    }
+
+    private func migrateLegacyAutomationNotifications() async {
+        let key = "corptie.notifications.automationMigration.v2"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let legacy: (UNNotificationRequest) -> Bool = {
+            $0.identifier.hasPrefix("automation-terminal:") || $0.identifier.hasPrefix("automation-periodic-completed:")
+        }
+        let delivered = await center.deliveredNotifications().map(\.request).filter(legacy).map(\.identifier)
+        let pending = await center.pendingNotificationRequests().filter(legacy).map(\.identifier)
+        center.removeDeliveredNotifications(withIdentifiers: delivered)
+        center.removePendingNotificationRequests(withIdentifiers: pending)
+        UserDefaults.standard.set(true, forKey: key)
+    }
+
+    private func scheduleAutomationDelivery() {
+        guard automationWorker == nil, automationLedger.pendingCount > 0 else { return }
+        let expectedScope = automationScope
+        let generation = automationGeneration
+        automationWorker = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.automationGeneration == generation { self.automationWorker = nil } }
+            while !Task.isCancelled, self.automationScope == expectedScope, self.automationLedger.pendingCount > 0 {
+                // One worker, one bounded summary per burst, no per-event Tasks.
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, self.automationGeneration == generation else { return }
+                self.automationLedger.discardExpired()
+                let count = self.automationLedger.pendingCount
+                let sequence = self.automationLedger.sequence
+                guard let latest = self.automationLedger.pending.last else { self.persistAutomationLedger(); break }
+                let authorized = await self.ensureAuthorization()
+                guard !Task.isCancelled, self.automationGeneration == generation else { return }
+                if authorized && self.preferences.notifyOnAutomations {
+                    let content = UNMutableNotificationContent()
+                    let summary = self.automationLedger.recovered || count > 1
+                    if summary {
+                        content.title = "计划任务有 \(count) 条新结果"
+                        content.body = "\(latest.name)等计划任务已有更新，点此查看执行记录。"
+                        content.userInfo = ["destination": "automation"]
+                    } else {
+                        content.title = ["completed": "计划任务已触发完成", "failed": "计划任务失败",
+                            "cancelled": "计划任务已取消", "expired": "计划任务已过期"][latest.kind] ?? "计划任务更新"
+                        content.body = latest.name
+                        var info = ["destination": "automation", "automationId": latest.automationId]
+                        if let id = latest.logicalSessionId { info["logicalSessionId"] = id }
+                        content.userInfo = info
+                    }
+                    content.userInfo["throughSequence"] = sequence
+                    let periodic = latest.scheduleType == "interval" && latest.kind == "completed"
+                    let suffix = summary ? "summary" : periodic ? "periodic:\(latest.automationId)" : latest.eventId
+                    let identifier = "automation-v2:\(PadNotificationIdentity.stableDigest(expectedScope)):\(suffix)"
+                    let delivered = await self.center.deliveredNotifications()
+                    guard !Task.isCancelled, self.automationGeneration == generation else { return }
+                    if self.preferences.notifyOnAutomations && !delivered.contains(where: { $0.request.identifier == identifier
+                        && $0.request.content.userInfo["throughSequence"] as? Int == sequence }) {
+                        do { try await self.center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) }
+                        catch { return } // durable pending record retries on reconnect, never spin
+                    }
+                }
+                guard self.automationGeneration == generation else { return }
+                self.automationLedger.acknowledge(through: sequence, count: count)
+                self.persistAutomationLedger()
+            }
+        }
+    }
 
     func setScope(_ scope: String) {
         PadOperationNotifications.shared.setScope(scope)
@@ -396,6 +501,7 @@ final class PadNotificationManager {
         sessions: [ClientSession]
     ) {
         let resourceIndex = NotificationResourceIndex(works: works, tasks: tasks, sessions: sessions)
+        guard !automationEventFeedAvailable else { return }
         let events = automationReducer.events(for: items, resourceIndex: resourceIndex)
         guard preferences.notifyOnAutomations else { return }
         for event in events { enqueue(event) }
