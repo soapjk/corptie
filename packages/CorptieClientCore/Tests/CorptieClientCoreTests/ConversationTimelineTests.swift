@@ -3,22 +3,20 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationTimelineTests {
-    @Test func materializedImageOutputIsVisibleWithoutExpandingExecution() throws {
+    @Test func materializedToolImageStaysInExecution() throws {
         let data = Data(#"{"id":"image","turnId":"turn","type":"imageView","text":"/tmp/original.png","images":[{"managedPath":"chat-resources/test/image.png"}]}"#.utf8)
         let item = try JSONDecoder().decode(ClientMessage.self, from: data)
         #expect(item.timelineHasImages)
-        #expect(item.isStandaloneImage)
         #expect(item.presentationKind == .unknown, "Media must not become an authored reply")
         #expect(!ConversationPresentationKind.isFormalMessage(type: item.type, presentationRole: "final_answer"))
         let entries = ConversationTimeline.makeEntries(from: [item])
-        #expect(entries.map(\.id) == ["message:image"])
-        #expect(entries.first?.displayWeight == 1)
+        #expect(entries.map(\.id) == ["process:turn"])
+        #expect(entries.first?.displayWeight == 0)
     }
 
     @Test func imagePresentationPreservesExplicitEventRoles() throws {
         for role in ["system_event", "automation", "collaboration", "collaboration_confirmation"] {
             let item = try imageMessage(role: role)
-            #expect(!item.isStandaloneImage)
             let entries = ConversationTimeline.makeEntries(from: [item])
             #expect(entries.map(\.id) == ["message:image"], "Explicit events must not be folded as tools")
         }
@@ -27,25 +25,26 @@ struct ConversationTimelineTests {
     @Test func imagesDoNotReclassifyInteractionsUnknownEventsOrAuthoredReplies() throws {
         for type in ["approval", "choice", "userInput", "automationEvent", "futureEvent", "userMessage", "agentMessage"] {
             let item = try imageMessage(type: type)
-            #expect(!item.isStandaloneImage)
             #expect(ConversationTimeline.makeEntries(from: [item]).map(\.id) == ["message:image"])
         }
     }
 
-    @Test func missingImageRemainsAnExecutionRecordAndLateAttachmentPromotesSameMessage() throws {
+    @Test func lateImageAttachmentKeepsTheSameExecutionGroup() throws {
         let before = try imageMessage(hasImages: false)
-        #expect(!before.isStandaloneImage)
         #expect(ConversationTimeline.makeEntries(from: [before]).first?.isProcessGroup == true)
         let after = try imageMessage()
         #expect(after.id == before.id)
-        #expect(after.isStandaloneImage)
-        #expect(ConversationTimeline.makeEntries(from: [after]).map(\.id) == ["message:image"])
+        #expect(ConversationTimeline.makeEntries(from: [after]).map(\.id) == ["process:turn"])
     }
 
-    @Test func imageOutputSplitsProcessSegmentsWithoutLosingAdjacentTools() throws {
+    @Test func toolImageDoesNotSplitAdjacentExecutionSteps() throws {
         let items = try [message("before", "commandExecution"), imageMessage(), message("after", "mcpToolCall")]
         let entries = ConversationTimeline.makeEntries(from: items)
-        #expect(entries.map(\.id) == ["process:turn", "message:image", "process:turn:process-segment:1"])
+        #expect(entries.map(\.id) == ["process:turn"])
+        guard case let .process(_, steps) = entries.first?.kind else {
+            Issue.record("Missing execution group"); return
+        }
+        #expect(steps.map(\.id) == items.map(\.id))
     }
 
     private func imageMessage(type: String = "imageView", role: String? = nil,

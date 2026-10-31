@@ -127,7 +127,11 @@ private struct ConsoleDisclosureRevealLayout: Layout {
         return .init(width: size.width, height: size.height * min(1, max(0, fraction)))
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+        // Start at the title edge and slide the first rows into place while
+        // the reveal height grows. Keep list order; never fade the text.
+        let travel = min(20, cache.size?.height ?? 0)
+        let y = bounds.minY - travel * (1 - min(1, max(0, fraction)))
+        subviews.first?.place(at: .init(x: bounds.minX, y: y), anchor: .topLeading,
             proposal: .init(width: bounds.width, height: cache.size?.height))
     }
 }
@@ -140,7 +144,7 @@ private struct ConsoleDisclosureReveal: ViewModifier, Animatable {
     }
     func body(content: Content) -> some View {
         ConsoleDisclosureRevealLayout(fraction: fraction) { content }
-            .clipped().opacity(fraction)
+            .clipped()
             .allowsHitTesting(fraction >= 0.99)
     }
 }

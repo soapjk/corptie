@@ -114,7 +114,8 @@ struct SessionModelMenuSurface: View {
                 isBusy: switchingModel || switchingReasoning
                     || loadingModels,
                 maxWidth: maxWidth,
-                showsSurface: false, presentation: .regular
+                showsSurface: true, presentation: .regular,
+                showsDisclosureIndicator: true
             )
         }
         .buttonStyle(.plain)

@@ -32,7 +32,7 @@ struct ConversationNativeRowBuilder {
                     activeTurnID = nil
                     continue
                 }
-                guard (kind == .agentMessage || item.isStandaloneImage), item.messageOrigin != "scheduled_task" else { continue }
+                guard kind == .agentMessage, item.messageOrigin != "scheduled_task" else { continue }
             case .process: break
             }
             let newTurn = !hasReply || (!turnID.isEmpty && activeTurnID != nil && activeTurnID != turnID)
@@ -84,7 +84,9 @@ struct ConversationNativeRowBuilder {
         var scheduledTrigger: ScheduledTriggerPresentation?
         switch entry.kind {
         case .message(let item):
-            messageStatus = item.type == "userMessage" ? UserMessageStatusPresentation(
+            let presentationKind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+            let isCollaborationMessage = presentationKind == .collaborationMessage || presentationKind == .collaborationConfirmation
+            messageStatus = presentationKind == .userMessage ? UserMessageStatusPresentation(
                 authoritativeStatus: item.userMessageStatus,
                 legacyStatus: item.status,
                 queuePosition: item.queuePosition,
@@ -108,7 +110,7 @@ struct ConversationNativeRowBuilder {
                 let id = ScheduledTriggerPresentation.expansionID(for: item.id)
                 scheduledTrigger = .init(text: specialEvent.messageText, isExpanded: expandedTurnIds.contains(id), expansionID: id)
             }
-            style = collaboration == nil && specialEvent == nil && item.type == "userMessage" ? .user : .agent
+            style = !isCollaborationMessage && specialEvent == nil && item.type == "userMessage" ? .user : .agent
             copyText = item.type == "userInput" && item.userInput?.schemaVersion == 1
                 ? item.userInput.map(userInputCopyText) ?? ChatTimelineRowRouting.copyText(for: item)
                 : collaboration?.messageText ?? specialEvent?.messageText
@@ -134,14 +136,13 @@ struct ConversationNativeRowBuilder {
                 )
             })
             text = ClickableMessageText.markdown(
-                from: item.isStandaloneImage ? "" :
-                    MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(
+                from: MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(
                         parsedImages.filter { markdownImageSources.contains($0.source) },
                         from: presentedText), hasImages: !images.isEmpty),
                 baseDirectory: workingDirectory
             )
-            let isOrdinaryMessage = collaboration == nil && specialEvent == nil
-                && (item.type == "userMessage" || item.type == "agentMessage" || item.isStandaloneImage)
+            let isOrdinaryMessage = !isCollaborationMessage && specialEvent == nil
+                && (item.type == "userMessage" || item.type == "agentMessage")
             let scheduledSource = item.messageOrigin == "scheduled_task"
                 ? ConversationEventText(languageCode: AppLanguageController.shared.languageCode).messageSource(name: item.automationName) : nil
             title = scheduledSource ?? collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)
@@ -162,12 +163,12 @@ struct ConversationNativeRowBuilder {
             showsCollaborationSentStatus = collaboration != nil
                 && (item.collaborationConfirmationStatus ?? item.status ?? "").lowercased() == "confirmed"
             rawStatusText = ""
-            isCollaboration = collaboration != nil
+            isCollaboration = isCollaborationMessage
             collaborationRoute = collaboration?.route
         case .process(let turnId, let items):
             messageStatus = nil
             processPlan = items.compactMap(\.executionPlan).last(where: { $0.schemaVersion == 1 })
-            images = items.flatMap { item in
+            images = items.filter { $0.type != "imageView" }.flatMap { item in
                 (item.images ?? []).map { image in
                     ChatTimelineImage(
                         managedPath: image.managedPath,
@@ -371,7 +372,8 @@ struct ConversationNativeRowBuilder {
         if ConversationPresentationKind.resolve(
             type: item.type, presentationRole: item.presentationRole) == .collaborationConfirmation,
            (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased() == "pending",
-           let confirmationID = item.collaborationConfirmationId {
+           let confirmationID = item.collaborationConfirmationId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !confirmationID.isEmpty {
             return [
                 .init(
                     id: "\(item.id):confirm",
