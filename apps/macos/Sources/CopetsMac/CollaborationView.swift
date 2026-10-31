@@ -2,7 +2,7 @@ import SwiftUI
 
 @MainActor
 final class CollaborationViewModel: ObservableObject {
-    @Published private(set) var agents: [CollaborationAgent] = []
+    @Published private(set) var roles: [CollaborationRole] = []
     @Published private(set) var services: [CollaborationService] = []
     @Published private(set) var channels: [SessionCollaborationChannel] = []
     @Published private(set) var selectedChannel: SessionCollaborationChannel?
@@ -14,7 +14,7 @@ final class CollaborationViewModel: ObservableObject {
     func refresh() async {
         do {
             let response: CollaborationOverviewResponse = try await get("collaboration/overview")
-            agents = response.agents
+            roles = response.roles
             services = response.services
             channels = response.channels
             errorMessage = nil
@@ -50,13 +50,13 @@ final class CollaborationViewModel: ObservableObject {
 }
 
 private enum CollaborationSection: String, Identifiable {
-    case activeChannels, channelHistory, agents, services
+    case activeChannels, channelHistory, roles = "agents", services
     var id: String { rawValue }
     @MainActor var title: String {
         switch self {
         case .activeChannels: L10n("Active channels")
         case .channelHistory: L10n("Channel history")
-        case .agents: L10n("Agents")
+        case .roles: L10n("Roles")
         case .services: L10n("Services")
         }
     }
@@ -64,7 +64,7 @@ private enum CollaborationSection: String, Identifiable {
         switch self {
         case .activeChannels: "bubble.left.and.bubble.right.fill"
         case .channelHistory: "clock.arrow.circlepath"
-        case .agents: "person.2"
+        case .roles: "person.2"
         case .services: "shippingbox"
         }
     }
@@ -76,7 +76,7 @@ struct CollaborationView: View {
     @State private var section: CollaborationSection? = .activeChannels
     @State private var selectedChannelID: String?
 
-    private var activeAgents: [CollaborationAgent] { model.agents.filter { $0.status != "inactive" } }
+    private var activeAgents: [CollaborationRole] { model.roles.filter { $0.status != "inactive" } }
     private var activeChannels: [SessionCollaborationChannel] { model.channels.filter { $0.status == "active" } }
     private var historicalChannels: [SessionCollaborationChannel] { model.channels.filter { $0.status != "active" } }
 
@@ -88,7 +88,7 @@ struct CollaborationView: View {
                     sidebarRow(.channelHistory, count: historicalChannels.count)
                 }
                 Section(L10n("Registry")) {
-                    sidebarRow(.agents, count: activeAgents.count)
+                    sidebarRow(.roles, count: activeAgents.count)
                     sidebarRow(.services, count: model.services.count)
                 }
             }.navigationTitle(L10n("Collaboration"))
@@ -127,8 +127,8 @@ struct CollaborationView: View {
         switch section ?? .activeChannels {
         case .activeChannels: channelList(activeChannels)
         case .channelHistory: channelList(historicalChannels)
-        case .agents: CollaborationAgentList(agents: activeAgents)
-        case .services: CollaborationServiceList(services: model.services, agents: model.agents)
+        case .roles: CollaborationRoleList(roles: activeAgents)
+        case .services: CollaborationServiceList(services: model.services, roles: model.roles)
         }
     }
 
@@ -200,13 +200,13 @@ private struct SessionChannelDetailView: View {
     }
 }
 
-private struct CollaborationAgentList: View {
-    let agents: [CollaborationAgent]
+private struct CollaborationRoleList: View {
+    let roles: [CollaborationRole]
     var body: some View {
-        List(agents) { agent in
+        List(roles) { agent in
             VStack(alignment: .leading, spacing: 5) {
                 HStack { Text(agent.name).font(.headline); Spacer(); CollaborationStatusBadge(status: agent.status) }
-                Text(agent.agentId).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(agent.roleId).font(.caption.monospaced()).foregroundStyle(.secondary)
                 Text(agent.description).foregroundStyle(.secondary)
             }.padding(.vertical, 5)
         }
@@ -215,13 +215,13 @@ private struct CollaborationAgentList: View {
 
 private struct CollaborationServiceList: View {
     let services: [CollaborationService]
-    let agents: [CollaborationAgent]
+    let roles: [CollaborationRole]
     var body: some View {
         List(services) { service in
             VStack(alignment: .leading, spacing: 5) {
                 HStack { Text(service.name).font(.headline); Spacer(); CollaborationStatusBadge(status: service.status) }
                 Text(service.description).foregroundStyle(.secondary)
-                Text(agents.first(where: { $0.agentId == service.ownerAgentId })?.name ?? service.ownerAgentId).font(.caption)
+                Text(roles.first(where: { $0.roleId == service.ownerRoleId })?.name ?? service.ownerRoleId).font(.caption)
             }.padding(.vertical, 5)
         }
     }

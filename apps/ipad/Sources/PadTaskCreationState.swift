@@ -10,7 +10,7 @@ struct PadTaskDraft: Codable {
     var description = ""
     var acceptanceCriteria = ""
     var verificationCriteria = ""
-    var agentID = ""
+    var roleID = ""
     var providerID = ""
     var model = ""
     var reasoning = ""
@@ -72,7 +72,7 @@ final class PadTaskCreationState {
     var canSubmit: Bool {
         guard !submitting, !loading, pending == nil, result == nil, !recoveryBlocked,
               let options, options.work.id == workID, options.providerId == draft.providerID,
-              options.agents.contains(where: { $0.id == draft.agentID }),
+              options.roles.contains(where: { $0.id == draft.roleID }),
               options.providers.contains(where: { $0.id == draft.providerID && $0.available }),
               options.priorities.contains(draft.priority) else { return false }
         if draft.parentTaskId != nil {
@@ -114,7 +114,7 @@ final class PadTaskCreationState {
                   draft.providerID == provider else { return }
             guard next.work.id == workID else { throw ClientConnectionError.invalidResponse }
             options = next
-            if !next.agents.contains(where: { $0.id == draft.agentID }) { draft.agentID = next.agents.first?.id ?? "" }
+            if !next.roles.contains(where: { $0.id == draft.roleID }) { draft.roleID = next.roles.first?.id ?? "" }
             if provider.isEmpty { draft.providerID = next.defaultProviderId ?? next.providers.first(where: \.available)?.id ?? "" }
             if !provider.isEmpty, draft.model.isEmpty, let model = next.currentModel,
                next.models.contains(where: { $0.id == model }) {
@@ -133,7 +133,7 @@ final class PadTaskCreationState {
         submitting = true; notice = ""
         defer { submitting = false }
         var input = ClientTaskCreation(requestId: UUID().uuidString, workId: workID,
-            title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines), mainAgentId: draft.agentID, providerId: draft.providerID)
+            title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines), mainRoleId: draft.roleID, providerId: draft.providerID)
         input.description = draft.description; input.acceptanceCriteria = draft.acceptanceCriteria
         input.verificationCriteria = draft.verificationCriteria; input.priority = draft.priority
         input.model = draft.model.isEmpty ? nil : draft.model

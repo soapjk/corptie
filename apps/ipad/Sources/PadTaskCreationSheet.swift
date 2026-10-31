@@ -54,8 +54,8 @@ struct PadTaskCreationSheet: View {
                         }
                     }
                     Section("执行配置") {
-                        Picker("Agent", selection: $state.draft.agentID) {
-                            ForEach(options.agents) { Text($0.name).tag($0.id) }
+                        Picker("角色", selection: $state.draft.roleID) {
+                            ForEach(options.roles) { Text($0.name).tag($0.id) }
                         }
                         Picker("Provider", selection: provider) {
                             ForEach(options.providers) { item in

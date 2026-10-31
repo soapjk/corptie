@@ -11,7 +11,7 @@ struct PadEntityCommandTests {
         defer { defaults.removePersistentDomain(forName: name) }
         EntityProtocol.mode = "drop"
         _ = await state.run(connection, target: .chats, kind: "chat_create", label: "新建 Chat") { api, requestID in
-            try await api.createChat(ClientChatCreation(requestId: requestID, title: "Chat", agentId: "agent:a", providerId: "provider:a"))
+            try await api.createChat(ClientChatCreation(requestId: requestID, title: "Chat", roleId: "agent:a", providerId: "provider:a"))
         }
         #expect(EntityProtocol.lastPath == "/client/v1/chats/create")
         #expect(state.pending?.kind == "chat_create")

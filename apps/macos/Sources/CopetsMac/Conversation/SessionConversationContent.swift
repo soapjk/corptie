@@ -811,10 +811,10 @@ struct SessionConversationSurface: View {
 
     private var replyIdentity: ConversationReplyIdentity? {
         guard let session = selectedSession else { return nil }
-        let agents = renderInputs?.agents ?? EntityAPIClient.shared.agents
-        let agent = agents.first { $0.agentId == session.agentId }
-        return ConversationReplyIdentity(agentID: agent?.agentId ?? session.agentId ?? session.id,
-            name: agent?.name ?? L10n("Agent"), avatarPath: agent?.avatarPath)
+        let roles = renderInputs?.roles ?? EntityAPIClient.shared.roles
+        let agent = roles.first { $0.roleId == session.roleId }
+        return ConversationReplyIdentity(roleID: agent?.roleId ?? session.roleId ?? session.id,
+            name: agent?.name ?? L10n("Role"), avatarPath: agent?.avatarPath)
     }
 
     private var forkUnavailableReason: String? {

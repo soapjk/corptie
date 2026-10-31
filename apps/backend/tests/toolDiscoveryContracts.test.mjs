@@ -33,6 +33,14 @@ test("shared ranker keeps exact canonical/alias names above misleading hints", (
   assert.deepEqual(rankDiscoveryCandidates(candidates, { intent: "unrelated", domainHint: "one" }), []);
 });
 
+test("Role management discovers the existing canonical tool without adding another write entry", () => {
+  const candidates = platformDynamicTools.map(definition => ({ name: definition.name, definition,
+    domainId: "platform", aliases: ["role", "roles", "角色", "角色管理"], preferred: definition.name === "corptie_platform_capabilities" }));
+  for (const intent of ["创建角色", "Role management", "agent management", "编辑角色技能"]) {
+    assert.equal(rankDiscoveryCandidates(candidates, { intent })[0].name, "corptie_platform_agents_manage");
+  }
+});
+
 const domains = {
   artifacts: artifactDynamicTools,
   collaboration: collaborationDynamicTools,

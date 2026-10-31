@@ -65,7 +65,7 @@ struct ObjectiveAvatarShapeTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
 
-        for fileName in ["AgentDetailView.swift", "WorkCreateView.swift", "WorkDetailView.swift"] {
+        for fileName in ["RoleDetailView.swift", "WorkCreateView.swift", "WorkDetailView.swift"] {
             let source = try String(
                 contentsOf: sourceRoot.appendingPathComponent(fileName),
                 encoding: .utf8

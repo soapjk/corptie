@@ -11,7 +11,7 @@ struct MacReplyIdentityHeader: View {
                 if let path = identity.avatarPath, !path.isEmpty {
                     AnimatedAvatarImage(path: path, animates: false)
                 } else {
-                    DefaultInitialAvatarView(familySeed: identity.name, variationSeed: identity.agentID,
+                    DefaultInitialAvatarView(familySeed: identity.name, variationSeed: identity.roleID,
                         initials: DefaultAvatarInitials.make(from: identity.name), size: ReplyIdentityLayout.avatarSize)
                 }
             }

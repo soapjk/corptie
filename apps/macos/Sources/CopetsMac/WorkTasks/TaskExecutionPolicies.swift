@@ -5,18 +5,18 @@ import CorptieConversation
 enum CorptieTaskExecutionStartDecision: Equatable {
     case restoreCompleted
     case resume(sessionId: String)
-    case createSession(agentId: String)
+    case createSession(roleId: String)
     case chooseAgent
 
-    static func resolve(status: String, currentSessionId: String?, mainAgentId: String?) -> Self {
+    static func resolve(status: String, currentSessionId: String?, mainRoleId: String?) -> Self {
         if ["done", "complete", "completed"].contains(status) {
             return .restoreCompleted
         }
         if let currentSessionId = normalized(currentSessionId) {
             return .resume(sessionId: currentSessionId)
         }
-        if let mainAgentId = normalized(mainAgentId) {
-            return .createSession(agentId: mainAgentId)
+        if let mainRoleId = normalized(mainRoleId) {
+            return .createSession(roleId: mainRoleId)
         }
         return .chooseAgent
     }

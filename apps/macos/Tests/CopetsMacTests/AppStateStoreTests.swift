@@ -296,13 +296,13 @@ struct AppStateStoreTests {
 
 private extension ControlPlaneStatePayload {
     static func fixture(sessions: [TaskSession] = []) -> Self {
-        .init(sessions: sessions, tasks: [], works: [], agents: [], skills: [], repositories: [], integrationRuns: [])
+        .init(sessions: sessions, tasks: [], works: [], roles: [], skills: [], repositories: [], integrationRuns: [])
     }
 }
 
 private extension StateEntityDeletes {
     static func fixture() -> Self {
-        .init(sessions: [], tasks: [], works: [], agents: [], skills: [], repositories: [], integrationRuns: [])
+        .init(sessions: [], tasks: [], works: [], roles: [], skills: [], repositories: [], integrationRuns: [])
     }
 }
 
@@ -315,7 +315,7 @@ private extension TaskSession {
         currentReasoningLevel: String? = nil
     ) -> Self {
         .init(
-            id: id, title: title, agent: "Codex", agentId: nil, sessionKind: .worker,
+            id: id, title: title, agent: "Codex", roleId: nil, sessionKind: .worker,
             workId: nil, taskId: nil, status: status, progress: 0,
             summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
             updatedAt: updatedAt, accent: .cyan, archived: false,

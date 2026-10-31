@@ -1,3 +1,4 @@
+import { legacyAgentToRole, roleToLegacyAgentWire } from "../store/repositories/roleRepository.mjs";
 // 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：work/task/memory/hub 路由）。
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
 
@@ -119,7 +120,8 @@ export function handleEntityHttpRequest({
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
-  const presentAgent = (agent) => {
+  const presentRole = (role) => {
+    const agent = roleToLegacyAgentWire(role);
     if (!agent) return null;
     let availability = null;
     try {
@@ -134,7 +136,7 @@ export function handleEntityHttpRequest({
       ? suggestAgentSessionTitle(agent)
       : null;
     return {
-      ...agent,
+      ...role,
       status: unavailable ? "unavailable" : "available",
       statusReason: unavailable && typeof availability?.reason === "string"
         ? availability.reason.trim() || null
@@ -143,6 +145,8 @@ export function handleEntityHttpRequest({
       suggestedSessionTitle
     };
   };
+  // /agents remains the compatibility transport, not the business model.
+  const presentAgent = (agent) => roleToLegacyAgentWire(presentRole(legacyAgentToRole(agent)));
   const normalizeSkillIds = (value) => [...new Set((Array.isArray(value) ? value : [])
     .map((id) => String(id).trim()).filter(Boolean))];
   const validateSkillIds = (value) => {
@@ -326,11 +330,11 @@ export function handleEntityHttpRequest({
 
       // ---- Agent ----
       if (request.method === "GET" && path === "/agents") {
-        return sendJson(response, 200, { agents: workService.store.listAgents().map(presentAgent) });
+        return sendJson(response, 200, { agents: workService.store.listRoles().map(role => roleToLegacyAgentWire(presentRole(role))) });
       }
       if (request.method === "POST" && path === "/agents") {
         const input = await readJson(request);
-        const name = validateEntityName(input.name, "name", "Agent");
+        const name = validateEntityName(input.name, "name", "Role");
         const skillIds = validateSkillIds(input.skillIds);
         const requestId = boundedHeaderText(request, "x-request-id") || randomUUID();
         const idempotencyKey = boundedHeaderText(request, "idempotency-key");
@@ -366,11 +370,13 @@ export function handleEntityHttpRequest({
           }
         };
         try {
-          const result = workService.store.createAgentWithRegistrySkillsIdempotently(
+          const roleReceipt = workService.store.createRoleWithRegistrySkillsIdempotently(
             agentInput,
             skillIds,
             { idempotencyKey, requestHash, requestId, deviceId }
           );
+          const { role, ...receipt } = roleReceipt;
+          const result = { ...receipt, agent: roleToLegacyAgentWire(role) };
           auditLog({
             ...audit,
             outcome: result.replayed ? "replayed" : "created",
@@ -408,7 +414,7 @@ export function handleEntityHttpRequest({
         // 客户端无需也不应传 cwd。
         if (request.method === "POST") {
           const agent = workService.store.getAgent(id);
-          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+          if (!agent) throw apiError("AGENT_NOT_FOUND", "Role not found.", 404);
           if (typeof launchAgentSession !== "function") {
             throw apiError("INTERNAL", "launchAgentSession is not configured.", 500);
           }
@@ -431,7 +437,7 @@ export function handleEntityHttpRequest({
         const id = decodeURIComponent(agentMatch[1]);
         if (request.method === "GET") {
           const agent = workService.store.getAgent(id);
-          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+          if (!agent) throw apiError("AGENT_NOT_FOUND", "Role not found.", 404);
           return sendJson(response, 200, {
             agent: presentAgent(agent)
           });
@@ -439,7 +445,7 @@ export function handleEntityHttpRequest({
         if (request.method === "PATCH") {
           const input = await readJson(request);
           if (Object.prototype.hasOwnProperty.call(input, "name")) {
-            validateEntityName(input.name, "name", "Agent");
+            validateEntityName(input.name, "name", "Role");
           }
           // Fail before avatar file I/O so a mixed cosmetic + protected patch cannot leave orphaned files.
           if (isPlatformAssistant(id)) assertPlatformAssistantPatch(input);
@@ -458,12 +464,12 @@ export function handleEntityHttpRequest({
               input.avatarPath = null;
             }
           }
-          const agent = workService.store.updateAgentWithRegistrySkills(id, input, skillIds);
+          const agent = roleToLegacyAgentWire(workService.store.updateRoleWithRegistrySkills(id, input, skillIds));
           onEntityChanged?.("AgentChanged", { action: "updated", entity: agent });
           return sendJson(response, 200, { agent: presentAgent(workService.store.getAgent(id) ?? agent) });
         }
         if (request.method === "DELETE") {
-          workService.store.deleteAgent(id);
+          workService.store.deleteRole(id);
           onEntityChanged?.("AgentChanged", { action: "deleted", entity: { agentId: id } });
           return sendJson(response, 200, { ok: true });
         }

@@ -171,7 +171,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
 
     func testAgentIdentityAppearsOncePerReplyAndSkipsSpecialMessages() throws {
         var projection = builder()
-        let identity = ConversationReplyIdentity(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        let identity = ConversationReplyIdentity(roleID: "agent:one", name: "Developer", avatarPath: nil)
         projection.replyIdentity = identity
         let entries: [ChatDisplayEntry] = [
             .init(kind: .message(try item(["id": "u1", "type": "userMessage", "presentationRole": NSNull()]))),
@@ -203,7 +203,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
 
     func testReplyIdentityMovesToEarlierContentWhenHistoryIsPrepended() throws {
         var projection = builder()
-        projection.replyIdentity = .init(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        projection.replyIdentity = .init(roleID: "agent:one", name: "Developer", avatarPath: nil)
         let final = ChatDisplayEntry(kind: .message(try item(["id": "final"])))
         let earlier = ChatDisplayEntry(kind: .message(try item(["id": "earlier", "presentationRole": "commentary"])))
         let initial = projection.applyingReplyIdentity(to: [projection.nativeAppKitRow(final, expandedTurnIds: [])], entries: [final])
@@ -219,7 +219,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
 
     func testReplyIdentitySurvivesStreamingTailReplacementAndReusedPrefix() throws {
         var projection = builder()
-        projection.replyIdentity = .init(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        projection.replyIdentity = .init(roleID: "agent:one", name: "Developer", avatarPath: nil)
         let first = ChatDisplayEntry(kind: .message(try item(["id": "first", "text": "Partial"])))
         let initial = projection.applyingReplyIdentity(to: [projection.nativeAppKitRow(first, expandedTurnIds: [])], entries: [first])
         let streamed = ChatDisplayEntry(kind: .message(try item(["id": "first", "text": "Complete answer"])))

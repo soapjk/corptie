@@ -152,9 +152,18 @@ public struct ClientControlSnapshot: Decodable, Sendable {
     public let schemaVersion: Int
     public let automations: [ClientControlItem]
     public let repositories: [ClientControlItem]
-    public let agents: [ClientControlItem]
+    public let roles: [ClientControlItem]
     public let skills: [ClientControlItem]
     public let resourceRevision: Int?
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case automations
+        case repositories
+        case roles = "agents"
+        case skills
+        case resourceRevision
+    }
 }
 
 public struct ClientTimelineSnapshot: Decodable, Sendable {

@@ -504,7 +504,7 @@ struct PadWorktreeManagementView: View {
                         Task { await manager.jobAction("retry", connection: connection) }
                     }
                     if job.hasMergeConflict {
-                        Button("交给 Agent 解决冲突", systemImage: "person.crop.circle.badge.gearshape") {
+                        Button("交给角色解决冲突", systemImage: "person.crop.circle.badge.gearshape") {
                             Task { await manager.jobAction("resolve-conflict", connection: connection) }
                         }
                     }

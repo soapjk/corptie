@@ -1,33 +1,33 @@
 import SwiftUI
 
-enum AgentsSkillsLayoutMode: Equatable {
+enum RolesSkillsLayoutMode: Equatable {
     case split
     case compact
 }
 
-enum AgentsSkillsLayoutMetrics {
+enum RolesSkillsLayoutMetrics {
     static let skillsColumnWidth: CGFloat = 300
     static let headerHeight: CGFloat = 60
     static let columnPadding: CGFloat = 16
     static let minimumAgentsColumnWidth: CGFloat = 520
     static let dividerWidth: CGFloat = 1
 
-    static func mode(for availableWidth: CGFloat) -> AgentsSkillsLayoutMode {
+    static func mode(for availableWidth: CGFloat) -> RolesSkillsLayoutMode {
         availableWidth >= minimumAgentsColumnWidth + skillsColumnWidth + dividerWidth ? .split : .compact
     }
 }
 
 // 顶层 Agents Tab 同时管理 Agent 和共享 Skill 注册表。宽屏平级双列，紧凑宽度仅保留 Agent 主列。
-struct AgentManagementView: View {
+struct RoleManagementView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
-    @State private var isCreatingAgent = false
+    @State private var isCreatingRole = false
     @State private var isRegisteringSkill = false
     @State private var isShowingSkillsSheet = false
     @State private var isShowingMcpSheet = false
-    @State private var selectedAgentForDetail: Agent?
-    @State private var agentForSessionCreation: Agent?
+    @State private var selectedRoleForDetail: Role?
+    @State private var roleForSessionCreation: Role?
     @State private var pendingSkillDeletion: SkillDeletionImpact?
     @State private var skillDeletionError: String?
     @State private var isDeletingSkill = false
@@ -37,34 +37,34 @@ struct AgentManagementView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let layoutMode = AgentsSkillsLayoutMetrics.mode(for: geometry.size.width)
+            let layoutMode = RolesSkillsLayoutMetrics.mode(for: geometry.size.width)
 
             HStack(spacing: 0) {
-                agentsColumn(showsSkillsButton: sidebarState.isVisible && layoutMode == .compact)
+                rolesColumn(showsSkillsButton: sidebarState.isVisible && layoutMode == .compact)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 if sidebarState.isVisible && layoutMode == .split {
                     Divider()
                     skillsColumn
-                        .frame(width: AgentsSkillsLayoutMetrics.skillsColumnWidth)
+                        .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
                 }
             }
         }
         .sheet(isPresented: $isShowingSkillsSheet) {
             skillsColumn
-                .frame(width: AgentsSkillsLayoutMetrics.skillsColumnWidth)
+                .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
                 .frame(minHeight: 520, idealHeight: 680)
         }
         .sheet(isPresented: $isShowingMcpSheet) {
-            McpManagementView(agents: client.agents)
+            McpManagementView(roles: client.roles)
         }
-        .sheet(isPresented: $isCreatingAgent) {
-            AgentCreateView()
+        .sheet(isPresented: $isCreatingRole) {
+            RoleCreateView()
         }
-        .sheet(item: $selectedAgentForDetail) { agent in
-            AgentDetailView(agent: agent)
+        .sheet(item: $selectedRoleForDetail) { agent in
+            RoleDetailView(agent: agent)
         }
-        .sheet(item: $agentForSessionCreation) { agent in
+        .sheet(item: $roleForSessionCreation) { agent in
             NewSessionCreationSheet(fixedAgent: agent) { session in
                 router.openSession(session.id, source: .createdSession)
             }
@@ -96,18 +96,18 @@ struct AgentManagementView: View {
             Text(skillDeletionError ?? "")
         }
         .task {
-            async let agents: Void = client.refreshAgents()
+            async let roles: Void = client.refreshRoles()
             async let skills: Void = client.refreshSkills()
-            _ = await (agents, skills)
+            _ = await (roles, skills)
         }
     }
 
-    private func agentsColumn(showsSkillsButton: Bool) -> some View {
+    private func rolesColumn(showsSkillsButton: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(L10n("Agents"))
+                Text(L10n("Roles"))
                     .font(.title2.bold())
-                Text("\(client.agents.count)")
+                Text("\(client.roles.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
@@ -129,33 +129,39 @@ struct AgentManagementView: View {
                 }
                 .help("管理独立 MCP Server")
                 Button {
-                    isCreatingAgent = true
+                    isCreatingRole = true
                 } label: {
-                    Label(L10n("新建 Agent"), systemImage: "plus")
+                    Label(L10n("新建 角色"), systemImage: "plus")
                 }
             }
-            .padding(.horizontal, AgentsSkillsLayoutMetrics.columnPadding)
-            .frame(height: AgentsSkillsLayoutMetrics.headerHeight)
+            .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
+            .frame(height: RolesSkillsLayoutMetrics.headerHeight)
+
+            Text(L10n("Roles define reusable instructions and skills. Sessions run through execution engines."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
+                .padding(.bottom, 8)
 
             Divider()
 
-            if client.isLoading && client.agents.isEmpty {
+            if client.isLoading && client.roles.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if client.agents.isEmpty {
+            } else if client.roles.isEmpty {
                 ContentUnavailableView(
-                    "暂无 Agent",
+                    "暂无 角色",
                     systemImage: "person.2",
-                    description: Text(L10n("点击右上角「新建 Agent」创建第一个"))
+                    description: Text(L10n("点击右上角「新建 角色」创建第一个"))
                 )
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
-                        ForEach(client.agents) { agent in
-                            agentCard(agent)
+                        ForEach(client.roles) { agent in
+                            roleCard(agent)
                         }
                     }
-                    .padding(AgentsSkillsLayoutMetrics.columnPadding)
+                    .padding(RolesSkillsLayoutMetrics.columnPadding)
                 }
             }
         }
@@ -173,8 +179,8 @@ struct AgentManagementView: View {
                     Label(L10n("登记"), systemImage: "plus")
                 }
             }
-            .padding(.horizontal, AgentsSkillsLayoutMetrics.columnPadding)
-            .frame(height: AgentsSkillsLayoutMetrics.headerHeight)
+            .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
+            .frame(height: RolesSkillsLayoutMetrics.headerHeight)
 
             Divider()
 
@@ -194,7 +200,7 @@ struct AgentManagementView: View {
                             }
                             if index < client.skills.count - 1 {
                                 Divider()
-                                    .padding(.leading, AgentsSkillsLayoutMetrics.columnPadding)
+                                    .padding(.leading, RolesSkillsLayoutMetrics.columnPadding)
                             }
                         }
                     }
@@ -229,8 +235,8 @@ struct AgentManagementView: View {
     private func skillDeletionConfirmationMessage(_ impact: SkillDeletionImpact) -> String {
         let agentNames = impact.affectedAgents.map(\.name).joined(separator: "、")
         let affected = impact.affectedAgentCount == 0
-            ? L10n("No Agent currently uses this Skill.")
-            : L10nFormat("This permanently removes the Skill from %d Agent(s): %@.", impact.affectedAgentCount, agentNames)
+            ? L10n("No Role currently uses this Skill.")
+            : L10nFormat("This permanently removes the Skill from %d Role(s): %@.", impact.affectedAgentCount, agentNames)
         if impact.canDelete {
             return affected + "\n\n" + L10n("All Provider runtime copies and the Git cache will be removed. This cannot be undone.")
         }
@@ -242,34 +248,34 @@ struct AgentManagementView: View {
         )
     }
 
-    private func agentCard(_ agent: Agent) -> some View {
-        AgentCard(agent: agent, onStartSession: { agentForSessionCreation = agent })
+    private func roleCard(_ agent: Role) -> some View {
+        RoleCard(agent: agent, onStartSession: { roleForSessionCreation = agent })
             .contextMenu {
-                Button(L10n("开始新会话")) { agentForSessionCreation = agent }
-                Button(L10n("打开详情")) { selectedAgentForDetail = agent }
+                Button(L10n("开始新会话")) { roleForSessionCreation = agent }
+                Button(L10n("打开详情")) { selectedRoleForDetail = agent }
                 Divider()
                 Button {
                     NotificationCenter.default.post(
                         name: .showAgentOrb,
                         object: nil,
-                        userInfo: ["agentId": agent.agentId]
+                        userInfo: ["agentId": agent.roleId]
                     )
                 } label: {
                     Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
                 }
             }
-            .onTapGesture { selectedAgentForDetail = agent }
+            .onTapGesture { selectedRoleForDetail = agent }
             .focusable()
             .onKeyPress(.return) {
-                selectedAgentForDetail = agent
+                selectedRoleForDetail = agent
                 return .handled
             }
             .onKeyPress(.space) {
-                selectedAgentForDetail = agent
+                selectedRoleForDetail = agent
                 return .handled
             }
             .accessibilityAction(named: Text(L10n("打开详情"))) {
-                selectedAgentForDetail = agent
+                selectedRoleForDetail = agent
             }
     }
 
@@ -313,7 +319,7 @@ struct SkillRegistryRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .padding(.horizontal, AgentsSkillsLayoutMetrics.columnPadding)
+        .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -321,8 +327,8 @@ struct SkillRegistryRow: View {
 }
 
 // 单个 Agent 的网格卡片。所有 Agent 都可创建聊天或 Worker Session。
-struct AgentCard: View {
-    let agent: Agent
+struct RoleCard: View {
+    let agent: Role
     var onStartSession: (() -> Void)? = nil
 
     private enum Metrics {
@@ -407,7 +413,7 @@ struct AgentCard: View {
             } else {
                 DefaultInitialAvatarView(
                     familySeed: agent.name,
-                    variationSeed: agent.agentId,
+                    variationSeed: agent.roleId,
                     initials: DefaultAvatarInitials.make(from: agent.name),
                     size: 40
                 )

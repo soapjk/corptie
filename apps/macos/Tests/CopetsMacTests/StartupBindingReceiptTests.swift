@@ -7,7 +7,7 @@ struct StartupBindingReceiptTests {
     @Test func workSessionStartRequestUsesTheAuthoritativeFieldContract() throws {
         let request = WorkSessionStartRequest(
             taskId: "task:one",
-            assigneeAgentId: "agent:worker",
+            assigneeRoleId: "agent:worker",
             expectedTaskVersion: 3,
             providerId: "openclacky",
             title: "Worker",

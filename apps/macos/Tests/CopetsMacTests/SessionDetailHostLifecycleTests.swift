@@ -7,7 +7,7 @@ import CorptieConversation
 
 @MainActor final class SessionDetailHostLifecycleTests: XCTestCase {
     private func session(_ id: String) -> TaskSession {
-        TaskSession(id: id, title: id, agent: "Fixture", agentId: nil, sessionKind: .worker,
+        TaskSession(id: id, title: id, agent: "Fixture", roleId: nil, sessionKind: .worker,
             workId: "work", taskId: "task-\(id)", status: .complete, progress: 0, summary: "",
             suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil, updatedAt: "2026-09-01",
             accent: .cyan, archived: false, pinned: false, sortOrder: 0, capabilities: nil, external: nil)

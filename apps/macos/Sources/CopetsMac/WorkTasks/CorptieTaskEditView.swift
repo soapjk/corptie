@@ -12,11 +12,11 @@ struct CorptieTaskEditView: View {
     @State private var detail: String
     @State private var acceptanceCriteria: String
     @State private var verificationCriteria: String
-    @State private var mainAgentID: String
+    @State private var mainRoleID: String
     @State private var priority: String
     @State private var status: String
     @State private var showStatusConfirm = false
-    @State private var assistAgentId: String?
+    @State private var assistRoleId: String?
     @State private var saveError: String?
     @State private var updateTaskId = "task.update:\(UUID().uuidString.lowercased())"
 
@@ -27,7 +27,7 @@ struct CorptieTaskEditView: View {
         _detail = State(initialValue: task.description)
         _acceptanceCriteria = State(initialValue: task.acceptanceCriteria)
         _verificationCriteria = State(initialValue: task.verificationCriteria)
-        _mainAgentID = State(initialValue: task.mainAgentId ?? "")
+        _mainRoleID = State(initialValue: task.mainRoleId ?? "")
         _priority = State(initialValue: task.priority)
         _status = State(initialValue: task.lifecycleState)
     }
@@ -51,7 +51,7 @@ struct CorptieTaskEditView: View {
                     Text(L10n("描述"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)")
+                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedRoleId: $assistRoleId, context: "工作项标题：\(title)")
                     Spacer()
                 }
                 TextEditor(text: $detail)
@@ -66,7 +66,7 @@ struct CorptieTaskEditView: View {
                     Text(L10n("验收标准"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)；描述：\(detail)")
+                    AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedRoleId: $assistRoleId, context: "工作项标题：\(title)；描述：\(detail)")
                     Spacer()
                 }
                 TextEditor(text: $acceptanceCriteria)
@@ -82,11 +82,11 @@ struct CorptieTaskEditView: View {
                     .accessibilityLabel(L10n("验证标准"))
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("Agent")).font(.caption).foregroundStyle(.secondary)
-                Picker("Agent", selection: $mainAgentID) {
-                    Text(L10n("保留当前设置")).tag(task.mainAgentId ?? "")
-                    ForEach(AppStateStore.shared.work(task.workId)?.contributorAgentIds ?? [], id: \.self) { id in
-                        if id != task.mainAgentId { Text(AppStateStore.shared.agent(id)?.name ?? id).tag(id) }
+                Text(L10n("Role")).font(.caption).foregroundStyle(.secondary)
+                Picker("Role", selection: $mainRoleID) {
+                    Text(L10n("保留当前设置")).tag(task.mainRoleId ?? "")
+                    ForEach(AppStateStore.shared.work(task.workId)?.contributorRoleIds ?? [], id: \.self) { id in
+                        if id != task.mainRoleId { Text(AppStateStore.shared.agent(id)?.name ?? id).tag(id) }
                     }
                 }.labelsHidden()
             }
@@ -262,7 +262,7 @@ struct CorptieTaskEditView: View {
         let requestDescription = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestAcceptanceCriteria = acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestVerificationCriteria = verificationCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestMainAgentID = mainAgentID == (task.mainAgentId ?? "") ? nil : mainAgentID
+        let requestMainAgentID = mainRoleID == (task.mainRoleId ?? "") ? nil : mainRoleID
         let requestPriority = priority
         let requestStatus = status
         let taskId = updateTaskId
@@ -275,7 +275,7 @@ struct CorptieTaskEditView: View {
                latest.description == requestDescription,
                latest.acceptanceCriteria == requestAcceptanceCriteria,
                latest.verificationCriteria == requestVerificationCriteria,
-               requestMainAgentID == nil || latest.mainAgentId == requestMainAgentID,
+               requestMainAgentID == nil || latest.mainRoleId == requestMainAgentID,
                latest.priority == requestPriority,
                latest.lifecycleState == requestStatus {
                 onSaved()
@@ -293,7 +293,7 @@ struct CorptieTaskEditView: View {
                 verificationCriteria: requestVerificationCriteria,
                 priority: requestPriority,
                 lifecycleState: targetsCompleted ? nil : requestStatus,
-                mainAgentId: requestMainAgentID
+                mainRoleId: requestMainAgentID
             ) != nil else {
                 return .failure(client.errorMessage ?? L10n("CorptieTask 保存失败，可重试。"))
             }

@@ -13,10 +13,25 @@ struct Work: Identifiable, Codable, Hashable {
     var status: String
     var profile: String
     var tags: [String]
-    var contributorAgentIds: [String]
+    var contributorRoleIds: [String]
     var primaryAgentId: String? = nil
     var createdAt: String
     var updatedAt: String
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case workspaceId
+        case name
+        case description
+        case avatarPath
+        case status
+        case profile
+        case tags
+        case contributorRoleIds = "contributorAgentIds"
+        case primaryAgentId
+        case createdAt
+        case updatedAt
+    }
 }
 
 // 挂靠资源：Git 仓库（Work 涉及修改的 Workspace）
@@ -96,7 +111,7 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var lifecycleState: String
     var autoTitleEnabled: Bool? = nil
     var archived: Bool? = nil
-    var mainAgentId: String?
+    var mainRoleId: String?
     var currentSessionId: String?
     var executionStatus: String?
     var hasPendingScheduledWake: Bool? = nil
@@ -112,6 +127,37 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var revision: Int = 1
     var createdAt: String
     var updatedAt: String
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case workId
+        case parentTaskId
+        case hierarchy
+        case title
+        case description
+        case acceptanceCriteria
+        case verificationCriteria
+        case priority
+        case lifecycleState
+        case autoTitleEnabled
+        case archived
+        case mainRoleId = "mainAgentId"
+        case currentSessionId
+        case executionStatus
+        case hasPendingScheduledWake
+        case userSummary
+        case deletionStatus
+        case deletionError
+        case acceptanceAssessment
+        case completionSuggestion
+        case completionSource
+        case creationOrigin
+        case resourceVersion
+        case currentSnapshotId
+        case revision
+        case createdAt
+        case updatedAt
+    }
 }
 
 struct CorptieTaskSnapshot: Identifiable, Codable, Hashable {
@@ -678,13 +724,24 @@ struct CorptieTaskStartupReady: Codable {
 /// the assignee resource and never the actor.
 struct WorkSessionStartRequest: Codable, Equatable {
     let taskId: String
-    let assigneeAgentId: String
+    let assigneeRoleId: String
     let expectedTaskVersion: Int
     let providerId: String
     let title: String?
     let idempotencyKey: String
     let sourceSessionId: String
     var dispatchInitialTurn: Bool? = nil
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case taskId
+        case assigneeRoleId = "assigneeAgentId"
+        case expectedTaskVersion
+        case providerId
+        case title
+        case idempotencyKey
+        case sourceSessionId
+        case dispatchInitialTurn
+    }
 }
 
 private struct StartupAnyCodingKey: CodingKey {

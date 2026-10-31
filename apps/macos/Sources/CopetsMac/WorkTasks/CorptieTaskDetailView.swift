@@ -7,7 +7,7 @@ struct CorptieTaskDetailView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     let task: CorptieTask
-    let contributorAgentIds: [String]
+    let contributorRoleIds: [String]
     var isDeletionPending = false
     var onRequestDeletion: (() -> Void)?
     var onRequestReload: () -> Void = {}
@@ -24,7 +24,7 @@ struct CorptieTaskDetailView: View {
     @State private var isUpdatingAutoTitle = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
-    @State private var sessionCreationAgent: Agent?
+    @State private var sessionCreationAgent: Role?
     @State private var worktreeStatus: CorptieTaskWorktreeStatus?
     @State private var isLoadingWorktree = false
     @State private var isReclaimingWorktree = false
@@ -67,25 +67,25 @@ struct CorptieTaskDetailView: View {
             }
         }
         .sheet(isPresented: $showAgentPicker) {
-            AgentPickerView(
+            RolePickerView(
                 selectedIds: $executionAgentIds,
-                allowedAgentIds: Set(contributorAgentIds),
+                allowedAgentIds: Set(contributorRoleIds),
                 onDone: { selection in
-                if let agentId = selection.first {
+                if let roleId = selection.first {
                     Task {
-                        await createExecutionSession(agentId: agentId)
+                        await createExecutionSession(roleId: roleId)
                     }
                 }
             })
         }
         .sheet(isPresented: $showAgentSwitch) {
-            AgentPickerView(
+            RolePickerView(
                 selectedIds: $executionAgentIds,
-                allowedAgentIds: Set(contributorAgentIds),
+                allowedAgentIds: Set(contributorRoleIds),
                 onDone: { selection in
-                if let agentId = selection.first {
+                if let roleId = selection.first {
                     Task {
-                        _ = await client.updateCorptieTask(taskId: task.id, mainAgentId: agentId)
+                        _ = await client.updateCorptieTask(taskId: task.id, mainRoleId: roleId)
                         await refreshExecution()
                         onRequestReload()
                     }
@@ -372,7 +372,7 @@ struct CorptieTaskDetailView: View {
                             .foregroundStyle(.white)
                             .frame(width: 22, height: 22)
                             .background(currentAgent?.isPlatformAssistant == true ? Color.accentColor : Color.blue, in: Circle())
-                        Text(currentAgent?.name ?? L10n("Select an Agent"))
+                        Text(currentAgent?.name ?? L10n("Select a Role"))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(currentAgent == nil ? .secondary : .primary)
                             .lineLimit(1)
@@ -433,9 +433,9 @@ struct CorptieTaskDetailView: View {
     }
 
     // 当前 CorptieTask 绑定的 Agent（依据 mainAgentId 从 agents 列表解析）。
-    private var currentAgent: Agent? {
-        guard let agentId = task.mainAgentId else { return nil }
-        return client.agents.first { $0.agentId == agentId }
+    private var currentAgent: Role? {
+        guard let roleId = task.mainRoleId else { return nil }
+        return client.roles.first { $0.roleId == roleId }
     }
 
     // 是否已完成：只看 CorptieTask 自身状态。Session complete 只代表一次执行落定，
@@ -662,7 +662,7 @@ struct CorptieTaskDetailView: View {
         switch CorptieTaskExecutionStartDecision.resolve(
             status: task.lifecycleState,
             currentSessionId: currentSession?.id,
-            mainAgentId: task.mainAgentId
+            mainRoleId: task.mainRoleId
         ) {
         case .restoreCompleted:
             guard !isLaunchingExecution else { return }
@@ -688,18 +688,18 @@ struct CorptieTaskDetailView: View {
             } else {
                 executionError = EntityLaunchError(message: client.errorMessage ?? "恢复会话失败", code: nil)
             }
-        case .createSession(let agentId):
-            await createExecutionSession(agentId: agentId)
+        case .createSession(let roleId):
+            await createExecutionSession(roleId: roleId)
         case .chooseAgent:
             executionAgentIds = []
             showAgentPicker = true
         }
     }
 
-    private func createExecutionSession(agentId: String) async {
-        if client.agents.isEmpty { await client.refreshAgents() }
-        guard let agent = client.agents.first(where: { $0.agentId == agentId }) else {
-            executionError = EntityLaunchError(message: L10n("Agent 不存在"), code: "AGENT_NOT_FOUND")
+    private func createExecutionSession(roleId: String) async {
+        if client.roles.isEmpty { await client.refreshRoles() }
+        guard let agent = client.roles.first(where: { $0.roleId == roleId }) else {
+            executionError = EntityLaunchError(message: L10n("角色不存在"), code: "AGENT_NOT_FOUND")
             return
         }
         sessionCreationAgent = agent
@@ -780,7 +780,7 @@ struct CorptieTaskDetailView: View {
     }
 
     private func refreshExecution() async {
-        if client.agents.isEmpty { await client.refreshAgents() }
+        if client.roles.isEmpty { await client.refreshRoles() }
         let sessions = await client.sessions(for: task)
         // 优先用 task.currentSessionId 匹配；匹配不到（例如旧 task 值仍为 nil）时，
         // 取后端返回列表里 updatedAt 最新的那一条，避免因陈旧 currentSessionId 导致「当前执行」显示为空。

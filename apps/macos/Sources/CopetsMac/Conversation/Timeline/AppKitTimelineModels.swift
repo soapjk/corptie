@@ -4,7 +4,7 @@ import CorptieConversation
 import CorptieClientCore
 
 struct ConversationReplyIdentity: Equatable {
-    let agentID: String
+    let roleID: String
     let name: String
     let avatarPath: String?
 }

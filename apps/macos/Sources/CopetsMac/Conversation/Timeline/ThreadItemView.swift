@@ -815,7 +815,7 @@ struct ThreadItemView: View {
         case "userMessage":
             return L10n("User")
         case "agentMessage":
-            return L10n("Agent")
+            return L10n("Session")
         default:
             return L10n("System")
         }

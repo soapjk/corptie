@@ -80,7 +80,7 @@ final class SessionPageRenderInputs {
     private(set) var verifyingBinding = false
     private(set) var tasks: [CorptieTask] = []
     private(set) var works: [Work] = []
-    private(set) var agents: [Agent] = []
+    private(set) var roles: [Role] = []
     private(set) var mentionSessions: [TaskSession] = []
     private(set) var searchTarget: UnifiedSearchNavigation.Target?
     private(set) var searchMatches: [UnifiedSearchHit] = []
@@ -296,7 +296,7 @@ final class SessionPageRenderInputs {
             loadingModels = source.isLoadingCodexModels
         }
         if changes.contains(.entities) {
-            tasks = entities.tasks; works = entities.works; agents = entities.agents
+            tasks = entities.tasks; works = entities.works; roles = entities.roles
             mentionSessions = backend.sessions
         }
         if changes.contains(.search) {

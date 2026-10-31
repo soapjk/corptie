@@ -5,15 +5,15 @@ import Testing
 struct AgentsSkillsLayoutTests {
     @Test("Desktop width uses parallel columns")
     func desktopUsesSplitLayout() {
-        #expect(AgentsSkillsLayoutMetrics.mode(for: 1200) == .split)
-        #expect(AgentsSkillsLayoutMetrics.skillsColumnWidth == 300)
-        #expect(AgentsSkillsLayoutMetrics.headerHeight == 60)
-        #expect(AgentsSkillsLayoutMetrics.columnPadding == 16)
+        #expect(RolesSkillsLayoutMetrics.mode(for: 1200) == .split)
+        #expect(RolesSkillsLayoutMetrics.skillsColumnWidth == 300)
+        #expect(RolesSkillsLayoutMetrics.headerHeight == 60)
+        #expect(RolesSkillsLayoutMetrics.columnPadding == 16)
     }
 
     @Test("Minimum window width prioritizes Agents")
     func minimumWidthUsesCompactLayout() {
-        #expect(AgentsSkillsLayoutMetrics.mode(for: 600) == .compact)
+        #expect(RolesSkillsLayoutMetrics.mode(for: 600) == .compact)
     }
 
     @Test("Skill rows derive source from the shared registry model")

@@ -8,7 +8,7 @@ export const AGENT_KIND = Object.freeze({
 export const PLATFORM_ASSISTANT_MANIFEST = Object.freeze({
   agentId: PLATFORM_ASSISTANT_ID,
   defaultName: "Corptie",
-  description: "Corptie 平台助手：代用户管理 Agent、Work、Task、Session 与其他 Corptie 产品能力。",
+  description: "Corptie 平台助手：代用户管理角色（Role）、Work、Task、Session 与其他 Corptie 产品能力。",
   capabilities: Object.freeze([]),
   systemPrompt: [
     "You are Corptie's built-in platform assistant.",
@@ -23,8 +23,8 @@ const PLATFORM_ASSISTANT_USER_EDITABLE_FIELDS = new Set(["name", "avatarPath"]);
 
 export function isPlatformAssistant(agentOrId) {
   if (typeof agentOrId === "string") return agentOrId === PLATFORM_ASSISTANT_ID;
-  const agentId = agentOrId?.agentId ?? agentOrId?.agent_id;
-  const agentKind = agentOrId?.agentKind ?? agentOrId?.agent_kind;
+  const agentId = agentOrId?.roleId ?? agentOrId?.agentId ?? agentOrId?.agent_id;
+  const agentKind = agentOrId?.roleKind ?? agentOrId?.agentKind ?? agentOrId?.agent_kind;
   return agentId === PLATFORM_ASSISTANT_ID && agentKind === AGENT_KIND.PLATFORM_ASSISTANT;
 }
 

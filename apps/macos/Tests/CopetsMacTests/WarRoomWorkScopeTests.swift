@@ -35,7 +35,7 @@ private func work(id: String) -> Work {
         status: "active",
         profile: "general",
         tags: [],
-        contributorAgentIds: [],
+        contributorRoleIds: [],
         createdAt: "2026-08-19T00:00:00Z",
         updatedAt: "2026-08-19T00:00:00Z"
     )

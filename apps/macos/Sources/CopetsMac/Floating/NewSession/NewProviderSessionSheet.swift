@@ -41,7 +41,7 @@ struct NewPtyAgentTaskSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(L10n("New Agent Task"))
+                Text(L10n("New Session"))
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                 Spacer()
                 Button {
@@ -118,7 +118,7 @@ struct NewPtyAgentTaskSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(L10n("Agent"))
+                Text(L10n("Execution Engine"))
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.black)
                 HStack(spacing: 8) {
@@ -208,11 +208,11 @@ struct NewPtyAgentTaskSheet: View {
                                 .labelsHidden()
                                 .pickerStyle(.menu)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .help(L10n("Controls when the Agent asks before running privileged actions"))
+                                .help(L10n("Controls when the Session asks before running privileged actions"))
                             }
                         }
                         if sandboxMode == "danger-full-access" {
-                            Label(L10n("Full Access lets the Agent operate outside the workspace. Use it only for trusted tasks."), systemImage: "exclamationmark.triangle")
+                            Label(L10n("Full Access lets the Session operate outside the workspace. Use it only for trusted tasks."), systemImage: "exclamationmark.triangle")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(CorptiePalette.amber)
                         }
@@ -622,7 +622,7 @@ struct NewPtyAgentTaskSheet: View {
 
     private func defaultSessionTitle(for path: String) -> String {
         let folderName = URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
-        return folderName.isEmpty ? "Agent" : EntityTitlePolicy.generatedDefault("\(folderName)_agent")
+        return folderName.isEmpty ? "Execution Engine" : EntityTitlePolicy.generatedDefault("\(folderName)_agent")
     }
 
     private func chooseWorkspace() {

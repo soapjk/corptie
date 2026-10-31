@@ -3,11 +3,11 @@ import SwiftUI
 // Agent 详情页：承载 Profile、已安装 Skill、操作和 Memory。
 // 从侧栏 Agent 右键「打开详情」进入（sheet 弹窗）。
 
-struct AgentDetailView: View {
+struct RoleDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @Environment(\.dismiss) private var dismiss
-    let agent: Agent
+    let agent: Role
 
     @State private var name: String
     @State private var detail: String
@@ -18,9 +18,9 @@ struct AgentDetailView: View {
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
     @State private var showSessionCreation = false
-    @State private var assistAgentId: String?
+    @State private var assistRoleId: String?
 
-    init(agent: Agent) {
+    init(agent: Role) {
         self.agent = agent
         _name = State(initialValue: agent.name)
         _detail = State(initialValue: agent.description)
@@ -58,7 +58,7 @@ struct AgentDetailView: View {
                     deleteButton
                     Divider()
                     MemoryManagementView(
-                        scope: .owner(type: "agent", id: agent.agentId),
+                        scope: .owner(type: "agent", id: agent.roleId),
                         embedsListInParentScrollView: true
                     )
                 }
@@ -67,14 +67,14 @@ struct AgentDetailView: View {
         }
         .frame(width: 760)
         .frame(minHeight: 580, idealHeight: 680)
-        .alert(L10n("删除 Agent"), isPresented: $showDeleteConfirm) {
+        .alert(L10n("删除 角色"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
-                Task { await client.deleteAgent(agentId: agent.agentId) }
+                Task { await client.deleteRole(roleId: agent.roleId) }
                 dismiss()
             }
             Button(L10n("取消"), role: .cancel) {}
         } message: {
-            Text(L10n("删除后该 Agent 的历史会话会解绑保留，但此操作不可撤销。"))
+            Text(L10n("删除后该 角色 的历史会话会解绑保留，但此操作不可撤销。"))
         }
         .sheet(isPresented: $showSessionCreation) {
             NewSessionCreationSheet(fixedAgent: agent) { session in
@@ -83,14 +83,14 @@ struct AgentDetailView: View {
             }
         }
         .sheet(isPresented: $showSkillPicker) {
-            AgentSkillPickerView(skills: client.skills, selectedSkillIds: selectedSkillIds) { selection in
+            RoleSkillPickerView(skills: client.skills, selectedSkillIds: selectedSkillIds) { selection in
                 selectedSkillIds = selection
             }
         }
         .task {
             await client.refreshSkills()
-            await client.refreshAgents()
-            if let latest = client.agents.first(where: { $0.agentId == agent.agentId }) {
+            await client.refreshRoles()
+            if let latest = client.roles.first(where: { $0.roleId == agent.roleId }) {
                 selectedSkillIds = Set(latest.skillIds ?? [])
             }
         }
@@ -147,13 +147,13 @@ struct AgentDetailView: View {
     // 头像：优先自定义头像，否则 Agent 级渐变+首字母（与浮球/会话一致）。
     private var agentAvatar: some View {
         Group {
-            if let avatarPath = client.agents.first(where: { $0.agentId == agent.agentId })?.avatarPath ?? agent.avatarPath,
+            if let avatarPath = client.roles.first(where: { $0.roleId == agent.roleId })?.avatarPath ?? agent.avatarPath,
                !avatarPath.isEmpty {
                 AnimatedAvatarImage(path: avatarPath)
             } else {
                 DefaultInitialAvatarView(
                     familySeed: agent.name,
-                    variationSeed: agent.agentId,
+                    variationSeed: agent.roleId,
                     initials: DefaultAvatarInitials.make(from: agent.name),
                     size: 44
                 )
@@ -181,7 +181,7 @@ struct AgentDetailView: View {
                 field(L10n("描述")) {
                     TextField(L10n("描述"), text: $detail)
                 } trailing: {
-                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)")
+                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)")
                 }
                 field("System Prompt") {
                     TextEditor(text: $systemPrompt)
@@ -190,9 +190,9 @@ struct AgentDetailView: View {
                         .padding(6)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                 } trailing: {
-                    AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)；描述：\(detail)")
+                    AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)；描述：\(detail)")
                 }
-                AgentInstalledSkillsView(
+                RoleInstalledSkillsView(
                     skills: client.skills,
                     selectedSkillIds: $selectedSkillIds,
                     isEnabled: true,
@@ -220,9 +220,9 @@ struct AgentDetailView: View {
 
             Spacer()
 
-            if client.agents.first(where: { $0.agentId == agent.agentId })?.avatarPath ?? agent.avatarPath != nil {
+            if client.roles.first(where: { $0.roleId == agent.roleId })?.avatarPath ?? agent.avatarPath != nil {
                 Button(L10n("清除头像")) {
-                    Task { await client.clearAgentAvatar(agentId: agent.agentId) }
+                    Task { await client.clearRoleAvatar(roleId: agent.roleId) }
                 }
                 .buttonStyle(.bordered)
             }
@@ -231,15 +231,15 @@ struct AgentDetailView: View {
                 Task {
                     isSaving = true
                     saveError = nil
-                    let updated: Agent?
+                    let updated: Role?
                     if agent.isPlatformAssistant {
-                        updated = await client.updateAgent(
-                            agentId: agent.agentId,
+                        updated = await client.updateRole(
+                            roleId: agent.roleId,
                             name: name == agent.name ? nil : name
                         )
                     } else {
-                        updated = await client.updateAgent(
-                            agentId: agent.agentId,
+                        updated = await client.updateRole(
+                            roleId: agent.roleId,
                             name: name == agent.name ? nil : name,
                             description: detail,
                             systemPrompt: systemPrompt,
@@ -276,7 +276,7 @@ struct AgentDetailView: View {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = AvatarImageSupport.allowedContentTypes
         if panel.runModal() == .OK, let url = panel.url {
-            Task { await client.setAgentAvatar(agentId: agent.agentId, sourcePath: url.path) }
+            Task { await client.setRoleAvatar(roleId: agent.roleId, sourcePath: url.path) }
         }
     }
 
@@ -290,7 +290,7 @@ struct AgentDetailView: View {
                     Button {
                         showDeleteConfirm = true
                     } label: {
-                        Label(L10n("删除 Agent"), systemImage: "trash")
+                        Label(L10n("删除 角色"), systemImage: "trash")
                             .foregroundStyle(.red)
                     }
                 }
@@ -301,7 +301,7 @@ struct AgentDetailView: View {
     // MARK: - 辅助
 
     private var kindLabel: String {
-        L10n(agent.isPlatformAssistant ? "Platform managed" : "Agent")
+        L10n(agent.isPlatformAssistant ? "Platform managed" : "Role")
     }
 
     private var kindColor: Color {

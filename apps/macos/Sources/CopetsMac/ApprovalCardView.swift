@@ -215,7 +215,7 @@ struct ApprovalCardDemoView: View {
             riskLevel: .high,
             affectedScope: ["仓库 corptie / refs/heads/main", "远程 origin"],
             rationale: "推送会改变远程共享状态，其他协作者将看到这些提交。",
-            sourceLine: "Agent 独立贡献者「backend-dev」· Session#42",
+            sourceLine: "角色独立贡献者「backend-dev」· Session#42",
             requiresSecondaryConfirm: false,
             confirmPhrase: nil
         ),
@@ -226,7 +226,7 @@ struct ApprovalCardDemoView: View {
             riskLevel: .dangerous,
             affectedScope: ["build/（约 1.2 GB）", "node_modules/（约 480 MB）"],
             rationale: "删除不可恢复；依赖需重新安装，构建需重跑。",
-            sourceLine: "Agent 独立贡献者「ops」· Session#57",
+            sourceLine: "角色独立贡献者「ops」· Session#57",
             requiresSecondaryConfirm: true,
             confirmPhrase: "删除不可恢复"
         )

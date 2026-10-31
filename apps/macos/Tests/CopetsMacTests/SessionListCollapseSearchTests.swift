@@ -50,7 +50,7 @@ struct SessionSelectionResolutionTests {
         let rows = [
             makeRow("worker-a", kind: .worker),
             makeRow("worker-b", kind: .worker),
-            makeRow("assistant-a", kind: .assistantChat, agentId: "agent"),
+            makeRow("assistant-a", kind: .assistantChat, roleId: "agent"),
         ]
         // 当前选择是 assistant，切到 worker Tab 时应恢复 worker 记住的 worker-b。
         #expect(
@@ -78,7 +78,7 @@ struct SessionSelectionResolutionTests {
 
     @Test
     func fallsBackToFirstWhenSavedSelectionBelongsToAnotherCategory() {
-        let rows = [makeRow("assistant-a", kind: .assistantChat, agentId: "agent")]
+        let rows = [makeRow("assistant-a", kind: .assistantChat, roleId: "agent")]
         // 记住的 worker-x 已不属于 assistant 分类，应回退到该分类第一个。
         #expect(
             resolvedSessionSelection(
@@ -112,7 +112,7 @@ private func makeRow(
     summary: String = "Summary",
     agent: String = "Codex",
     kind: SessionKind = .legacy,
-    agentId: String? = nil,
+    roleId: String? = nil,
     cwd: String? = nil
 ) -> SessionRowModel {
     let external: ExternalSession? = cwd.map { cwd in
@@ -139,7 +139,7 @@ private func makeRow(
         id: id,
         title: title,
         agent: agent,
-        agentId: agentId,
+        roleId: roleId,
         sessionKind: kind,
         taskId: nil,
         status: .complete,

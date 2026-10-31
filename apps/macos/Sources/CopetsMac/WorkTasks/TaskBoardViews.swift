@@ -205,9 +205,9 @@ struct CorptieTaskCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 4) {
                     Text(item.priority)
-                    if let agentId = item.mainAgentId {
+                    if let roleId = item.mainRoleId {
                         Text("·")
-                        Text(agentId)
+                        Text(roleId)
                             .lineLimit(1)
                     }
                 }
@@ -262,8 +262,8 @@ struct CorptieTaskCard: View {
 
 // MARK: - Agent 行（侧栏 Agent 一览）
 
-struct AgentRow: View {
-    let agent: Agent
+struct RoleRow: View {
+    let agent: Role
 
     var body: some View {
         HStack(spacing: 8) {
@@ -276,7 +276,7 @@ struct AgentRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(agent.name)
                     .font(.callout)
-                Text(L10n(agent.isPlatformAssistant ? "Platform managed" : "Agent"))
+                Text(L10n(agent.isPlatformAssistant ? "Platform managed" : "Role"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
