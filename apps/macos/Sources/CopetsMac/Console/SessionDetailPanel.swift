@@ -111,6 +111,9 @@ struct SessionDetailPanel: View {
 
     private var liveDetailBody: some View {
         sessionCard
+        .safeAreaInset(edge: .top, spacing: 0) {
+            detailTabToolbar
+        }
         .frame(width: railWidth)
         .task(id: isPresentationActive ? session.id : nil) {
             guard isPresentationActive else { return }
@@ -210,12 +213,45 @@ struct SessionDetailPanel: View {
         }
     }
 
+    private var detailTabToolbar: some View {
+        PlatformWorkOutlineToolbar(density: .compact) {
+            HStack(spacing: 2) {
+                detailTabButton("详情", tab: "detail")
+                detailTabButton("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")", tab: "mailbox")
+            }
+            .padding(2)
+            .platformGlassSurface(in: Capsule(), interactive: true)
+            .frame(height: PlatformWorkOutlineToolbarDensity.compact.controlSize)
+        } trailing: {
+            EmptyView()
+        }
+        // The page has an outer gutter; the sidebar toolbar does not.
+        .padding(.top, -MainWindowPageLayoutMetrics.outerPadding)
+    }
+
+    private func detailTabButton(_ title: String, tab: String) -> some View {
+        Button {
+            selectedDetailTab = tab
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: selectedDetailTab == tab ? .semibold : .regular))
+                .foregroundStyle(selectedDetailTab == tab ? .primary : .secondary)
+                .padding(.horizontal, 14)
+                .frame(height: 26)
+                .background {
+                    if selectedDetailTab == tab {
+                        Capsule().fill(Color.primary.opacity(0.10))
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selectedDetailTab == tab ? .isSelected : [])
+        .accessibilityIdentifier("session.detail.tab.\(tab)")
+    }
+
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("会话详情", selection: $selectedDetailTab) {
-                Text("详情").tag("detail")
-                Text("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")").tag("mailbox")
-            }.pickerStyle(.segmented)
             if selectedDetailTab == "mailbox" {
                 SessionMailboxPanel(sessionID: session.id, pendingRevision: "\(session.mailboxPendingCount ?? 0):\(session.executionStatus ?? session.status.rawValue)", activity: activity)
             } else {
