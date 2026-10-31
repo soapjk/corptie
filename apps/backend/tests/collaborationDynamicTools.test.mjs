@@ -14,13 +14,14 @@ const directUserEvidence = {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 17);
+  assert.equal(names.length, 18);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
   assert.ok(names.includes("corptie_collaboration_channel_open"));
   assert.ok(names.includes("corptie_collaboration_message_send"));
   assert.ok(names.includes("corptie_sessions_discover"));
   assert.ok(names.includes("corptie_collaboration_tasks_create"));
+  assert.ok(names.includes("corptie_collaboration_tasks_create_batch"));
   assert.ok(names.includes("corptie_collaboration_tasks_share_artifact"));
   assert.equal(names.includes("corptie_collaboration_tasks_start"), false);
   assert.equal(names.includes("corptie_collaboration_tasks_cancel"), false);
@@ -72,6 +73,22 @@ test("dynamic Task creation maps assignment and Provider for automatic startup",
       idempotencyKey: "create:one"
     }
   }]);
+});
+
+test("batch creation maps references and routes exactly one HTTP request", async () => {
+  const calls = [];
+  const client = { post: async (path, body) => { calls.push({ path, body }); return { status: "completed" }; } };
+  await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create_batch", {
+    ...directUserEvidence, parent_task_id: "task:parent", expected_parent_resource_version: 5,
+    items: [{ title: "Child", agent_id: "agent:worker", idempotency_key: "batch:child",
+      artifact_reference: { artifact_id: "artifact:plan", relation: "implementation_spec", required: true, version_policy: "fixed", version: 1 } }]
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/internal/collaboration/tasks/batch");
+  assert.equal(calls[0].body.parentTaskId, "task:parent");
+  assert.equal(calls[0].body.items[0].idempotencyKey, "batch:child");
+  assert.deepEqual(calls[0].body.items[0].artifactReference, { artifactId: "artifact:plan", relation: "implementation_spec", required: true, versionPolicy: "fixed", version: 1 });
+  assert.equal(calls[0].body.items[0].parentTaskId, undefined);
 });
 
 test("dynamic Artifact sharing maps a read-only Task reference request", async () => {

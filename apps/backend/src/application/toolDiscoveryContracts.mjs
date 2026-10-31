@@ -177,6 +177,8 @@ export function rankDiscoveryCandidates(candidates, { intent = "", domainHint = 
     })) score += 1;
     if (!exact && !aliasExact) {
       if (query.operation === "task-create" && name === "corptie_collaboration_tasks_create") score += 100;
+      if (query.operation === "task-create" && name === "corptie_collaboration_tasks_create_batch"
+        && /(?:batch|bulk|批量|多个|[2-9二三四五六七八九十]\s*个)/iu.test(String(intent))) score += 120;
       if (query.operation === "channel" && name === "corptie_collaboration_channel_open") score += 100;
       if (query.operation === "automation" && name === "corptie_automations_create") score += 100;
       if ((query.excludesAutomation || query.operation === "task-create") && domainId === "scheduled-tasks") score = 0;

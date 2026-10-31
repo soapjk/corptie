@@ -134,7 +134,7 @@ export class TaskCompletionRepository {
         throw error;
       }
       const completed = task.lifecycle_state === "done";
-      if (completed) {
+      if (completed && !(task.parent_task_id && input.details?.childDelivery)) {
         const error = new Error("The Task was already completed by another operation.");
         error.code = "TASK_ALREADY_COMPLETED";
         throw error;

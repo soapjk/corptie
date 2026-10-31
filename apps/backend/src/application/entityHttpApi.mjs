@@ -21,6 +21,7 @@ import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
+import { handleChildTaskDeliveryHttp } from "./childTaskDeliveryHttp.mjs";
 
 function encodeTaskCursor(cursor) {
   return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
@@ -1003,6 +1004,8 @@ export function handleEntityHttpRequest({
       }
 
       const completionIntentMatch = path.match(/^\/tasks\/([^/]+)\/completion-intents$/);
+      if(await handleChildTaskDeliveryHttp({request,response,url,service:workService.childTaskDeliveryService,
+        completion:taskCompletionService,actor:localMacUserActor(),revalidate:()=>{},readJson,sendJson})) return;
       if (request.method === "POST" && completionIntentMatch) {
         if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
         const input = await readJson(request);
@@ -1023,8 +1026,9 @@ export function handleEntityHttpRequest({
         if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
         const result = await taskCompletionService.completeFromMacOS(id, input);
         return sendJson(response, 200, {
-          task: presentTaskWithScheduledWake(workService, result.task),
+          task: result.task ? presentTaskWithScheduledWake(workService, result.task) : null,
           operation: result.operation,
+          childDelivery: result.childDelivery ?? null,
           idempotentReplay: result.idempotentReplay
         });
       }

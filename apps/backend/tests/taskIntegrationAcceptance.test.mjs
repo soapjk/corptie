@@ -14,6 +14,68 @@ import { WorktreeIntegrationJobService } from "../src/application/worktreeIntegr
 import { WorktreeIntegrationGraph } from "../src/application/worktreeIntegrationGraph.mjs";
 import { automaticWorktreeMutationActive } from "../src/application/worktreeAutoFollowService.mjs";
 import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueue.mjs";
+import { ChildTaskDeliveryService } from "../src/application/childTaskDeliveryService.mjs";
+import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
+
+test("accepted child delivery uses a real scoped Git Job, never main or a sibling",{timeout:20000},async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
+  const childHead=await f.commit(child,"delivered.js","export const delivered = true;\n");
+  await f.commit(f.children[1],"sibling.js","export const pending = true;\n");
+  const siblingHead=await git(f.trees.get(f.children[1].id).path,["rev-parse","HEAD"]);
+  const jobs=integrationJobs(f);let cleanupCount=0;
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs,artifactService:{},deletionService:{
+    requestAfterChildDelivery:async()=>{cleanupCount++;return {operation:{operationId:"delete:fixture"}};},
+    resumeChildDeliveryDeletion:async()=>{},getOperation:()=>({state:"succeeded"})
+  }});
+  jobs.onEvent=(type,payload)=>service.onRuntimeEvent(type,payload);
+  const completion=new TaskCompletionService({store:f.store});completion.childDelivery=service;
+  const receipt=await completion.issueMacOSIntent(child.id,{requestId:"real:child",interactionId:"real:click",uiSurface:"task_completion_confirmation",
+    displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
+  const result=await completion.completeFromMacOS(child.id,{requestId:receipt.requestId,intentToken:receipt.intentToken,idempotencyKey:"real:accept"});
+  const id=result.childDelivery.operationId;
+  for(let attempt=0;attempt<100;attempt++) {
+    await service.inFlight.get(id);
+    const op=service.repository.getOperation(id);
+    if(["completed","blocked"].includes(op.state)) break;
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  const op=service.repository.getOperation(id);
+  assert.equal(op.state,"completed",op.errorMessage);
+  assert.equal(cleanupCount,1);
+  await git(f.parentTree.path,["merge-base","--is-ancestor",childHead,"HEAD"]);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  assert.equal(await git(f.trees.get(f.children[1].id).path,["rev-parse","HEAD"]),siblingHead);
+  assert.equal(await git(tree.path,["rev-parse","HEAD"]),childHead);
+});
+
+test("native delivery preparation commits only child code, and refuses unapproved documents",{timeout:20000},async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
+  const parentHead=await git(f.parentTree.path,["rev-parse","HEAD"]);
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs:{},artifactService:{verifyRepositoryPromotion:async()=>false},deletionService:{},prepareProtection:async()=>{}});
+  await writeFile(join(tree.path,"uncommitted.js"),"export const prepared = true;\n");
+  const snapshot=await service.prepareVersion(child.id);
+  assert.notEqual(snapshot.git.headOid,f.baseHead);
+  assert.equal(await git(tree.path,["status","--porcelain=v1"]),"");
+  assert.equal(await git(f.parentTree.path,["rev-parse","HEAD"]),parentHead);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  await writeFile(join(tree.path,"unapproved.md"),"Do not silently track\n");
+  await assert.rejects(()=>service.prepareVersion(child.id),{code:"GIT_ARTIFACT_POLICY_REJECTED"});
+  assert.equal(await git(tree.path,["rev-parse","HEAD"]),snapshot.git.headOid);
+});
+
+test("child code written after approval is preserved and cannot be cleaned",{timeout:20000},async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs:{},artifactService:{},deletionService:{}});
+  const completion=new TaskCompletionService({store:f.store});completion.childDelivery=service;
+  const originalWake=service.wake;service.wake=()=>{};
+  const receipt=await completion.issueMacOSIntent(child.id,{requestId:"late:child",interactionId:"late:click",uiSurface:"task_completion_confirmation",
+    displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
+  const accepted=await completion.completeFromMacOS(child.id,{requestId:receipt.requestId,intentToken:receipt.intentToken,idempotencyKey:"late:accept"});
+  await writeFile(join(tree.path,"late.js"),"important new data\n");
+  service.wake=originalWake;await service.wake(accepted.childDelivery.operationId);
+  const op=service.repository.getOperation(accepted.childDelivery.operationId);
+  assert.equal(op.state,"blocked");assert.equal(op.errorCode,"CHILD_DELIVERY_VERSION_CHANGED");assert.ok(f.store.getTask(child.id));
+});
 
 for (const providerId of ["codex-app-server", "claude-code"]) {
   test(`conflict pause releases a safe source, preserves the target and rejects a stale resume (${providerId})`, { timeout: 20000 }, async t => {
