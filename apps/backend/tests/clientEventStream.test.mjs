@@ -12,6 +12,29 @@ class Response extends EventEmitter {
 const identity = { deviceId: "one" };
 const data = frame => JSON.parse(frame.split("data: ")[1]);
 
+test("automation recovery is opt-in, cursor ordered and finishes before live batches", async () => {
+  const reads = [];
+  const hub = new ClientEventStream({ automationNotifications: async (_identity, cursor) => {
+    reads.push(cursor);
+    return { schemaVersion: 1, cursor: cursor === "initial" ? "page2" : "head", reset: false,
+      hasMore: cursor === "initial", events: [] };
+  } });
+  const old = new Response(), current = new Response();
+  try {
+    hub.attachV2(old, () => identity);
+    hub.attachV2(current, () => ({ deviceId: "two" }), { automationNotifications: true, automationCursor: "initial" });
+    await [...hub.clients].find(client => client.deviceId === "two").tail;
+    assert.deepEqual(reads, ["initial", "page2"]);
+    assert.equal(old.frames.some(f => f.includes("event: automation-notifications")), false);
+    assert.equal(current.frames.filter(f => f.includes("event: automation-notifications")).every(f => data(f).recovery), true);
+    hub.publishControl();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(data(current.frames.filter(f => f.includes("event: automation-notifications")).at(-1)).recovery, false);
+    assert.throws(() => parseRealtimeResumeQuery(new URLSearchParams({ automationNotifications: "yes" })), { code: "INVALID_QUERY" });
+    assert.throws(() => parseRealtimeResumeQuery(new URLSearchParams({ automationCursor: "x".repeat(513) })), { code: "INVALID_QUERY" });
+  } finally { hub.close(); }
+});
+
 test("quick-message invalidations are identifier-only and opt-in, including on-demand streams", async () => {
   const hub = new ClientEventStream();
   const oldClient = new Response(), newClient = new Response();

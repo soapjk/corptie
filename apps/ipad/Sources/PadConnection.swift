@@ -46,6 +46,11 @@ final class PadConnection {
         detailBusinessRepository.invalidateAll(); detailBusinessOwnerID = UUID().uuidString
         messageImageRepository.invalidate(); messageImageOwnerID = UUID().uuidString
     }
+    var automationNotificationScope: String {
+        let principal = cloudTargetMacID != nil ? cloudCredential?.identity.id.uuidString : credentials?.deviceId
+        let server = cloudTargetMacID.map { "cloud-mac:\($0.uuidString)" } ?? serverID
+        return "\(server)|\(principal ?? "unavailable")"
+    }
     func businessDisplayScope(sessionID: String, taskID: String?, workID: String?) -> ClientDetailBusinessScope {
         let principal = cloudTargetMacID != nil ? cloudCredential?.identity.id.uuidString : credentials?.deviceId
         let server = cloudTargetMacID.map { "cloud-mac:\($0.uuidString)" } ?? "\(serverID):\(address)"

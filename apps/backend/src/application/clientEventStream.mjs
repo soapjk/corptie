@@ -19,10 +19,17 @@ export function parseRealtimeResumeQuery(query) {
   const coalescing = query.get("timelineCoalescing");
   if (coalescing != null && !["true", "false"].includes(coalescing)) throw deviceError("INVALID_QUERY", 400);
   const operations = query.get("operationNotifications");
+  const automations = query.get("automationNotifications");
+  const automationCursor = query.get("automationCursor");
+  if (automations != null && !["true", "false"].includes(automations)
+      || automationCursor != null && (automationCursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(automationCursor))) {
+    throw deviceError("INVALID_QUERY", 400);
+  }
   const quickMessages = query.get("quickMessageNotifications");
   if (quickMessages != null && !["true", "false"].includes(quickMessages)) throw deviceError("INVALID_QUERY", 400);
   if (operations != null && !["true", "false"].includes(operations)) throw deviceError("INVALID_QUERY", 400);
   return { timelineRevisions, backgroundTimelineLimit, timelineCoalescing: coalescing === "true",
+    ...(automations != null ? { automationNotifications: automations === "true", automationCursor } : {}),
     ...(operations != null ? { operationNotifications: operations === "true" } : {}),
     ...(quickMessages != null ? { quickMessageNotifications: quickMessages === "true" } : {}) };
 }
@@ -32,7 +39,7 @@ export function parseRealtimeResumeQuery(query) {
  */
 export class ClientEventStream {
   constructor({ coalesceMs = 500, heartbeatMs = 10000, stateSnapshot = null,
-    controlSnapshot = null, timeline = null, backgroundTimelineLimit = 48,
+    controlSnapshot = null, timeline = null, automationNotifications = null, backgroundTimelineLimit = 48,
     backgroundTimelineBatchSize = 2, backgroundTimelineBatchDelayMs = 1000,
     backgroundTimelineBytesPerSecond = 128 * 1024 } = {}) {
     this.clients = new Set();
@@ -46,6 +53,7 @@ export class ClientEventStream {
     this.stateSnapshot = stateSnapshot;
     this.controlSnapshot = controlSnapshot;
     this.timeline = timeline;
+    this.automationNotifications = automationNotifications;
     this.backgroundTimelineLimit = Math.max(0, Math.min(128, Number(backgroundTimelineLimit) || 0));
     this.backgroundTimelineBatchSize = Math.max(1, Math.min(48, Number(backgroundTimelineBatchSize) || 2));
     this.backgroundTimelineBatchDelayMs = Math.max(0, Number(backgroundTimelineBatchDelayMs) || 0);
@@ -110,7 +118,7 @@ export class ClientEventStream {
 
   attachV2(response, authenticate, { sessionId = null, stateRevision = 0, timelineRevision = 0,
     timelineRevisions = {}, backgroundTimelineLimit = null, timelineCoalescing = false, operationNotifications = false,
-    quickMessageNotifications = false } = {}) {
+    quickMessageNotifications = false, automationNotifications = false, automationCursor = null } = {}) {
     const identity = authenticate();
     if (this.clients.size >= 16 || [...this.clients].filter(c => c.deviceId === identity.deviceId).length >= 2) {
       throw deviceError("STREAM_LIMIT", 429);
@@ -130,6 +138,9 @@ export class ClientEventStream {
       version: 2,
       operationNotifications,
       quickMessageNotifications,
+      automationNotifications,
+      automationCursor,
+      automationRecovery: true,
       closed: false,
       deviceId: identity.deviceId,
       sessionId,
@@ -180,6 +191,7 @@ export class ClientEventStream {
     this.clients.add(client);
     response.once("close", close);
     client.write("stream-ready", { schemaVersion: 2, pushPayloads: true,
+      ...(this.automationNotifications ? { automationNotifications: true } : {}),
       backgroundTimelines: true, eventRecovery: "server-snapshot" });
     this.#enqueue(client, async () => {
       const state = await this.#pushState(client, true);
@@ -320,6 +332,18 @@ export class ClientEventStream {
 
   async #pushControl(client) {
     const identity = client.authenticate();
+    if (client.automationNotifications && this.automationNotifications) {
+      let batch;
+      do {
+        batch = await this.automationNotifications(identity, client.automationCursor);
+        if (!batch || client.closed) break;
+        const wrote = client.write("automation-notifications", { ...batch, recovery: client.automationRecovery });
+        await client.waitForWritable(wrote);
+        client.automationCursor = batch.cursor;
+        if (batch.hasMore) await new Promise(resolve => setImmediate(resolve));
+      } while (batch.hasMore && !client.closed);
+      client.automationRecovery = false;
+    }
     if (!this.controlSnapshot) return;
     const snapshot = await this.controlSnapshot(identity);
     if (snapshot) {

@@ -61,7 +61,7 @@ function streamFile(response, { path, contentType, size, etag }) {
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
 export class ClientDeviceGateway {
   constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null,
-    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true } = {}) {
+    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true, automationNotifications = null } = {}) {
     if (typeof detailWritesAllowed !== "boolean") throw deviceError("DETAIL_GATE_INVALID", 500);
     this.authority = authority;
     this.readAPI = readAPI;
@@ -76,6 +76,7 @@ export class ClientDeviceGateway {
       artifacts: sessionAPI.inspector.artifacts, writesAllowed: resourceWritesAllowed }) : null;
     this.inspectorEvents = new ClientInspectorStream({ snapshot: (identity, id) => this.sessionAPI.inspector.snapshot(identity, id) });
     this.events = new ClientEventStream({
+      automationNotifications,
       stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
       controlSnapshot: async () => this.controlAPI?.realtimeSnapshot?.() ?? null,
       timeline: async (identity, sessionId, after, options) =>
@@ -753,7 +754,7 @@ export class ClientDeviceGateway {
 }
 
 export async function startConfiguredDeviceGateway({ directory, preview, readAPI = null, controlAPI = null,
-  worktreeAPI = null, sessionAPIFactory = null, environment = process.env, detailActionService = null, detailWritesAllowed = false }) {
+  worktreeAPI = null, sessionAPIFactory = null, environment = process.env, detailActionService = null, detailWritesAllowed = false, automationNotifications = null }) {
   if (preview || environment.CORPTIE_REMOTE_ACCESS !== "1") return null;
   const host = environment.CORPTIE_REMOTE_HOST;
   const port = Number(environment.CORPTIE_REMOTE_PORT);
@@ -767,7 +768,7 @@ export async function startConfiguredDeviceGateway({ directory, preview, readAPI
   const authority = new ClientDeviceAuthority(directory);
   await authority.initialize();
   const gateway = new ClientDeviceGateway(authority, {
-    detailActionService, detailWritesAllowed,
+    detailActionService, detailWritesAllowed, automationNotifications,
     readAPI, controlAPI, worktreeAPI, sessionAPI: sessionAPIFactory?.() ?? null
   });
   try { await gateway.start({ host, port, key, cert }); }

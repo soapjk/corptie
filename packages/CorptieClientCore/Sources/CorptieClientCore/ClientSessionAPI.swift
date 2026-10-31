@@ -252,6 +252,7 @@ public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
 }
 extension ClientMessage: ConversationExecutionItem {
     public var timelineHasImages: Bool { !images.isEmpty }
+    public var timelineMessageOrigin: String? { messageOrigin }
     public var executionTitle: String { title ?? "" }
     public var timelineTurnID: String { turnId ?? "" }
     public var timelineTurnStatus: String { turnStatus ?? "" }

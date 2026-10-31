@@ -60,7 +60,8 @@ public struct ClientEvents: Sendable {
         timelineRevision: Int = 0,
         timelineRevisions: [String: Int] = [:],
         backgroundTimelineLimit: Int? = nil,
-        timelineCoalescing: Bool = false
+        timelineCoalescing: Bool = false,
+        automationCursor: String? = nil
     ) -> AsyncThrowingStream<ClientRealtimeUpdate, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
             let task = Task { [transport] in
@@ -70,6 +71,8 @@ public struct ClientEvents: Sendable {
                                  URLQueryItem(name: "stateRevision", value: String(stateRevision)),
                                  URLQueryItem(name: "timelineRevision", value: String(timelineRevision))]
                     if let sessionId { query.append(URLQueryItem(name: "sessionId", value: sessionId)) }
+                    query.append(URLQueryItem(name: "automationNotifications", value: "true"))
+                    if let automationCursor { query.append(URLQueryItem(name: "automationCursor", value: automationCursor)) }
                     if timelineCoalescing { query.append(URLQueryItem(name: "timelineCoalescing", value: "true")) }
                     if !timelineRevisions.isEmpty {
                         guard timelineRevisions.count <= 48,
@@ -109,6 +112,7 @@ public struct ClientEvents: Sendable {
                             case "stream-ready": update = .ready(try JSONDecoder().decode(ClientRealtimeReady.self, from: data))
                             case "state-snapshot": update = .state(try JSONDecoder().decode(ClientStateSnapshot.self, from: data))
                             case "operation-job": update = .operation(try JSONDecoder().decode(OperationJobSnapshot.self, from: data))
+                            case "automation-notifications": update = .automationNotifications(try JSONDecoder().decode(ClientAutomationNotificationBatch.self, from: data).validated())
                             case "control-snapshot": update = .control(try JSONDecoder().decode(ClientControlSnapshot.self, from: data))
                             case "timeline-snapshot": update = .timelineSnapshot(try JSONDecoder().decode(ClientTimelineSnapshot.self, from: data))
                             case "timeline-delta": update = .timelineDelta(try JSONDecoder().decode(ClientTimelineDelta.self, from: data))
@@ -138,6 +142,7 @@ public struct ClientRealtimeReady: Decodable, Sendable {
     public let pushPayloads: Bool
     public let backgroundTimelines: Bool?
     public let eventRecovery: String
+    public let automationNotifications: Bool?
 }
 
 public struct ClientStateSnapshot: Decodable, Sendable {
@@ -198,6 +203,7 @@ public struct ClientTimelineDelta: Decodable, Sendable {
 }
 
 public enum ClientRealtimeUpdate: Sendable {
+    case automationNotifications(ClientAutomationNotificationBatch)
     case ready(ClientRealtimeReady)
     case state(ClientStateSnapshot)
     case control(ClientControlSnapshot)
