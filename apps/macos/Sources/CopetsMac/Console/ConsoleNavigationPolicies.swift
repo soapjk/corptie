@@ -1,4 +1,5 @@
 import Combine
+import Observation
 import CorptieConversation
 import AppKit
 import SwiftUI
@@ -53,10 +54,10 @@ enum ConsoleWorkActivityPolicy {
 }
 
 /// Local disclosure preference for the grouped console outline.
-@MainActor
-final class ConsoleOutlineExpansionPreferences: ObservableObject {
-    @Published private(set) var expandedWorkIDs: Set<String>
-    @Published private(set) var isAssistantCollapsed: Bool
+@MainActor @Observable
+final class ConsoleOutlineExpansionPreferences {
+    private(set) var expandedWorkIDs: Set<String>
+    private(set) var isAssistantCollapsed: Bool
     private let store: WorkOutlineExpansionStore
 
     init(defaults: UserDefaults = CorptieAppEnvironment.userDefaults) {
