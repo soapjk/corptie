@@ -34,9 +34,12 @@ struct TaskCardView: View {
                     .frame(width: 47, height: 47)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(session.title)
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(1)
+                        SessionTitleBadges(session: session)
+                    }
                     SessionIdentityLine(
                         session: session,
                         showsProjectName: showsProjectName,

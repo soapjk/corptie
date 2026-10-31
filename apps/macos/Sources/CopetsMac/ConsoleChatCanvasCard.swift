@@ -51,7 +51,7 @@ private struct ConsoleChatCanvasRow: View {
             ConsoleConversationCardLabel(title: session.title, execution: session.executionTaskStatus,
                 needsAttention: session.attention != nil, status: session.executionTaskStatus.rawValue,
                 isSelected: isSelected, isFixed: false, hasScheduledWake: session.hasPendingScheduledWake == true,
-                isUnread: isSessionUnread(session), isActive: isActive) {
+                isUnread: isSessionUnread(session), isActive: isActive, session: session) {
                 let text = TaskCardSummaryPreview.text(content: nil, isCurrent: false,
                     sessionSummary: session.attention?.reason ?? session.summary, description: "")
                 Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4).help(text)

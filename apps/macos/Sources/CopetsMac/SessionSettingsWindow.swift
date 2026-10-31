@@ -110,8 +110,11 @@ private struct SessionSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.title)
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                HStack(spacing: 4) {
+                    Text(session.title)
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    SessionTitleBadges(session: session)
+                }
                 Text(session.external?.cwd ?? session.agent)
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
