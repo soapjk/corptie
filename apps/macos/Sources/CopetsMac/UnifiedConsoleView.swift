@@ -125,7 +125,7 @@ struct UnifiedConsoleView: View {
             CorptieAppEnvironment.userDefaults.set(newValue, forKey: "console.workOutline.sort")
         }
     }
-    @StateObject var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
+    @State var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
     @State var outlineFullyExpandedWorkIDs = Set<String>()
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
