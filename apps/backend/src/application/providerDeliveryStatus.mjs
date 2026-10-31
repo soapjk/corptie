@@ -1,4 +1,5 @@
 export function providerDeliveryFailureStatus(error) {
+  if (error?.code === "PROVIDER_SEND_RECEIPT_INVALID") return "delivery_unknown";
   if (error?.code === "SESSION_BUSY") return "queued";
   if (error?.dispatchState === "not_sent") return "failed";
   if ([

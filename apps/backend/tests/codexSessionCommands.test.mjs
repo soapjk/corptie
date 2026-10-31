@@ -3,6 +3,25 @@ import test from "node:test";
 import { createCodexSessionCommands } from "../src/adapters/codexSessionCommands.mjs";
 import { createCodexTurnDispatcher } from "../src/adapters/codexTurnDispatcher.mjs";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
+import { validateConversationSendReceipt } from "../src/agent-provider/contracts.mjs";
+
+test("Codex native Turn acknowledgement exposes the shared send receipt without dropping native fields", async () => {
+  const dispatcher = createCodexTurnDispatcher({
+    store: { getLogicalSessionByLegacySessionId: () => null, clearActiveChoicePrompt: () => {},
+      getSession: () => ({ external: { cwd: "/tmp" } }) },
+    bumpChoiceGeneration: () => {}, ensureCodexSessionPermissions: async session => session,
+    sessionWithLogicalWorkspace: session => session, collaborationThreadOptionsForSession: async () => ({}),
+    codexRuntime: { ensureThreadResumed: async () => ({ alreadyLoaded: true }),
+      startTurn: async () => ({ turn: { id: "native-turn", status: "inProgress" }, nativeField: true }) }
+  });
+  const receipt = validateConversationSendReceipt(await dispatcher.sendCodexProviderMessage({
+    sessionId: "session", providerSessionId: "native"
+  }, "hello"));
+  assert.equal(receipt.turnId, "native-turn");
+  assert.equal(receipt.delivery, "accepted");
+  assert.equal(receipt.turn.status, "inProgress");
+  assert.equal(receipt.nativeField, true);
+});
 
 test("binding probes between configured sends preserve the live Thread proof without another resume", async () => {
   const client = new CodexAppServerClient();

@@ -240,7 +240,7 @@ export function createRuntimeAgentWorkQueue({
             latencyTrace
           }
         );
-        turnId = response.result?.turn?.id ?? response.result?.turnId ?? null;
+        turnId = response.result?.turnId ?? response.result?.turn?.id ?? null;
       }
       if (store.getAgentTask(claimed.taskId)?.status === "running") {
         store.updateAgentTask(claimed.taskId, { status: "running", targetTurnId: turnId, lastError: null });

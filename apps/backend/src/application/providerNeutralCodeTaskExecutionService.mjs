@@ -23,7 +23,7 @@ export class ProviderNeutralCodeTaskExecutionService {
       source: { type: "benchmark", attemptId },
       purpose: "benchmark-code-task"
     });
-    const turnId = text(result?.turn?.id ?? result?.turnId);
+    const turnId = text(result?.turnId ?? result?.turn?.id);
     if (!turnId) fail("CODE_TASK_EXECUTION_RECEIPT_MISSING", "The Provider-neutral Session entry returned no turn identity.", 503);
     const deadline = Date.now() + this.timeoutMs;
     while (Date.now() <= deadline) {

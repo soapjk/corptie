@@ -26,14 +26,14 @@ async function fixture() {
   core.registerAgent({ agentId: "agent-b", name: "Agent B" });
   const work = store.createWork({
     id: "work:collaboration-fixture",
-    name: "Collaboration Fixture",
+    name: "Collaboration-Fixture",
     contributorAgentIds: ["agent-a", "agent-b"]
   });
   let taskOrdinal = 0;
   const createWorkerOwnership = (agentId, title) => store.createTask({
     id: `task:collaboration-fixture:${++taskOrdinal}`,
     workId: work.id,
-    title,
+    title: title.replaceAll(" ", "-"),
     mainAgentId: agentId
   });
   for (const [providerSessionId, logicalSessionId, agentId, title] of [

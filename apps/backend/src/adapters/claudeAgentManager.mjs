@@ -317,7 +317,8 @@ export class ClaudeAgentManager {
     session.status = "running";
     session.phase = "input_sent";
     session.turnState = "running";
-    session.currentTurnId = options.turnId ?? `${session.id}:turn:${session.nextTurnSeq++}`;
+    const turnId = options.turnId ?? `${session.id}:turn:${session.nextTurnSeq++}`;
+    session.currentTurnId = turnId;
     if (options.turnId) session.nextTurnSeq += 1;
     session.lastInputAt = new Date().toISOString();
     session.updatedAt = session.lastInputAt;
@@ -331,13 +332,13 @@ export class ClaudeAgentManager {
     }
     this.emitProviderEvent(session, {
       type: "turn.started",
-      turnId: session.currentTurnId,
+      turnId,
       occurredAt: session.updatedAt
     });
     console.log(`[claude-sdk] send queued id=${id} chars=${value.length}`);
     const providerValue = providerMessageWithSessionContext(value, options.contextPrompt);
     this.enqueueInput(session, await makeClaudeUserMessage(providerValue, images));
-    return this.toSessionSummary(session);
+    return { ...this.toSessionSummary(session), turnId, delivery: "accepted" };
   }
 
   async switchWorkspace(id, cwd) {
