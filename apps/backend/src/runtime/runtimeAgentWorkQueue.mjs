@@ -10,11 +10,13 @@ export function createRuntimeAgentWorkQueue({
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
+  channelMailbox, sessionMailbox,
   isWorkspaceMutationActive = () => false
 }) {
   const drainingAgentWorkSessionIds = new Set();
   const runtimeQueuedTasksBySession = new Map();
   const preDeliveryRetryCounts = new Map();
+  const mailboxTimers = new Map();
   const MAX_PRE_DELIVERY_RETRIES = 3;
 
   function registerRuntimeQueuedWork(sessionId, taskId) {
@@ -40,7 +42,7 @@ export function createRuntimeAgentWorkQueue({
     const queued = runtimeQueuedTasksBySession.get(sessionId);
     if (!queued?.size) return null;
     for (const item of store.listQueuedAgentTasksForSession(sessionId, Math.max(queued.size, 1))) {
-      if (queued.has(item.taskId)) return item;
+      if (queued.has(item.taskId) && (!sessionMailbox || sessionMailbox.canDispatchOperation(item))) return item;
     }
     for (const taskId of [...queued]) {
       const item = store.getAgentTask(taskId);
@@ -206,11 +208,28 @@ export function createRuntimeAgentWorkQueue({
     // against integration's final idle check.
     if (isWorkspaceMutationActive(sessionId)) return;
 
+    if (next.source?.type === "session_channel" && channelMailbox) {
+      const waitMs = channelMailbox.waitMs(next.deliveryId, next.taskId);
+      if (waitMs > 0) {
+        if (!mailboxTimers.has(sessionId)) {
+          const timer = setTimeout(() => {
+            mailboxTimers.delete(sessionId);
+            scheduleAgentWorkDrain(sessionId);
+          }, waitMs);
+          timer.unref?.();
+          mailboxTimers.set(sessionId, timer);
+        }
+        return;
+      }
+    }
+    const pendingTimer = mailboxTimers.get(sessionId);
+    if (pendingTimer) { clearTimeout(pendingTimer); mailboxTimers.delete(sessionId); }
     const claimed = store.claimAgentTask(next.taskId);
     if (!claimed) return;
     forgetRuntimeQueuedWork(sessionId, next.taskId);
     logSessionMessageLatency(latencyTrace, "task_claimed");
     try {
+      sessionMailbox?.validateOperation(claimed);
       emitEvent("AgentWorkPreparing", { sessionId, task: claimed }, { sessionId, source: claimed.source });
       let turnId = null;
       if (claimed.kind === "collaboration") {
@@ -219,17 +238,24 @@ export function createRuntimeAgentWorkQueue({
           : await collaborationDispatcher.dispatch(claimed.deliveryId, { resolvedRoute: collaborationRoute });
         if (delivered?.status !== "delivered") {
           const status = delivered?.status === "failed" ? "failed" : "queued";
-          store.updateAgentTask(claimed.taskId, {
+          const settled = store.updateAgentTask(claimed.taskId, {
             status,
             startedAt: null,
             lastError: delivered?.lastError ?? null
           });
           if (status === "queued") registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
+          else {
+            emitEvent("AgentWorkFailed", { sessionId, task: settled }, { sessionId, source: settled.source });
+            workspaceContinuationCoordinator.recordWorkSettled(settled);
+          }
           return;
         }
         turnId = delivered.targetTurnId;
       } else {
         workspaceContinuationCoordinator.assertWorkTarget(claimed);
+        if (claimed.source?.mailboxMessageId) store.updateAgentTask(claimed.taskId, {
+          source: { ...claimed.source, mailboxDispatchAttempted: true }
+        });
         const response = await sendUnifiedSessionMessage(
           claimed.sessionId,
           claimed.source?.messageContent ?? claimed.text,
@@ -250,6 +276,7 @@ export function createRuntimeAgentWorkQueue({
           source: claimed.source
         });
         workspaceContinuationCoordinator.recordWorkStarted(startedWork);
+        if (startedWork.source?.mailboxMessageId) sessionMailbox?.notify(sessionMailbox.logical(startedWork.sessionId));
       }
       preDeliveryRetryCounts.delete(claimed.taskId);
     } catch (error) {
@@ -280,6 +307,7 @@ export function createRuntimeAgentWorkQueue({
   }
 
   async function tickAgentWorkQueue() {
+    sessionMailbox?.syncQueuedOperations(registerRuntimeQueuedWork);
     await syncSessionChannelDeliveriesIntoAgentWorkQueue();
     await syncCollaborationDeliveriesIntoAgentWorkQueue();
     await Promise.all(

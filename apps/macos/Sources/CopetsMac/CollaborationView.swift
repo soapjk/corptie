@@ -8,6 +8,10 @@ final class CollaborationViewModel: ObservableObject {
     @Published private(set) var selectedChannel: SessionCollaborationChannel?
     @Published private(set) var messages: [SessionCollaborationMessage] = []
     @Published private(set) var errorMessage: String?
+    @Published private(set) var pendingMessageCount = 0
+    @Published private(set) var hasOlderMessages = false
+    @Published private(set) var isLoadingMessages = false
+    private var selectionRequest = UUID()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
 
@@ -25,21 +29,53 @@ final class CollaborationViewModel: ObservableObject {
     }
 
     func loadChannel(_ id: String) async {
+        let request = UUID()
+        selectionRequest = request
+        isLoadingMessages = true
+        defer { if selectionRequest == request { isLoadingMessages = false } }
         do {
             let response: SessionCollaborationChannelResponse = try await get("collaboration/channels/\(id)")
+            guard selectionRequest == request else { return }
             selectedChannel = response.channel
             messages = response.messages
+            pendingMessageCount = response.pendingCount ?? 0
+            hasOlderMessages = response.hasMore ?? false
             errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
+        } catch { if selectionRequest == request { errorMessage = error.localizedDescription } }
+    }
+
+    func loadOlderMessages() async {
+        guard !isLoadingMessages, let id = selectedChannel?.channelId,
+              let cursor = messages.first?.cursor else { return }
+        let request = selectionRequest
+        isLoadingMessages = true
+        defer { if selectionRequest == request { isLoadingMessages = false } }
+        do {
+            let response: SessionCollaborationChannelResponse = try await get(
+                "collaboration/channels/\(id)", query: [URLQueryItem(name: "beforeCursor", value: cursor)])
+            guard selectionRequest == request else { return }
+            let existing = Set(messages.map(\.messageId))
+            // Bound retained rows while navigating history; Refresh returns to latest.
+            messages = Array((response.messages.filter { !existing.contains($0.messageId) } + messages).prefix(500))
+            pendingMessageCount = response.pendingCount ?? 0
+            hasOlderMessages = response.hasMore ?? false
+            errorMessage = nil
+        } catch { if selectionRequest == request { errorMessage = error.localizedDescription } }
     }
 
     func clearSelection() {
+        selectionRequest = UUID()
         selectedChannel = nil
         messages = []
+        hasOlderMessages = false
+        pendingMessageCount = 0
+        isLoadingMessages = false
     }
 
-    private func get<Response: Decodable>(_ path: String) async throws -> Response {
-        let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: path))
+    private func get<Response: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> Response {
+        var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)!
+        components.queryItems = query.isEmpty ? nil : query
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let message = (try? JSONDecoder().decode(BackendErrorResponse.self, from: data).error)
                 ?? "The collaboration request failed."
@@ -101,7 +137,10 @@ struct CollaborationView: View {
                 }
         } detail: {
             if let channel = model.selectedChannel {
-                SessionChannelDetailView(channel: channel, messages: model.messages)
+                SessionChannelDetailView(channel: channel, messages: model.messages,
+                    hasOlderMessages: model.hasOlderMessages, isLoading: model.isLoadingMessages,
+                    pendingCount: model.pendingMessageCount,
+                    loadOlder: { Task { await model.loadOlderMessages() } })
             } else {
                 ContentUnavailableView(L10n("Select a communication channel"), systemImage: "bubble.left.and.bubble.right")
             }
@@ -160,9 +199,13 @@ struct CollaborationView: View {
 private struct SessionChannelDetailView: View {
     let channel: SessionCollaborationChannel
     let messages: [SessionCollaborationMessage]
+    let hasOlderMessages: Bool
+    let isLoading: Bool
+    let pendingCount: Int
+    let loadOlder: () -> Void
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L10n("Communication channel")).font(.title2.bold())
@@ -178,7 +221,13 @@ private struct SessionChannelDetailView: View {
                     if let value = channel.authorizedAt { LabeledContent(L10n("Authorized at"), value: value) }
                     if let value = channel.revocationReason { LabeledContent(L10n("Revocation reason"), value: value) }
                 }
-                Text(L10n("Messages")).font(.headline)
+                HStack {
+                    Text(L10n("Messages")).font(.headline)
+                    if pendingCount > 0 { Text("\(L10n("Pending")) · \(pendingCount)").font(.caption).foregroundStyle(.secondary) }
+                }
+                if hasOlderMessages {
+                    Button(L10n("Load older messages"), action: loadOlder).disabled(isLoading)
+                }
                 ForEach(messages) { message in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -188,6 +237,7 @@ private struct SessionChannelDetailView: View {
                             Spacer()
                             Text(message.messageKind).font(.caption).foregroundStyle(.secondary)
                         }
+                        Text(deliveryLabel(message)).font(.caption).foregroundStyle(.secondary)
                         Text(message.body).textSelection(.enabled)
                         Text(message.createdAt).font(.caption).foregroundStyle(.tertiary)
                     }.padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
@@ -198,6 +248,19 @@ private struct SessionChannelDetailView: View {
             }.padding(24)
         }
     }
+
+    private func deliveryLabel(_ message: SessionCollaborationMessage) -> String {
+        guard let receipt = message.delivery else { return L10n("Saved") }
+        if receipt.batchStatus == "unknown" { return L10n("Delivery uncertain — automatic replay blocked") }
+        if let count = receipt.messageCount, count > 1 {
+            return "\(L10n("Batch")) · \(count) \(L10n("messages")) · \(receipt.executionStatus ?? receipt.status)"
+        }
+        if ["notification", "acknowledgement"].contains(message.deliveryIntent ?? ""), receipt.status == "pending" {
+            return L10n("Saved — does not wake recipient")
+        }
+        return L10n(receipt.executionStatus ?? receipt.status)
+    }
+
 }
 
 private struct CollaborationRoleList: View {

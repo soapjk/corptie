@@ -1,10 +1,11 @@
+import { handleSessionMailboxHttp } from "./sessionMailboxHttpApi.mjs";
 import { handleDesktopDetail, handleDesktopDetailSync } from "./detailDocumentService.mjs";
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 
 export function routeBackendHttpRequest(request, response, ports) {
   const {
     clientDeviceGateway, sendJson, developmentPreview, clientCapabilities, backendStoreReady,
-    store, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
+    store, sessionMailbox, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
     agentProviderRegistry, backgroundAgentService, taskSummaryService, readJson, rejectUnavailableStoreRequest,
     dataRootMigrationCoordinator, handleSceneHttpRequest, sceneService, handleBackendRestartHttpRequest, shutdown,
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
@@ -74,6 +75,8 @@ export function routeBackendHttpRequest(request, response, ports) {
   if (rejectUnavailableStoreRequest({
     request, response, url, backendStoreReady, store, dataRootMigrationCoordinator, sendJson
   })) return;
+
+  if (sessionMailbox && handleSessionMailboxHttp({ request, response, url, service: sessionMailbox, sendJson, readJson, preview: developmentPreview })) return;
 
   if (handleDesktopDetailSync({ request, response, url, store, sendJson }) ||
       handleDesktopDetail({ request, response, url, store, sendJson })) return;

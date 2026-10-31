@@ -1,7 +1,7 @@
-import { formatTrustedChannelMessage } from "../collaboration/trustedCollaborationEvent.mjs";
+import { formatTrustedChannelMessage, formatTrustedChannelBatch } from "../collaboration/trustedCollaborationEvent.mjs";
 
 export function createSessionChannelDeliveryOperation({
-  store, sessionChannelService, resumeSession, sendMessage, now
+  store, sessionChannelService, resumeSession, sendMessage, now, channelMailbox
 }) {
   async function inspectCollaborationSession(sessionId) {
     const session = store.getSession(sessionId);
@@ -20,7 +20,9 @@ export function createSessionChannelDeliveryOperation({
       messageId: metadata.messageId,
       taskId: metadata.taskId,
       channelId: metadata.channelId,
-      deliveryId: metadata.deliveryId
+      deliveryId: metadata.deliveryId,
+      batchId: metadata.batchId,
+      messageIds: metadata.messageIds
     }, { fromAgentWorkQueue: true });
     if (response.queued) {
       if (response.message?.id) store.removeItem(sessionId, response.message.id);
@@ -47,6 +49,7 @@ export function createSessionChannelDeliveryOperation({
         lastError: `Target Session ${route.sessionId} is unavailable.`
       });
     }
+    if (channelMailbox) return dispatchBatch(deliveryId, route, state);
     if (!sessionChannelService.claimDelivery(deliveryId)) return sessionChannelService.getDelivery(deliveryId);
     try {
       if (state === "stopped") await resumeCollaborationSession(route.providerSessionId);
@@ -68,6 +71,48 @@ export function createSessionChannelDeliveryOperation({
       return sessionChannelService.updateDelivery(deliveryId, {
         status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
       });
+    }
+  }
+
+  async function dispatchBatch(deliveryId, route, state) {
+    const work = store.getRunningAgentTaskForSession(route.providerSessionId);
+    if (!work) throw new Error("Channel batch requires a claimed Session operation.");
+    let batch;
+    let submitted = false;
+    try {
+      batch = channelMailbox.prepareBatch(deliveryId, work.taskId);
+      if (batch.status === "accepted") return sessionChannelService.getDelivery(deliveryId);
+      if (batch.status !== "prepared") return { status: "failed",
+        lastError: "Channel batch dispatch is uncertain; automatic replay is blocked.", batchId: batch.batch_id };
+      if (state === "stopped") await resumeCollaborationSession(route.providerSessionId);
+      const items = channelMailbox.getItems(batch.batch_id);
+      for (const item of items) {
+        const currentRoute = sessionChannelService.resolveDeliveryRoute(item.delivery.deliveryId);
+        if (currentRoute.providerSessionId !== route.providerSessionId || currentRoute.routingVersion !== route.routingVersion) {
+          const error = new Error("Channel route changed before batch dispatch.");
+          error.code = "SESSION_BUSY";
+          throw error;
+        }
+      }
+      channelMailbox.mark(batch.batch_id, "dispatching");
+      submitted = true;
+      const result = await startCollaborationTurn(route.providerSessionId,
+        formatTrustedChannelBatch(items, batch.batch_id), {
+          deliveryId, batchId: batch.batch_id, messageId: items[0].message.messageId,
+          channelId: items[0].channel.channelId, messageIds: items.map(item => item.message.messageId)
+        });
+      if (!result.turnId) throw new Error("Provider did not return a turn receipt; automatic replay is blocked.");
+      channelMailbox.mark(batch.batch_id, "accepted", { turnId: result.turnId });
+      return sessionChannelService.getDelivery(deliveryId);
+    } catch (error) {
+      if (batch && error.code === "SESSION_BUSY") {
+        channelMailbox.mark(batch.batch_id, "prepared");
+        return sessionChannelService.getDelivery(deliveryId);
+      }
+      if (batch) channelMailbox.mark(batch.batch_id, submitted ? "unknown" : "failed", { error: error.message });
+      else sessionChannelService.updateDelivery(deliveryId, { status: "failed", incrementAttempt: true, lastError: error.message });
+      // A potentially accepted Provider request must not return to the retry queue.
+      return { status: "failed", lastError: error.message, batchId: batch?.batch_id ?? null };
     }
   }
 

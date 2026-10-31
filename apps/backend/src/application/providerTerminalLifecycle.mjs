@@ -1,5 +1,5 @@
 export function createProviderTerminalLifecycle({
-  store, emitEvent, recordWorkSettled, settleEntityTaskFromSession,
+  store, emitEvent, recordWorkSettled, sessionMailbox, settleEntityTaskFromSession,
   collaborationCore, refreshWorkspaceInventoryAfterTurn,
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
   resumeWorkAfterTransition, scheduleAgentWorkDrain
@@ -27,6 +27,7 @@ export function createProviderTerminalLifecycle({
       });
       recordWorkSettled(updatedWork);
     }
+    sessionMailbox?.settleAdopted(nextSession.id, event.turnId, terminalStatus);
     settleEntityTaskFromSession(nextSession);
     // Recovered execution state does not prove the final business result was
     // delivered. Require user review before advancing queued work.

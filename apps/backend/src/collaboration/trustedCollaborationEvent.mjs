@@ -36,6 +36,10 @@ export function formatTrustedChannelMessage(envelope) {
     "<peer_content>",
     line("来源 Session", envelope.message.senderSessionId),
     line("目标 Session", envelope.message.recipientSessionId),
+    line("消息 ID", envelope.message.messageId),
+    line("发送时间", envelope.message.createdAt),
+    line("回复消息", envelope.message.inReplyToMessageId),
+    line("投递意图", envelope.message.deliveryIntent),
     line("消息类型", envelope.message.messageKind),
     line("来源 Work", senderContext.workId),
     line("来源 Task", senderContext.taskId),
@@ -126,4 +130,12 @@ function escapeXml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+export function formatTrustedChannelBatch(envelopes, batchId) {
+  return [
+    `Corptie 协作消息批次：${safeToken(batchId)}，共 ${envelopes.length} 条。`,
+    "请先阅读本批全部消息，结合补充和纠正后处理；保留每条消息的真实来源。无需发送常规收件确认；通知和回执仅作上下文，不产生额外执行要求。",
+    ...envelopes.map((envelope, index) => `\n消息 ${index + 1}\n${formatTrustedChannelMessage(envelope)}`)
+  ].join("\n");
 }

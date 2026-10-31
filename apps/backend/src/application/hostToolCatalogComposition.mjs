@@ -1,3 +1,4 @@
+import { sessionMailboxDynamicTools, callSessionMailboxTool } from "./sessionMailboxDynamicTools.mjs";
 import { HostToolCatalog } from "./hostToolCatalog.mjs";
 import { memoryDynamicTools, callMemoryDynamicTool } from "./memoryDynamicTools.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./artifactDynamicTools.mjs";
@@ -23,9 +24,12 @@ export function createHostToolCatalog({
   reportTaskAcceptanceForAgent, completeTaskForSession, captureTaskIntegrationForAgent,
   reviseTaskForSession, sceneService,
   getToolMaterializationPort, getPlatformOperationService,
-  getWorkChatOperationService, contextReadService, mcpRegistryService, onIntegrationChanged
+  getWorkChatOperationService, getSessionMailboxService, contextReadService, mcpRegistryService, onIntegrationChanged
 }) {
   return new HostToolCatalog([
+    { id: "mailbox", tools: sessionMailboxDynamicTools,
+      authorize: ({ actorId, metadata }) => Boolean(actorId && metadata?.sessionId),
+      execute: input => callSessionMailboxTool(getSessionMailboxService(), input) },
     {
       id: "integration-registry",
       tools: integrationRegistryDynamicTools,

@@ -17,6 +17,7 @@ struct SessionDetailPanel: View {
         return activity.allows(generation: activity.generation)
     }
     private func allows(_ generation: UInt64) -> Bool { activity?.allows(generation: generation) ?? true }
+    @State private var selectedDetailTab = "detail"
     @State private var contextReferenceAddMode: ContextReferenceAddMode?
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
@@ -183,7 +184,11 @@ struct SessionDetailPanel: View {
                 }.padding(20).frame(minWidth: 360)
             }
         }
-        .onChange(of: session.id) { _, _ in richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionMailboxRequested)) { notification in
+            guard isPresentationActive, notification.object as? String == session.id else { return }
+            selectedDetailTab = "mailbox"
+        }
+        .onChange(of: session.id) { _, _ in selectedDetailTab = "detail"; richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
         .onChange(of: session.taskId) { _, _ in retireDetailDestination() }
         .onChange(of: session.workId) { _, _ in retireDetailDestination() }
         .onChange(of: session.external?.provider) { _, _ in retireDetailDestination() }
@@ -207,6 +212,13 @@ struct SessionDetailPanel: View {
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Picker("会话详情", selection: $selectedDetailTab) {
+                Text("详情").tag("detail")
+                Text("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")").tag("mailbox")
+            }.pickerStyle(.segmented)
+            if selectedDetailTab == "mailbox" {
+                SessionMailboxPanel(sessionID: session.id, pendingRevision: "\(session.mailboxPendingCount ?? 0):\(session.executionStatus ?? session.status.rawValue)", activity: activity)
+            } else {
             ConversationServerDetail(scope: "\(CorptieAppEnvironment.backendBaseURL):\(session.id)", sessionID: session.id,
                 context: ClientDetailContext(sessionKind: session.resolvedSessionKind.rawValue, taskID: session.taskId, workID: session.workId),
                 actions: nativeDetailNavigation,
@@ -225,6 +237,7 @@ struct SessionDetailPanel: View {
             if richDetailReady != false {
                 if !detailResourceItems.isEmpty { ConversationDetailResourceMenu(items: detailResourceItems) }
             } else { nativeDetailContent }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

@@ -6,6 +6,8 @@ import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy
 // responsibility varies by kind, but chart syntax never varies by Provider.
 export function collaborationRuntimeInstructions(agentId, metadata = null) {
   return [
+    "Each logical Session has an external inbox. Use corptie_mailbox_list/get to inspect it; reading does not consume queued messages. Use corptie_mailbox_adopt only when you will process unclaimed messages in the current active turn; adoption prevents later duplicate injection and retains original authorization. Respect paused inboxes. Direct user input stays in the normal conversation.",
+    "Channel messages are delivered in batches. Read the entire batch before acting on updates or corrections. Do not send routine receipt acknowledgements; reply with substantive results, questions or changes. Use delivery_intent action_required/response_required for requests, notification for information only, acknowledgement for receipts. Notifications and acknowledgements do not wake the recipient. Reading history does not consume queued deliveries.",
     `Your Corptie Role configuration resource is ${agentId}. Role supplies reusable instructions and skills; Provider supplies the execution engine. Session is the only executor, authorization context and collaboration actor. Historical agentId/agent: fields identify the Role resource, not a separate actor.`,
     CHART_PRESENTATION_INSTRUCTIONS,
     ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS,

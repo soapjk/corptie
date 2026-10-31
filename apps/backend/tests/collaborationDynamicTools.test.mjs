@@ -268,3 +268,19 @@ test("Session discovery maps an explicit peer Work boundary", async () => {
     }
   }]);
 });
+
+test("Channel tools forward explicit wake intent and stable history cursors", async () => {
+  const calls = [];
+  const client = { get: async (...args) => { calls.push(args); return { messages: [] }; },
+    post: async (...args) => { calls.push(args); return { message: { messageId: "one" } }; } };
+  await callCollaborationDynamicTool(client, "corptie_collaboration_channel_get", {
+    channel_id: "channel:one", limit: 25, before_cursor: "123"
+  });
+  assert.deepEqual(calls[0], ["/internal/collaboration/channels/channel%3Aone", {
+    limit: 25, beforeCursor: "123", afterCursor: undefined
+  }]);
+  await callCollaborationDynamicTool(client, "corptie_collaboration_message_send", {
+    channel_id: "channel:one", body: "FYI", idempotency_key: "notify", delivery_intent: "notification"
+  });
+  assert.equal(calls[1][1].deliveryIntent, "notification");
+});
