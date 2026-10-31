@@ -154,22 +154,37 @@ extension PadWorkspace {
                 Self.realtimeLog.info("Subscribe attempt: generation=\(generation, privacy: .public) recoveryRevision=\(connectionRevision) failures=\(failures)")
                 // Selection prioritizes bootstrap only. The stream still pushes
                 // updates globally; cached timelines resume their own cursors.
+                var automationCursor: String?
+                #if canImport(UIKit)
+                PadNotificationManager.shared.configureAutomationScope(connection.automationNotificationScope)
+                automationCursor = PadNotificationManager.shared.automationCursor
+                #endif
                 for try await update in api.subscribeRealtime(
                     sessionId: selection,
                     stateRevision: realtimeStateRevision,
                     timelineRevision: lastTimelineRevision ?? 0,
                     timelineRevisions: realtimeResumeRevisions,
                     backgroundTimelineLimit: 0,
-                    timelineCoalescing: true
+                    timelineCoalescing: true,
+                    automationCursor: automationCursor
                 ) {
                     try Task.checkCancellation()
                     guard realtimeGeneration == generation, connection.recoveryRevision == connectionRevision else { return }
                     failures = 0
                     consecutiveTransportFailures = 0
                     switch update {
+                    case .automationNotifications(let batch):
+                        #if canImport(UIKit)
+                        PadNotificationManager.shared.consumeAutomationNotifications(batch)
+                        #endif
                     case .operation(let job):
                         PadOperationNotifications.shared.observe(job)
                     case .ready:
+                        #if canImport(UIKit)
+                        if case .ready(let ready) = update {
+                            PadNotificationManager.shared.setAutomationFeedAvailable(ready.automationNotifications == true)
+                        }
+                        #endif
                         quickMessageCache.connectionRecovered()
                         Self.realtimeLog.info("Realtime ready: generation=\(generation, privacy: .public)")
                         PadOperationNotifications.shared.recover(connection: connection)

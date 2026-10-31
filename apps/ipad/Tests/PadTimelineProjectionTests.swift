@@ -27,8 +27,8 @@ struct PadTimelineProjectionTests {
         let start = try #require(contents.range(of: "private struct PadProcessCard: View"))
         let end = try #require(contents.range(of: "private struct PadProcessCardLayout"))
         let card = contents[start.lowerBound..<end.lowerBound]
-        #expect(card.contains("Locale.preferredLanguages.first ?? \"en\""))
-        #expect(!card.contains("locale.language.languageCode"))
+        #expect(card.contains("@Environment(\\.locale) private var locale"))
+        #expect(card.contains("locale.identifier"))
         #expect(card.components(separatedBy: ".summary(languageCode: languageCode)").count - 1 == 3)
     }
 
@@ -100,16 +100,16 @@ struct PadTimelineProjectionTests {
         workspace.selection = "session:a"
         let messages = try JSONDecoder().decode([ClientMessage].self, from: Data(#"[{"id":"u","turnId":"t","type":"userMessage","text":"question"},{"id":"p","turnId":"t","type":"agentMessage","text":"checking","presentationRole":"commentary","turnStatus":"running"},{"id":"tool","turnId":"t","type":"mcpToolCall","text":"result","turnStatus":"running"},{"id":"a","turnId":"t","type":"agentMessage","text":"answer","presentationRole":"final_answer"}]"#.utf8))
         workspace.messages = messages
-        #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a"])
         #expect(Set(workspace.displayEntryByID.keys) == Set(workspace.displayEntries.map(\.id)))
         #expect(workspace.displayEntryByID["process:t"]?.id == "process:t")
-        #expect(workspace.processPresentations["process:t"]?.state == .running)
-        #expect(workspace.activeProcessEntryID == "process:t")
+        #expect(workspace.processPresentations["process:t"]?.state == .completed)
+        #expect(workspace.activeProcessEntryID == nil)
         #expect(workspace.processPresentations["process:t"]?.duration == nil)
-        #expect(workspace.processSteps["process:t"]?.map(\.kind) == [.action])
-        #expect(workspace.processPresentations["process:t"]?.currentStepTitle == "Used tool")
+        #expect(workspace.processSteps["process:t"]?.map(\.id) == ["p", "tool"])
+        #expect(workspace.processPresentations["process:t"]?.currentStepTitle == nil)
         workspace.outgoingMessages["session:a"] = [ClientMessage(id: "pending", text: "next")]
-        #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a", "message:pending"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
         workspace.messages.append(ClientMessage(id: "pending", text: "next"))
         #expect(workspace.displayEntries.filter { $0.id == "message:pending" }.count == 1)
         workspace.selection = "session:b"
@@ -119,7 +119,7 @@ struct PadTimelineProjectionTests {
         #expect(workspace.activeProcessEntryID == nil)
         #expect(workspace.processSteps.isEmpty)
         workspace.selection = "session:a"
-        #expect(workspace.displayEntries.map(\.id) == ["message:u", "message:p", "process:t", "message:a", "message:pending"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
     }
 
     @Test func messageTimeSeparatorsFollowDesktopGapAndRecomputeAtHistoryBoundary() throws {

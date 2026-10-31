@@ -650,6 +650,7 @@ struct ConversationView: View {
             topOverlayHeight: nativeHeaderHeight + (usesStandardTimeline ? 0 : safeArea.top),
             imageStore: messageImages,
             tracksVisibleFrames: false,
+            rowAliases: workspace.timelineRowAliases,
             row: { id, width in timelineRow(id: id, width: width) },
             composer: Group {
                 if usesStandardTimeline { composer }
@@ -757,6 +758,11 @@ struct ConversationView: View {
             explicitJumpRevision &+= 1
             nativeTimeline.jump?()
         }
+        .onChange(of: workspace.timelineRowAliases) {
+            expandedProcessEntryIDs = Set(expandedProcessEntryIDs.compactMap {
+                workspace.resolveTimelineRowID($0)
+            })
+        }
         .onDisappear {
             if let value = nativeTimeline.currentPosition?() { persistNativePosition(value, scope: nativeScope) }
             cancelNativeHistory()
@@ -802,9 +808,10 @@ struct ConversationView: View {
         if let presentation = workspace.processPresentations[entryID] {
             PadProcessCard(entryID: entryID,
                            steps: workspace.processSteps[entryID] ?? [], presentation: presentation,
+                           commentaryIDs: workspace.processCommentaryIDs[entryID] ?? [],
                            laneWidth: laneWidth, coordinateSpace: timelineCoordinateSpace,
-                           startedAt: items.contains(where: { $0.processEndedAt != nil })
-                               ? nil : ConversationProcessPresentation.startedAt(for: items),
+                           startedAt: presentation.state == .running
+                               ? workspace.processReplyBounds[entryID]?.startedAt : nil,
                            canAdvance: PadProcessClockPolicy.canAdvance(
                                isActiveProcess: entryID == workspace.activeProcessEntryID,
                                clientIsOnline: connection.connected,
@@ -838,7 +845,10 @@ struct ConversationView: View {
             }.joined(separator: "|") + ":\(connection.connected):\(connection.busy):\(scenePhase == .active)"
             result[entry.id] = .init(messages: messages, decoration: decoration,
                 expanded: expandedProcessEntryIDs.contains(entry.id),
-                canRespond: workspace.capabilities?.collaborationConfirmation?.available == true)
+                canRespond: workspace.capabilities?.collaborationConfirmation?.available == true,
+                replyState: entry.processReplyState,
+                replyStartedAt: workspace.processReplyBounds[entry.id]?.startedAt,
+                replyEndedAt: workspace.processReplyBounds[entry.id]?.endedAt)
         }
         return result
     }
@@ -935,17 +945,21 @@ struct ConversationView: View {
             deviceID: scope[1], sessionID: scope[2])
         await workspace.waitForRealtimeTimelineOrFallback(connection)
         guard !Task.isCancelled, readingScope == scope, workspace.selection == sessionID else { return }
-        if let saved = savedNativePosition, !saved.followsLatest, let id = saved.entryID {
+        if let saved = savedNativePosition, !saved.followsLatest, saved.entryID != nil {
             for _ in 0..<20 {
                 guard !Task.isCancelled, readingScope == scope, workspace.selection == sessionID else { return }
-                if workspace.displayEntries.contains(where: { $0.id == id }) { break }
+                if let target = saved.resolvingRowID(workspace.resolveTimelineRowID).entryID,
+                   workspace.displayEntryByID[target] != nil { break }
                 guard !connection.busy, !workspace.isLoadingEarlier,
                       let cursor = workspace.historyRequestCursor else { break }
                 await workspace.loadEarlierMessagesIfNeeded(connection)
                 guard workspace.historyRequestCursor != cursor else { break }
             }
             guard !Task.isCancelled, readingScope == scope, workspace.selection == sessionID else { return }
-            if !workspace.displayEntries.contains(where: { $0.id == id }) {
+            if let target = saved.resolvingRowID(workspace.resolveTimelineRowID).entryID,
+               workspace.displayEntryByID[target] != nil {
+                savedNativePosition = saved.resolvingRowID(workspace.resolveTimelineRowID)
+            } else {
                 preserveSavedPosition = workspace.historyRequestCursor != nil
                 savedNativePosition = workspace.displayEntries.first.map {
                     .init(followsLatest: false, entryID: $0.id, minY: 0)
@@ -1580,7 +1594,9 @@ private struct PadProcessCard: View {
     let entryID: String
     let steps: [ConversationExecutionStep]
     let presentation: ConversationProcessPresentation
-    private let languageCode = Locale.preferredLanguages.first ?? "en"
+    let commentaryIDs: Set<String>
+    @Environment(\.locale) private var locale
+    private var languageCode: String { locale.identifier }
     let laneWidth: CGFloat
     let coordinateSpace: String
     let startedAt: Date?
@@ -1661,7 +1677,7 @@ private struct PadProcessCard: View {
                         toggle: toggle) {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(steps) { step in
-                        PadExecutionStepCard(step: step)
+                        PadExecutionStepCard(step: step, isCommentary: commentaryIDs.contains(step.id))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1694,12 +1710,14 @@ private struct PadProcessCardLayout: Layout {
 
 private struct PadExecutionStepCard: View {
     let step: ConversationExecutionStep
+    let isCommentary: Bool
     let presentation: ExecutionStepDetailPresentation
     let structuredPresentation: ExecutionStructuredStepPresentation?
     @State private var showsFull = false
 
-    init(step: ConversationExecutionStep) {
+    init(step: ConversationExecutionStep, isCommentary: Bool = false) {
         self.step = step
+        self.isCommentary = isCommentary
         self.presentation = ExecutionStepDetailPresentation(step: step)
         self.structuredPresentation = step.tool != nil || step.changeSet != nil
             ? ExecutionStructuredStepPresentation(step: step) : nil
@@ -1716,7 +1734,10 @@ private struct PadExecutionStepCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            if let plan = step.plan {
+            if isCommentary {
+                PadMessageText(text: step.detail ?? step.title, fromUser: false)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let plan = step.plan {
                 if plan.steps.count > 12 {
                     ScrollView {
                         ExecutionPlanChecklist(plan: plan)
@@ -1733,7 +1754,7 @@ private struct PadExecutionStepCard: View {
                                steps: [presentation.displayedStep])
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if structuredPresentation?.hasOverflow ?? presentation.hasOverflow {
+            if !isCommentary, structuredPresentation?.hasOverflow ?? presentation.hasOverflow {
                 Button("查看完整内容") { showsFull = true }
                     .font(.caption2)
                     .accessibilityIdentifier("execution-step-full-details")

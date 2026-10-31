@@ -26,6 +26,8 @@ struct PadWorkOutline: View {
     @State private var orderedTasks: [ClientTask] = []
     @State private var tasksByWork: [String: [ClientTask]] = [:]
     @State private var expandedParentIDs: Set<String> = []
+    @State private var hierarchyProjection = PadTaskOutlineHierarchy()
+    @State private var revealedSelection: String?
     @State private var workNames: [String: String] = [:]
     @State private var visibleChats: [ClientSession] = []
     @State private var isSearching = false
@@ -127,7 +129,17 @@ struct PadWorkOutline: View {
             })
         }
         .onChange(of: workspace.works, initial: true) { _, _ in rebuildOrder() }
-        .onChange(of: workspace.tasks) { _, _ in rebuildOrder() }
+        .onChange(of: workspace.tasks) { _, _ in rebuildOrder(); revealSelectedChild() }
+        .onChange(of: workspace.selection, initial: true) { _, _ in
+            revealedSelection = nil
+            revealSelectedChild()
+        }
+        .onChange(of: "\(connection.automationNotificationScope)|\(connection.address)", initial: true) { _, _ in
+            workspace.prepareTaskChildrenScope(connection)
+            expandedParentIDs.removeAll()
+            revealedSelection = nil
+            revealSelectedChild()
+        }
         .onChange(of: expandedParentIDs) { _, _ in rebuildOrder() }
         .onChange(of: sortRaw) { _, _ in rebuildOrder() }
         .onChange(of: viewMode) { _, _ in rebuildOrder() }
@@ -163,11 +175,9 @@ struct PadWorkOutline: View {
                     || ($0.description ?? "").localizedCaseInsensitiveContains(query)
                     || (workNames[$0.workId] ?? "").localizedCaseInsensitiveContains(query)
         }
-        let needed=Set(orderedTasks.compactMap(\.parentTaskId)).subtracting(Set(orderedTasks.map(\.id)))
-        orderedTasks.append(contentsOf:workspace.tasks.filter{needed.contains($0.id)})
-        let byID=Dictionary(orderedTasks.map{($0.id,$0)},uniquingKeysWith:{$1})
-        orderedTasks=TaskHierarchyIndex.visibleOrder(nodes:orderedTasks.map{.init(id:$0.id,workId:$0.workId,parentTaskId:$0.parentTaskId)},
-            expanded:query.isEmpty ? expandedParentIDs : Set(orderedTasks.map(\.id))).compactMap{byID[$0]}
+        hierarchyProjection = PadTaskOutlineHierarchy(filtered: orderedTasks, inventory: workspace.tasks,
+            expanded: expandedParentIDs, searching: !query.isEmpty)
+        orderedTasks = hierarchyProjection.tasks
         tasksByWork = Dictionary(grouping: orderedTasks, by: \.workId)
         if !query.isEmpty || showingArchived {
             orderedWorks = orderedWorks.filter {
@@ -179,6 +189,21 @@ struct PadWorkOutline: View {
         }
         visibleChats = sort.ordered(chats, id: { $0.id }, title: { $0.title },
                                    updatedAt: { $0.updatedAt }, activityAt: { $0.lastMessageAt })
+    }
+
+    private func revealSelectedChild() {
+        guard let selected = workspace.selection,
+              selected != revealedSelection,
+              let taskID = workspace.sessionsByID[selected]?.taskId,
+              let child = workspace.tasks.first(where: { $0.id == taskID }) else { return }
+        revealedSelection = selected
+        guard let parent = child.parentTaskId else { return }
+        expandedWorkIDs.insert(child.workId)
+        fullyExpandedWorkIDs.insert(child.workId)
+        expandedParentIDs.insert(parent)
+        if let parentTask = workspace.tasks.first(where: { $0.id == parent }) {
+            Task { await workspace.loadTaskChildren(parentTask, connection: connection) }
+        }
     }
 
     private var outlineToolbar: some View {
@@ -512,26 +537,85 @@ struct PadWorkOutline: View {
     }
 
     private func hierarchyTaskRow(_ task: ClientTask, sessionID: String?) -> some View {
-        HStack(spacing:4) {
-            taskRow(task,sessionID:sessionID)
-            if let hierarchy=task.hierarchy, hierarchy.childCount > 0 {
-                Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
-                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    .accessibilityLabel("子任务完成进度")
-            }
-            if (task.hierarchy?.childCount ?? 0)>0 {
-                Button {
-                    if !expandedParentIDs.insert(task.id).inserted {expandedParentIDs.remove(task.id)}
-                    else { Task { await workspace.loadTaskChildren(task,connection:connection) } }
-                } label: {Image(systemName:expandedParentIDs.contains(task.id) ? "chevron.down" : "chevron.right").frame(minWidth:24,minHeight:32)}
-                .buttonStyle(.plain).accessibilityLabel(expandedParentIDs.contains(task.id) ? "收起子任务" : "展开子任务")
-                if expandedParentIDs.contains(task.id), workspace.taskChildrenCursors[task.id] != nil {
-                    Button { Task { await workspace.loadTaskChildren(task,connection:connection,more:true) } }
-                    label: { Image(systemName:"ellipsis").frame(minWidth:24,minHeight:32) }
-                    .buttonStyle(.plain).accessibilityLabel("加载更多子任务")
+        let count = max(task.hierarchy?.childCount ?? 0, hierarchyProjection.childCountByParent[task.id] ?? 0)
+        let parent = task.parentTaskId == nil && count > 0
+        let expanded = hasSearch || expandedParentIDs.contains(task.id)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                if parent {
+                    Button {
+                        if !expandedParentIDs.insert(task.id).inserted {
+                            expandedParentIDs.remove(task.id)
+                        } else {
+                            Task { await workspace.loadTaskChildren(task, connection: connection) }
+                        }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(hasSearch)
+                    .accessibilityLabel("\(expanded ? "收起" : "展开")\(task.title)的子任务")
+                    .accessibilityValue(expanded ? "已展开" : "已收起")
+                    .accessibilityIdentifier("task-children-disclosure-\(task.id)")
+                } else if task.parentTaskId != nil {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .frame(width: 20).accessibilityHidden(true)
+                } else {
+                    Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
+                }
+                taskRow(task, sessionID: sessionID)
+                    .frame(minHeight: 44)
+                if parent {
+                    Text("\(task.hierarchy?.completedChildCount ?? 0)/\(count)")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .accessibilityLabel("子任务已完成 \(task.hierarchy?.completedChildCount ?? 0) 个，共 \(count) 个")
                 }
             }
-        }.padding(.leading,task.parentTaskId == nil ? 0 : 24)
+            .padding(.leading, task.parentTaskId == nil ? 0 : 44)
+            if let parentID = hierarchyProjection.footerParentByRowID[task.id],
+               let parentTask = hierarchyProjection.taskByID[parentID] {
+                childrenFooter(parentTask)
+                    .padding(.leading, 64)
+            }
+        }
+    }
+
+    @ViewBuilder private func childrenFooter(_ parent: ClientTask) -> some View {
+        if workspace.taskChildrenLoading.contains(parent.id) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("正在加载子任务…").font(.caption).foregroundStyle(.secondary)
+            }.frame(minHeight: 44)
+                .accessibilityIdentifier("task-children-loading-\(parent.id)")
+        } else if let error = workspace.taskChildrenErrors[parent.id] {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("重试加载子任务") {
+                    Task { await workspace.loadTaskChildren(parent, connection: connection,
+                        more: workspace.taskChildrenCursors[parent.id] != nil, force: true) }
+                }.font(.caption).frame(minHeight: 44).buttonStyle(.plain)
+                    .accessibilityIdentifier("task-children-retry-\(parent.id)")
+            }
+        } else if workspace.taskChildrenCursors[parent.id] != nil {
+            Button {
+                Task { await workspace.loadTaskChildren(parent, connection: connection, more: true) }
+            } label: {
+                Label("加载更多子任务", systemImage: "chevron.down")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .accessibilityIdentifier("task-children-more-\(parent.id)")
+        } else if workspace.loadedTaskChildrenVersions[parent.id] != nil,
+                  (hierarchyProjection.childCountByParent[parent.id] ?? 0) == 0 {
+            Text(showingArchived ? "没有归档子任务" : "没有可显示的子任务")
+                .font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
+        }
     }
     private func taskRow(_ task: ClientTask, sessionID: String?) -> some View {
         let activity = workspace.activityByTaskID[task.id]

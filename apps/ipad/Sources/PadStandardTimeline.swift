@@ -111,14 +111,17 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
                 }
             }
             .onPreferenceChange(StandardTimelineFrames.self) { frames in
+                let bookmark = pendingRestore ?? readingPosition()
                 reader.frames = frames
+                restoreArchivedAnchor(bookmark)
                 finishRestorationIfRealized(); publishPresentation()
                 if input.tracksVisibleFrames { input.onVisibleFrames(frames, metrics.size) }
             }
             .onChange(of: input.ready, initial: true) { _, ready in
                 guard ready, !placed else { return }
                 placed = true; policy.begin(saved: input.savedPosition)
-                pendingRestore = input.savedPosition?.followsLatest == false ? input.savedPosition : nil
+                pendingRestore = input.savedPosition?.followsLatest == false
+                    ? input.savedPosition?.resolvingRowID({ input.rowAliases[$0] }) : nil
                 withoutAnimation {
                     if let id = pendingRestore?.entryID { position.scrollTo(id: id, anchor: .top) }
                 }
@@ -132,6 +135,10 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
                 diagnose("keyboard-before")
                 policy.observeBottom(metrics.atBottom, keyboardChanging: input.keyboard.isChanging)
                 attach(); publishPresentation()
+                if !input.keyboard.isChanging, !policy.interacting,
+                   let id = pendingRestore?.entryID {
+                    withoutAnimation { position.scrollTo(id: id, anchor: .top) }
+                }
                 bindFollowingTail(force: true)
                 diagnose("keyboard-after")
                 // This is explicitly a next-runloop sample, not proof of layout completion.
@@ -142,6 +149,9 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
             }
             .onChange(of: input.ids) { previous, current in
                 attach()
+                // A commentary row can become a process child. Resolve the
+                // old visible identity before treating it as missing history.
+                restoreArchivedAnchor(pendingRestore ?? readingPosition())
                 // Rebind a previous explicit ID target when a new tail arrives.
                 // Same-ID streaming growth continues using the system size anchor.
                 if previous.last != current.last, policy.followsLatest, !policy.interacting,
@@ -190,7 +200,8 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
         }
         input.handle.scrollToEntry = { id in
             pendingRestore = nil; policy.restored()
-            withoutAnimation { position.scrollTo(id: id, anchor: .top) }
+            let target = PadTimelineReadingPosition.resolve(id) { input.rowAliases[$0] } ?? id
+            withoutAnimation { position.scrollTo(id: target, anchor: .top) }
         }
         input.handle.scrollToOffset = { offset in
             pendingRestore = nil; policy.restored()
@@ -241,9 +252,19 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
             minY: Double(entry.value.minY - reader.readingRect.minY))
     }
     private func save() { if let bookmark = readingPosition() { input.onSave(bookmark) } }
+    private func restoreArchivedAnchor(_ bookmark: PadTimelineReadingPosition?) {
+        guard !policy.followsLatest, !policy.interacting, let bookmark else { return }
+        let mapped = bookmark.resolvingRowID { input.rowAliases[$0] }
+        guard mapped.entryID != bookmark.entryID, let id = mapped.entryID else { return }
+        pendingRestore = mapped
+        if !input.keyboard.isChanging {
+            withoutAnimation { position.scrollTo(id: id, anchor: .top) }
+        }
+    }
     private func finishRestorationIfRealized() {
-        guard let bookmark = pendingRestore, let id = bookmark.entryID, let frame = reader.frames[id],
-              metrics.readingRect.height > 0 else { return }
+        guard let bookmark = pendingRestore?.resolvingRowID({ input.rowAliases[$0] }),
+              let id = bookmark.entryID, let frame = reader.frames[id],
+              !policy.interacting, !input.keyboard.isChanging, metrics.readingRect.height > 0 else { return }
         // One alignment after ID realization, never continuous anchor correction.
         pendingRestore = nil
         if let anchor = PadStandardTimelinePolicy.restorationAnchor(minY: CGFloat(bookmark.minY),

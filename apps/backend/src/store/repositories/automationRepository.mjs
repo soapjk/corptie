@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createdAtFromOrNow } from "../../utils/timestamps.mjs";
 import { parseJson } from "../storedJson.mjs";
+import { recordAutomationNotification } from "../automationNotificationFeed.mjs";
 
 // Repositories share the Store connection and transaction/notification owner.
 export class AutomationRepository {
@@ -382,24 +383,31 @@ export class AutomationRepository {
   }
 
   recordScheduledSessionEvent(input) {
+    return this.runInTransaction(() => this.recordScheduledSessionEventInTransaction(input));
+  }
+
+  recordScheduledSessionEventInTransaction(input) {
     const sequence = Number(this.selectOne(
       "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM scheduled_session_events WHERE task_id = ?",
       [input.taskId]
     )?.sequence ?? 1);
     const createdAt = input.createdAt ?? new Date().toISOString();
+    const eventId = input.eventId ?? randomUUID();
     this.db.run(
       `INSERT INTO scheduled_session_events (
         event_id, task_id, run_id, sequence, type, actor_type, actor_id,
         payload_json, environment, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.eventId ?? randomUUID(), input.taskId, input.runId ?? null, sequence, input.type,
+        eventId, input.taskId, input.runId ?? null, sequence, input.type,
         input.actorType ?? null, input.actorId ?? null, JSON.stringify(input.payload ?? {}),
         input.environment, createdAt
       ]
     );
+    const event = { ...input, eventId, sequence, createdAt };
+    recordAutomationNotification(this, event, this.getScheduledSessionTask(input.taskId));
     this.scheduleSave();
-    return { ...input, sequence, createdAt };
+    return event;
   }
 
   listScheduledSessionEvents(taskId, limit = 200) {

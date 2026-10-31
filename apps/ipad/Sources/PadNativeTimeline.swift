@@ -12,6 +12,9 @@ struct PadNativeTimelineRowVersion: Equatable {
     var decoration: String = ""
     var expanded = false
     var canRespond = false
+    var replyState: ConversationProcessState? = nil
+    var replyStartedAt: Date? = nil
+    var replyEndedAt: Date? = nil
 }
 
 /// Only presentation transitions are observed. Offsets never invalidate SwiftUI.
@@ -45,6 +48,7 @@ struct PadNativeTimeline<Row: View, Composer: View>: UIViewControllerRepresentab
     var topOverlayHeight: CGFloat = 0
     var imageStore: PadMessageImageStore? = nil
     var tracksVisibleFrames = true
+    var rowAliases: [String: String] = [:]
     let row: (String, CGFloat) -> Row
     let composer: Composer
     let onScrollView: (UIScrollView) -> Void
@@ -111,7 +115,8 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         self.input = input
         lastJumpRevision = input.jumpRevision
         following = input.savedPosition?.followsLatest ?? true
-        pendingRestore = input.savedPosition?.followsLatest == false ? input.savedPosition : nil
+        pendingRestore = input.savedPosition?.followsLatest == false
+            ? input.savedPosition?.resolvingRowID({ input.rowAliases[$0] }) : nil
         collection = TimelineCollectionView(frame: .zero, collectionViewLayout: chatLayout)
         composerHost = UIHostingController(rootView: input.composer)
         super.init(nibName: nil, bundle: nil)
@@ -238,7 +243,8 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         // Keyboard visibility affects only the control, never reading intent.
         if !placed, next.ready {
             following = next.savedPosition?.followsLatest ?? true
-            pendingRestore = next.savedPosition?.followsLatest == false ? next.savedPosition : nil
+            pendingRestore = next.savedPosition?.followsLatest == false
+                ? next.savedPosition?.resolvingRowID({ next.rowAliases[$0] }) : nil
         }
         if next.jumpRevision != lastJumpRevision {
             lastJumpRevision = next.jumpRevision
@@ -260,7 +266,9 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         }
         input.handle.jump = { [weak self] in self?.jumpToLatest() }
         input.handle.scrollToEntry = { [weak self] id in
-            guard let self, self.dataSource.indexPath(for: id) != nil else { return }
+            guard let self else { return }
+            let id = PadTimelineReadingPosition.resolve(id) { self.input.rowAliases[$0] } ?? id
+            guard self.dataSource.indexPath(for: id) != nil else { return }
             self.following = false
             self.intentRevision &+= 1
             self.pendingRestore = PadTimelineReadingPosition(followsLatest: false, entryID: id, minY: 0)
@@ -302,7 +310,11 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         }
         needsRows = false
         let widthChanged = width != configuredWidth
-        let anchor = placed && !following && !userScrolling ? position() : nil
+        let anchor = (placed && !following && !userScrolling ? position() : nil)?
+            .resolvingRowID { input.rowAliases[$0] }
+        pendingRestore = pendingRestore?.resolvingRowID { input.rowAliases[$0] }
+        settledRestore = settledRestore?.resolvingRowID { input.rowAliases[$0] }
+        resizeAnchor = resizeAnchor?.resolvingRowID { input.rowAliases[$0] }
         let anchorRevision = intentRevision
         var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
         snapshot.appendSections([0])

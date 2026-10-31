@@ -1570,6 +1570,7 @@ typealias UserMessageProcessingState = CorptieClientCore.UserMessageProcessingSt
 
 extension CodexThreadItem: CorptieClientCore.ConversationExecutionItem {
     var timelineHasImages: Bool { !(images ?? []).isEmpty }
+    var timelineMessageOrigin: String? { messageOrigin }
     var executionTitle: String { title }
     var timelineTurnID: String { turnId }
     var timelineTurnStatus: String { turnStatus }
