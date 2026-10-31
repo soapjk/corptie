@@ -52,13 +52,46 @@ struct ComposerShellMetricsTests {
     @MainActor private final class Mounts { var count = 0 }
     private struct EditorProbe: NSViewRepresentable {
         let mounts: Mounts
+        var identifier = "test.resident-editor"
         func makeNSView(context: Context) -> NSView {
             mounts.count += 1
             let view = NSView()
-            view.identifier = .init("test.resident-editor")
+            view.identifier = .init(identifier)
             return view
         }
         func updateNSView(_ nsView: NSView, context: Context) {}
+    }
+
+    @Test @MainActor func unifiedComposerKeepsEditorAboveFooterAcrossNarrowWidths() throws {
+        let editorMounts = Mounts(), footerMounts = Mounts()
+        let host = NSHostingView(rootView: ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
+            ComposerEditorRowLayout(minimumEditorWidth: 100) {
+                EditorProbe(mounts: footerMounts, identifier: "test.footer.status").frame(height: 30)
+                Text("Model and send").frame(width: 180, height: 30)
+            }
+        } content: {
+            EditorProbe(mounts: editorMounts).frame(height: 72)
+        })
+        func find(_ identifier: String, in view: NSView) -> NSView? {
+            if view.identifier?.rawValue == identifier { return view }
+            return view.subviews.lazy.compactMap { find(identifier, in: $0) }.first
+        }
+        var original: NSView?
+        for width: CGFloat in [640, 264, 640] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 200)
+            host.layoutSubtreeIfNeeded()
+            let editor = try #require(find("test.resident-editor", in: host))
+            let footer = try #require(find("test.footer.status", in: host))
+            if let original { #expect(editor === original) } else { original = editor }
+            let editorRect = editor.convert(editor.bounds, to: host)
+            let footerRect = footer.convert(footer.bounds, to: host)
+            #expect(editorRect.height == 72)
+            #expect(editorRect.minX >= 0 && editorRect.maxX <= width + 1)
+            #expect(footerRect.minX >= 0 && footerRect.maxX <= width + 1)
+            #expect(host.isFlipped ? editorRect.maxY <= footerRect.minY : footerRect.maxY <= editorRect.minY)
+        }
+        #expect(editorMounts.count == 1)
+        #expect(footerMounts.count == 1)
     }
 
     @Test @MainActor func modelWrapKeepsTheSameNativeEditorAcrossTheBreakpoint() throws {
