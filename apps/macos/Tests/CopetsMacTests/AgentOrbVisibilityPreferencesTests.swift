@@ -5,7 +5,7 @@ import XCTest
 final class AgentOrbVisibilityPreferencesTests: XCTestCase {
     func testRunningStateCannotEnableAnOrbWithoutExplicitPreference() {
         XCTAssertFalse(AgentOrbVisibilityPolicy.shouldShow(
-            agentID: "agent-one",
+            roleID: "agent-one",
             explicitlyEnabledAgentIDs: []
         ))
     }
@@ -17,7 +17,7 @@ final class AgentOrbVisibilityPreferencesTests: XCTestCase {
 
         let reloaded = AgentOrbVisibilityPreferences(defaults: defaults)
         XCTAssertTrue(AgentOrbVisibilityPolicy.shouldShow(
-            agentID: "agent-one",
+            roleID: "agent-one",
             explicitlyEnabledAgentIDs: reloaded.enabledAgentIDs
         ))
     }
@@ -30,7 +30,7 @@ final class AgentOrbVisibilityPreferencesTests: XCTestCase {
 
         let reloaded = AgentOrbVisibilityPreferences(defaults: defaults)
         XCTAssertFalse(AgentOrbVisibilityPolicy.shouldShow(
-            agentID: "agent-one",
+            roleID: "agent-one",
             explicitlyEnabledAgentIDs: reloaded.enabledAgentIDs
         ))
     }

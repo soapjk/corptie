@@ -112,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .sink { [weak self] sessions in
                 MainActor.assumeIsolated {
                     guard self?.suppressAutomaticWindowPresentation != true else { return }
-                    self?.agentOrbManager?.sync(agents: EntityAPIClient.shared.agents, sessions: sessions)
+                    self?.agentOrbManager?.sync(roles: EntityAPIClient.shared.roles, sessions: sessions)
                 }
             }
             .store(in: &cancellables)
@@ -122,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 MainActor.assumeIsolated {
                     guard self?.suppressAutomaticWindowPresentation != true else { return }
                     self?.agentOrbManager?.sync(
-                        agents: AppStateStore.shared.agents,
+                        roles: AppStateStore.shared.roles,
                         sessions: self?.backendClient.sessions ?? []
                     )
                 }
@@ -132,9 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.publisher(for: .showAgentOrb)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
-                guard let agentID = notification.userInfo?["agentId"] as? String,
-                      let agent = AppStateStore.shared.agents.first(where: { $0.agentId == agentID })
-                        ?? EntityAPIClient.shared.agents.first(where: { $0.agentId == agentID }) else {
+                guard let roleID = notification.userInfo?["agentId"] as? String,
+                      let agent = AppStateStore.shared.roles.first(where: { $0.roleId == roleID })
+                        ?? EntityAPIClient.shared.roles.first(where: { $0.roleId == roleID }) else {
                     return
                 }
                 self?.agentOrbManager?.show(agent: agent)

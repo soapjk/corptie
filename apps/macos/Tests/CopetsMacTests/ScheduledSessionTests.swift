@@ -491,7 +491,7 @@ private func makeSession(id: String) -> TaskSession {
         id: id,
         title: id,
         agent: "Codex",
-        agentId: nil,
+        roleId: nil,
         status: .complete,
         progress: 1,
         summary: "",

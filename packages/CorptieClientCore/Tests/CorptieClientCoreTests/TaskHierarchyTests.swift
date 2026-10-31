@@ -58,7 +58,7 @@ struct TaskHierarchyTests {
         #expect(task.parentTaskId == nil)
         #expect(task.hierarchy == nil)
         #expect(task.resourceVersion == nil)
-        var creation = ClientTaskCreation(requestId: "request_1234", workId: "work:w", title: "Child", mainAgentId: "agent:a", providerId: "neutral")
+        var creation = ClientTaskCreation(requestId: "request_1234", workId: "work:w", title: "Child", mainRoleId: "agent:a", providerId: "neutral")
         let old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(creation)) as? [String: Any])
         #expect(old["parentTaskId"] == nil)
         #expect(old["expectedParentResourceVersion"] == nil)

@@ -4,7 +4,7 @@ public struct ClientTaskCreation: Codable, Sendable {
     public let requestId: String
     public let workId: String
     public let title: String
-    public let mainAgentId: String
+    public let mainRoleId: String
     public let providerId: String
     public var description: String?
     public var acceptanceCriteria: String?
@@ -15,12 +15,28 @@ public struct ClientTaskCreation: Codable, Sendable {
     public var parentTaskId: String?
     public var expectedParentResourceVersion: Int?
 
-    public init(requestId: String, workId: String, title: String, mainAgentId: String, providerId: String) {
+    public init(requestId: String, workId: String, title: String, mainRoleId: String, providerId: String) {
         self.requestId = requestId
         self.workId = workId
         self.title = title
-        self.mainAgentId = mainAgentId
+        self.mainRoleId = mainRoleId
         self.providerId = providerId
+    }
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case requestId
+        case workId
+        case title
+        case mainRoleId = "mainAgentId"
+        case providerId
+        case description
+        case acceptanceCriteria
+        case verificationCriteria
+        case priority
+        case model
+        case reasoningLevel
+        case parentTaskId
+        case expectedParentResourceVersion
     }
 }
 
@@ -50,7 +66,7 @@ public struct ClientTaskCreationOptions: Decodable, Sendable {
     public let schemaVersion: Int
     public let sourceSessionId: String
     public let work: Resource
-    public let agents: [Resource]
+    public let roles: [Resource]
     public let providers: [Provider]
     public let providerId: String?
     public let defaultProviderId: String?
@@ -59,4 +75,19 @@ public struct ClientTaskCreationOptions: Decodable, Sendable {
     public let currentReasoningLevel: String?
     public let priorities: [String]
     public let taskHierarchyCapabilities: TaskHierarchyCapabilities?
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case sourceSessionId
+        case work
+        case roles = "agents"
+        case providers
+        case providerId
+        case defaultProviderId
+        case models
+        case currentModel
+        case currentReasoningLevel
+        case priorities
+        case taskHierarchyCapabilities
+    }
 }

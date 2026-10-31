@@ -693,7 +693,7 @@ final class BackendClient: ObservableObject {
             return
         }
         sendStatusMessage = L10n(
-            "A new Git worktree was detected. Ask the Agent to list workspaces or switch to it."
+            "A new Git worktree was detected. Ask the Role to list workspaces or switch to it."
         )
     }
     private func applyLiveUsageEvent(_ data: String) {

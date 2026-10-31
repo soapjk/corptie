@@ -65,7 +65,7 @@ enum MemoryScopeLayer: String, CaseIterable {
         case .task: L10n("CorptieTask Memory")
         case .work: L10n("Work Memory")
         case .global: L10n("Global Memory")
-        case .agent: L10n("Agent Long-term Memory")
+        case .agent: L10n("Role Long-term Memory")
         }
     }
     var icon: String {
@@ -90,7 +90,7 @@ enum MemoryOriginLayer: Int, CaseIterable {
     var title: String {
         switch self {
         case .userKept: L10n("Kept by me")
-        case .agentCandidate: L10n("Suggested by Agent")
+        case .agentCandidate: L10n("Suggested by Role")
         case .agentDurable: L10n("Active extracted Memory")
         case .systemManaged: L10n("System checkpoints and consolidation")
         case .inactive: L10n("Disabled, replaced or expired")
@@ -344,11 +344,11 @@ struct MemoryManagementView: View {
     private var scopeSubtitle: String {
         switch scope {
         case .global:
-            L10n("Task → Work → Global memories apply across their scopes. Agent memories remain a separate legacy layer.")
+            L10n("Task → Work → Global memories apply across their scopes. Role memories remain a separate legacy layer.")
         case .owner(type: "agent", id: _):
-            L10n("Only this Agent's structured long-term layer is managed here. Work, CorptieTask, and runtime file memories remain separate.")
+            L10n("Only this Role's structured long-term layer is managed here. Work, CorptieTask, and runtime file memories remain separate.")
         case .owner(type: "work", id: _):
-            L10n("Shared Work context. CorptieTask-local and Agent long-term memories are managed separately.")
+            L10n("Shared Work context. CorptieTask-local and Role long-term memories are managed separately.")
         case .owner(type: "task", id: _):
             L10n("The most specific task-local layer and the first layer considered during recall.")
         case .owner:
@@ -444,7 +444,7 @@ struct MemoryManagementView: View {
                 metadata("updated", memory.updatedAt ?? memory.createdAt)
                 if let promoted = memory.promotedSkillId { metadata("promoted", promoted) }
                 if let replacement = memory.replacesMemoryId { metadata("impact", "replaced by \(replacement)") }
-                else { metadata("impact", memory.ownerType == "agent" ? "all Agent sessions" : "this \(memory.ownerType)") }
+                else { metadata("impact", memory.ownerType == "agent" ? "all Role sessions" : "this \(memory.ownerType)") }
                 Spacer()
             }
             HStack {
@@ -713,7 +713,7 @@ private struct MemoryCreationSheet: View {
             return MemoryOwnerOption(id: $0.id, label: $0.title)
         }
         case "work": options = client.works.map { MemoryOwnerOption(id: $0.id, label: $0.name) }
-        default: options = client.agents.map { MemoryOwnerOption(id: $0.agentId, label: $0.name) }
+        default: options = client.roles.map { MemoryOwnerOption(id: $0.roleId, label: $0.name) }
         }
         return options.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
     }

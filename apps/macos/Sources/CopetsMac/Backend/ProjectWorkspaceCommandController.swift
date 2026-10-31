@@ -201,7 +201,7 @@ final class ProjectWorkspaceCommandController: ObservableObject {
         }
     }
 
-    func createIntegrationConflictCorptieTask(runId: String, agentId: String, title: String? = nil) {
+    func createIntegrationConflictCorptieTask(runId: String, roleId: String, title: String? = nil) {
         guard let session = selectedSession,
               let projectId = projectId(for: session),
               let workId = session.workId,
@@ -216,7 +216,7 @@ final class ProjectWorkspaceCommandController: ObservableObject {
                 ))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
-                var body: [String: Any] = ["agentId": agentId]
+                var body: [String: Any] = ["agentId": roleId]
                 if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     body["title"] = title
                 }

@@ -271,7 +271,7 @@ struct DetachedHistoryControllerTests {
 
     private func session(_ id: String) -> TaskSession {
         TaskSession(
-            id: id, title: id, agent: "Agent", agentId: nil,
+            id: id, title: id, agent: "Agent", roleId: nil,
             status: .complete, progress: 1, summary: "", suggestedOptions: nil,
             suggestedPrompt: nil, activityStatus: nil,
             updatedAt: "2026-08-19T00:00:00Z", accent: .cyan,

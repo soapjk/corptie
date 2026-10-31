@@ -27,28 +27,28 @@ struct PadControlSelection: Hashable {
 }
 
 enum PadTab: Int, CaseIterable, Identifiable {
-    case workspace, automations, worktrees, agents, resources, settings
+    case workspace, automations, worktrees, roles, resources, settings
     var id: Int { rawValue }
     var title: String {
-        switch self { case .workspace: "工作台"; case .automations: "自动化"; case .worktrees: "Worktree"; case .agents: "Agents"; case .resources: "资源管理"; case .settings: "设置" }
+        switch self { case .workspace: "工作台"; case .automations: "自动化"; case .worktrees: "Worktree"; case .roles: "角色"; case .resources: "资源管理"; case .settings: "设置" }
     }
     var symbol: String {
         switch self { case .workspace: "circle.hexagongrid.fill"; case .automations: "bolt.badge.clock";
-        case .worktrees: "arrow.triangle.branch"; case .agents: "person.2"; case .resources: "tray.full"; case .settings: "gearshape" }
+        case .worktrees: "arrow.triangle.branch"; case .roles: "person.2"; case .resources: "tray.full"; case .settings: "gearshape" }
     }
     var resources: [ClientControlKind] {
         switch self { case .workspace, .resources, .settings: []; case .automations: [.automations];
-        case .worktrees: [.repositories]; case .agents: [.agents, .skills] }
+        case .worktrees: [.repositories]; case .roles: [.roles, .skills] }
     }
 
-    static let optionalTabs: [Self] = [.automations, .worktrees, .agents, .resources]
+    static let optionalTabs: [Self] = [.automations, .worktrees, .roles, .resources]
     var isRequired: Bool { self == .workspace || self == .settings }
     var preferenceID: String {
         switch self {
         case .workspace: "workspace"
         case .automations: "automations"
         case .worktrees: "worktrees"
-        case .agents: "agents"
+        case .roles: "agents"
         case .resources: "resources"
         case .settings: "settings"
         }
@@ -130,7 +130,7 @@ final class PadControlStore {
         let next: [ClientControlKind: [ClientControlItem]] = [
             .automations: snapshot.automations,
             .repositories: snapshot.repositories,
-            .agents: snapshot.agents,
+            .roles: snapshot.roles,
             .skills: snapshot.skills
         ]
         for (kind, values) in next where items[kind] != values { items[kind] = values }

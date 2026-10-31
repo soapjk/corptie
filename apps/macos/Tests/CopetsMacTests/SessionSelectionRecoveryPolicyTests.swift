@@ -29,7 +29,7 @@ struct SessionSelectionRecoveryPolicyTests {
     }
 
     private func session(_ id: String, archived: Bool = false) -> TaskSession {
-        TaskSession(id: id, title: id, agent: "Agent", agentId: "agent:one",
+        TaskSession(id: id, title: id, agent: "Agent", roleId: "agent:one",
             sessionKind: .worker, workId: "work:one", taskId: "task:one",
             status: .complete, progress: 1, summary: "", suggestedOptions: nil,
             suggestedPrompt: nil, activityStatus: nil, updatedAt: "2026-10-30T00:00:00Z",

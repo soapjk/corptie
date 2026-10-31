@@ -57,9 +57,9 @@ extension BackendClient {
 
     func integrateCompletedWorktrees() { projectWorkspaceCommandController.integrateCompletedWorktrees() }
 
-    func createIntegrationConflictCorptieTask(runId: String, agentId: String, title: String? = nil) {
+    func createIntegrationConflictCorptieTask(runId: String, roleId: String, title: String? = nil) {
         projectWorkspaceCommandController.createIntegrationConflictCorptieTask(
-            runId: runId, agentId: agentId, title: title
+            runId: runId, roleId: roleId, title: title
         )
     }
 

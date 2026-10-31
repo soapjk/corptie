@@ -10,7 +10,7 @@ struct WorkResourcesEditor: View {
     @ObservedObject private var client = EntityAPIClient.shared
 
     @Binding var workspaceId: String?
-    @Binding var contributorAgentIds: Set<String>
+    @Binding var contributorRoleIds: Set<String>
     var workspaceEditable = true
 
     @State private var showAgentPicker = false
@@ -25,7 +25,7 @@ struct WorkResourcesEditor: View {
             agentSection
         }
         .sheet(isPresented: $showAgentPicker) {
-            AgentPickerView(selectedIds: $contributorAgentIds)
+            RolePickerView(selectedIds: $contributorRoleIds)
         }
         .sheet(isPresented: $showSSHWorkspaceSetup) {
             SSHWorkspaceSetupView(workspaceId: $workspaceId)
@@ -63,7 +63,7 @@ struct WorkResourcesEditor: View {
                 await client.refreshWorkspaces()
                 await client.refreshRepositories()
                 if client.works.isEmpty { await client.refreshWorks() }
-                if client.agents.isEmpty { await client.refreshAgents() }
+                if client.roles.isEmpty { await client.refreshRoles() }
             }
         }
     }
@@ -196,7 +196,7 @@ struct WorkResourcesEditor: View {
     private var agentSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(L10n("Contributor Agent"))
+                Text(L10n("Contributor Role"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -204,23 +204,23 @@ struct WorkResourcesEditor: View {
                     Image(systemName: "plus.circle")
                 }
                 .buttonStyle(.borderless)
-                .help(L10n("分配 Agent"))
+                .help(L10n("分配角色"))
             }
-            if selectedAgents.isEmpty && unresolvedAgentIds.isEmpty {
-                Text(L10n("尚未分配 Agent"))
+            if selectedRoles.isEmpty && unresolvedAgentIds.isEmpty {
+                Text(L10n("尚未分配角色"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(selectedAgents) { agent in
+                    ForEach(selectedRoles) { agent in
                         resourceRow(label: agent.name, icon: agent.isPlatformAssistant ? "sparkles" : "person") {
-                            contributorAgentIds.remove(agent.agentId)
+                            contributorRoleIds.remove(agent.roleId)
                         }
                     }
                     ForEach(unresolvedAgentIds, id: \.self) { id in
                         resourceRow(label: id, icon: "exclamationmark.triangle") {
-                            contributorAgentIds.remove(id)
+                            contributorRoleIds.remove(id)
                         }
                     }
                 }
@@ -228,13 +228,13 @@ struct WorkResourcesEditor: View {
         }
     }
 
-    private var selectedAgents: [Agent] {
-        client.agents.filter { contributorAgentIds.contains($0.agentId) }
+    private var selectedRoles: [Role] {
+        client.roles.filter { contributorRoleIds.contains($0.roleId) }
     }
 
     private var unresolvedAgentIds: [String] {
-        let assignable = Set(client.agents.map(\.agentId))
-        return contributorAgentIds.filter { !assignable.contains($0) }.sorted()
+        let assignable = Set(client.roles.map(\.roleId))
+        return contributorRoleIds.filter { !assignable.contains($0) }.sorted()
     }
 
     // MARK: - 通用行

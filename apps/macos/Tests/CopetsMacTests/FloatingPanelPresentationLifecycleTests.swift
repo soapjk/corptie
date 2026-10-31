@@ -14,8 +14,8 @@ final class FloatingPanelPresentationLifecycleTests: XCTestCase {
         let store = AppStateStore.shared
         _ = store.apply(changeSet: .init(snapshotRequired: false, baseRevision: store.revision,
             revision: store.revision + 1,
-            upserts: .init(sessions: [], tasks: [], works: [], agents: [], skills: [], repositories: [], integrationRuns: []),
-            deletes: .init(sessions: fixtureIDs, tasks: [], works: [], agents: [], skills: [], repositories: [], integrationRuns: [])))
+            upserts: .init(sessions: [], tasks: [], works: [], roles: [], skills: [], repositories: [], integrationRuns: []),
+            deletes: .init(sessions: fixtureIDs, tasks: [], works: [], roles: [], skills: [], repositories: [], integrationRuns: [])))
         fixtureIDs = []
         try await super.tearDown()
     }
@@ -23,7 +23,7 @@ final class FloatingPanelPresentationLifecycleTests: XCTestCase {
     private func seed(_ client: BackendClient, _ suffix: String) -> String {
         let id = "fixture:floating-\(UUID().uuidString)-\(suffix)"
         fixtureIDs.append(id)
-        let session = TaskSession(id: id, title: "Lifecycle \(suffix)", agent: "Fixture", agentId: nil,
+        let session = TaskSession(id: id, title: "Lifecycle \(suffix)", agent: "Fixture", roleId: nil,
             sessionKind: .assistantChat, status: .complete, progress: 1, summary: "",
             suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil, updatedAt: "2026-10-24",
             accent: .cyan, archived: false, pinned: false, sortOrder: 0, capabilities: nil, external: nil)

@@ -1,3 +1,4 @@
+import { roleToLegacyAgentWire } from "../store/repositories/roleRepository.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
@@ -103,7 +104,7 @@ export class PlatformOperationService {
     }
     switch (input.tool) {
       case "corptie_platform_capabilities": result = this.capabilities(); break;
-      case "corptie_platform_agents_manage": result = await this.#agents(args); break;
+      case "corptie_platform_agents_manage": result = await this.#roles(args); break;
       case "corptie_platform_works_manage": result = await this.#works(args); break;
       case "corptie_platform_tasks_manage": result = await this.#tasks(args, binding); break;
       case "corptie_platform_sessions_manage": result = await this.#sessions(args, binding); break;
@@ -128,18 +129,18 @@ export class PlatformOperationService {
     return receipt;
   }
 
-  #agents(args) {
+  #roles(args) {
     assertKnown(args, ["action", "agent_id", "name", "description", "system_prompt", "capabilities", "skill_ids", "work_dir", "avatar_path", "idempotency_key"]);
     switch (required(args.action, "action")) {
-      case "list": return this.store.listAgents();
-      case "get": return found(this.store.getAgent(required(args.agent_id, "agent_id")), "AGENT_NOT_FOUND");
-      case "create": return this.emitEntityChanged("AgentChanged", this.store.createAgentWithRegistrySkills({ name: validateEntityName(required(args.name, "name"), "name", "Agent"), description: args.description ?? "", systemPrompt: args.system_prompt ?? "", capabilities: array(args.capabilities), workDir: optional(args.work_dir), avatarPath: optional(args.avatar_path) }, array(args.skill_ids)), "created");
+      case "list": return this.store.listRoles().map(roleToLegacyAgentWire);
+      case "get": return found(roleToLegacyAgentWire(this.store.getRole(required(args.agent_id, "agent_id"))), "AGENT_NOT_FOUND");
+      case "create": return this.emitEntityChanged("AgentChanged", roleToLegacyAgentWire(this.store.createRoleWithRegistrySkills({ name: validateEntityName(required(args.name, "name"), "name", "Role"), description: args.description ?? "", systemPrompt: args.system_prompt ?? "", capabilities: array(args.capabilities), workDir: optional(args.work_dir), avatarPath: optional(args.avatar_path) }, array(args.skill_ids))), "created");
       case "update": {
-        if (args.name !== undefined) validateEntityName(args.name, "name", "Agent");
-        return this.emitEntityChanged("AgentChanged", found(this.store.updateAgentWithRegistrySkills(required(args.agent_id, "agent_id"), compact({ name: args.name, description: args.description, systemPrompt: args.system_prompt, capabilities: args.capabilities, workDir: args.work_dir, avatarPath: args.avatar_path }), Array.isArray(args.skill_ids) ? args.skill_ids : null), "AGENT_NOT_FOUND"), "updated");
+        if (args.name !== undefined) validateEntityName(args.name, "name", "Role");
+        return this.emitEntityChanged("AgentChanged", found(roleToLegacyAgentWire(this.store.updateRoleWithRegistrySkills(required(args.agent_id, "agent_id"), compact({ name: args.name, description: args.description, systemPrompt: args.system_prompt, capabilities: args.capabilities, workDir: args.work_dir, avatarPath: args.avatar_path }), Array.isArray(args.skill_ids) ? args.skill_ids : null)), "AGENT_NOT_FOUND"), "updated");
       }
-      case "delete": { const agentId = required(args.agent_id, "agent_id"); found(this.store.getAgent(agentId), "AGENT_NOT_FOUND"); this.store.deleteAgent(agentId); this.emitEntityChanged("AgentChanged", { agentId }, "deleted"); return { deleted: true }; }
-      default: throw unsupported("Agent", args.action);
+      case "delete": { const agentId = required(args.agent_id, "agent_id"); found(this.store.getAgent(agentId), "AGENT_NOT_FOUND"); this.store.deleteRole(agentId); this.emitEntityChanged("AgentChanged", { agentId }, "deleted"); return { deleted: true }; }
+      default: throw unsupported("Role", args.action);
     }
   }
 

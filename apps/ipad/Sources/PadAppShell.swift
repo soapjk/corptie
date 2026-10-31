@@ -455,7 +455,7 @@ private struct PadResidentTabPage: View {
                 onOpenAutomation: { id in
                     if let destination = controls.selectAutomation(id: id) { open(destination) }
                 }, navigationGesturesEnabled: active)
-        case .automations, .worktrees, .agents:
+        case .automations, .worktrees, .roles:
             PadControlView(tab: page, connection: connection, store: controls, openSession: openSession)
         case .resources:
             ResourceBrowser(focus: $navigation.resourceFocus, active: active,
@@ -744,7 +744,7 @@ private struct PadGeneralSettingsView: View {
             } header: {
                 Text("通用")
             } footer: {
-                Text("会话、自动化、Worktree 与 Agent 数据均由已配对的 Mac 通过长连接主动推送。")
+                Text("会话、自动化、Worktree 与角色数据均由已配对的 Mac 通过长连接主动推送。")
             }
             Section {
                 NavigationLink {

@@ -12,15 +12,15 @@ struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
     let onConfirm: (String, String?) -> Void
     let onCancel: () -> Void
 
-    @State private var selectedAgentId = ""
+    @State private var selectedRoleId = ""
     @State private var title = ""
 
     private var conflicts: [ProjectIntegrationRunItem] {
         run.items.filter { $0.status == "conflict" }
     }
 
-    private var selectedAgent: ProjectIntegrationAgent? {
-        status.eligibleAgents.first { $0.agentId == selectedAgentId }
+    private var selectedAgent: ProjectIntegrationRole? {
+        status.eligibleAgents.first { $0.roleId == selectedRoleId }
     }
 
     var body: some View {
@@ -78,11 +78,11 @@ struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
                         .fontWeight(.semibold)
                 }
                 GridRow {
-                    Text(L10n("Agent"))
+                    Text(L10n("Role"))
                         .foregroundStyle(CorptiePalette.secondaryText)
-                    Picker("", selection: $selectedAgentId) {
+                    Picker("", selection: $selectedRoleId) {
                         ForEach(status.eligibleAgents) { agent in
-                            Text(agent.name).tag(agent.agentId)
+                            Text(agent.name).tag(agent.roleId)
                         }
                     }
                     .labelsHidden()
@@ -98,14 +98,14 @@ struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
 
             if let selectedAgent {
                 Text(L10nFormat(
-                    "After confirmation, Corptie will bind this CorptieTask to Agent %@ and start its Work Session in a dedicated Integration Worktree.",
+                    "After confirmation, Corptie will bind this CorptieTask to Role %@ and start its Work Session in a dedicated Integration Worktree.",
                     selectedAgent.name
                 ))
                 .font(.system(size: 10.5))
                 .foregroundStyle(CorptiePalette.secondaryText)
             } else if status.eligibleAgents.isEmpty {
                 Label(
-                    L10n("This Work has no available IC Agent."),
+                    L10n("This Work has no available IC Role."),
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.system(size: 11, weight: .semibold))
@@ -118,17 +118,17 @@ struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
                     .keyboardShortcut(.cancelAction)
                 Button(L10n("Create and Start CorptieTask")) {
                     let customTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                    onConfirm(selectedAgentId, customTitle.isEmpty ? nil : customTitle)
+                    onConfirm(selectedRoleId, customTitle.isEmpty ? nil : customTitle)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selectedAgentId.isEmpty || isCreating)
+                .disabled(selectedRoleId.isEmpty || isCreating)
             }
         }
         .padding(20)
         .frame(width: 580)
         .onAppear {
-            if selectedAgentId.isEmpty {
-                selectedAgentId = status.eligibleAgents.first?.agentId ?? ""
+            if selectedRoleId.isEmpty {
+                selectedRoleId = status.eligibleAgents.first?.roleId ?? ""
             }
         }
     }
@@ -226,7 +226,7 @@ struct WorktreeCommitReviewView: View {
             CommitMessageEditor(
                 message: $commitMessage,
                 isGenerating: backendClient.isGeneratingWorktreeCommitMessage,
-                helpText: L10n("Enter your own message or generate one with Agent, then edit it before continuing."),
+                helpText: L10n("Enter your own message or generate one with Role, then edit it before continuing."),
                 generate: { await backendClient.generateWorktreeCommitMessage() }
             )
 

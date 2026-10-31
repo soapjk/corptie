@@ -296,9 +296,19 @@ public struct ClientWorktreeConflictResolution: Decodable, Equatable, Sendable {
     public let worktreeId: String?
     public let taskId: String?
     public let sessionId: String?
-    public let agentId: String?
+    public let roleId: String?
     public let agentName: String?
     public let sessionStatus: String?
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case status
+        case worktreeId
+        case taskId
+        case sessionId
+        case roleId = "agentId"
+        case agentName
+        case sessionStatus
+    }
 }
 
 public struct ClientWorktreeConflictAutomation: Decodable, Equatable, Sendable {
@@ -308,13 +318,29 @@ public struct ClientWorktreeConflictAutomation: Decodable, Equatable, Sendable {
     public let taskId: String?
     public let sessionId: String?
     public let sessionName: String?
-    public let agentId: String?
+    public let roleId: String?
     public let agentName: String?
     public let currentWorktreeId: String?
     public let blockedWorktreeId: String?
     public let conflictFiles: [String]
     public let failureCode: String?
     public let failureReason: String?
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case status
+        case scopeWorktreeIds
+        case completedWorktreeIds
+        case taskId
+        case sessionId
+        case sessionName
+        case roleId = "agentId"
+        case agentName
+        case currentWorktreeId
+        case blockedWorktreeId
+        case conflictFiles
+        case failureCode
+        case failureReason
+    }
 }
 
 public struct ClientWorktreeCommitDecision: Encodable, Equatable, Sendable {

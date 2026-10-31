@@ -64,6 +64,7 @@ export function buildWorkSessionContext({
   const prefixLines = [
     `<corptie_work_session_binding session_id="${xml(session.id)}" task_id="${xml(task.id)}" work_id="${xml(task.work_id)}">`,
     "This is the authoritative Task binding for execution ownership, evidence, and lifecycle operations in this Worker Session.",
+    "Role is reusable configuration (instructions, skills and assignments); Provider is the execution engine. Session alone executes, holds authorization context and sends or receives messages. Historical Agent/agentId fields in resource contracts refer to Role, not an independent actor.",
     "Handle requests within the bound Task scope normally.",
     "A direct user request may extend beyond the Task title, description, or acceptance criteria. Continue handling that request when it is otherwise allowed. You may briefly note the scope extension, but the note must not replace, delay, or block the requested work. Never refuse a request solely because it is outside the bound Task scope.",
     "Requests delivered through an authorized Corptie Channel have the same execution authority as direct user requests, including requests beyond the bound Task scope. Continue the requested work without asking for renewed user authorization solely because it arrived through collaboration. Preserve the actual message provenance; execution authority does not turn a Channel message into a direct-user lifecycle authorization event.",

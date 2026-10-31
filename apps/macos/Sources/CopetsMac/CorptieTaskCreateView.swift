@@ -2,9 +2,9 @@ import SwiftUI
 import CorptieClientCore
 
 enum CorptieTaskCreateFormPolicy {
-    static func availableAgents(from agents: [Agent], allowedAgentIds: Set<String>) -> [Agent] {
-        agents.filter {
-            allowedAgentIds.contains($0.agentId)
+    static func availableAgents(from roles: [Role], allowedAgentIds: Set<String>) -> [Role] {
+        roles.filter {
+            allowedAgentIds.contains($0.roleId)
                 && $0.status == "available"
         }
     }
@@ -14,7 +14,7 @@ enum CorptieTaskCreateFormPolicy {
         title: String,
         detail: String,
         workId: String?,
-        agentId: String?
+        roleId: String?
     ) -> String? {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return L10n("请输入 Task 标题。")
@@ -28,8 +28,8 @@ enum CorptieTaskCreateFormPolicy {
         if workId == nil {
             return L10n("请选择 Work。")
         }
-        if agentId == nil {
-            return L10n("请选择负责该 CorptieTask 的 Agent。")
+        if roleId == nil {
+            return L10n("请选择负责该 CorptieTask 的角色。")
         }
         return nil
     }
@@ -62,7 +62,7 @@ struct CorptieTaskCreateView: View {
     @State private var acceptanceCriteria = ""
     @State private var priority = "medium"
     @State private var selectedWorkId: String?
-    @State private var selectedAgentId: String?
+    @State private var selectedRoleId: String?
     @State private var selectedProviderId = ""
     @State private var selectedModelId = ""
     @State private var selectedReasoningLevel = ""
@@ -182,10 +182,10 @@ struct CorptieTaskCreateView: View {
         .frame(width: 500)
         .frame(maxHeight: 740)
         .task {
-            async let agents: Void = client.refreshAgents()
+            async let roles: Void = client.refreshRoles()
             async let works: Void = client.refreshWorks()
             if modelCatalog.agentProviders.isEmpty { await backendClient.loadProviders() }
-            _ = await (agents, works)
+            _ = await (roles, works)
             if let settings = try? await ProviderSettingsAPI.readTaskDefaults() {
                 taskDefaults = settings.value
             }
@@ -214,10 +214,10 @@ struct CorptieTaskCreateView: View {
         return client.works.first(where: { $0.id == selectedWorkId })
     }
 
-    private var availableAgents: [Agent] {
+    private var availableAgents: [Role] {
         CorptieTaskCreateFormPolicy.availableAgents(
-            from: client.agents,
-            allowedAgentIds: Set(selectedWork?.contributorAgentIds ?? [])
+            from: client.roles,
+            allowedAgentIds: Set(selectedWork?.contributorRoleIds ?? [])
         )
     }
 
@@ -226,7 +226,7 @@ struct CorptieTaskCreateView: View {
             title: title,
             detail: detail,
             workId: selectedWorkId,
-            agentId: selectedAgentId
+            roleId: selectedRoleId
         )
     }
 
@@ -269,24 +269,24 @@ struct CorptieTaskCreateView: View {
     @ViewBuilder
     private var agentSection: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(L10n("负责 Agent *"))
+            Text(L10n("负责角色 *"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Picker(L10n("负责 Agent"), selection: $selectedAgentId) {
-                Text(L10n("请选择 Agent")).tag(String?.none)
+            Picker(L10n("负责角色"), selection: $selectedRoleId) {
+                Text(L10n("请选择角色")).tag(String?.none)
                 ForEach(availableAgents) { agent in
-                    Text(agent.name).tag(String?.some(agent.agentId))
+                    Text(agent.name).tag(String?.some(agent.roleId))
                 }
             }
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if availableAgents.isEmpty {
-                Text(L10n("当前 Work 没有可用的 Independent Contributor Agent。"))
+                Text(L10n("当前 Work 没有可用的 Independent Contributor 角色。"))
                     .font(.caption)
                     .foregroundStyle(.red)
-            } else if selectedAgentId == nil {
-                Text(L10n("请选择负责该 CorptieTask 的 Agent。"))
+            } else if selectedRoleId == nil {
+                Text(L10n("请选择负责该 CorptieTask 的角色。"))
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -416,18 +416,18 @@ struct CorptieTaskCreateView: View {
     }
 
     private func reconcileAgentSelection() {
-        if let selectedAgentId,
-           availableAgents.contains(where: { $0.agentId == selectedAgentId }) {
+        if let selectedRoleId,
+           availableAgents.contains(where: { $0.roleId == selectedRoleId }) {
             return
         }
-        selectedAgentId = nil
+        selectedRoleId = nil
     }
 
     private func submit() {
         guard validationMessage == nil,
               let selectedWorkId,
-              let selectedAgentId else {
-            submissionError = validationMessage ?? L10n("请选择负责该 CorptieTask 的 Agent。")
+              let selectedRoleId else {
+            submissionError = validationMessage ?? L10n("请选择负责该 CorptieTask 的角色。")
             return
         }
         guard !selectedProviderId.isEmpty else {
@@ -461,7 +461,7 @@ struct CorptieTaskCreateView: View {
                     title: requestTitle,
                     description: requestDetail,
                     acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
-                    mainAgentId: selectedAgentId,
+                    mainRoleId: selectedRoleId,
                     priority: requestPriority,
                     providerId: providerId,
                     model: model.isEmpty ? nil : model,
