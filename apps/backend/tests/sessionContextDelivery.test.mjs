@@ -85,7 +85,7 @@ for (const kind of ["codex", "claude", "openclacky"]) {
     const send = async (_reference, _message, options) => {
       if (reject) throw new Error("Provider rejected context");
       captured.push(options.contextPrompt ?? options.sessionContext?.prompt ?? "");
-      return { accepted: true };
+      return { turnId: "turn:context", delivery: "accepted" };
     };
     const provider = kind === "codex"
       ? createCodexAppServerProvider({ send }, { capabilities: [C.CONVERSATION_SEND] })

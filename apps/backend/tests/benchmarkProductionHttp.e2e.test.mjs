@@ -248,7 +248,7 @@ function createProviderExecutionEntry({ store, startup, observability }) {
         assert.equal(result.status, "applied");
         assert.notEqual(result.observability?.state, "skipped");
       }
-      return { turn: { id: turnId } };
+      return { turn: { id: turnId }, turnId, delivery: "accepted" };
     },
     interrupt: async () => ({ accepted: true })
   });
@@ -282,7 +282,7 @@ async function establishWorkSession({ store, source }) {
   const work = workService.createWork({ id: WORK_ID, name: "Benchmark",
     contributorAgentIds: [agent.agentId], workspaceId: "workspace:benchmark" });
   const task = workService.createTask({ id: TASK_ID, workId: work.id,
-    title: "Benchmark production", mainAgentId: agent.agentId });
+    title: "Benchmark-production", mainAgentId: agent.agentId });
   store.createSession({ id: "provider:benchmark-source", title: "Benchmark source",
     provider: "test-provider", agentId: agent.agentId, sessionKind: "workChat",
     workId: work.id, cwd: source.directory });
@@ -301,7 +301,7 @@ async function establishWorkSession({ store, source }) {
     inspectWorktree: async ({ allocation }) => allocation,
     providerWorkSessionPort: {
       createSession: async ({ providerBindingId }) => {
-        const session = store.createSession({ id: "session:benchmark", title: "Benchmark production",
+        const session = store.createSession({ id: "session:benchmark", title: "Benchmark-production",
           provider: "test-provider", agentId: agent.agentId, sessionKind: "worker",
           workId: work.id, taskId: task.id, cwd: source.directory,
           deferTaskProjection: true });

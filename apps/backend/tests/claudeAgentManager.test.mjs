@@ -524,7 +524,9 @@ test("Claude emits Provider-neutral turn and incremental item events without wri
   manager.ensureQueryStarted = async () => {};
   manager.enqueueInput = () => {};
 
-  await manager.send("claude-events", "Run it", { localVisibility: "status_only", turnId: "turn:events" });
+  const receipt = await manager.send("claude-events", "Run it", { localVisibility: "status_only", turnId: "turn:events" });
+  assert.equal(receipt.turnId, "turn:events");
+  assert.equal(receipt.delivery, "accepted");
   manager.handleSdkMessage(
     manager.get("claude-events"),
     sdkAssistant([{ type: "text", text: "Working" }])

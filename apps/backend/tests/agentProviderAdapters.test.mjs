@@ -52,8 +52,8 @@ test("shared catalog and common commands work without a Provider-specific comman
   assert.equal(commands.find(command => command.name === "rename").available, true);
   await assert.rejects(service.validateConversationCommand("session:claude", { name: "goal", arguments: "build" }), { code: "CAPABILITY_UNSUPPORTED" });
   assert.match((await service.executeCommand("session:claude", { name: "status", arguments: "" })).text, /complete/);
-  await service.executeCommand("session:claude", { name: "rename", arguments: "new title" });
-  assert.deepEqual(manager.calls, [["rename", "native:claude", "new title"]]);
+  await service.executeCommand("session:claude", { name: "rename", arguments: "new-title" });
+  assert.deepEqual(manager.calls, [["rename", "native:claude", "new-title"]]);
 });
 
 test("bootstrap does not advertise command execution without an implementation", () => {
