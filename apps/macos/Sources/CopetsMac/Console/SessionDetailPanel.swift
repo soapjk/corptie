@@ -6,11 +6,13 @@ import AppKit
 import SwiftUI
 
 struct SessionDetailPanel: View {
+    @Environment(\.sessionChromeCenterY) private var sessionChromeCenterY
     private let modelCatalog = BackendClient.shared.modelCatalog
     private let entityClient = EntityAPIClient.shared
     private let backendClient = BackendClient.shared
     let session: TaskSession
     var railWidth: CGFloat = 280
+    var chromeCenterY: CGFloat? = nil
     var activity: ConversationDetailPresentationActivity? = nil
     private var isPresentationActive: Bool {
         guard let activity else { return true }
@@ -111,7 +113,7 @@ struct SessionDetailPanel: View {
 
     private var liveDetailBody: some View {
         sessionCard
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .overlay(alignment: .top) {
             detailTabToolbar
         }
         .frame(width: railWidth)
@@ -214,19 +216,13 @@ struct SessionDetailPanel: View {
     }
 
     private var detailTabToolbar: some View {
-        PlatformWorkOutlineToolbar(density: .compact) {
-            HStack(spacing: 2) {
-                detailTabButton("详情", tab: "detail")
-                detailTabButton("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")", tab: "mailbox")
-            }
-            .padding(2)
-            .platformGlassSurface(in: Capsule(), interactive: true)
-            .frame(height: PlatformWorkOutlineToolbarDensity.compact.controlSize)
-        } trailing: {
-            EmptyView()
+        HStack(spacing: 2) {
+            detailTabButton("详情", tab: "detail")
+            detailTabButton("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")", tab: "mailbox")
         }
-        // The page has an outer gutter; the sidebar toolbar does not.
-        .padding(.top, -MainWindowPageLayoutMetrics.outerPadding)
+        .padding(2)
+        .platformGlassSurface(in: Capsule(), interactive: true)
+        .offset(y: (chromeCenterY ?? sessionChromeCenterY) - 15)
     }
 
     private func detailTabButton(_ title: String, tab: String) -> some View {
