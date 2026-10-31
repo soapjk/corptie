@@ -109,83 +109,156 @@ struct ConsoleScheduledWakeIcon: View {
 }
 
 /// Measure the full child stack once for a width, then reveal its height.
-/// The transition retains children only until removal completes.
+/// Children remain in normal layout until the reveal animation completes.
 private struct ConsoleDisclosureRevealLayout: Layout {
-    var fraction: CGFloat
-    struct Cache {
-        var width: CGFloat?
-        var size: CGSize?
-    }
-    func makeCache(subviews: Subviews) -> Cache { Cache() }
-    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.size = nil }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        if cache.size == nil || cache.width != proposal.width {
-            cache.width = proposal.width
-            cache.size = subviews.first?.sizeThatFits(.init(width: proposal.width, height: nil)) ?? .zero
-        }
-        let size = cache.size ?? .zero
-        return .init(width: size.width, height: size.height * min(1, max(0, fraction)))
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        // Start at the title edge and slide the first rows into place while
-        // the reveal height grows. Keep list order; never fade the text.
-        let travel = min(20, cache.size?.height ?? 0)
-        let y = bounds.minY - travel * (1 - min(1, max(0, fraction)))
-        subviews.first?.place(at: .init(x: bounds.minX, y: y), anchor: .topLeading,
-            proposal: .init(width: bounds.width, height: cache.size?.height))
-    }
-}
-
-private struct ConsoleDisclosureReveal: ViewModifier, Animatable {
     nonisolated var fraction: CGFloat
     nonisolated var animatableData: CGFloat {
         get { fraction }
         set { fraction = newValue }
     }
-    func body(content: Content) -> some View {
-        ConsoleDisclosureRevealLayout(fraction: fraction) { content }
-            .clipped()
-            .allowsHitTesting(fraction >= 0.99)
+    struct Cache {
+        // SwiftUI alternates unconstrained and constrained width proposals in
+        // one layout pass. Retain a bounded set instead of evicting each other.
+        var measurements: [(width: CGFloat?, size: CGSize)] = []
     }
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache.measurements.removeAll(keepingCapacity: true)
+    }
+    private func fullSize(width: CGFloat?, subviews: Subviews, cache: inout Cache) -> CGSize {
+        if let measured = cache.measurements.first(where: { $0.width == width }) { return measured.size }
+        let size = subviews.first?.sizeThatFits(.init(width: width, height: nil)) ?? .zero
+        if cache.measurements.count == 8 { cache.measurements.removeFirst() }
+        cache.measurements.append((width, size))
+        return size
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        let size = fullSize(width: proposal.width, subviews: subviews, cache: &cache)
+        return .init(width: size.width, height: size.height * min(1, max(0, fraction)))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        // Keep rows at their natural size and position; only the enclosing
+        // layout height changes, as in the mobile Work card.
+        let size = fullSize(width: bounds.width, subviews: subviews, cache: &cache)
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+            proposal: .init(width: bounds.width, height: size.height))
+    }
+
 }
 
-struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+/// Keep the reveal container alive across both directions. Removal transitions
+/// let LazyVStack reclaim the row before the departing children finish drawing.
+private struct ConsoleWorkDisclosureBody<Label: View, Content: View>: View {
+    @Binding var isExpanded: Bool
+    let label: Label
+    let content: Content
+    let reduceMotion: Bool
+    let onCollapseCompleted: (() -> Void)?
+    @State private var collapseNotified = false
+    @State private var contentMounted: Bool
+    @State private var fraction: CGFloat
+    @State private var animationGeneration = 0
+
+    init(isExpanded: Binding<Bool>, label: Label, content: Content, reduceMotion: Bool,
+         onCollapseCompleted: (() -> Void)?) {
+        _isExpanded = isExpanded
+        self.label = label
+        self.content = content
+        self.reduceMotion = reduceMotion
+        self.onCollapseCompleted = onCollapseCompleted
+        _contentMounted = State(initialValue: isExpanded.wrappedValue)
+        _fraction = State(initialValue: isExpanded.wrappedValue ? 1 : 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
-                Button {
-                    withAnimation(reduceMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                        configuration.isExpanded.toggle()
-                    }
-                } label: {
+                Button { isExpanded.toggle() } label: {
                     Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .rotationEffect(.degrees(90 * min(1, max(0, fraction))))
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 18, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(L10n(
-                    configuration.isExpanded ? "Collapse group" : "Expand group"
-                ))
-
-                configuration.label
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(L10n(isExpanded ? "Collapse group" : "Expand group"))
+                label.frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if configuration.isExpanded {
-                configuration.content
-                    .transition(reduceMotion ? .identity : .modifier(
-                        active: ConsoleDisclosureReveal(fraction: 0),
-                        identity: ConsoleDisclosureReveal(fraction: 1)))
+            ConsoleDisclosureRevealLayout(fraction: fraction) {
+                if contentMounted {
+                    // Reuse the layout at a constant fraction for full-size
+                    // measurement. Its cache survives reveal interpolation,
+                    // while SwiftUI invalidates it when the content changes.
+                    ConsoleDisclosureRevealLayout(fraction: 1) { content }
+                        .transition(.identity)
+                }
             }
+            .clipped()
+            .contentShape(Rectangle())
+            .padding(.top, 2 * min(1, max(0, fraction)))
+            .allowsHitTesting(isExpanded)
+            .accessibilityHidden(!isExpanded)
         }
-        .animation(
-            reduceMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation,
-            value: configuration.isExpanded
-        )
+        .clipped()
+        .onAppear { reveal(isExpanded, animated: false) }
+        .onDisappear {
+            animationGeneration &+= 1
+            finishCollapse(generation: animationGeneration)
+        }
+        .onChange(of: isExpanded) { _, expanded in reveal(expanded, animated: !reduceMotion) }
+        .onChange(of: reduceMotion) { _, reduced in
+            if reduced { reveal(isExpanded, animated: false) }
+        }
+    }
+
+    private func reveal(_ expanded: Bool, animated: Bool) {
+        animationGeneration &+= 1
+        let generation = animationGeneration
+        var immediate = Transaction(animation: nil)
+        immediate.disablesAnimations = true
+        withTransaction(immediate) {
+            if expanded {
+                contentMounted = true
+                collapseNotified = false
+            }
+            if !animated { fraction = expanded ? 1 : 0 }
+        }
+        guard animated else {
+            finishCollapse(generation: generation)
+            return
+        }
+        withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation, completionCriteria: .removed) {
+            fraction = expanded ? 1 : 0
+        } completion: {
+            finishCollapse(generation: generation)
+        }
+    }
+
+    private func finishCollapse(generation: Int) {
+        guard generation == animationGeneration, !isExpanded, !collapseNotified else { return }
+        var immediate = Transaction(animation: nil)
+        immediate.disablesAnimations = true
+        withTransaction(immediate) {
+            contentMounted = false
+            collapseNotified = true
+            onCollapseCompleted?()
+        }
+    }
+
+}
+
+struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var reduceMotionOverride: Bool? = nil
+    var onCollapseCompleted: (() -> Void)? = nil
+
+    func makeBody(configuration: Configuration) -> some View {
+        ConsoleWorkDisclosureBody(isExpanded: configuration.$isExpanded,
+                                  label: configuration.label, content: configuration.content,
+                                  reduceMotion: reduceMotionOverride ?? reduceMotion,
+                                  onCollapseCompleted: onCollapseCompleted)
     }
 }
 
