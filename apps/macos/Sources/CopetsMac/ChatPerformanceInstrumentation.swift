@@ -195,6 +195,11 @@ final class SessionSwitchTrace {
         if current(sessionID: sessionID) == nil { begin(sessionID: sessionID) }
     }
 
+    func recordPagePool(sessionID: String?, count: Int, capacity: Int, reason: String) {
+        guard enabled else { return }
+        logger.info("page pool session=\(sessionID ?? "", privacy: .public) count=\(count) capacity=\(capacity) reason=\(reason, privacy: .public)")
+    }
+
     func mark(_ stage: Stage, sessionID: String? = nil) {
         guard var value = current(sessionID: sessionID) else { return }
         let elapsed = (clock() - value.start) * 1000
