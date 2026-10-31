@@ -121,6 +121,8 @@ struct FirstRunSetupRoot<Content: View>: View {
         Group {
             if !FirstRunStatus.requiresSetup(status) {
                 content()
+            } else if status == nil && error == nil {
+                startupLoadingPage
             } else {
                 setupPage
             }
@@ -133,6 +135,19 @@ struct FirstRunSetupRoot<Content: View>: View {
             guard ready, status == nil else { return }
             perform { try await refresh() }
         }
+    }
+
+    private var startupLoadingPage: some View {
+        VStack(spacing: 20) {
+            CorptieLoadingLogo()
+                .frame(width: 128, height: 128)
+                .accessibilityHidden(true)
+            Text(L10n("正在准备本地数据…"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var setupPage: some View {
