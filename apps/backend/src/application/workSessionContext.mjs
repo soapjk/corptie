@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy.mjs";
 
-export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace.";
+export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; manually create or switch Worktrees only when the direct user explicitly requests it. Scoped child Task tools may automatically allocate child Worktrees during autonomous decomposition, without a separate user creation request. This does not authorize manual Worktree changes; shell cd or command workdir never changes the logical Workspace.";
 
 export const WORKER_SESSION_CONTEXT_LIMITS = Object.freeze({
   // Corptie supplemental-context limits, not a model token-window estimate.

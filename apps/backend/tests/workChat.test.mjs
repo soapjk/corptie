@@ -149,8 +149,8 @@ test("Work Chat context forbids Task creation without a direct explicit user req
     assert.match(context.prompt, /workflow recommendation, not a permission denial/);
     assert.match(context.prompt, /carry out the request in this Session when otherwise authorized/);
     assert.match(context.prompt, /Non-code changes, including repository configuration, may be performed directly/);
-    assert.match(context.prompt, /Never create a new Task unless the direct user explicitly asks/);
-    assert.match(context.prompt, /Complexity, code changes, decomposition, parallelism, missing information/);
+    assert.match(context.prompt, /Independent root Tasks require an explicit direct-user creation request/);
+    assert.match(context.prompt, /Child Tasks under an existing same-Work root may be created autonomously/);
     assert.match(context.prompt, /explicitly requests a new Task, its title, description, and acceptance criteria/);
     assert.match(context.prompt, /Task creation starts its Worker Session automatically/);
     assert.match(context.prompt, /never request or perform a separate start action/);
