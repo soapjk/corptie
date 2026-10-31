@@ -56,7 +56,13 @@ enum ConsoleWorkActivityPolicy {
 /// Local disclosure preference for the grouped console outline.
 @MainActor @Observable
 final class ConsoleOutlineExpansionPreferences {
-    private(set) var expandedWorkIDs: Set<String>
+    // The saved collection is storage, not a shared UI invalidation source.
+    @ObservationIgnored private(set) var expandedWorkIDs: Set<String>
+    @ObservationIgnored private var workStates: [String: WorkState] = [:]
+    @MainActor @Observable fileprivate final class WorkState {
+        var isExpanded: Bool
+        init(isExpanded: Bool) { self.isExpanded = isExpanded }
+    }
     private(set) var isAssistantCollapsed: Bool
     private let store: WorkOutlineExpansionStore
 
@@ -66,6 +72,13 @@ final class ConsoleOutlineExpansionPreferences {
         isAssistantCollapsed = !store.loadChat()
     }
 
+    func isWorkExpanded(_ workID: String) -> Bool {
+        if let state = workStates[workID] { return state.isExpanded }
+        let state = WorkState(isExpanded: expandedWorkIDs.contains(workID))
+        workStates[workID] = state
+        return state.isExpanded
+    }
+
     func setWorkExpanded(_ isExpanded: Bool, workID: String) {
         guard expandedWorkIDs.contains(workID) != isExpanded else { return }
         if isExpanded {
@@ -73,6 +86,7 @@ final class ConsoleOutlineExpansionPreferences {
         } else {
             expandedWorkIDs.remove(workID)
         }
+        workStates[workID]?.isExpanded = isExpanded
         store.save(expandedWorkIDs)
     }
 
@@ -92,6 +106,7 @@ final class ConsoleOutlineExpansionPreferences {
     }
 
     func removeWork(_ workID: String) {
+        workStates.removeValue(forKey: workID)?.isExpanded = false
         guard expandedWorkIDs.remove(workID) != nil else { return }
         store.save(expandedWorkIDs)
     }
@@ -182,7 +197,7 @@ private struct ConsoleWorkDisclosureBody<Label: View, Content: View>: View {
                         .frame(width: 18, height: 24)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SessionSelectionPressStyle())
                 .accessibilityLabel(L10n(isExpanded ? "Collapse group" : "Expand group"))
                 label.frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -353,7 +368,7 @@ struct ConsoleWorkOutlineHeader: View {
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SessionSelectionPressStyle())
             .accessibilityLabel(work.name)
             .accessibilityValue(accessibilityValue)
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))

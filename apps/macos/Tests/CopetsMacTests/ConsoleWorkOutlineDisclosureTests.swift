@@ -386,38 +386,38 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         XCTAssertEqual(lifetime.removed, 0)
     }
 
-    func testMouseReleaseToFirstFrameDoesNotWaitForHalfASecond() throws {
+    func testMousePressStartsRevealBeforeReleaseAcrossHeaderHitAreas() throws {
         _ = NSApplication.shared
-        let state = State(), probe = GeometryProbe(), times = ClickTimes()
-        let host = NSHostingView(rootView: InputSurface(state: state, probe: probe, times: times))
-        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 350),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
-        defer { window.orderOut(nil); window.contentView = nil }
-        settle(0.1)
-        let initialHeight = probe.frame.height
-        let header = probe.convert(probe.bounds, to: host)
-        let location = host.convert(NSPoint(x: 75, y: header.minY + 19), to: nil)
-        func event(_ type: NSEvent.EventType) throws -> NSEvent {
-            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+        for x: CGFloat in [9, 75, 220] { // Arrow, Work title with context menu, blank header.
+            let state = State(), probe = GeometryProbe(), times = ClickTimes()
+            let host = NSHostingView(rootView: InputSurface(state: state, probe: probe, times: times))
+            let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 350),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+            defer { window.orderOut(nil); window.contentView = nil }
+            settle(0.1)
+            let initialHeight = probe.frame.height
+            let header = probe.convert(probe.bounds, to: host)
+            let location = host.convert(NSPoint(x: x, y: header.minY + 19), to: nil)
+            func event(_ type: NSEvent.EventType) throws -> NSEvent {
+                try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            }
+            let began = Date()
+            window.sendEvent(try event(.leftMouseDown))
+            var firstFrame: Date?
+            while Date().timeIntervalSince(began) < 0.2 {
+                settle(0.005)
+                if probe.frame.height > initialHeight + 0.5 { firstFrame = Date(); break }
+            }
+            XCTAssertTrue(state.expanded, "Header x=\(x) must respond while the mouse is held")
+            XCTAssertNotNil(firstFrame, "Header x=\(x) must start layout before release")
+            print("Work press-to-layout ms", x, firstFrame.map { $0.timeIntervalSince(began) * 1000 } as Any)
+            window.sendEvent(try event(.leftMouseUp)); settle(0.3)
+            XCTAssertTrue(state.expanded, "Release must not toggle the group again")
+            if x == 75 { XCTAssertEqual(times.count, 1) }
         }
-        let began = Date()
-        window.sendEvent(try event(.leftMouseDown)); settle(0.03)
-        let released = Date()
-        window.sendEvent(try event(.leftMouseUp))
-        var firstFrame: Date?
-        while Date().timeIntervalSince(released) < 0.7 {
-            settle(0.005)
-            if probe.frame.height > initialHeight + 0.5 { firstFrame = Date(); break }
-        }
-        let movedAt = try XCTUnwrap(firstFrame)
-        print("Work header mouse action ms", times.firedAt.map { $0.timeIntervalSince(began) * 1000 } as Any,
-            "release-to-layout ms", movedAt.timeIntervalSince(released) * 1000)
-        XCTAssertLessThan(movedAt.timeIntervalSince(released), 0.2)
-        settle(0.3)
-        XCTAssertEqual(times.count, 1)
     }
 
     @MainActor private final class BodyCounts {
@@ -429,7 +429,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         let counts: BodyCounts
         var body: some View {
             counts.content += 1
-            let expanded = Binding(get: { preferences.expandedWorkIDs.contains("work:ownership") },
+            let expanded = Binding(get: { preferences.isWorkExpanded("work:ownership") },
                 set: { preferences.setWorkExpanded($0, workID: "work:ownership") })
             return DisclosureGroup(isExpanded: expanded) { Text("Task") } label: { Text("Work") }
                 .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
@@ -442,6 +442,78 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
             counts.root += 1
             return PreferenceGroup(preferences: preferences, counts: counts)
         }
+    }
+
+    @MainActor private final class GroupBuilds {
+        var counts: [Int: Int] = [:]
+        func record(_ index: Int) { counts[index, default: 0] += 1 }
+    }
+    private struct MultipleWorkSurface: View {
+        let preferences: ConsoleOutlineExpansionPreferences
+        let builds: GroupBuilds
+        var body: some View {
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(0..<12) { index in
+                        let _ = builds.record(index)
+                        DisclosureGroup(isExpanded: Binding(
+                            get: { preferences.isWorkExpanded("work:\(index)") },
+                            set: { preferences.setWorkExpanded($0, workID: "work:\(index)") })) {
+                            VStack { ForEach(0..<5) { Text("Task \($0)").frame(height: 22) } }
+                        } label: {
+                            Text("Work \(index) \(preferences.isWorkExpanded("work:\(index)"))")
+                        }
+                        .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
+                        .consoleWorkOutlineGroupCard()
+                    }
+                }
+            }
+        }
+    }
+    func testTogglingOneGroupDoesNotReconstructSiblingGroupsInLazyOutline() throws {
+        _ = NSApplication.shared
+        let suite = "ConsoleWorkOutlineDisclosureTests.groups.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ConsoleOutlineExpansionPreferences(defaults: defaults), builds = GroupBuilds()
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 900),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: MultipleWorkSurface(preferences: preferences, builds: builds))
+        window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.1)
+        let initial = builds.counts
+        XCTAssertEqual(initial.count, 12)
+        preferences.setWorkExpanded(true, workID: "work:0"); settle(0.3)
+        preferences.setWorkExpanded(false, workID: "work:0"); settle(0.3)
+        for index in 1..<12 { XCTAssertEqual(builds.counts[index], initial[index], "Unchanged Work \(index)") }
+        XCTAssertGreaterThan(builds.counts[0] ?? 0, initial[0] ?? 0)
+        print("Sibling Work constructions across expand/collapse:", (1..<12).reduce(0) { $0 + (builds.counts[$1] ?? 0) - (initial[$1] ?? 0) })
+    }
+
+    func testChangingOneWorkDoesNotInvalidateOtherWorkOrChatObservers() throws {
+        let suite = "ConsoleWorkOutlineDisclosureTests.isolation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ConsoleOutlineExpansionPreferences(defaults: defaults)
+        let selected = BodyCounts(), sibling = BodyCounts(), chat = BodyCounts()
+        withObservationTracking { _ = preferences.isWorkExpanded("work:a") }
+            onChange: { MainActor.assumeIsolated { selected.root += 1 } }
+        withObservationTracking { _ = preferences.isWorkExpanded("work:b") }
+            onChange: { MainActor.assumeIsolated { sibling.root += 1 } }
+        withObservationTracking { _ = preferences.isAssistantCollapsed }
+            onChange: { MainActor.assumeIsolated { chat.root += 1 } }
+        preferences.setWorkExpanded(true, workID: "work:a")
+        XCTAssertEqual(selected.root, 1)
+        XCTAssertEqual(sibling.root, 0)
+        XCTAssertEqual(chat.root, 0)
+        XCTAssertTrue(preferences.isWorkExpanded("work:a"))
+        XCTAssertFalse(preferences.isWorkExpanded("work:b"))
+        let restored = ConsoleOutlineExpansionPreferences(defaults: defaults)
+        XCTAssertTrue(restored.isWorkExpanded("work:a"))
+        preferences.removeWork("work:a")
+        XCTAssertFalse(preferences.isWorkExpanded("work:a"))
     }
 
     func testDisclosureUpdatesDoNotRebuildThePreferenceOwner() throws {
@@ -467,7 +539,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         preferences.setWorkExpanded(false, workID: "work:ownership")
         settle(0.3)
         XCTAssertEqual(counts.root, initialRoot)
-        XCTAssertFalse(preferences.expandedWorkIDs.contains("work:ownership"))
+        XCTAssertFalse(preferences.isWorkExpanded("work:ownership"))
         XCTAssertEqual(host.fittingSize.height, collapsedHeight, accuracy: 1)
         print("Work disclosure preference owner body builds: \(initialRoot) -> \(counts.root)")
     }
