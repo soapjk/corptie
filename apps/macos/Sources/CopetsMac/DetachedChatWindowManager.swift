@@ -481,10 +481,13 @@ private struct DetachedChatWindowTitle: View {
 
     var body: some View {
         VStack(spacing: 1) {
-            Text(session?.title ?? L10n("Chat"))
-                .font(.system(size: 11, weight: .semibold))
-                .lineLimit(1)
-                .accessibilityAddTraits(.isHeader)
+            HStack(spacing: 4) {
+                Text(session?.title ?? L10n("Chat"))
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                if let session { SessionTitleBadges(session: session, size: 12) }
+            }
             if let work {
                 HStack(spacing: 4) {
                     ObjectiveAvatarView(objectiveID: work.id, name: work.name,

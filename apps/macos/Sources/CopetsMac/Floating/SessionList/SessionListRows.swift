@@ -64,12 +64,15 @@ struct DetailSessionRailRow: View {
                         }
                     }
 
-                Text(session.title)
-                    .font(.system(size: 10, weight: isSelected ? .semibold : .medium, design: .rounded))
-                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(width: 64)
+                HStack(spacing: 2) {
+                    Text(session.title)
+                        .font(.system(size: 10, weight: isSelected ? .semibold : .medium, design: .rounded))
+                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    SessionTitleBadges(session: session, size: 10)
+                }
+                .frame(width: 64)
             }
             .contentShape(Rectangle())
         }
@@ -137,10 +140,13 @@ struct CompactSessionRow: View {
             HStack(spacing: 10) {
                 SessionStatusLight(status: session.executionTaskStatus, diameter: 9)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(displayTitle ?? session.title)
-                        .font(.system(size: 12.5, weight: style.titleWeight))
-                        .lineLimit(1)
-                        .help(session.title)
+                    HStack(spacing: 4) {
+                        Text(displayTitle ?? session.title)
+                            .font(.system(size: 12.5, weight: style.titleWeight))
+                            .lineLimit(1)
+                            .help(session.title)
+                        SessionTitleBadges(session: session)
+                    }
                     if let subtitle {
                         Text(subtitle)
                             .font(.system(size: 10, weight: .medium))
@@ -287,7 +293,11 @@ enum ProviderBrandIcon {
         }
     }
 
-    static func image(for identity: String?, providers: [AgentProviderDescriptor]) -> NSImage? {
+    static func image(for identity: String?, providers: [AgentProviderDescriptor], resourceBundle: Bundle? = nil) -> NSImage? {
+        if let resourceBundle {
+            guard let name = assetName(for: identity, providers: providers) else { return nil }
+            return load(name, bundle: resourceBundle)
+        }
         switch assetName(for: identity, providers: providers) {
         case "codex": return codex
         case "claude-code": return claudeCode
@@ -296,8 +306,8 @@ enum ProviderBrandIcon {
         }
     }
 
-    private static func load(_ name: String) -> NSImage? {
-        guard let url = AppResourceBundle.bundle.url(
+    private static func load(_ name: String, bundle: Bundle = AppResourceBundle.bundle) -> NSImage? {
+        guard let url = bundle.url(
             forResource: name,
             withExtension: "png",
             subdirectory: "ProviderIcons"
