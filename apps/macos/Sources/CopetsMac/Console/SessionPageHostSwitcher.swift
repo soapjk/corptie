@@ -190,7 +190,7 @@ struct ResidentSessionPageRoot: View {
     }
 
     func handleMemoryPressure(_ event: DispatchSource.MemoryPressureEvent) {
-        capacity = event.contains(.critical) ? 1 : event.contains(.warning) ? 2 : SessionSwitchingPreferences.maximumResidentPages
+        capacity = SessionSwitchingPreferences.maximumResidentPages
         SessionSwitchTrace.shared.recordPagePool(sessionID: current?.inputs.scope.sessionID,
             count: entries.count, capacity: capacity, reason: event.contains(.critical) ? "critical" : event.contains(.warning) ? "warning" : "normal")
         scheduleCleanup()
