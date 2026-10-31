@@ -2,6 +2,10 @@ import Foundation
 
 extension BackendClient {
     func select(session: TaskSession, focusComposer: Bool = false) {
+        guard sessionSelectionController.selectedSessionID != session.id else {
+            if focusComposer { ComposerDraftRepository.requestUserFocus(for: session.id) }
+            return
+        }
         SessionSwitchTrace.shared.ensureSelection(sessionID: session.id)
         let trace = SessionSwitchTrace.shared.start(.backendSelection, sessionID: session.id)
         defer { SessionSwitchTrace.shared.finish(trace) }
