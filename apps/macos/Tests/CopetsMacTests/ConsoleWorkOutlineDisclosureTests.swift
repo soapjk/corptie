@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 import XCTest
 @testable import CorptieMac
@@ -92,6 +93,40 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
             .background(Color.white)
         }
     }
+    @MainActor private final class ClickTimes {
+        var firedAt: Date?
+        var count = 0
+    }
+    private struct InputSurface: View {
+        @ObservedObject var state: State
+        let probe: NSView
+        let times: ClickTimes
+        let work = Work(id: "work:input-latency", workspaceId: "workspace:test", name: "Work",
+            description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
+            createdAt: "", updatedAt: "")
+        var body: some View {
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    DisclosureGroup(isExpanded: $state.expanded) {
+                        VStack(spacing: 2) {
+                            ForEach(0..<5) { index in Text("Task \(index)").frame(height: 22) }
+                        }
+                    } label: {
+                        ConsoleWorkOutlineHeader(work: work, isExpanded: state.expanded, isSelected: false,
+                            isWorking: false, hasUnread: false, isChatSelected: false,
+                            isChatRunning: false, hasUnreadChat: false, toggleExpanded: {
+                                times.firedAt = Date(); times.count += 1; state.expanded.toggle()
+                            }, openChat: {}, createTask: {})
+                        .contextMenu { Button("Menu action") {} }
+                    }
+                    .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
+                    .consoleWorkOutlineGroupCard()
+                    .background(Probe(view: probe))
+                }
+            }
+        }
+    }
+
     private func settle(_ duration: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(duration))
     }
@@ -349,5 +384,91 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         XCTAssertEqual(probe.frame.height, lifetime.view.frame.height + 36, accuracy: 1)
         XCTAssertEqual(lifetime.created, 1)
         XCTAssertEqual(lifetime.removed, 0)
+    }
+
+    func testMouseReleaseToFirstFrameDoesNotWaitForHalfASecond() throws {
+        _ = NSApplication.shared
+        let state = State(), probe = GeometryProbe(), times = ClickTimes()
+        let host = NSHostingView(rootView: InputSurface(state: state, probe: probe, times: times))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 350),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.1)
+        let initialHeight = probe.frame.height
+        let header = probe.convert(probe.bounds, to: host)
+        let location = host.convert(NSPoint(x: 75, y: header.minY + 19), to: nil)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+        }
+        let began = Date()
+        window.sendEvent(try event(.leftMouseDown)); settle(0.03)
+        let released = Date()
+        window.sendEvent(try event(.leftMouseUp))
+        var firstFrame: Date?
+        while Date().timeIntervalSince(released) < 0.7 {
+            settle(0.005)
+            if probe.frame.height > initialHeight + 0.5 { firstFrame = Date(); break }
+        }
+        let movedAt = try XCTUnwrap(firstFrame)
+        print("Work header mouse action ms", times.firedAt.map { $0.timeIntervalSince(began) * 1000 } as Any,
+            "release-to-layout ms", movedAt.timeIntervalSince(released) * 1000)
+        XCTAssertLessThan(movedAt.timeIntervalSince(released), 0.2)
+        settle(0.3)
+        XCTAssertEqual(times.count, 1)
+    }
+
+    @MainActor private final class BodyCounts {
+        var root = 0
+        var content = 0
+    }
+    private struct PreferenceGroup: View {
+        let preferences: ConsoleOutlineExpansionPreferences
+        let counts: BodyCounts
+        var body: some View {
+            counts.content += 1
+            let expanded = Binding(get: { preferences.expandedWorkIDs.contains("work:ownership") },
+                set: { preferences.setWorkExpanded($0, workID: "work:ownership") })
+            return DisclosureGroup(isExpanded: expanded) { Text("Task") } label: { Text("Work") }
+                .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
+        }
+    }
+    private struct PreferenceOwner: View {
+        @State var preferences: ConsoleOutlineExpansionPreferences
+        let counts: BodyCounts
+        var body: some View {
+            counts.root += 1
+            return PreferenceGroup(preferences: preferences, counts: counts)
+        }
+    }
+
+    func testDisclosureUpdatesDoNotRebuildThePreferenceOwner() throws {
+        _ = NSApplication.shared
+        let suite = "ConsoleWorkOutlineDisclosureTests.ownership.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ConsoleOutlineExpansionPreferences(defaults: defaults), counts = BodyCounts()
+        let host = NSHostingView(rootView: PreferenceOwner(preferences: preferences, counts: counts))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 300),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.06)
+        let initialRoot = counts.root
+        let collapsedHeight = host.fittingSize.height
+        preferences.setWorkExpanded(true, workID: "work:ownership")
+        settle(0.3)
+        XCTAssertGreaterThan(host.fittingSize.height, collapsedHeight + 1,
+            "The observing disclosure must still render its expanded content")
+        XCTAssertEqual(counts.root, initialRoot,
+            "A Work disclosure must not invalidate its owner and unrelated Console content")
+        preferences.setWorkExpanded(false, workID: "work:ownership")
+        settle(0.3)
+        XCTAssertEqual(counts.root, initialRoot)
+        XCTAssertFalse(preferences.expandedWorkIDs.contains("work:ownership"))
+        XCTAssertEqual(host.fittingSize.height, collapsedHeight, accuracy: 1)
+        print("Work disclosure preference owner body builds: \(initialRoot) -> \(counts.root)")
     }
 }
