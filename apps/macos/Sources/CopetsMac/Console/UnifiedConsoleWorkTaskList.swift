@@ -172,6 +172,7 @@ extension UnifiedConsoleView {
         let rowView = ConsoleTaskRowContent(
             task: task,
             sessionActivity: sessionActivity,
+            session: session,
             isSelected: selectedTaskId == task.id,
             isUnread: session.map(isSessionUnread) ?? false
         ) {

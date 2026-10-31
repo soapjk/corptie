@@ -46,9 +46,12 @@ struct ArchivedSessionsSettingsTab: View {
                             .frame(width: 28)
 
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(session.title)
-                                .font(.system(size: 13, weight: .semibold))
-                                .lineLimit(1)
+                            HStack(spacing: 4) {
+                                Text(session.title)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .lineLimit(1)
+                                SessionTitleBadges(session: session)
+                            }
                             HStack(spacing: 7) {
                                 Text(session.agent)
                                 Text("·")

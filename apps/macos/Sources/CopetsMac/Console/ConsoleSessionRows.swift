@@ -89,9 +89,12 @@ struct ConsoleSessionRow: View {
                     .fill(session.executionTaskStatus.color)
                     .frame(width: 7, height: 7)
                     .accessibilityLabel(session.executionTaskStatus.label)
-                Text(row.listTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(row.listTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    SessionTitleBadges(session: session)
+                }
                 Spacer(minLength: 0)
                 if isSessionUnread(session) {
                     Circle()
@@ -129,9 +132,12 @@ struct ConsoleWorkChatRowContent: View {
                     .fill(session.executionTaskStatus.color)
                     .frame(width: 7, height: 7)
                     .accessibilityLabel(session.executionTaskStatus.label)
-                Text(row.listTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(row.listTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    SessionTitleBadges(session: session)
+                }
                 Spacer(minLength: 0)
                 if isSessionUnread(session) {
                     Circle()
@@ -156,6 +162,7 @@ struct ConsoleWorkChatRowContent: View {
 struct ConsoleTaskRowContent: View {
     let task: CorptieTask
     let sessionActivity: TaskSessionActivity
+    var session: TaskSession? = nil
     let isSelected: Bool
     let isUnread: Bool
     let onOpen: () -> Void
@@ -168,9 +175,12 @@ struct ConsoleTaskRowContent: View {
                     lifecycleState: task.lifecycleState,
                     label: L10nFormat("Session: %@", sessionActivity.label)
                 )
-                Text(task.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(task.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    if let session { SessionTitleBadges(session: session) }
+                }
                 if task.hasPendingScheduledWake == true {
                     ConsoleScheduledWakeIcon()
                 }

@@ -222,6 +222,7 @@ struct SessionConversationHeaderSurface: View {
                             .multilineTextAlignment(.center)
                             .accessibilityAddTraits(.isHeader)
                             .accessibilityIdentifier("conversation-task-title")
+                        if let session { SessionTitleBadges(session: session) }
                         if hasPendingScheduledWake {
                             ConsoleScheduledWakeIcon(isActive: scenePhase == .active && isPresentationActive)
                                 .accessibilityIdentifier("conversation-task-scheduled-wake")
