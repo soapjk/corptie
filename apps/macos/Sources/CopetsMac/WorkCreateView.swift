@@ -17,7 +17,7 @@ struct WorkCreateView: View {
     @State private var tagsText = ""
     @State private var showAdvanced = false
     @State private var workspaceId: String?
-    @State private var contributorAgentIds = Set<String>()
+    @State private var contributorRoleIds = Set<String>()
     @State private var avatarSourcePath: String?
     @State private var creationId = "work:\(UUID().uuidString.lowercased())"
 
@@ -70,10 +70,10 @@ struct WorkCreateView: View {
 
                     WorkResourcesEditor(
                         workspaceId: $workspaceId,
-                        contributorAgentIds: $contributorAgentIds
+                        contributorRoleIds: $contributorRoleIds
                     )
-                    if contributorAgentIds.isEmpty {
-                        Text(L10n("请至少选择一个 Contributor Agent；创建 Work 时会由其中一个 Agent 建立 Work Chat。"))
+                    if contributorRoleIds.isEmpty {
+                        Text(L10n("请至少选择一个 Contributor 角色；创建 Work 时会由其中一个角色建立 Work Chat。"))
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -103,7 +103,7 @@ struct WorkCreateView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     isCreating || !EntityNamePolicy.isValid(name)
-                        || contributorAgentIds.isEmpty
+                        || contributorRoleIds.isEmpty
                         || !workspaceSupportsExecution
                 )
             }
@@ -121,7 +121,7 @@ struct WorkCreateView: View {
             defer { isCreating = false }
             if let work = await client.createWork(
                 id: creationId, name: name, description: detail.isEmpty ? nil : detail,
-                workspaceId: workspaceId, contributorAgentIds: Array(contributorAgentIds)
+                workspaceId: workspaceId, contributorRoleIds: Array(contributorRoleIds)
             ) {
                 onCreated(work)
                 dismiss()
@@ -132,7 +132,7 @@ struct WorkCreateView: View {
     }
 
     private func create() -> Bool {
-        guard EntityNamePolicy.isValid(name), !contributorAgentIds.isEmpty, workspaceSupportsExecution else { return false }
+        guard EntityNamePolicy.isValid(name), !contributorRoleIds.isEmpty, workspaceSupportsExecution else { return false }
         let validatedName = name
 
         let tags = tagsText
@@ -144,7 +144,7 @@ struct WorkCreateView: View {
         let requestDetail = detail
         let requestAvatarSourcePath = avatarSourcePath
         let requestWorkspaceId = workspaceId
-        let requestContributorAgentIds = Array(contributorAgentIds)
+        let requestContributorAgentIds = Array(contributorRoleIds)
         return BackgroundTaskCenter.shared.start(
             id: requestId,
             title: L10nFormat("创建 Work：%@", validatedName)
@@ -157,7 +157,7 @@ struct WorkCreateView: View {
                 profile: "general",
                 tags: tags,
                 workspaceId: requestWorkspaceId,
-                contributorAgentIds: requestContributorAgentIds
+                contributorRoleIds: requestContributorAgentIds
             )
             if work != nil {
                 return .success(L10nFormat("Work“%@”已创建。", validatedName))

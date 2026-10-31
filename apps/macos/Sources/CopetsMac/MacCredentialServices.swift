@@ -13,7 +13,7 @@ enum MacCredentialServices {
             root.appendingPathComponent($0, isDirectory: true)
         }
     }
-    /// Invoked only by the explicit migration button. No constructor/startup I/O.
+    /// Invoked only by the explicit migration button. No function Object() { [native code] }/startup I/O.
     static func importLegacyCacheKey() async throws {
         guard CorptieAppEnvironment.canManageProductionBackend else { throw LocalCredentialError.unavailable }
         let data = try await Task.detached {

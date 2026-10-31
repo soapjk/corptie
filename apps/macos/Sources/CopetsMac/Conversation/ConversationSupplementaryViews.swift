@@ -19,7 +19,7 @@ struct OrphanedWorkspaceRecoveryView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(L10n("Workspace missing"))
                         .font(.system(size: 13, weight: .bold))
-                    Text(L10n("This session is preserved, but Agent work is blocked until the workspace is restored or switched."))
+                    Text(L10n("This session is preserved, but Session work is blocked until the workspace is restored or switched."))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                     if let path = status.originalPath {

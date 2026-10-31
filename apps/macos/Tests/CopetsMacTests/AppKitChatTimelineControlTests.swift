@@ -14,7 +14,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 harness.coordinator.updateSkin(skin)
                 var answer = row(id: "leading-answer", text: "Reply body", showsHeader: false,
                                  contextTimestamp: "10:20")
-                answer.replyIdentity = .init(agentID: "agent:one", name: "Developer", avatarPath: nil)
+                answer.replyIdentity = .init(roleID: "agent:one", name: "Developer", avatarPath: nil)
                 answer.showsReplyActions = true
                 harness.coordinator.apply(rows: [answer])
                 await settleMainQueue()
@@ -94,7 +94,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
     func testReplyIdentityMovesDuringPrependWithoutChangingContentRevision() throws {
         let harness = makeHarness(followsLatest: false, useSharedTextCards: false)
-        let identity = ConversationReplyIdentity(agentID: "agent:one", name: "Developer", avatarPath: nil)
+        let identity = ConversationReplyIdentity(roleID: "agent:one", name: "Developer", avatarPath: nil)
         var answer = row(id: "identity-answer", text: "Answer", showsHeader: false)
         answer.replyIdentity = identity
         harness.coordinator.apply(rows: [answer])
@@ -1039,7 +1039,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
         )
         agentCell.layoutSubtreeIfNeeded()
-        let agentCard = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.card"))
+        let roleCard = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.card"))
         let agentActions = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.message-actions"))
         let copy = try XCTUnwrap(menuItem(in: agentCell.menu, identifier: "chat.timeline.context.copy"))
         XCTAssertTrue(agentActions.isHidden)
@@ -1057,7 +1057,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertNotNil(menuItem(in: userCell.menu, identifier: "chat.timeline.context.timestamp"))
         XCTAssertFalse(
             try XCTUnwrap(NSColor(cgColor: userCard.layer?.backgroundColor ?? CGColor.clear))
-                .isEqual(try XCTUnwrap(NSColor(cgColor: agentCard.layer?.backgroundColor ?? CGColor.clear)))
+                .isEqual(try XCTUnwrap(NSColor(cgColor: roleCard.layer?.backgroundColor ?? CGColor.clear)))
         )
 
         let processCell = try XCTUnwrap(

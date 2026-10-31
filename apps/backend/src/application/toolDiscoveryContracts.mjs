@@ -46,7 +46,7 @@ const DOMAIN_PROFILES = Object.freeze({
     "corptie_automations_create"
   ),
   platform: profile(
-    ["platform", "platform administration", "Corptie administration", "平台", "平台管理"],
+    ["platform", "platform administration", "Corptie administration", "role", "roles", "role management", "agent management", "角色", "角色管理", "平台", "平台管理"],
     "corptie_platform_capabilities"
   ),
   "work-chat": profile(
@@ -153,9 +153,10 @@ export function parseDiscoveryIntent(intent) {
   const create = /\b(?:create|new)\b|创建|新建/u.test(text);
   const task = /tasks?|任务/u.test(text);
   const channel = /channel|send message|发消息|发送.*消息|会话.*消息/u.test(text);
+  const role = /\broles?\b|角色|agent management|管理.*agent|agent.*(?:管理|配置)/u.test(text);
   const stopwords = new Set(["the", "for", "with", "and", "current", "call", "tool", "in", "to", "a", "an", "of"]);
   return { text, terms: [...new Set(positive.split(/\s+/u).filter((term) => term.length > 1 && !stopwords.has(term)))],
-    excludesAutomation, operation: channel ? "channel" : automation ? "automation" : create && task ? "task-create" : null };
+    excludesAutomation, operation: channel ? "channel" : automation ? "automation" : create && task ? "task-create" : role ? "role-management" : null };
 }
 
 export function rankDiscoveryCandidates(candidates, { intent = "", domainHint = "" } = {}) {
@@ -179,6 +180,7 @@ export function rankDiscoveryCandidates(candidates, { intent = "", domainHint = 
       if (query.operation === "task-create" && name === "corptie_collaboration_tasks_create") score += 100;
       if (query.operation === "channel" && name === "corptie_collaboration_channel_open") score += 100;
       if (query.operation === "automation" && name === "corptie_automations_create") score += 100;
+      if (query.operation === "role-management" && name === "corptie_platform_agents_manage") score += 100;
       if ((query.excludesAutomation || query.operation === "task-create") && domainId === "scheduled-tasks") score = 0;
     }
     const hintMatched = Boolean(hint && (domainText.includes(hint) || normalizeDiscoveryText(domainId) === hint));

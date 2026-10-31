@@ -99,7 +99,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     case scenes
     case worktrees
     case resources
-    case agents
+    case roles = "agents"
     case memory
     case settings
 
@@ -117,7 +117,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .scenes: 2
         case .worktrees: 3
         case .resources: 4
-        case .agents: 5
+        case .roles: 5
         case .memory: 6
         case .settings: 7
         }
@@ -130,7 +130,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .scenes: L10n("Scenes")
         case .worktrees: L10n("Worktrees")
         case .resources: L10n("资源管理")
-        case .agents: L10n("Agents")
+        case .roles: L10n("Roles")
         case .memory: L10n("Memory")
         case .settings: L10n("Settings")
         }
@@ -143,7 +143,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .scenes: "camera.macro"
         case .worktrees: "arrow.triangle.branch"
         case .resources: "folder"
-        case .agents: "person.2"
+        case .roles: "person.2"
         case .memory: "brain.head.profile"
         case .settings: "gearshape"
         }
@@ -437,8 +437,8 @@ private struct MainTabPageHost: NSViewRepresentable {
                 root = AnyView(WorktreeManagementView())
             case .resources:
                 root = AnyView(MacResourcePage(router: router))
-            case .agents:
-                root = AnyView(AgentManagementView())
+            case .roles:
+                root = AnyView(RoleManagementView())
             case .memory:
                 root = AnyView(MemoryCenterPage(navigation: router.memoryNavigation)
                     .padding(16).mainWindowPageCard())

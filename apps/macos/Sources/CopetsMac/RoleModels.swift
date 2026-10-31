@@ -1,13 +1,13 @@
 import Foundation
 
-// 通用 Agent 模型。Agent 是可复用的行为配置；Session 才是执行与授权上下文。
+// Role 是可复用的工作配置；Provider 是执行引擎；Session 才是执行与授权上下文。
 // 对齐后端 agents 表 + GET /agents 返回的 camelCase（见 corptieStore.agentFromRow）。
 //
-// 与协作专用 CollaborationAgent（Models.swift）不同：这里不区分 Assistant / Contributor。
+// 与协作投影 CollaborationRole（Models.swift）共享同一资源 ID，不代表独立执行者。
 
-struct Agent: Identifiable, Codable, Hashable {
-    let agentId: String
-    var agentKind: String? = nil
+struct Role: Identifiable, Codable, Hashable {
+    let roleId: String
+    var roleKind: String? = nil
     var name: String
     var description: String
     var status: String
@@ -22,14 +22,36 @@ struct Agent: Identifiable, Codable, Hashable {
     var createdAt: String
     var updatedAt: String
 
-    var id: String { agentId }
+    var id: String { roleId }
 
-    var isPlatformAssistant: Bool { agentKind == "platformAssistant" || agentId == "assistant" }
+    var isPlatformAssistant: Bool { roleKind == "platformAssistant" || roleId == "assistant" }
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roleId = "agentId"
+        case roleKind = "agentKind"
+        case name
+        case description
+        case status
+        case statusReason
+        case systemPrompt
+        case capabilities
+        case workDir
+        case avatarPath
+        case skillIds
+        case suggestedSessionTitle
+        case currentSessionId
+        case createdAt
+        case updatedAt
+    }
 }
 
 // 后端响应 envelope：GET /agents → { agents: [...] }
-struct AgentListEnvelope: Codable {
-    let agents: [Agent]
+struct RoleListEnvelope: Codable {
+    let roles: [Role]
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roles = "agents"
+    }
 }
 
 // Skill（全局共享的 Skill 维护中心条目）。对齐后端 skills 表 + GET /skills 返回的 camelCase。
@@ -120,25 +142,38 @@ struct SkillEnvelope: Codable {
     let skill: Skill
 }
 
-struct SkillDeletionAffectedAgent: Codable, Hashable, Identifiable {
-    let agentId: String
+struct SkillDeletionAffectedRole: Codable, Hashable, Identifiable {
+    let roleId: String
     let name: String
-    var id: String { agentId }
+    var id: String { roleId }
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roleId = "agentId"
+        case name
+    }
 }
 
 struct SkillDeletionActiveSession: Codable, Hashable, Identifiable {
     let sessionId: String
     let title: String
     let status: String
-    let agentId: String
+    let roleId: String
     let agentName: String
     var id: String { sessionId }
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case title
+        case status
+        case roleId = "agentId"
+        case agentName
+    }
 }
 
 struct SkillDeletionImpact: Codable, Hashable {
     let skillId: String
     let skillName: String
-    let affectedAgents: [SkillDeletionAffectedAgent]
+    let affectedAgents: [SkillDeletionAffectedRole]
     let affectedAgentCount: Int
     let activeSessions: [SkillDeletionActiveSession]
     let activeSessionCount: Int

@@ -14,7 +14,9 @@ const id = (prefix, description) => ({
 });
 
 export const repositoryIdSchema = id("repository", "Registered logical Workspace repository: ID; filesystem paths are not accepted.");
-export const agentIdSchema = id("agent", "Stable Agent identity and authorization principal (agent: ID).");
+export const roleIdSchema = id("agent", "Stable Role configuration resource ID, not an executor or authorization principal. The historical agent: namespace is retained.");
+// Compatibility export for existing tool parameter names and Provider bindings.
+export const agentIdSchema = roleIdSchema;
 export const taskIdSchema = id("task", "Stable Task identity (task: ID) within its owning Work.");
 export const sessionIdSchema = id("session", "Stable logical Session identity (session: ID), not a Provider thread id.");
 export const workIdSchema = id("work", "Stable Work identity (work: ID).");

@@ -89,7 +89,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
     let agent: String
-    let agentId: String?
+    let roleId: String?
     var sessionKind: SessionKind? = nil
     var workId: String? = nil
     var taskId: String? = nil
@@ -210,6 +210,44 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         }
         return isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
     }
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case agent
+        case roleId = "agentId"
+        case sessionKind
+        case workId
+        case taskId
+        case status
+        case executionStatus
+        case deliveryStatus
+        case hasPendingScheduledWake
+        case providerConnectionStatus
+        case syncHealth
+        case transitionState
+        case readiness
+        case notReadyReason
+        case progress
+        case summary
+        case suggestedOptions
+        case suggestedPrompt
+        case activityStatus
+        case updatedAt
+        case lastMessageAt
+        case lastAgentMessageSequence
+        case lastReadMessageSequence
+        case timelineRevision
+        case attention
+        case accent
+        case archived
+        case archiveReason
+        case pinned
+        case sortOrder
+        case capabilities
+        case external
+        case actions
+    }
 }
 
 struct SessionReadReceiptResponse: Decodable, Sendable {
@@ -221,9 +259,9 @@ struct SessionReadReceiptResponse: Decodable, Sendable {
 
 struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let confirmationId: String
-    let initiatorAgentId: String?
+    let initiatorRoleId: String?
     let initiatorName: String?
-    let recipientAgentId: String?
+    let recipientRoleId: String?
     let recipientName: String
     let sourceWorkId: String?
     let sourceWorkName: String?
@@ -242,6 +280,31 @@ struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let taskTitle: String
     let summary: String
     let acceptanceCriteria: [String]
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case confirmationId
+        case initiatorRoleId = "initiatorAgentId"
+        case initiatorName
+        case recipientRoleId = "recipientAgentId"
+        case recipientName
+        case sourceWorkId
+        case sourceWorkName
+        case targetWorkId
+        case targetWorkName
+        case initiatorSessionId
+        case initiatorSessionTitle
+        case initiatorSessionKind
+        case initiatorCorptieTaskId
+        case recipientSessionId
+        case recipientSessionTitle
+        case recipientSessionKind
+        case recipientCorptieTaskId
+        case routeStatus
+        case routingVersion
+        case taskTitle
+        case summary
+        case acceptanceCriteria
+    }
 }
 
 struct ExternalSession: Codable, Equatable, Sendable {
@@ -451,7 +514,7 @@ struct ProjectIntegrationStatusResponse: Decodable, Equatable, Sendable {
     let mainHeadOid: String?
     let eligibleWorktrees: [ProjectIntegrationCandidate]
     let excludedWorktrees: [ProjectIntegrationExcludedCandidate]
-    let eligibleAgents: [ProjectIntegrationAgent]
+    let eligibleAgents: [ProjectIntegrationRole]
     let latestRun: ProjectIntegrationRun?
 }
 
@@ -481,11 +544,17 @@ struct ProjectIntegrationExcludedCandidate: Identifiable, Decodable, Equatable, 
     let reason: String
 }
 
-struct ProjectIntegrationAgent: Identifiable, Decodable, Equatable, Sendable {
-    var id: String { agentId }
-    let agentId: String
+struct ProjectIntegrationRole: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { roleId }
+    let roleId: String
     let name: String
     let role: String
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roleId = "agentId"
+        case name
+        case role
+    }
 }
 
 struct ProjectIntegrationRun: Identifiable, Decodable, Equatable, Sendable {
@@ -803,9 +872,15 @@ struct SessionCollectionPatchEnvelope: Decodable, Sendable {
 }
 
 struct CollaborationOverviewResponse: Decodable {
-    let agents: [CollaborationAgent]
+    let roles: [CollaborationRole]
     let services: [CollaborationService]
     let channels: [SessionCollaborationChannel]
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roles = "agents"
+        case services
+        case channels
+    }
 }
 
 struct SessionCollaborationChannelResponse: Decodable {
@@ -855,9 +930,9 @@ struct CollaborationDeliveryResponse: Decodable {
     let delivery: CollaborationDelivery
 }
 
-struct CollaborationAgent: Identifiable, Decodable, Equatable {
-    var id: String { agentId }
-    let agentId: String
+struct CollaborationRole: Identifiable, Decodable, Equatable {
+    var id: String { roleId }
+    let roleId: String
     let name: String
     let description: String
     let status: String
@@ -866,7 +941,7 @@ struct CollaborationAgent: Identifiable, Decodable, Equatable {
     let sessionId: String?
     let providerSessionId: String?
     let role: String?
-    let agentKind: String?
+    let roleKind: String?
     let systemPrompt: String?
     let currentSessionId: String?
     let currentWorkId: String?
@@ -874,6 +949,26 @@ struct CollaborationAgent: Identifiable, Decodable, Equatable {
     let workIds: [String]?
     let createdAt: String
     let updatedAt: String
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roleId = "agentId"
+        case name
+        case description
+        case status
+        case capabilities
+        case sessionName
+        case sessionId
+        case providerSessionId
+        case role
+        case roleKind = "agentKind"
+        case systemPrompt
+        case currentSessionId
+        case currentWorkId
+        case currentCorptieTaskId
+        case workIds
+        case createdAt
+        case updatedAt
+    }
 }
 
 struct CollaborationService: Identifiable, Decodable, Equatable {
@@ -881,7 +976,7 @@ struct CollaborationService: Identifiable, Decodable, Equatable {
     let serviceId: String
     let name: String
     let description: String
-    let ownerAgentId: String
+    let ownerRoleId: String
     let currentVersion: String?
     let status: String
     let endpoint: String?
@@ -889,6 +984,20 @@ struct CollaborationService: Identifiable, Decodable, Equatable {
     let metadata: [String: JSONValue]?
     let createdAt: String
     let updatedAt: String
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case serviceId
+        case name
+        case description
+        case ownerRoleId = "ownerAgentId"
+        case currentVersion
+        case status
+        case endpoint
+        case repositoryRoot
+        case metadata
+        case createdAt
+        case updatedAt
+    }
 }
 
 struct CollaborationTask: Identifiable, Decodable, Equatable {
@@ -905,8 +1014,8 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let sourceTaskTitle: String?
     let targetTaskId: String?
     let taskTitle: String?
-    let initiatorAgentId: String
-    let recipientAgentId: String
+    let initiatorRoleId: String
+    let recipientRoleId: String
     let initiatorSessionId: String?
     let recipientSessionId: String?
     let initiatorNameAtSend: String?
@@ -933,6 +1042,49 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let messages: [CollaborationMessage]?
     let artifacts: [CollaborationArtifact]?
     let events: [CollaborationEvent]?
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case taskId
+        case contextId
+        case parentTaskId
+        case protocolVersion
+        case sourceWorkId
+        case sourceWorkName
+        case targetWorkId
+        case targetWorkName
+        case sourceTaskId
+        case sourceTaskTitle
+        case targetTaskId
+        case taskTitle
+        case initiatorRoleId = "initiatorAgentId"
+        case recipientRoleId = "recipientAgentId"
+        case initiatorSessionId
+        case recipientSessionId
+        case initiatorNameAtSend
+        case recipientNameAtSend
+        case routingVersion
+        case routeStatus
+        case routingIntent
+        case artifactStatus
+        case acceptanceStatus
+        case initiatorBindingId
+        case recipientBindingId
+        case serviceId
+        case type
+        case status
+        case iteration
+        case maxIterations
+        case title
+        case summary
+        case acceptanceCriteria
+        case idempotencyKey
+        case createdAt
+        case updatedAt
+        case completedAt
+        case messages
+        case artifacts
+        case events
+    }
 }
 
 struct CollaborationMessage: Identifiable, Decodable, Equatable {
@@ -940,7 +1092,7 @@ struct CollaborationMessage: Identifiable, Decodable, Equatable {
     let messageId: String
     let taskId: String
     let senderAgentId: String
-    let recipientAgentId: String
+    let recipientRoleId: String
     let senderSessionId: String?
     let recipientSessionId: String?
     let messageType: String
@@ -950,6 +1102,22 @@ struct CollaborationMessage: Identifiable, Decodable, Equatable {
     let idempotencyKey: String?
     let createdAt: String
     let envelope: CollaborationMessageEnvelope?
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case messageId
+        case taskId
+        case senderAgentId
+        case recipientRoleId = "recipientAgentId"
+        case senderSessionId
+        case recipientSessionId
+        case messageType
+        case body
+        case evidence
+        case resourceVersion
+        case idempotencyKey
+        case createdAt
+        case envelope
+    }
 }
 
 struct CollaborationMessageEnvelope: Decodable, Equatable {
@@ -1038,7 +1206,7 @@ struct CollaborationDelivery: Identifiable, Decodable, Equatable {
     var id: String { deliveryId }
     let deliveryId: String
     let messageId: String
-    let recipientAgentId: String
+    let recipientRoleId: String
     let recipientSessionId: String?
     let status: String
     let attemptCount: Int
@@ -1048,6 +1216,21 @@ struct CollaborationDelivery: Identifiable, Decodable, Equatable {
     let lastError: String?
     let createdAt: String
     let updatedAt: String
+    // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case deliveryId
+        case messageId
+        case recipientRoleId = "recipientAgentId"
+        case recipientSessionId
+        case status
+        case attemptCount
+        case nextAttemptAt
+        case deliveredAt
+        case targetTurnId
+        case lastError
+        case createdAt
+        case updatedAt
+    }
 }
 
 struct BackendErrorResponse: Decodable {

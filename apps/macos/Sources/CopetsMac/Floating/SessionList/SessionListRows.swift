@@ -340,12 +340,12 @@ struct SessionContextMenuContent: View {
 
         DetachedChatWindowMenuButton(session: session)
 
-        if let agentID = session.agentId {
+        if let roleID = session.roleId {
             Button {
                 NotificationCenter.default.post(
                     name: .showAgentOrb,
                     object: nil,
-                    userInfo: ["agentId": agentID]
+                    userInfo: ["agentId": roleID]
                 )
             } label: {
                 Label(L10n("Show Floating Orb"), systemImage: "circle.circle")

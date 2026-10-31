@@ -11,10 +11,10 @@ final class CorptieTaskCreateFormTests: XCTestCase {
 
         let result = CorptieTaskCreateFormPolicy.availableAgents(
             from: [available, unavailable, secondAvailable, outside],
-            allowedAgentIds: [available.agentId, unavailable.agentId, secondAvailable.agentId]
+            allowedAgentIds: [available.roleId, unavailable.roleId, secondAvailable.roleId]
         )
 
-        XCTAssertEqual(result.map(\.agentId), [available.agentId, secondAvailable.agentId])
+        XCTAssertEqual(result.map(\.roleId), [available.roleId, secondAvailable.roleId])
     }
 
     func testMissingAgentHasExplicitValidationAndCannotSubmit() {
@@ -22,10 +22,10 @@ final class CorptieTaskCreateFormTests: XCTestCase {
             title: "Implement",
             detail: "Implement the feature",
             workId: "work:one",
-            agentId: nil
+            roleId: nil
         )
 
-        XCTAssertEqual(message, L10n("请选择负责该 CorptieTask 的 Agent。"))
+        XCTAssertEqual(message, L10n("请选择负责该 CorptieTask 的角色。"))
     }
 
     func testCompleteFormPassesValidation() {
@@ -33,7 +33,7 @@ final class CorptieTaskCreateFormTests: XCTestCase {
             title: "Implement",
             detail: "Implement the feature",
             workId: "work:one",
-            agentId: "agent:one"
+            roleId: "agent:one"
         ))
     }
 
@@ -43,7 +43,7 @@ final class CorptieTaskCreateFormTests: XCTestCase {
                 title: "",
                 detail: "Implement the feature",
                 workId: "work:one",
-                agentId: "agent:one"
+                roleId: "agent:one"
             ),
             L10n("请输入 Task 标题。")
         )
@@ -55,7 +55,7 @@ final class CorptieTaskCreateFormTests: XCTestCase {
                 title: "Implement",
                 detail: "Implement the feature",
                 workId: nil,
-                agentId: "agent:one"
+                roleId: "agent:one"
             ),
             L10n("请选择 Work。")
         )
@@ -104,9 +104,9 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         )
     }
 
-    private func agent(id: String, status: String) -> Agent {
-        Agent(
-            agentId: id,
+    private func agent(id: String, status: String) -> Role {
+        Role(
+            roleId: id,
             name: id,
             description: "",
             status: status,

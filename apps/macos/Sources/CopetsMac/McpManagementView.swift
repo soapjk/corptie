@@ -90,10 +90,15 @@ private struct McpServerListEnvelope: Decodable { let servers: [ManagedMcpServer
 private struct McpServerEnvelope: Decodable { let server: ManagedMcpServer }
 private struct McpDeletionImpactEnvelope: Decodable {
     struct Impact: Decodable {
-        struct AssignedAgent: Decodable { let agentId: String; let name: String }
+        struct AssignedRole: Decodable { let roleId: String; let name: String     // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case roleId = "agentId"
+        case name
+    }
+}
         let serverId: String
         let canRemove: Bool
-        let assignedAgents: [AssignedAgent]
+        let assignedAgents: [AssignedRole]
         let managedPackageCopies: Int
         let credentialReferences: Int
         let originalSourceWillBeDeleted: Bool
@@ -127,17 +132,17 @@ private struct McpAssignmentListEnvelope: Decodable {
 }
 private struct McpAssignmentCredentialTarget: Identifiable {
     let server: ManagedMcpServer
-    let agentId: String
+    let roleId: String
     let agentName: String
     let detail: McpAssignmentListEnvelope.Detail?
-    var id: String { "\(agentId):\(server.serverId)" }
+    var id: String { "\(roleId):\(server.serverId)" }
 }
 private struct McpAssignmentToolTarget: Identifiable {
     let server: ManagedMcpServer
-    let agentId: String
+    let roleId: String
     let agentName: String
     let toolAllowlist: [String]?
-    var id: String { "\(agentId):\(server.serverId)" }
+    var id: String { "\(roleId):\(server.serverId)" }
 }
 private struct McpAssignmentEnvelope: Decodable {
     struct Assignment: Decodable { let serverId: String; let assigned: Bool }
@@ -212,7 +217,7 @@ private struct McpSessionAvailabilityEnvelope: Decodable {
             var id: String { serverId }
         }
         let sessionName: String
-        let agentId: String?
+        let roleId: String?
         let bindingId: String?
         let status: String
         let errorCode: String?
@@ -220,7 +225,19 @@ private struct McpSessionAvailabilityEnvelope: Decodable {
         let servers: [Server]
         let declaredSkills: [DeclaredSkill]?
         let standaloneAssignments: [StandaloneAssignment]?
+        // Legacy transport names remain stable; business code uses Role.
+    enum CodingKeys: String, CodingKey {
+        case sessionName
+        case roleId = "agentId"
+        case bindingId
+        case status
+        case errorCode
+        case toolHostStatus
+        case servers
+        case declaredSkills
+        case standaloneAssignments
     }
+}
     let availability: Availability
 }
 
@@ -238,7 +255,7 @@ private final class McpManagementModel: ObservableObject {
     private let decoder = JSONDecoder()
     private var loadGeneration = UUID()
 
-    func load(agentId: String?) async {
+    func load(roleId: String?) async {
         let generation = UUID()
         loadGeneration = generation
         isLoading = true
@@ -247,9 +264,9 @@ private final class McpManagementModel: ObservableObject {
             let loadedServers = try await request("mcp-servers", as: McpServerListEnvelope.self).servers
             let loadedAssignments: Set<String>
             let loadedDetails: [String: McpAssignmentListEnvelope.Detail]
-            if let agentId {
+            if let roleId {
                 let response = try await request(
-                    "agents/\(agentId)/mcp-servers", as: McpAssignmentListEnvelope.self
+                    "agents/\(roleId)/mcp-servers", as: McpAssignmentListEnvelope.self
                 )
                 loadedAssignments = Set(response.serverIds)
                 loadedDetails = Dictionary(uniqueKeysWithValues: response.assignments.map { ($0.serverId, $0) })
@@ -267,19 +284,19 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
-    func check(_ server: ManagedMcpServer, agentId: String?) async {
+    func check(_ server: ManagedMcpServer, roleId: String?) async {
         isWorking = true
         defer { isWorking = false }
         do {
             _ = try await request("mcp-servers/\(server.serverId)/verify", method: "POST",
                                   as: McpServerEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func install(config: [String: Any], agentId: String?, installRequestId: String) async -> Bool {
+    func install(config: [String: Any], roleId: String?, installRequestId: String) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
@@ -287,7 +304,7 @@ private final class McpManagementModel: ObservableObject {
             body["installRequestId"] = installRequestId
             let result = try await request("mcp-servers", method: "POST", body: body,
                                            as: McpServerEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: .succeeded, name: "MCP installation"))
             return true
         } catch {
@@ -328,7 +345,7 @@ private final class McpManagementModel: ObservableObject {
 
     func installPackage(sourceType: String, source: String, serverName: String, contentHash: String,
                         sourceRevision: String?,
-                        agentId: String?, assignAfterInstall: Bool,
+                        roleId: String?, assignAfterInstall: Bool,
                         credentials: [String: Any], installRequestId: String) async -> Bool {
         isWorking = true
         defer { isWorking = false }
@@ -343,15 +360,15 @@ private final class McpManagementModel: ObservableObject {
             let result = try await request("mcp-servers/package", method: "POST", body: body,
                                            as: McpServerEnvelope.self)
             var assignmentFailure: String?
-            if assignAfterInstall, let agentId {
+            if assignAfterInstall, let roleId {
                 do {
-                    _ = try await request("agents/\(agentId)/mcp-servers/\(result.server.serverId)",
+                    _ = try await request("agents/\(roleId)/mcp-servers/\(result.server.serverId)",
                                           method: "PUT", as: McpAssignmentEnvelope.self)
                 } catch {
-                    assignmentFailure = "MCP 已安装，但分配给 Agent 失败：\(error.localizedDescription)"
+                    assignmentFailure = "MCP 已安装，但分配给角色失败：\(error.localizedDescription)"
                 }
             }
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             if let assignmentFailure { errorMessage = assignmentFailure }
             OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: assignmentFailure == nil ? .succeeded : .partial, name: "MCP installation"))
             return true
@@ -402,7 +419,7 @@ private final class McpManagementModel: ObservableObject {
     func updatePackage(_ server: ManagedMcpServer,
                        discovery: McpPackageDiscoveryEnvelope.Discovery,
                        serverName: String, credentials: [String: Any],
-                       agentId: String?) async -> Bool {
+                       roleId: String?) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
@@ -415,7 +432,7 @@ private final class McpManagementModel: ObservableObject {
             body.merge(credentials) { _, new in new }
             _ = try await request("mcp-servers/\(server.serverId)/package", method: "POST",
                                   body: body, as: McpServerEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: .succeeded, name: "MCP update"))
             return true
         } catch {
@@ -426,7 +443,7 @@ private final class McpManagementModel: ObservableObject {
     }
 
     func rollbackPackage(_ server: ManagedMcpServer, targetRevision: Int,
-                         credentials: [String: Any], agentId: String?) async -> Bool {
+                         credentials: [String: Any], roleId: String?) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
@@ -435,7 +452,7 @@ private final class McpManagementModel: ObservableObject {
             body.merge(credentials) { _, new in new }
             _ = try await request("mcp-servers/\(server.serverId)/rollback", method: "POST",
                                   body: body, as: McpServerEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             OperationNotificationManager.shared.complete(.init(category: .mcp, outcome: .succeeded, name: "MCP rollback"))
             return true
         } catch {
@@ -445,27 +462,27 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
-    func assign(_ server: ManagedMcpServer, to agentId: String, enabled: Bool) async {
+    func assign(_ server: ManagedMcpServer, to roleId: String, enabled: Bool) async {
         isWorking = true
         defer { isWorking = false }
         do {
-            _ = try await request("agents/\(agentId)/mcp-servers/\(server.serverId)",
+            _ = try await request("agents/\(roleId)/mcp-servers/\(server.serverId)",
                                   method: enabled ? "PUT" : "DELETE", as: McpAssignmentEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func setAssignmentCredentials(_ server: ManagedMcpServer, agentId: String,
+    func setAssignmentCredentials(_ server: ManagedMcpServer, roleId: String,
                                   credentials: [String: Any]?, clear: Bool) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
             let body = clear ? ["clearCredentials": true] : (credentials ?? [:])
-            _ = try await request("agents/\(agentId)/mcp-servers/\(server.serverId)",
+            _ = try await request("agents/\(roleId)/mcp-servers/\(server.serverId)",
                                   method: "PUT", body: body, as: McpAssignmentEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -473,16 +490,16 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
-    func setAssignmentToolAllowlist(_ server: ManagedMcpServer, agentId: String,
+    func setAssignmentToolAllowlist(_ server: ManagedMcpServer, roleId: String,
                                     toolAllowlist: [String]?) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
             let value: Any = toolAllowlist.map { $0 as Any } ?? NSNull()
-            _ = try await request("agents/\(agentId)/mcp-servers/\(server.serverId)",
+            _ = try await request("agents/\(roleId)/mcp-servers/\(server.serverId)",
                                   method: "PUT", body: ["toolAllowlist": value],
                                   as: McpAssignmentEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -490,19 +507,19 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
-    func setEnabled(_ server: ManagedMcpServer, enabled: Bool, agentId: String?) async {
+    func setEnabled(_ server: ManagedMcpServer, enabled: Bool, roleId: String?) async {
         isWorking = true
         defer { isWorking = false }
         do {
             _ = try await request("mcp-servers/\(server.serverId)", method: "PATCH",
                                   body: ["enabled": enabled], as: McpServerEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func update(_ server: ManagedMcpServer, config: [String: Any], agentId: String?) async -> Bool {
+    func update(_ server: ManagedMcpServer, config: [String: Any], roleId: String?) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
@@ -510,7 +527,7 @@ private final class McpManagementModel: ObservableObject {
             body["expectedConfigRevision"] = server.configRevision
             _ = try await request("mcp-servers/\(server.serverId)", method: "PATCH", body: body,
                                   as: McpServerEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -518,13 +535,13 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
-    func remove(_ server: ManagedMcpServer, agentId: String?) async {
+    func remove(_ server: ManagedMcpServer, roleId: String?) async {
         isWorking = true
         defer { isWorking = false }
         do {
             _ = try await request("mcp-servers/\(server.serverId)", method: "DELETE",
                                   as: McpRemovalEnvelope.self)
-            await load(agentId: agentId)
+            await load(roleId: roleId)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -582,10 +599,10 @@ private final class McpManagementModel: ObservableObject {
 }
 
 struct McpManagementView: View {
-    let agents: [Agent]
+    let roles: [Role]
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = McpManagementModel()
-    @State private var selectedAgentId = ""
+    @State private var selectedRoleId = ""
     @State private var isAdding = false
     @State private var editingServer: ManagedMcpServer?
     @State private var versionedServer: ManagedMcpServer?
@@ -598,7 +615,7 @@ struct McpManagementView: View {
     @State private var diagnosticSessionName = ""
     @State private var sessionAvailability: McpSessionAvailabilityEnvelope.Availability?
 
-    private var selectedAgent: Agent? { agents.first(where: { $0.agentId == selectedAgentId }) }
+    private var selectedAgent: Role? { roles.first(where: { $0.roleId == selectedRoleId }) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -612,17 +629,17 @@ struct McpManagementView: View {
             .padding(20)
             Divider()
             HStack {
-                Text("分配给 Agent")
-                Picker("Agent", selection: Binding(
-                    get: { selectedAgentId },
+                Text("分配给角色")
+                Picker("Role", selection: Binding(
+                    get: { selectedRoleId },
                     set: { value in
-                        selectedAgentId = value
-                        Task { await model.load(agentId: value.isEmpty ? nil : value) }
+                        selectedRoleId = value
+                        Task { await model.load(roleId: value.isEmpty ? nil : value) }
                     }
                 )) {
-                    Text("选择 Agent").tag("")
-                    ForEach(agents.filter { !$0.isPlatformAssistant }, id: \.agentId) { agent in
-                        Text(agent.name).tag(agent.agentId)
+                    Text("选择角色").tag("")
+                    ForEach(roles.filter { !$0.isPlatformAssistant }, id: \.roleId) { agent in
+                        Text(agent.name).tag(agent.roleId)
                     }
                 }
                 .frame(maxWidth: 240)
@@ -658,7 +675,7 @@ struct McpManagementView: View {
                         .font(.subheadline.weight(.semibold))
                     Text("Tool Host：\(sessionAvailability.toolHostStatus)")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Agent：\(sessionAvailability.agentId ?? "未绑定") · Binding：\(sessionAvailability.bindingId ?? "未绑定")")
+                    Text("Role：\(sessionAvailability.roleId ?? "未绑定") · Binding：\(sessionAvailability.bindingId ?? "未绑定")")
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     if let errorCode = sessionAvailability.errorCode {
                         Text(errorCode).font(.caption).foregroundStyle(.red)
@@ -687,7 +704,7 @@ struct McpManagementView: View {
             }
             if model.servers.isEmpty && !model.isLoading {
                 ContentUnavailableView("暂无 MCP Server", systemImage: "point.3.connected.trianglepath.dotted",
-                                       description: Text("添加独立 MCP Server 后，可分配给 Agent 使用。"))
+                                       description: Text("添加独立 MCP Server 后，可分配给角色使用。"))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(model.servers) { server in
@@ -703,21 +720,21 @@ struct McpManagementView: View {
                             if let selectedAgent, !selectedAgent.isPlatformAssistant {
                                 Toggle("分配给 \(selectedAgent.name)", isOn: Binding(
                                     get: { model.assignedIDs.contains(server.serverId) },
-                                    set: { value in Task { await model.assign(server, to: selectedAgent.agentId, enabled: value) } }
+                                    set: { value in Task { await model.assign(server, to: selectedAgent.roleId, enabled: value) } }
                                 ))
                                 .toggleStyle(.checkbox)
                                 .disabled(model.isWorking)
                                 if model.assignedIDs.contains(server.serverId) {
                                     Menu("分配设置") {
-                                        Button("Agent 凭据") {
+                                        Button("角色凭据") {
                                             credentialTarget = McpAssignmentCredentialTarget(
-                                                server: server, agentId: selectedAgent.agentId,
+                                                server: server, roleId: selectedAgent.roleId,
                                                 agentName: selectedAgent.name,
                                                 detail: model.assignmentDetails[server.serverId])
                                         }
                                         Button("工具权限") {
                                             toolTarget = McpAssignmentToolTarget(
-                                                server: server, agentId: selectedAgent.agentId,
+                                                server: server, roleId: selectedAgent.roleId,
                                                 agentName: selectedAgent.name,
                                                 toolAllowlist: model.assignmentDetails[server.serverId]?.toolAllowlist)
                                         }
@@ -741,11 +758,11 @@ struct McpManagementView: View {
                             if let errorCode = server.lastErrorCode {
                                 Text(errorCode).font(.caption).foregroundStyle(.secondary)
                             }
-                            Text("\(server.assignmentCount) 个 Agent 已分配")
+                            Text("\(server.assignmentCount) 个角色已分配")
                                 .font(.caption).foregroundStyle(.secondary)
                             Spacer()
                             Button("重新检测") {
-                                Task { await model.check(server, agentId: selectedAgent?.agentId) }
+                                Task { await model.check(server, roleId: selectedAgent?.roleId) }
                             }
                             .disabled(model.isWorking)
                             Button("运行记录") { eventServer = server }
@@ -759,7 +776,7 @@ struct McpManagementView: View {
                             }
                             Button(server.enabled ? "禁用" : "启用") {
                                 Task { await model.setEnabled(server, enabled: !server.enabled,
-                                                             agentId: selectedAgent?.agentId) }
+                                                             roleId: selectedAgent?.roleId) }
                             }
                             .disabled(model.isWorking)
                             Button("删除", role: .destructive) {
@@ -784,17 +801,17 @@ struct McpManagementView: View {
         }
         .frame(width: 760, height: 620)
         .task {
-            selectedAgentId = agents.first(where: { !$0.isPlatformAssistant })?.agentId ?? ""
-            await model.load(agentId: selectedAgent?.agentId)
+            selectedRoleId = roles.first(where: { !$0.isPlatformAssistant })?.roleId ?? ""
+            await model.load(roleId: selectedAgent?.roleId)
         }
         .sheet(isPresented: $isAdding) {
-            McpInstallView(model: model, agentId: selectedAgent?.agentId)
+            McpInstallView(model: model, roleId: selectedAgent?.roleId)
         }
         .sheet(item: $editingServer) { server in
-            McpEditView(model: model, server: server, agentId: selectedAgent?.agentId)
+            McpEditView(model: model, server: server, roleId: selectedAgent?.roleId)
         }
         .sheet(item: $versionedServer) { server in
-            McpPackageVersionsView(model: model, server: server, agentId: selectedAgent?.agentId)
+            McpPackageVersionsView(model: model, server: server, roleId: selectedAgent?.roleId)
         }
         .sheet(item: $eventServer) { server in
             McpRuntimeEventsView(model: model, server: server)
@@ -808,12 +825,12 @@ struct McpManagementView: View {
         .confirmationDialog("删除 MCP Server？", isPresented: $showRemovalConfirmation) {
             if let server = removingServer, removalImpact?.canRemove == true {
                 Button("删除 \(server.name)", role: .destructive) {
-                    Task { await model.remove(server, agentId: selectedAgent?.agentId) }
+                    Task { await model.remove(server, roleId: selectedAgent?.roleId) }
                 }
             }
         } message: {
             if let impact = removalImpact, !impact.canRemove {
-                Text("无法删除：仍分配给 \(impact.assignedAgents.map(\.name).joined(separator: "、"))。请先解除这些 Agent 的分配。")
+                Text("无法删除：仍分配给 \(impact.assignedAgents.map(\.name).joined(separator: "、"))。请先解除这些角色的分配。")
             } else if let impact = removalImpact {
                 Text("将移除登记及 \(impact.managedPackageCopies) 份受控包副本，并清理 \(impact.credentialReferences) 个凭据引用。不会删除原始来源或外部服务。")
             }
@@ -890,11 +907,11 @@ private struct McpAssignmentCredentialView: View {
     var body: some View {
         Form {
             Text("\(target.server.name) · \(target.agentName)").font(.title3.bold())
-            Text("这里的凭据只供此 Agent 使用，会覆盖 Server 安装级凭据。已有秘密不会回填；保存时需填写全部字段的新值。")
+            Text("这里的凭据只供此角色使用，会覆盖 Server 安装级凭据。已有秘密不会回填；保存时需填写全部字段的新值。")
                 .font(.caption).foregroundStyle(.secondary)
             McpCredentialFields(kind: target.server.transport, rows: $rows)
             if target.detail?.hasOwnCredentials == true {
-                Text("当前已有 Agent 专属凭据：\(target.detail?.credentialNames.joined(separator: "、") ?? "")")
+                Text("当前已有角色专属凭据：\(target.detail?.credentialNames.joined(separator: "、") ?? "")")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let error = model.errorMessage {
@@ -904,21 +921,21 @@ private struct McpAssignmentCredentialView: View {
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if target.detail?.hasOwnCredentials == true {
-                    Button("清除 Agent 覆盖", role: .destructive) {
+                    Button("清除角色覆盖", role: .destructive) {
                         Task {
-                            if await model.setAssignmentCredentials(target.server, agentId: target.agentId,
+                            if await model.setAssignmentCredentials(target.server, roleId: target.roleId,
                                                                     credentials: nil, clear: true) {
                                 dismiss()
                             }
                         }
                     }
                     .disabled(model.isWorking)
-                    .help("清除后回退到安装级凭据；若安装时未提供凭据，则该 Agent 不使用凭据")
+                    .help("清除后回退到安装级凭据；若安装时未提供凭据，则该角色不使用凭据")
                 }
-                Button("保存 Agent 凭据") {
+                Button("保存角色凭据") {
                     Task {
                         let credentials = mcpCredentialConfig(rows, transport: target.server.transport)
-                        if await model.setAssignmentCredentials(target.server, agentId: target.agentId,
+                        if await model.setAssignmentCredentials(target.server, roleId: target.roleId,
                                                                 credentials: credentials, clear: false) {
                             dismiss()
                         }
@@ -958,7 +975,7 @@ private struct McpAssignmentToolView: View {
                 Text("暂不允许工具").tag("none")
             }
             .pickerStyle(.segmented)
-            Text("保存后立即影响该 Agent 的旧会话；先前目录里的未授权工具名不能继续调用。")
+            Text("保存后立即影响该角色的旧会话；先前目录里的未授权工具名不能继续调用。")
                 .font(.caption).foregroundStyle(.secondary)
             if mode == "selected" {
                 if target.server.observedToolNames.isEmpty {
@@ -994,7 +1011,7 @@ private struct McpAssignmentToolView: View {
                     let allowlist: [String]? = mode == "all" ? nil
                         : mode == "none" ? [] : selected.sorted()
                     Task {
-                        if await model.setAssignmentToolAllowlist(target.server, agentId: target.agentId,
+                        if await model.setAssignmentToolAllowlist(target.server, roleId: target.roleId,
                                                                    toolAllowlist: allowlist) {
                             dismiss()
                         }
@@ -1018,7 +1035,7 @@ private func mcpAvailabilityLabel(_ status: String) -> String {
     case "assigned_mcp_unresolved": return "已分配但未解析出 MCP"
     case "gateway_available_host_unverified": return "网关可用，Tool Host 待验证"
     case "no_active_binding": return "无活跃会话绑定"
-    case "agent_unavailable": return "Agent 不可用"
+    case "agent_unavailable": return "角色不可用"
     default: return "诊断失败"
     }
 }
@@ -1030,7 +1047,7 @@ private func mcpServerAvailabilityLabel(_ server: McpSessionAvailabilityEnvelope
 
 private struct McpInstallView: View {
     @ObservedObject var model: McpManagementModel
-    let agentId: String?
+    let roleId: String?
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var url = ""
@@ -1242,12 +1259,12 @@ private struct McpInstallView: View {
                                 source: packageDiscovery.source, serverName: selectedServerName,
                                 contentHash: packageDiscovery.contentHash,
                                 sourceRevision: packageDiscovery.sourceRevision,
-                                agentId: agentId, assignAfterInstall: assignAfterInstall,
+                                roleId: roleId, assignAfterInstall: assignAfterInstall,
                                 credentials: credentials, installRequestId: requestId
                             )
                         } else {
                             let currentConfig = config
-                            installed = await model.install(config: currentConfig, agentId: agentId,
+                            installed = await model.install(config: currentConfig, roleId: roleId,
                                 installRequestId: installRequestId(for: currentConfig))
                         }
                         if installed {
@@ -1260,8 +1277,8 @@ private struct McpInstallView: View {
                            ? packageDiscovery == nil || !packageCredentialsValid
                            : !isValid))
             }
-            if installMode == "package", agentId != nil {
-                Toggle("安装后分配给当前 Agent", isOn: $assignAfterInstall)
+            if installMode == "package", roleId != nil {
+                Toggle("安装后分配给当前角色", isOn: $assignAfterInstall)
             }
         }
         .padding(20)
@@ -1273,7 +1290,7 @@ private struct McpInstallView: View {
 private struct McpEditView: View {
     @ObservedObject var model: McpManagementModel
     let server: ManagedMcpServer
-    let agentId: String?
+    let roleId: String?
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var transport: String
@@ -1284,10 +1301,10 @@ private struct McpEditView: View {
     @State private var credentialAction = "keep"
     @State private var credentialRows: [McpCredentialInput] = []
 
-    init(model: McpManagementModel, server: ManagedMcpServer, agentId: String?) {
+    init(model: McpManagementModel, server: ManagedMcpServer, roleId: String?) {
         self.model = model
         self.server = server
-        self.agentId = agentId
+        self.roleId = roleId
         _name = State(initialValue: server.name)
         _transport = State(initialValue: server.transport)
         _url = State(initialValue: server.url)
@@ -1364,7 +1381,7 @@ private struct McpEditView: View {
             if credentialAction == "replace" {
                 McpCredentialFields(kind: transport, rows: $credentialRows)
             }
-            Text("保存前只进行握手和工具列表验证；验证失败会保留原配置。成功后，已分配 Agent 的旧会话可通过固定 Tool Host 看到更新。")
+            Text("保存前只进行握手和工具列表验证；验证失败会保留原配置。成功后，已分配角色的旧会话可通过固定 Tool Host 看到更新。")
                 .font(.caption).foregroundStyle(.secondary)
             if let error = model.errorMessage {
                 Text(error).foregroundStyle(.red)
@@ -1375,7 +1392,7 @@ private struct McpEditView: View {
                 Spacer()
                 Button("验证并保存") {
                     Task {
-                        if await model.update(server, config: config, agentId: agentId) {
+                        if await model.update(server, config: config, roleId: roleId) {
                             dismiss()
                         }
                     }
@@ -1392,7 +1409,7 @@ private struct McpEditView: View {
 private struct McpPackageVersionsView: View {
     @ObservedObject var model: McpManagementModel
     let server: ManagedMcpServer
-    let agentId: String?
+    let roleId: String?
     @Environment(\.dismiss) private var dismiss
     @State private var versions: [McpPackageVersionsEnvelope.Version] = []
     @State private var sourceType: String
@@ -1406,10 +1423,10 @@ private struct McpPackageVersionsView: View {
     @State private var rollbackCredentialRows: [McpCredentialInput] = []
     @State private var showRollbackConfirmation = false
 
-    init(model: McpManagementModel, server: ManagedMcpServer, agentId: String?) {
+    init(model: McpManagementModel, server: ManagedMcpServer, roleId: String?) {
         self.model = model
         self.server = server
-        self.agentId = agentId
+        self.roleId = roleId
         _sourceType = State(initialValue: server.sourceKind == "git_package" ? "git" : "local")
         _source = State(initialValue: server.sourceLocator ?? "")
     }
@@ -1453,7 +1470,7 @@ private struct McpPackageVersionsView: View {
     var body: some View {
         Form {
             Text("\(server.name) · 包版本管理").font(.headline)
-            Text("更新与回滚会先验证工具列表，再切换同一个 Server；已有 Agent 分配保持不变。")
+            Text("更新与回滚会先验证工具列表，再切换同一个 Server；已有角色分配保持不变。")
                 .font(.caption).foregroundStyle(.secondary)
 
             Section("安装新版本") {
@@ -1519,7 +1536,7 @@ private struct McpPackageVersionsView: View {
                             if await model.updatePackage(server, discovery: discovery,
                                                          serverName: selectedServerName,
                                                          credentials: updateCredentials,
-                                                         agentId: agentId) { dismiss() }
+                                                         roleId: roleId) { dismiss() }
                         }
                     }
                     .disabled(model.isWorking || !canUpdate)
@@ -1578,12 +1595,12 @@ private struct McpPackageVersionsView: View {
                     Task {
                         if await model.rollbackPackage(server, targetRevision: rollbackVersion.revision,
                                                        credentials: rollbackCredentials,
-                                                       agentId: agentId) { dismiss() }
+                                                       roleId: roleId) { dismiss() }
                     }
                 }
             }
         } message: {
-            Text("回滚会重新验证目标版本并切换工具目录，不改变 Server ID 或 Agent 分配。")
+            Text("回滚会重新验证目标版本并切换工具目录，不改变 Server ID 或角色分配。")
         }
     }
 }

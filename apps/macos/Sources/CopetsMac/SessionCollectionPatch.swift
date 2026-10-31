@@ -140,7 +140,7 @@ enum SessionCollectionDiffer {
             fields.insert(.ordering)
         }
         if previous.external != next.external
-            || previous.agentId != next.agentId
+            || previous.roleId != next.roleId
             || previous.sessionKind != next.sessionKind
             || previous.workId != next.workId
             || previous.taskId != next.taskId

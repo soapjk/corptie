@@ -104,7 +104,7 @@ struct FormAssistPanel: View {
     @State private var previousValues: [String: String]?
     @State private var lastAppliedValues: [String: String]?
     @State private var confirmation: FormAssistConfirmation?
-    @State private var selectedAgentId: String?
+    @State private var selectedRoleId: String?
     @State private var showAgentPicker = false
 
     var body: some View {
@@ -151,7 +151,7 @@ struct FormAssistPanel: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "person.crop.circle.badge.checkmark")
-                            Text(selectedAgentName ?? L10n("使用默认 Agent"))
+                            Text(selectedAgentName ?? L10n("使用默认角色"))
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.caption2)
                         }
@@ -159,15 +159,15 @@ struct FormAssistPanel: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(selectedAgentName == nil ? .secondary : .primary)
 
-                    if selectedAgentId != nil {
+                    if selectedRoleId != nil {
                         Button {
-                            selectedAgentId = nil
+                            selectedRoleId = nil
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
-                        .help(L10n("清除，使用默认 Agent"))
+                        .help(L10n("清除，使用默认角色"))
                     }
 
                     Spacer()
@@ -205,7 +205,7 @@ struct FormAssistPanel: View {
         .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.accentColor.opacity(0.18), lineWidth: 1))
         .sheet(isPresented: $showAgentPicker) {
-            AgentSinglePickerView(selectedId: $selectedAgentId)
+            RoleSinglePickerView(selectedId: $selectedRoleId)
         }
         .alert(item: $confirmation) { value in
             switch value {
@@ -237,7 +237,7 @@ struct FormAssistPanel: View {
             }
         }
         .task {
-            if client.agents.isEmpty { await client.refreshAgents() }
+            if client.roles.isEmpty { await client.refreshRoles() }
         }
     }
 
@@ -246,8 +246,8 @@ struct FormAssistPanel: View {
     }
 
     private var selectedAgentName: String? {
-        guard let selectedAgentId else { return nil }
-        return client.agents.first { $0.agentId == selectedAgentId }?.name
+        guard let selectedRoleId else { return nil }
+        return client.roles.first { $0.roleId == selectedRoleId }?.name
     }
 
     private func requestGeneration() {
@@ -270,7 +270,7 @@ struct FormAssistPanel: View {
                 prompt: trimmedIntent,
                 currentValues: snapshot,
                 cwd: cwd,
-                agentId: selectedAgentId
+                roleId: selectedRoleId
             ) {
                 if FormAssistOverwritePolicy.formChanged(since: snapshot, current: currentValues()) {
                     confirmation = .applyChanged(draft.fields)

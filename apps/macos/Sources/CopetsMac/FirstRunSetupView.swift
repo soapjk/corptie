@@ -142,7 +142,7 @@ struct FirstRunSetupRoot<Content: View>: View {
                     welcomeHeader
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text(L10n("本机 Agent")).font(.headline)
+                            Text(L10n("本机执行引擎")).font(.headline)
                             Spacer()
                             Button {
                                 scanGeneration += 1
@@ -226,10 +226,10 @@ struct FirstRunSetupRoot<Content: View>: View {
                     Text(L10n("欢迎开始")).font(.callout).foregroundStyle(.secondary)
                 }
             }
-            Text(L10n("让你的 Agent 准备就绪"))
+            Text(L10n("让你的执行引擎准备就绪"))
                 .font(.system(size: 30, weight: .semibold))
                 .accessibilityAddTraits(.isHeader)
-            Text(L10n("连接本机的 Agent，开始在 Corptie 中工作。完成一个配置即可开始，其他配置可以稍后添加。"))
+            Text(L10n("连接本机的执行引擎，开始在 Corptie 中工作。完成一个配置即可开始，其他配置可以稍后添加。"))
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -238,7 +238,7 @@ struct FirstRunSetupRoot<Content: View>: View {
 
     private var completionHint: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Label(L10n(canEnter ? "Agent 已准备就绪" : "至少完成一个 Agent 配置才能继续"),
+            Label(L10n(canEnter ? "执行引擎已准备就绪" : "至少完成一个执行引擎配置才能继续"),
                   systemImage: canEnter ? "checkmark.circle.fill" : "info.circle")
                 .font(.callout)
                 .foregroundStyle(canEnter ? Color.accentColor : Color.secondary)
@@ -450,7 +450,7 @@ struct FirstRunProviderCard: View {
                         }
                     }
                     if path.isEmpty {
-                        Text(L10n("未找到程序，请选择已安装的 Agent 可执行文件。"))
+                        Text(L10n("未找到程序，请选择已安装的执行引擎可执行文件。"))
                             .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                     }
                 }

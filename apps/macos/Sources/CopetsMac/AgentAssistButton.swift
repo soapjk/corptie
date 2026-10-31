@@ -6,7 +6,7 @@ import SwiftUI
 //
 // 用法示例：
 //   AgentAssistButton(fieldLabel: "描述", text: $detail,
-//                     selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
+//                     selectedRoleId: $assistRoleId, context: "目标名称：\(name)")
 //
 // 组件无 provider 依赖，后端统一走 BackgroundAgentService（BACKGROUND_PROMPT 能力）。
 
@@ -14,7 +14,7 @@ struct AgentAssistButton: View {
     let fieldLabel: String
     @Binding var text: String
     /// 同一创建页面上的辅助填写入口共享此选择，避免重复选择 Agent。
-    @Binding var selectedAgentId: String?
+    @Binding var selectedRoleId: String?
     /// 额外的上下文说明（如名称、已选仓库），会拼进 prompt 帮助 Agent 理解。
     var context: String = ""
     /// 可选的 workspace 路径，作为后台 Agent 的运行目录（用于读取仓库上下文）。
@@ -46,7 +46,7 @@ struct AgentAssistButton: View {
         .foregroundStyle(.tint)
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 12) {
-                Text(L10nFormat("Ask an Agent to write “%@”", fieldLabel))
+                Text(L10nFormat("Ask a Role to write “%@”", fieldLabel))
                     .font(.headline)
 
                 if isGenerating {
@@ -83,7 +83,7 @@ struct AgentAssistButton: View {
                         .keyboardShortcut(.defaultAction)
                     }
                 } else {
-                    Text(L10n("简单描述你想让 Agent 填写的内容，例如："))
+                    Text(L10n("简单描述你想让角色填写的内容，例如："))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(L10n("「把 Corptie 的工作台拆成三个模块，说明重构目标和验收标准」"))
@@ -107,7 +107,7 @@ struct AgentAssistButton: View {
                             showAgentPicker = true
                         } label: {
                             HStack(spacing: 4) {
-                                Text(selectedAgentName ?? L10n("Select an Agent"))
+                                Text(selectedAgentName ?? L10n("Select a Role"))
                                     .foregroundStyle(selectedAgentName == nil ? .secondary : .primary)
                                 Image(systemName: "chevron.up.chevron.down")
                                     .font(.caption2)
@@ -115,15 +115,15 @@ struct AgentAssistButton: View {
                             }
                         }
                         .buttonStyle(.borderless)
-                        if selectedAgentId != nil {
+                        if selectedRoleId != nil {
                             Button {
-                                selectedAgentId = nil
+                                selectedRoleId = nil
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.borderless)
-                            .help(L10n("清除，使用默认 Agent"))
+                            .help(L10n("清除，使用默认角色"))
                         }
                     }
 
@@ -145,19 +145,19 @@ struct AgentAssistButton: View {
             .padding(16)
             .frame(width: 380)
             .sheet(isPresented: $showAgentPicker) {
-                AgentSinglePickerView(selectedId: $selectedAgentId)
+                RoleSinglePickerView(selectedId: $selectedRoleId)
             }
             .onAppear {
                 Task {
-                    if client.agents.isEmpty { await client.refreshAgents() }
+                    if client.roles.isEmpty { await client.refreshRoles() }
                 }
             }
         }
     }
 
     private var selectedAgentName: String? {
-        guard let selectedAgentId else { return nil }
-        return client.agents.first { $0.agentId == selectedAgentId }?.name
+        guard let selectedRoleId else { return nil }
+        return client.roles.first { $0.roleId == selectedRoleId }?.name
     }
 
     private func generate() {
@@ -178,7 +178,7 @@ struct AgentAssistButton: View {
         isGenerating = true
         errorText = nil
         Task {
-            if let result = await client.assistDraft(fieldLabel: fieldLabel, prompt: prompt, cwd: cwd, agentId: selectedAgentId) {
+            if let result = await client.assistDraft(fieldLabel: fieldLabel, prompt: prompt, cwd: cwd, roleId: selectedRoleId) {
                 draft = result
             } else {
                 errorText = client.errorMessage ?? "生成失败，请稍后重试。"

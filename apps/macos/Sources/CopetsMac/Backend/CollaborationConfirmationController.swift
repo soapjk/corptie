@@ -138,10 +138,10 @@ final class CollaborationConfirmationController: ObservableObject {
         }), let confirmationID = item.collaborationConfirmationId else { return nil }
         return PendingCollaborationConfirmation(
             confirmationId: confirmationID,
-            initiatorAgentId: item.collaborationSenderAgentId,
+            initiatorRoleId: item.collaborationSenderAgentId,
             initiatorName: item.collaborationSenderName,
-            recipientAgentId: item.collaborationRecipientAgentId,
-            recipientName: item.collaborationRecipientName ?? "Agent",
+            recipientRoleId: item.collaborationRecipientAgentId,
+            recipientName: item.collaborationRecipientName ?? "Role",
             sourceWorkId: item.collaborationSourceWorkId,
             sourceWorkName: item.collaborationSourceWorkName,
             targetWorkId: item.collaborationTargetWorkId,

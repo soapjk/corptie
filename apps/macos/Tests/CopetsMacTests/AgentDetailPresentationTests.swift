@@ -8,7 +8,7 @@ struct AgentDetailPresentationTests {
     func installedSkillsFollowRegistryOrder() {
         let skills = [skill(id: "one"), skill(id: "two"), skill(id: "three")]
 
-        let installed = AgentSkillAssignment.installedSkills(
+        let installed = RoleSkillAssignment.installedSkills(
             from: skills,
             selectedSkillIds: ["skill:three", "skill:one"]
         )
@@ -20,8 +20,8 @@ struct AgentDetailPresentationTests {
     func skillPickerTogglesDraftSelection() {
         let original: Set<String> = ["skill:one"]
 
-        let added = AgentSkillAssignment.toggled("skill:two", in: original)
-        let removed = AgentSkillAssignment.toggled("skill:one", in: added)
+        let added = RoleSkillAssignment.toggled("skill:two", in: original)
+        let removed = RoleSkillAssignment.toggled("skill:one", in: added)
 
         #expect(original == ["skill:one"])
         #expect(added == ["skill:one", "skill:two"])
@@ -34,7 +34,7 @@ struct AgentDetailPresentationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/AgentManagementView.swift")
+            .appendingPathComponent("Sources/CopetsMac/RoleManagementView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
         #expect(source.contains(".focusable()"))
@@ -50,14 +50,14 @@ struct AgentDetailPresentationTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
-        let management = try String(contentsOf: sourceRoot.appendingPathComponent("AgentManagementView.swift"), encoding: .utf8)
+        let management = try String(contentsOf: sourceRoot.appendingPathComponent("RoleManagementView.swift"), encoding: .utf8)
         let creation = try String(contentsOf: sourceRoot.appendingPathComponent("NewChatPickerSheet.swift"), encoding: .utf8)
-        let model = try String(contentsOf: sourceRoot.appendingPathComponent("AgentModels.swift"), encoding: .utf8)
+        let model = try String(contentsOf: sourceRoot.appendingPathComponent("RoleModels.swift"), encoding: .utf8)
 
         #expect(!management.contains("filter(\\.isAssistant)"))
         #expect(!management.contains("filter(\\.isIndependentContributor)"))
-        #expect(creation.contains("rows: client.agents"))
-        #expect(creation.contains("case .worker: candidates = workerAgents"))
+        #expect(creation.contains("rows: client.roles"))
+        #expect(creation.contains("case .worker: candidates = workerRoles"))
         #expect(!model.contains("var role: String"))
     }
 

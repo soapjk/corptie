@@ -744,7 +744,7 @@ struct SettingsView: View {
     private func dataRootMigrationBlockerLabel(_ kind: String) -> String {
         switch kind {
         case "active_session_turns": L10n("Active Session turns")
-        case "agent_work_queue": L10n("Agent work queue")
+        case "agent_work_queue": L10n("Role work queue")
         case "scheduled_tasks": L10n("Scheduled tasks")
         case "worktree_integrations": L10n("Worktree integrations")
         case "artifact_writes": L10n("Artifact writes")

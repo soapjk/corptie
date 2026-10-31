@@ -9,6 +9,8 @@ const foundationalDelegates = Object.freeze({
     "listSkillRuntimeEvents", "createInstallOperation", "getInstallOperation", "advanceInstallOperation", "listPendingInstallOperations"
   ],
   agentRepository: [
+    "createRoleWithRegistrySkills", "createRoleWithRegistrySkillsIdempotently",
+    "updateRoleWithRegistrySkills", "setRoleRegistrySkills",
     "createAgentWithRegistrySkills", "createAgentWithRegistrySkillsIdempotently",
     "updateAgentWithRegistrySkills", "setAgentRegistrySkills"
   ],
@@ -133,6 +135,7 @@ const domainDelegates = Object.freeze({
     "getItemsForBinding"
   ],
   agentRepository: [
+    "listRoles", "getRole", "ensureAssistantRole", "createRole", "updateRole", "deleteRole",
     "listAgents", "getAgent", "ensureAssistantAgent",
     "migrateAgentAvailability", "createAgent", "updateAgent",
     "deleteAgent"

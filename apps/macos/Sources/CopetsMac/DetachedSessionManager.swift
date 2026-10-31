@@ -24,13 +24,13 @@ final class AgentOrbManager: ObservableObject {
         self.visibilityPreferences = visibilityPreferences
     }
 
-    func show(agent: Agent) {
-        visibilityPreferences.setEnabled(true, for: agent.agentId)
+    func show(agent: Role) {
+        visibilityPreferences.setEnabled(true, for: agent.roleId)
         float(agent: agent, bringToFront: true)
     }
 
-    private func float(agent: Agent, bringToFront: Bool) {
-        let id = agent.agentId
+    private func float(agent: Role, bringToFront: Bool) {
+        let id = agent.roleId
         if let controller = controllers[id] {
             if bringToFront {
                 controller.show()
@@ -55,25 +55,25 @@ final class AgentOrbManager: ObservableObject {
             openSession: { [weak self] sessionID in
                 self?.openSession(sessionID)
             },
-            userClose: { [weak self] agentID in
-                self?.hide(agentID: agentID)
+            userClose: { [weak self] roleID in
+                self?.hide(roleID: roleID)
             },
-            close: { [weak self] agentId in
-                self?.controllers[agentId] = nil
+            close: { [weak self] roleId in
+                self?.controllers[roleId] = nil
             }
         )
         controllers[id] = controller
         controller.show()
     }
 
-    func hide(agentID: String) {
-        visibilityPreferences.setEnabled(false, for: agentID)
-        close(agentID: agentID)
+    func hide(roleID: String) {
+        visibilityPreferences.setEnabled(false, for: roleID)
+        close(roleID: roleID)
     }
 
-    private func close(agentID: String) {
-        controllers[agentID]?.close()
-        controllers[agentID] = nil
+    private func close(roleID: String) {
+        controllers[roleID]?.close()
+        controllers[roleID] = nil
     }
 
     func closeAll() {
@@ -85,20 +85,20 @@ final class AgentOrbManager: ObservableObject {
 
     // State publications may update an explicitly enabled orb, but never change
     // the user's persisted visibility choice or bring an existing orb forward.
-    func sync(agents: [Agent], sessions _: [TaskSession]) {
-        let availableAgentIDs = Set(agents.map(\.agentId))
-        for agentID in Array(controllers.keys) where !availableAgentIDs.contains(agentID) {
-            close(agentID: agentID)
+    func sync(roles: [Role], sessions _: [TaskSession]) {
+        let availableAgentIDs = Set(roles.map(\.roleId))
+        for roleID in Array(controllers.keys) where !availableAgentIDs.contains(roleID) {
+            close(roleID: roleID)
         }
         let enabledAgentIDs = visibilityPreferences.enabledAgentIDs
-        for agent in agents {
+        for agent in roles {
             if AgentOrbVisibilityPolicy.shouldShow(
-                agentID: agent.agentId,
+                roleID: agent.roleId,
                 explicitlyEnabledAgentIDs: enabledAgentIDs
             ) {
                 float(agent: agent, bringToFront: false)
-            } else if controllers[agent.agentId] != nil {
-                close(agentID: agent.agentId)
+            } else if controllers[agent.roleId] != nil {
+                close(roleID: agent.roleId)
             }
         }
     }
@@ -166,7 +166,7 @@ private final class DetachedAccessoryWindowController {
     private let hostingView: DetachedFirstMouseHostingView<DetachedSessionAccessoryView>
     private let state: DetachedReplyPreviewState
     private let client: BackendClient
-    private let agentId: String
+    private let roleId: String
     private let dismissPreview: () -> Void
     private let dismissQuickReply: () -> Void
     private let didResignKey: () -> Void
@@ -184,14 +184,14 @@ private final class DetachedAccessoryWindowController {
     init(
         state: DetachedReplyPreviewState,
         client: BackendClient,
-        agentId: String,
+        roleId: String,
         dismissPreview: @escaping () -> Void,
         dismissQuickReply: @escaping () -> Void,
         didResignKey: @escaping () -> Void
     ) {
         self.state = state
         self.client = client
-        self.agentId = agentId
+        self.roleId = roleId
         self.dismissPreview = dismissPreview
         self.dismissQuickReply = dismissQuickReply
         self.didResignKey = didResignKey
@@ -199,7 +199,7 @@ private final class DetachedAccessoryWindowController {
         self.hostingView = DetachedFirstMouseHostingView(
             rootView: DetachedSessionAccessoryView(
                 client: client,
-                agentId: agentId,
+                roleId: roleId,
                 previewState: state,
                 dismissPreview: dismissPreview,
                 dismissQuickReply: dismissQuickReply
@@ -392,7 +392,7 @@ private final class DetachedAccessoryWindowController {
 
 @MainActor
 private final class DetachedSessionWindowController: NSObject, NSWindowDelegate {
-    let agent: Agent
+    let agent: Role
     private let client: BackendClient
     private let showMain: () -> Void
     private let openSession: (String) -> Void
@@ -404,7 +404,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private lazy var accessoryController = DetachedAccessoryWindowController(
         state: previewState,
         client: client,
-        agentId: agent.agentId,
+        roleId: agent.roleId,
         dismissPreview: { [weak self] in
             self?.hideReplyPreview(markDismissed: true)
             self?.updateAccessory(for: self?.currentSession)
@@ -432,7 +432,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     init(
-        agent: Agent,
+        agent: Role,
         initialOrigin: NSPoint,
         client: BackendClient,
         showMain: @escaping () -> Void,
@@ -494,7 +494,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 },
                 close: { [weak self] in
                     guard let self else { return }
-                    self.userClose(self.agent.agentId)
+                    self.userClose(self.agent.roleId)
                 },
                 interactionBegan: {},
                 interactionEnded: { _ in },
@@ -534,7 +534,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     func windowWillClose(_ notification: Notification) {
         removeOutsideClickMonitor()
-        closeHandler(agent.agentId)
+        closeHandler(agent.roleId)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -737,8 +737,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private var currentSession: TaskSession? {
-        let currentAgent = AppStateStore.shared.agents.first { $0.agentId == agent.agentId }
-            ?? EntityAPIClient.shared.agents.first { $0.agentId == agent.agentId }
+        let currentAgent = AppStateStore.shared.roles.first { $0.roleId == agent.roleId }
+            ?? EntityAPIClient.shared.roles.first { $0.roleId == agent.roleId }
             ?? agent
         guard let sessionId = currentAgent.currentSessionId else { return nil }
         return client.sessions.first { $0.id == sessionId }
@@ -794,7 +794,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
 private struct DetachedSessionOrbView: View {
     @ObservedObject private var appLanguage = AppLanguageController.shared
-    let agent: Agent
+    let agent: Role
     @ObservedObject var previewState: DetachedReplyPreviewState
     @ObservedObject var animationState: DetachedOrbAnimationState
     let primaryAction: () -> Void
@@ -824,7 +824,7 @@ private struct DetachedSessionOrbView: View {
             .contentShape(Circle())
             .overlay(
                 DetachedOrbEventLayer(
-                    sessionId: agent.agentId,
+                    sessionId: agent.roleId,
                     open: {
                         primaryAction()
                     },
@@ -855,7 +855,7 @@ private struct DetachedSessionAccessoryView: View {
     @ObservedObject private var appLanguage = AppLanguageController.shared
     @ObservedObject var client: BackendClient
     @ObservedObject private var entityClient = EntityAPIClient.shared
-    let agentId: String
+    let roleId: String
     @ObservedObject var previewState: DetachedReplyPreviewState
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
@@ -986,7 +986,7 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var session: TaskSession? {
-        guard let agent = entityClient.agents.first(where: { $0.agentId == agentId }),
+        guard let agent = entityClient.roles.first(where: { $0.roleId == roleId }),
               let sessionId = agent.currentSessionId else {
             return nil
         }

@@ -102,7 +102,7 @@ struct UnifiedConsoleControlSurfaceTests {
         var chatOpens = 0
         var taskCreates = 0
         let work = Work(id: "work:hit-test", workspaceId: "workspace:test", name: "Work",
-            description: "", status: "active", profile: "general", tags: [], contributorAgentIds: [],
+            description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
             createdAt: "", updatedAt: "")
         let host = NSHostingView(rootView: ConsoleWorkOutlineHeader(work: work,
             isExpanded: false, isSelected: false, isWorking: false, hasUnread: false,
@@ -554,9 +554,9 @@ struct UnifiedConsoleControlSurfaceTests {
     func workCreationRequiresAnAgentAndDoesNotOfferATargetDate() throws {
         let createSource = try source(named: "WorkCreateView.swift")
 
-        #expect(createSource.contains("|| contributorAgentIds.isEmpty"))
-        #expect(createSource.contains("guard EntityNamePolicy.isValid(name), !contributorAgentIds.isEmpty"))
-        #expect(createSource.contains("请至少选择一个 Contributor Agent"))
+        #expect(createSource.contains("|| contributorRoleIds.isEmpty"))
+        #expect(createSource.contains("guard EntityNamePolicy.isValid(name), !contributorRoleIds.isEmpty"))
+        #expect(createSource.contains("请至少选择一个 Contributor 角色"))
         #expect(createSource.contains("Button(L10n(\"选择头像\"))"))
         #expect(createSource.contains("avatarPath: requestAvatarSourcePath"))
         #expect(!createSource.contains("targetDate"))
@@ -698,7 +698,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(content.contains("actions: { EmptyView() }, statusContent: { providerSwitchStatus }"))
         #expect(!content.contains("compactProviderMenu"))
         #expect(content.contains("workspacePath: session.external?.cwd"))
-        #expect(fields.contains("(\"Agent\", agentDisplayName)"))
+        #expect(fields.contains("(\"Role\", agentDisplayName)"))
         #expect(fields.contains("(\"工作空间\", compactPath(cwd))"))
         #expect(!fields.contains("currentModel"))
         #expect(!fields.contains("currentReasoningLevel"))

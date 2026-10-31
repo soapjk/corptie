@@ -3,12 +3,12 @@ import CorptieConversation
 import AppKit
 import SwiftUI
 
-func sessionAgentDisplayName(session: TaskSession, agents: [Agent]) -> String {
-    guard let agentId = session.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !agentId.isEmpty else {
+func sessionAgentDisplayName(session: TaskSession, roles: [Role]) -> String {
+    guard let roleId = session.roleId?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !roleId.isEmpty else {
         return "未挂载"
     }
-    return agents.first(where: { $0.agentId == agentId })?.name ?? agentId
+    return roles.first(where: { $0.roleId == roleId })?.name ?? roleId
 }
 
 struct SessionCorptieTaskDetailCard: View {
@@ -67,7 +67,7 @@ struct SessionCorptieTaskDetailCard: View {
         let work = entityClient.works.first { $0.id == task.workId }
         return CorptieTaskDetailView(
             task: task,
-            contributorAgentIds: work?.contributorAgentIds ?? [],
+            contributorRoleIds: work?.contributorRoleIds ?? [],
             onRequestReload: {
                 Task { await entityClient.refreshWorks() }
             },

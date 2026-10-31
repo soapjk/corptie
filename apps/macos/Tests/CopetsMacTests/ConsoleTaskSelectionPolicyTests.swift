@@ -50,7 +50,7 @@ struct ConsoleTaskSelectionPolicyTests {
     @Test
     func openingAnAssignedTaskWithoutASessionDoesNotCreateFromTheUI() {
         var task = makeTask(id: "task:target", workID: "work:current")
-        task.mainAgentId = " agent:owner "
+        task.mainRoleId = " agent:owner "
 
         #expect(ConsoleTaskOpenDecision.resolve(
             task: task,
@@ -86,7 +86,7 @@ struct ConsoleTaskSelectionPolicyTests {
             acceptanceCriteria: "",
             priority: "medium",
             lifecycleState: "todo",
-            mainAgentId: nil,
+            mainRoleId: nil,
             currentSessionId: currentSessionID,
             executionStatus: "idle",
             createdAt: "2026-09-04T00:00:00Z",
@@ -103,7 +103,7 @@ struct ConsoleTaskSelectionPolicyTests {
             id: id,
             title: id,
             agent: "Agent",
-            agentId: "agent:one",
+            roleId: "agent:one",
             sessionKind: .worker,
             workId: workID,
             taskId: taskID,

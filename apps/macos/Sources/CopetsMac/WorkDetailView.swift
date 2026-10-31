@@ -14,9 +14,9 @@ struct WorkDetailView: View {
     @State private var tagsText: String
     @State private var showAdvanced = false
     @State private var workspaceId: String?
-    @State private var contributorAgentIds = Set<String>()
+    @State private var contributorRoleIds = Set<String>()
     @State private var showDeleteConfirm = false
-    @State private var assistAgentId: String?
+    @State private var assistRoleId: String?
     @State private var localState: ClientWorkLocalState?
     @State private var localStateUnavailable = false
 
@@ -26,7 +26,7 @@ struct WorkDetailView: View {
         _detail = State(initialValue: work.description)
         _tagsText = State(initialValue: work.tags.joined(separator: ", "))
         _workspaceId = State(initialValue: work.workspaceId)
-        _contributorAgentIds = State(initialValue: Set(work.contributorAgentIds))
+        _contributorRoleIds = State(initialValue: Set(work.contributorRoleIds))
     }
 
     var body: some View {
@@ -61,13 +61,13 @@ struct WorkDetailView: View {
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
                     } trailing: {
-                        AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
+                        AgentAssistButton(fieldLabel: "描述", text: $detail, selectedRoleId: $assistRoleId, context: "目标名称：\(name)")
                     }
                     Divider()
 
                     WorkResourcesEditor(
                         workspaceId: $workspaceId,
-                        contributorAgentIds: $contributorAgentIds,
+                        contributorRoleIds: $contributorRoleIds,
                         workspaceEditable: false
                     )
 
@@ -169,7 +169,7 @@ struct WorkDetailView: View {
                 name: name == work.name ? nil : name,
                 description: detail,
                 tags: tags,
-                contributorAgentIds: Array(contributorAgentIds)
+                contributorRoleIds: Array(contributorRoleIds)
             )
             if updatedWork != nil {
                 dismiss()

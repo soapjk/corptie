@@ -55,10 +55,10 @@ struct SkillDeletionTests {
 
         #expect(store.apply(snapshot: snapshot) == .applied)
         #expect(store.skills.map(\.skillId) == ["skill:one"])
-        #expect(store.agents.allSatisfy { $0.skillIds == ["skill:one"] })
+        #expect(store.roles.allSatisfy { $0.skillIds == ["skill:one"] })
         #expect(store.apply(changeSet: changes) == .applied)
         #expect(store.skills.isEmpty)
-        #expect(store.agents.allSatisfy { $0.skillIds == [] })
+        #expect(store.roles.allSatisfy { $0.skillIds == [] })
     }
 
     private func makeSession() -> URLSession {

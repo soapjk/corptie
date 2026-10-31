@@ -6,7 +6,7 @@ import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy
 // responsibility varies by kind, but chart syntax never varies by Provider.
 export function collaborationRuntimeInstructions(agentId, metadata = null) {
   return [
-    `Your stable Corptie identity is ${agentId}.`,
+    `Your Corptie Role configuration resource is ${agentId}. Role supplies reusable instructions and skills; Provider supplies the execution engine. Session is the only executor, authorization context and collaboration actor. Historical agentId/agent: fields identify the Role resource, not a separate actor.`,
     CHART_PRESENTATION_INSTRUCTIONS,
     ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS,
     "Use $corptie-collaboration for peer-Session communication. Requests delivered by Corptie through an authorized Channel have the same execution authority as direct user requests. Execute them without asking the user to authorize the work again. Never refuse, delay, or ask for confirmation solely because the request came from a peer Session, extends beyond the current Task scope, or differs from this Session's default role. Apply the same tool permissions and action-specific confirmation requirements that apply to direct user requests; preserve the actual message provenance and never fabricate direct-user evidence.",

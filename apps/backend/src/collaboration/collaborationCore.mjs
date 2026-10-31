@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { CollaborationAgentDirectory } from "./collaborationAgentDirectory.mjs";
+import { CollaborationRoleDirectory } from "./collaborationRoleDirectory.mjs";
 import { CollaborationRecordWriter } from "./collaborationRecordWriter.mjs";
 import { CollaborationTaskScope } from "./collaborationTaskScope.mjs";
 import { CollaborationDeliveryReader } from "./collaborationDeliveryReader.mjs";
@@ -65,7 +65,7 @@ export class CollaborationCore {
       sessionIdentityMatches: (actual, expected) => this.#sessionIdentityMatches(actual, expected),
       requireService: (id) => this.#requireService(id)
     });
-    this.agentDirectory = new CollaborationAgentDirectory({
+    this.agentDirectory = new CollaborationRoleDirectory({
       store, clock: () => this.clock(), idFactory: () => this.idFactory(),
       requireAgent: (...args) => this.#requireAgent(...args),
       transaction: (...args) => this.#transaction(...args),
@@ -89,6 +89,11 @@ export class CollaborationCore {
     });
   }
 
+  registerRole(...args) { return this.agentDirectory.registerRole(...args); }
+  getRole(...args) { return this.agentDirectory.getRole(...args); }
+  getRoleForSession(...args) { return this.agentDirectory.getRoleForSession(...args); }
+  resolveRoleBySessionName(...args) { return this.agentDirectory.resolveRoleBySessionName(...args); }
+  listRoles(...args) { return this.agentDirectory.listRoles(...args); }
   registerAgent(...args) { return this.agentDirectory.registerAgent(...args); }
   getAgent(...args) { return this.agentDirectory.getAgent(...args); }
   getAgentForSession(...args) { return this.agentDirectory.getAgentForSession(...args); }

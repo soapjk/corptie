@@ -28,7 +28,7 @@ enum SessionCreationTitlePolicy {
         let suggestedAgentTitle = suggestedAgentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !suggestedAgentTitle.isEmpty { return EntityTitlePolicy.generatedDefault(suggestedAgentTitle) }
         let agentName = agentName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return EntityTitlePolicy.generatedDefault("\(agentName.isEmpty ? "Agent" : agentName)_Session")
+        return EntityTitlePolicy.generatedDefault("\(agentName.isEmpty ? "Role" : agentName)_Session")
     }
 }
 
@@ -58,7 +58,7 @@ struct NewSessionCreationSheet: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
 
-    let fixedAgent: Agent?
+    let fixedAgent: Role?
     let fixedWork: Work?
     let fixedCorptieTask: CorptieTask?
     let fixedKind: NewSessionKind?
@@ -66,7 +66,7 @@ struct NewSessionCreationSheet: View {
     var onCreated: (TaskSession) -> Void
 
     @State private var kind: NewSessionKind
-    @State private var selectedAgentId: String?
+    @State private var selectedRoleId: String?
     @State private var selectedCorptieTaskId: String?
     @State private var selectedWorkId: String?
     @State private var sessionTitle = ""
@@ -78,7 +78,7 @@ struct NewSessionCreationSheet: View {
     @State private var creationError: String?
 
     init(
-        fixedAgent: Agent? = nil,
+        fixedAgent: Role? = nil,
         fixedWork: Work? = nil,
         fixedCorptieTask: CorptieTask? = nil,
         fixedKind: NewSessionKind? = nil,
@@ -100,7 +100,7 @@ struct NewSessionCreationSheet: View {
             initialKind = fixedKind ?? .assistantChat
         }
         _kind = State(initialValue: initialKind)
-        _selectedAgentId = State(initialValue: fixedAgent?.agentId)
+        _selectedRoleId = State(initialValue: fixedAgent?.roleId)
         _selectedWorkId = State(initialValue: fixedWork?.id)
         _selectedCorptieTaskId = State(initialValue: fixedCorptieTask?.id)
         _sessionTitle = State(initialValue: SessionCreationTitlePolicy.defaultTitle(
@@ -172,10 +172,10 @@ struct NewSessionCreationSheet: View {
         .padding(20)
         .frame(width: 500, height: 620)
         .task {
-            async let agents: Void = client.refreshAgents()
+            async let roles: Void = client.refreshRoles()
             async let works: Void = client.refreshWorks()
             if modelCatalog.agentProviders.isEmpty { await backendClient.loadProviders() }
-            _ = await (agents, works)
+            _ = await (roles, works)
             reconcileProviderSelection()
             normalizeAgentSelection()
             applySuggestedTitle()
@@ -191,7 +191,7 @@ struct NewSessionCreationSheet: View {
                 if selectedWorkId == nil { selectedWorkId = client.works.first?.id }
             }
         }
-        .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
+        .onChange(of: selectedRoleId) { _, _ in applySuggestedTitle() }
         .onChange(of: selectedCorptieTaskId) { _, _ in
             normalizeAgentSelection()
             applySuggestedTitle()
@@ -240,10 +240,10 @@ struct NewSessionCreationSheet: View {
     private var assistantSection: some View {
         if fixedAgent == nil {
             choiceSection(
-                title: L10n("选择 Agent"),
-                emptyTitle: L10n("暂无可用 Agent"),
-                emptyDescription: L10n("请先在 Agent 管理页创建 Agent。"),
-                rows: workerAgents
+                title: L10n("选择角色"),
+                emptyTitle: L10n("暂无可用角色"),
+                emptyDescription: L10n("请先在角色管理页创建角色。"),
+                rows: workerRoles
             ) { agent in
                 agentChoiceRow(agent)
             }
@@ -258,10 +258,10 @@ struct NewSessionCreationSheet: View {
     private var workerSection: some View {
         if fixedAgent == nil {
             choiceSection(
-                title: L10n("选择 Agent"),
-                emptyTitle: L10n("暂无可用 Agent"),
-                emptyDescription: L10n("请先在 Agent 管理页创建 Agent。"),
-                rows: client.agents
+                title: L10n("选择角色"),
+                emptyTitle: L10n("暂无可用角色"),
+                emptyDescription: L10n("请先在角色管理页创建角色。"),
+                rows: client.roles
             ) { agent in
                 agentChoiceRow(agent)
             }
@@ -362,33 +362,33 @@ struct NewSessionCreationSheet: View {
         }
         if fixedAgent == nil {
             choiceSection(
-                title: L10n("选择 Work Agent"),
-                emptyTitle: L10n("Work 暂无可用 Agent"),
-                emptyDescription: L10n("请先在 Work 详情中分配 Agent。"),
+                title: L10n("选择 Work 角色"),
+                emptyTitle: L10n("Work 暂无可用角色"),
+                emptyDescription: L10n("请先在 Work 详情中分配角色。"),
                 rows: workAgents
             ) { agent in agentChoiceRow(agent) }
         }
     }
 
-    private var workAgents: [Agent] {
+    private var workAgents: [Role] {
         let work = fixedWork ?? client.works.first(where: { $0.id == selectedWorkId })
         guard let work else { return [] }
-        let contributorIds = Set(work.contributorAgentIds)
-        return client.agents.filter { contributorIds.contains($0.agentId) }
+        let contributorIds = Set(work.contributorRoleIds)
+        return client.roles.filter { contributorIds.contains($0.roleId) }
     }
 
-    private var workerAgents: [Agent] {
+    private var workerRoles: [Role] {
         guard let task = selectedCorptieTask,
               let work = client.works.first(where: { $0.id == task.workId }) else {
-            return client.agents
+            return client.roles
         }
-        let assignedIds = Set(work.contributorAgentIds)
-        return client.agents.filter { assignedIds.contains($0.agentId) }
+        let assignedIds = Set(work.contributorRoleIds)
+        return client.roles.filter { assignedIds.contains($0.roleId) }
     }
 
     private var canCreate: Bool {
         guard !titleWasEdited || sessionTitle.isEmpty || EntityNamePolicy.isValid(sessionTitle) else { return false }
-        guard selectedAgentId != nil, !selectedProviderId.isEmpty else { return false }
+        guard selectedRoleId != nil, !selectedProviderId.isEmpty else { return false }
         switch kind {
         case .assistantChat: return true
         case .workChat: return selectedWorkId != nil
@@ -415,8 +415,8 @@ struct NewSessionCreationSheet: View {
         title: String,
         emptyTitle: String,
         emptyDescription: String,
-        rows: [Agent],
-        @ViewBuilder row: @escaping (Agent) -> Row
+        rows: [Role],
+        @ViewBuilder row: @escaping (Role) -> Row
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
@@ -430,8 +430,8 @@ struct NewSessionCreationSheet: View {
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
-                List(rows, selection: $selectedAgentId) { agent in
-                    row(agent).tag(agent.agentId)
+                List(rows, selection: $selectedRoleId) { agent in
+                    row(agent).tag(agent.roleId)
                 }
                 .listStyle(.inset)
                 .frame(minHeight: 150)
@@ -439,7 +439,7 @@ struct NewSessionCreationSheet: View {
         }
     }
 
-    private func agentChoiceRow(_ agent: Agent) -> some View {
+    private func agentChoiceRow(_ agent: Role) -> some View {
         HStack(spacing: 10) {
             Image(systemName: agent.isPlatformAssistant ? "sparkles" : "person.fill")
                 .foregroundStyle(agent.isPlatformAssistant ? Color.accentColor : Color.blue)
@@ -474,23 +474,23 @@ struct NewSessionCreationSheet: View {
             if let fixedWork {
                 kind = .workChat
                 selectedWorkId = fixedWork.id
-                selectedAgentId = fixedWork.contributorAgentIds.contains(fixedAgent.agentId) ? fixedAgent.agentId : nil
+                selectedRoleId = fixedWork.contributorRoleIds.contains(fixedAgent.roleId) ? fixedAgent.roleId : nil
             } else if fixedCorptieTask != nil {
                 kind = .worker
-                selectedAgentId = fixedAgent.agentId
+                selectedRoleId = fixedAgent.roleId
             } else {
-                selectedAgentId = fixedAgent.agentId
+                selectedRoleId = fixedAgent.roleId
             }
             return
         }
-        let candidates: [Agent]
+        let candidates: [Role]
         switch kind {
-        case .assistantChat: candidates = client.agents
+        case .assistantChat: candidates = client.roles
         case .workChat: candidates = workAgents
-        case .worker: candidates = workerAgents
+        case .worker: candidates = workerRoles
         }
-        if !candidates.contains(where: { $0.agentId == selectedAgentId }) {
-            selectedAgentId = candidates.first?.agentId
+        if !candidates.contains(where: { $0.roleId == selectedRoleId }) {
+            selectedRoleId = candidates.first?.roleId
         }
     }
 
@@ -503,9 +503,9 @@ struct NewSessionCreationSheet: View {
         )
     }
 
-    private var selectedAgent: Agent? {
-        if let fixedAgent { return client.agents.first(where: { $0.agentId == fixedAgent.agentId }) ?? fixedAgent }
-        return client.agents.first(where: { $0.agentId == selectedAgentId })
+    private var selectedAgent: Role? {
+        if let fixedAgent { return client.roles.first(where: { $0.roleId == fixedAgent.roleId }) ?? fixedAgent }
+        return client.roles.first(where: { $0.roleId == selectedRoleId })
     }
 
     private var selectedCorptieTask: CorptieTask? {
@@ -518,13 +518,13 @@ struct NewSessionCreationSheet: View {
     }
 
     private func createSession() {
-        guard canCreate, let agentId = selectedAgentId, !isCreating else { return }
+        guard canCreate, let roleId = selectedRoleId, !isCreating else { return }
         let trimmedTitle = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedTitle = titleWasEdited && !trimmedTitle.isEmpty ? trimmedTitle : nil
         if submitsInBackground, kind == .worker, let task = selectedCorptieTask {
             enqueueWorkerSession(
                 task: task,
-                agentId: agentId,
+                roleId: roleId,
                 providerId: selectedProviderId,
                 title: requestedTitle
             )
@@ -536,8 +536,8 @@ struct NewSessionCreationSheet: View {
             let result: EntitySessionLaunchResult
             switch kind {
             case .assistantChat:
-                result = await client.startAgentSession(
-                    agentId: agentId,
+                result = await client.startRoleSession(
+                    roleId: roleId,
                     providerId: selectedProviderId,
                     title: requestedTitle
                 )
@@ -548,7 +548,7 @@ struct NewSessionCreationSheet: View {
                 }
                 result = await client.startWorkChat(
                     workId: workId,
-                    agentId: agentId,
+                    roleId: roleId,
                     providerId: selectedProviderId,
                     title: requestedTitle
                 )
@@ -559,7 +559,7 @@ struct NewSessionCreationSheet: View {
                 }
                 result = await client.createSession(
                     taskId: taskId,
-                    agentId: agentId,
+                    roleId: roleId,
                     providerId: selectedProviderId,
                     title: requestedTitle
                 )
@@ -577,7 +577,7 @@ struct NewSessionCreationSheet: View {
 
     private func enqueueWorkerSession(
         task: CorptieTask,
-        agentId: String,
+        roleId: String,
         providerId: String,
         title: String?
     ) {
@@ -598,7 +598,7 @@ struct NewSessionCreationSheet: View {
 
             let result = await client.createSession(
                 taskId: task.id,
-                agentId: agentId,
+                roleId: roleId,
                 providerId: providerId,
                 title: title
             )
