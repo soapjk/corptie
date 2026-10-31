@@ -6,39 +6,6 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-private struct SessionChromeCenterKey: EnvironmentKey {
-    static let defaultValue: CGFloat = 28
-}
-
-extension EnvironmentValues {
-    var sessionChromeCenterY: CGFloat {
-        get { self[SessionChromeCenterKey.self] }
-        set { self[SessionChromeCenterKey.self] = newValue }
-    }
-}
-
-private struct SessionChromeCenterPreference: PreferenceKey {
-    static let defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        if let next = nextValue() { value = next }
-    }
-}
-
-/// Measure only the header chrome, never scrolling cards or timeline rows.
-struct SessionChromeAlignment: ViewModifier {
-    @State private var centerY: CGFloat = 28
-
-    func body(content: Content) -> some View {
-        content
-            .environment(\.sessionChromeCenterY, centerY)
-            .coordinateSpace(name: "session.chrome.alignment")
-            .onPreferenceChange(SessionChromeCenterPreference.self) { value in
-                guard let value, value.isFinite, abs(centerY - value) >= 0.5 else { return }
-                centerY = value
-            }
-    }
-}
-
 /// Legacy observation stays outside the value-only header used by retained pages.
 struct DetailHeaderView: View {
     let session: TaskSession?
@@ -110,12 +77,6 @@ struct SessionConversationHeaderSurface: View {
     var body: some View {
         let _ = SessionSwitchTrace.shared.mark(.headerBody, sessionID: session?.id ?? "")
         headerControls
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: SessionChromeCenterPreference.self,
-                        value: geometry.frame(in: .named("session.chrome.alignment")).midY)
-                }
-            }
             .onChange(of: incomingProjectStatus, initial: true) { _, status in
                 guard let status else { return }
                 lastProjectStatus = ProjectStatusSnapshot(serverID: backendClient.baseURL.absoluteString, sessionID: session?.id, workspacePath: workspacePath, status: status)
