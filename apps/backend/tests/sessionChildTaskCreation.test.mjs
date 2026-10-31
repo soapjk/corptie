@@ -84,7 +84,8 @@ test("ordinary Worker creates and replays a child without platform administratio
     assert.equal(replay.task.id, created.task.id); assert.equal(f.starts.length, 1);
     const renewed = await f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, ...f.evidence() });
     assert.equal(renewed.task.id, created.task.id);
-    assert.equal(f.store.getTaskCreationOrigin(created.task.id).creationContextMessageId, input.userMessageEventId);
+    assert.equal(f.store.getTaskCreationOrigin(created.task.id).creationContextMessageId, null);
+    assert.equal(f.store.getTaskCreationOrigin(created.task.id).creatorSessionId,"session:source");
     f.store.updateTask(created.task.id, { title: "Automatically_updated_title", description: "Updated_task_scope" });
     assert.equal((await f.service.createTaskAndSession(f.source, f.agent.agentId, input)).task.id, created.task.id);
     assert.equal(f.starts.length, 1);
@@ -92,6 +93,47 @@ test("ordinary Worker creates and replays a child without platform administratio
     await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, parentTaskId: null, expectedParentResourceVersion: undefined }), { code: "IDEMPOTENCY_CONFLICT" });
     await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, description: "Other" }), { code: "IDEMPOTENCY_CONFLICT" });
   });
+});
+
+test("autonomous single and batch creation need no user message or turn evidence on every Provider",async t=>{
+  for(const provider of ["codex-app-server","claude-sdk","openclacky"]) await t.test(provider,async t=>{
+    const f=await fixture(t,provider);
+    const input={title:"Autonomous",agentId:f.agent.agentId,parentTaskId:f.root.id,
+      expectedParentResourceVersion:f.store.getTask(f.root.id).resource_version,idempotencyKey:"autonomous:one"};
+    const single=await f.service.createTaskAndSession(f.source,f.agent.agentId,input);
+    assert.equal(single.task.parentTaskId,f.root.id);
+    const batch=await f.service.createChildTasksBatch(f.source,f.agent.agentId,{
+      parentTaskId:f.root.id,expectedParentResourceVersion:f.store.getTask(f.root.id).resource_version,
+      items:Array.from({length:3},(_,index)=>({title:`Autonomous_${index}`,agentId:f.agent.agentId,idempotencyKey:`autonomous:batch:${index}`}))});
+    assert.equal(batch.succeeded,3);assert.equal(f.starts.length,4);
+    assert.equal(f.service.capabilities(f.source,f.agent.agentId).taskCreation.requiresExplicitUserIntent,false);
+    assert.ok(batch.results.every(item=>f.store.getTaskCreationOrigin(item.result.task.id).creationContextMessageId===null));
+    await assert.rejects(f.service.createTaskAndSession(f.source,f.agent.agentId,{
+      title:"Independent",agentId:f.agent.agentId,idempotencyKey:"independent:no-user"}),{code:"INVALID_INPUT"});
+  });
+});
+
+test("child schemas omit evidence requirements while independent creation keeps them",()=>{
+  const ajv=new Ajv({strict:false});
+  const single=ajv.compile(collaborationDynamicTools.find(tool=>tool.name==="corptie_collaboration_tasks_create").inputSchema);
+  const input={title:"Child",agent_id:"agent:a",parent_task_id:"task:p",expected_parent_resource_version:1,idempotency_key:"stable"};
+  assert.equal(single(input),true);
+  assert.equal(single({...input,parent_task_id:null}),false);
+  const batch=ajv.compile(collaborationDynamicTools.find(tool=>tool.name==="corptie_collaboration_tasks_create_batch").inputSchema);
+  assert.equal(batch({parent_task_id:"task:p",expected_parent_resource_version:1,items:[{title:"Child",agent_id:"agent:a",idempotency_key:"stable"}]}),true);
+});
+
+test("child creation does not treat expired, planning or Automation message context as an authorization grant",async t=>{
+  const f=await fixture(t);
+  for(const [index,source] of ["desktop","automation","collaboration"].entries()) {
+    const evidence=f.evidence(f.source,"分析并实现当前任务",source);
+    const result=await f.service.createTaskAndSession(f.source,f.agent.agentId,f.input({
+      ...evidence,title:`Autonomous_source_${index}`,idempotencyKey:`source:${index}`}));
+    assert.equal(f.store.getTaskCreationOrigin(result.task.id).creationContextMessageId,null);
+  }
+  const input=f.input({title:"Autonomous_expired",idempotencyKey:"expired"});
+  f.store.db.run("UPDATE session_events SET created_at='2000-01-01T00:00:00Z' WHERE event_id=?",[input.userMessageEventId]);
+  assert.equal((await f.service.createTaskAndSession(f.source,f.agent.agentId,input)).task.parentTaskId,f.root.id);
 });
 
 test("production collaboration composition fails closed on invalid proofs and recovers the same pair without restart", async t => {
@@ -141,13 +183,12 @@ test("Work Chat may choose a same-Work root; parent Session replacement preserve
   assert.throws(() => f.service.getTask(childSession, f.agent.agentId, outsider.id), { code: "TASK_OUTSIDE_SCOPE" });
 });
 
-test("parent scope, depth, CAS and explicit user intent fail before persistence", async t => {
+test("parent scope, depth and CAS fail before persistence, not missing user creation intent", async t => {
   const f = await fixture(t), initial = f.store.listTasks().length;
   const other = f.store.createTask({ workId: f.work.id, title: "Other_root" });
   await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ parentTaskId: other.id })), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
   await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ expectedParentResourceVersion: 999 })), { code: "TASK_PARENT_VERSION_CONFLICT" });
   await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ expectedParentResourceVersion: undefined })), { code: "TASK_PARENT_VERSION_CONFLICT" });
-  await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...f.input(), ...f.evidence(f.source, "给我一个完整方案") }), { code: "USER_MESSAGE_TASK_CREATION_INTENT_MISSING" });
   assert.equal(f.store.listTasks().length, initial + 1);
   const child = f.store.createTask({ workId: f.work.id, title: "Existing_child", parentTaskId: f.root.id }, {}, { expectedParentResourceVersion: f.store.getTask(f.root.id).resource_version });
   const childSource = f.open("child-source", child.id);
@@ -179,9 +220,8 @@ test("child tool schema and HTTP adapter preserve parent, CAS and exact authenti
   const f = await fixture(t), input = f.input(), tool = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create");
   const validate = new Ajv({ strict: false }).compile(tool.inputSchema);
   const wire = { title: input.title, agent_id: input.agentId, parent_task_id: input.parentTaskId,
-    expected_parent_resource_version: input.expectedParentResourceVersion, logical_session_id: input.logicalSessionId,
-    user_message_event_id: input.userMessageEventId, user_message_sequence: input.userMessageSequence,
-    turn_id: input.turnId, idempotency_key: input.idempotencyKey, verification_criteria: "Run tests" };
+    expected_parent_resource_version: input.expectedParentResourceVersion,
+    idempotency_key: input.idempotencyKey, verification_criteria: "Run tests" };
   assert.equal(validate(wire), true);
   const bad = { ...wire }; delete bad.expected_parent_resource_version; assert.equal(validate(bad), false);
   const client = { post: (path, body) => new Promise(resolve => {
@@ -275,8 +315,6 @@ function batchInput(f, count = 3, prefix = "batch") {
 test("batch schema, dynamic tool and HTTP endpoint create multiple children in one request", async t => {
   const f = await fixture(t), input = batchInput(f), definition = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create_batch");
   const wire = { parent_task_id: input.parentTaskId, expected_parent_resource_version: input.expectedParentResourceVersion,
-    logical_session_id: input.logicalSessionId, user_message_event_id: input.userMessageEventId,
-    user_message_sequence: input.userMessageSequence, turn_id: input.turnId,
     items: input.items.map(item => ({ title: item.title, agent_id: item.agentId, idempotency_key: item.idempotencyKey,
       verification_criteria: item.verificationCriteria })) };
   const validate = new Ajv({ strict: false }).compile(definition.inputSchema);
@@ -342,8 +380,6 @@ test("invalid batch envelopes, duplicate keys and foreign parents reject before 
     items: [input.items[0], input.items[0]] }), { code: "DUPLICATE_TASK_BATCH_KEY" });
   await assert.rejects(f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
     parentTaskId: "task:outside" }), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
-  await assert.rejects(f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
-    ...f.evidence(f.source, "给我一个完整方案") }), { code: "USER_MESSAGE_TASK_CREATION_INTENT_MISSING" });
   assert.equal(f.store.listTasks().length, 1); assert.equal(f.starts.length, 0);
 });
 
