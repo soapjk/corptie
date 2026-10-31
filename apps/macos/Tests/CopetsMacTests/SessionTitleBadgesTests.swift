@@ -15,30 +15,30 @@ struct SessionTitleBadgesTests {
         """.utf8))
     }
 
-    private func agent() -> Agent {
-        Agent(agentId: "agent:custom", name: "自定义助手", description: "", status: "idle", systemPrompt: "",
+    private func role() -> Role {
+        Role(roleId: "agent:custom", name: "自定义助手", description: "", status: "idle", systemPrompt: "",
               capabilities: [], avatarPath: "/tmp/custom-avatar.png", createdAt: "", updatedAt: "")
     }
 
-    @Test func allProvidersUseTheBoundAgentAndCurrentModel() throws {
+    @Test func allProvidersUseTheBoundRoleAndCurrentModel() throws {
         for provider in ["codex-app-server", "claude-sdk", "openclacky", "future-provider"] {
             let session = try session(provider: provider)
-            let identity = SessionTitleIdentity.resolve(.init(session: session), agents: [agent().id: agent()], providers: [])
+            let identity = SessionTitleIdentity.resolve(.init(session: session), roles: [role().id: role()], providers: [])
             #expect(identity.providerID == provider)
             #expect(identity.providerHelp == "\(provider) · model-v1")
-            #expect(identity.agentHelp == "自定义助手")
+            #expect(identity.roleHelp == "自定义助手")
             #expect(identity.avatarPath == "/tmp/custom-avatar.png")
         }
-        let unbound = SessionTitleIdentity.resolve(.init(session: try session(agent: nil)), agents: [:], providers: [])
-        #expect(unbound.agentID == nil)
-        let missing = SessionTitleIdentity.resolve(.init(session: try session()), agents: [:], providers: [])
-        #expect(missing.agentID == "agent:custom")
+        let unbound = SessionTitleIdentity.resolve(.init(session: try session(agent: nil)), roles: [:], providers: [])
+        #expect(unbound.roleID == nil)
+        let missing = SessionTitleIdentity.resolve(.init(session: try session()), roles: [:], providers: [])
+        #expect(missing.roleID == "agent:custom")
         #expect(missing.avatarPath == nil)
     }
 
     @Test func identityStreamTracksSwitchesAndAvatarEditsWithoutUnrelatedInvalidations() throws {
         let original = try session()
-        var state = NormalizedAppState(sessions: [original.id: original], agents: [agent().id: agent()])
+        var state = NormalizedAppState(sessions: [original.id: original], roles: [role().id: role()])
         let states = CurrentValueSubject<NormalizedAppState, Never>(state)
         let providers = CurrentValueSubject<[AgentProviderDescriptor], Never>([])
         var values: [SessionTitleIdentity] = []
@@ -47,7 +47,7 @@ struct SessionTitleBadgesTests {
         #expect(values.count == 1)
         state.sessions[original.id]?.executionStatus = "queued"
         states.send(state)
-        state.agents[agent().id]?.status = "busy"
+        state.roles[role().id]?.status = "busy"
         states.send(state)
         #expect(values.count == 1)
         state.sessions[original.id]?.external?.currentModel = "model-v2"
@@ -56,10 +56,10 @@ struct SessionTitleBadgesTests {
         state.sessions[original.id] = try session(provider: "claude-sdk")
         states.send(state)
         #expect(values.last?.providerID == "claude-sdk")
-        state.agents[agent().id]?.avatarPath = "/tmp/new-avatar.png"
+        state.roles[role().id]?.avatarPath = "/tmp/new-avatar.png"
         states.send(state)
         #expect(values.last?.avatarPath == "/tmp/new-avatar.png")
-        state.agents.removeValue(forKey: agent().id)
+        state.roles.removeValue(forKey: role().id)
         states.send(state)
         #expect(values.last?.avatarPath == nil)
         #expect(values.count == 5)
@@ -67,7 +67,7 @@ struct SessionTitleBadgesTests {
     }
 
     @Test func longTitlesKeepBothIconsVisibleAtNarrowWidths() throws {
-        let identity = SessionTitleIdentity.resolve(.init(session: try session()), agents: [:], providers: [])
+        let identity = SessionTitleIdentity.resolve(.init(session: try session()), roles: [:], providers: [])
         for width: CGFloat in [100, 160, 264] {
             let host = NSHostingView(rootView: HStack(spacing: 4) {
                 Text(String(repeating: "很长的会话标题", count: 20)).lineLimit(1)
