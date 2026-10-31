@@ -281,7 +281,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
-        #expect(controls.contains("PlatformWorkOutlineToolbar(density: .compact) {"))
+        #expect(controls.contains("PlatformWorkOutlineToolbar(density: .titlebar) {"))
         #expect(!controls.contains(".padding(.top, 3)"))
         #expect(PlatformWorkOutlineLayout.controlSize == 44)
         #expect(PlatformWorkOutlineLayout.controlSurfaceDiameter == 36)
@@ -316,6 +316,49 @@ struct UnifiedConsoleControlSurfaceTests {
             host.layoutSubtreeIfNeeded()
             #expect(host.fittingSize.height == PlatformWorkOutlineLayout.toolbarHeight)
             #expect(host.fittingSize.width <= width)
+        }
+    }
+
+    @Test @MainActor
+    func flatWorkToolbarAlignsWithNativeTrafficLightsAtEverySidebarWidth() throws {
+        let marker = NSView()
+        let host = NSHostingView(rootView: VStack(spacing: 0) {
+            PlatformWorkOutlineToolbar(density: .titlebar) {
+                ForEach(["arrow.up.arrow.down", "rectangle.3.group", "magnifyingglass", "archivebox"], id: \.self) { symbol in
+                    Button {} label: { PlatformWorkOutlineToolbarGlyph(symbol: symbol) }
+                        .platformWorkOutlineToolbarControl()
+                }
+            } trailing: {
+                Menu {} label: { PlatformWorkOutlineToolbarGlyph(symbol: "plus") }
+                    .platformWorkOutlineToolbarControl()
+                    .menuIndicator(.hidden)
+            }
+            .background(WorkToolbarFrameProbe(view: marker))
+            Spacer(minLength: 0)
+        }.ignoresSafeArea(.container, edges: .top))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.contentView = host
+        defer { window.close() }
+        let close = try #require(window.standardWindowButton(.closeButton))
+        for width in [220.0, 312.0, 420.0] {
+            window.setContentSize(NSSize(width: width, height: 300))
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            let toolbarFrame = marker.convert(marker.bounds, to: nil)
+            let closeFrame = close.convert(close.bounds, to: nil)
+            #expect(abs(toolbarFrame.midY - closeFrame.midY) < 0.5)
+            #expect(toolbarFrame.height == 32)
+            #expect(toolbarFrame.width <= width)
+            func hasBackdrop(_ layer: CALayer) -> Bool {
+                String(describing: type(of: layer)).contains("BackdropLayer")
+                    || (layer.sublayers ?? []).contains(where: hasBackdrop)
+            }
+            if let layer = host.layer { #expect(!hasBackdrop(layer)) }
         }
     }
 
@@ -420,10 +463,10 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!sessionComposer.contains("else if !sessionIsReady"))
         #expect(!sessionComposer.contains("ReadOnlyComposer(\n                reason: composerUnavailableReason"))
         #expect(composer.contains("ConversationComposerChrome"))
-        #expect(composer.contains("ConversationComposerEditorRow"))
+        #expect(composer.contains("ComposerEditorRowLayout(minimumEditorWidth: 100)"))
         #expect(composer.contains("ThreadMetaView("))
-        #expect(composer.contains("|| backendClient.isSendingMessage"))
-        #expect(composer.contains("!backendClient.isSendingMessage else"))
+        #expect(composer.contains("|| sendingMessage"))
+        #expect(composer.contains("!sendingMessage else"))
         #expect(!composer.contains(".opacity(!backendClient.selectedCanSendNow"))
         #expect(!composer.contains(".disabled(!isReady)"))
     }
@@ -1112,4 +1155,10 @@ struct UnifiedConsoleControlSurfaceTests {
             encoding: .utf8
         )
     }
+}
+
+private struct WorkToolbarFrameProbe: NSViewRepresentable {
+    let view: NSView
+    func makeNSView(context: Context) -> NSView { view }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

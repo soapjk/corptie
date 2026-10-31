@@ -177,11 +177,8 @@ struct SessionMessageComposerSurface: View {
                 compactEditorRow
                     .frame(maxWidth: CompactComposerLayout.maximumWidth)
             } else {
-                ConversationComposerChrome {
-                    HStack(spacing: 0) {
-                        statusRow.frame(maxWidth: .infinity, alignment: .leading)
-                        stopButton(compact: false)
-                    }
+                ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
+                    composerToolbar
                 } content: {
                     editorRow
                 }
@@ -310,22 +307,30 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var editorRow: some View {
-        ConversationComposerEditorRow(
-            showsAttachments: !attachedImages.isEmpty,
-            showsModel: allowsModelSwitch && canSwitchModel
-        ) {
-            attachmentStrip
-        } editor: {
+        VStack(alignment: .leading, spacing: 4) {
+            if !attachedImages.isEmpty { attachmentStrip }
             editorInput
-        } send: {
-            sendButton
-        } more: {
-            moreMenu
-        } model: {
-            modelMenu
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .padding(.horizontal, 10)
         }
         .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
             importDroppedImages(providers)
+        }
+    }
+
+    private var composerToolbar: some View {
+        ComposerEditorRowLayout(minimumEditorWidth: 100) {
+            HStack(spacing: 6) {
+                moreMenu
+                statusRow
+                    .lineLimit(1)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 6) {
+                if allowsModelSwitch && canSwitchModel { modelMenu }
+                stopButton(compact: false)
+                sendButton
+            }
         }
     }
 
@@ -453,7 +458,7 @@ struct SessionMessageComposerSurface: View {
             onMentionCommand: handleMentionCommand,
             onSubmit: send
         )
-        .frame(height: compact ? CompactComposerLayout.resolvedInputHeight(inputHeight) : inputHeight)
+        .frame(height: compact ? CompactComposerLayout.resolvedInputHeight(inputHeight) : max(72, inputHeight))
         .popover(isPresented: mentionMenuPresented,
                  attachmentAnchor: .point(mentionAnchorPoint), arrowEdge: .bottom) {
             ComposerMentionMenu(candidates: mentionCandidates,
@@ -811,7 +816,8 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var modelMenuMaxWidth: CGFloat {
-        ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth, presentation: .regular)
+        min(ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth, presentation: .regular),
+            composerWidth > 0 ? max(80, composerWidth - 124) : 176)
     }
 }
 

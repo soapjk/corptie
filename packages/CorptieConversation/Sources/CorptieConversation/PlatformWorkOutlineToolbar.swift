@@ -18,13 +18,15 @@ public enum PlatformWorkOutlineLayout {
 public enum PlatformWorkOutlineToolbarDensity: Sendable {
     case regular
     case compact
+    /// Flat macOS window chrome; its 32-point row centers on the traffic lights.
+    case titlebar
 
-    public var controlSize: CGFloat { self == .compact ? 36 : PlatformWorkOutlineLayout.controlSize }
-    public var controlSurfaceDiameter: CGFloat { self == .compact ? 30 : PlatformWorkOutlineLayout.controlSurfaceDiameter }
-    public var symbolSize: CGFloat { self == .compact ? 14 : PlatformWorkOutlineLayout.symbolSize }
-    public var controlSpacing: CGFloat { self == .compact ? 5 : PlatformWorkOutlineLayout.controlSpacing }
-    public var horizontalInset: CGFloat { self == .compact ? 10 : PlatformWorkOutlineLayout.horizontalInset }
-    public var verticalInset: CGFloat { self == .compact ? 4 : PlatformWorkOutlineLayout.verticalInset }
+    public var controlSize: CGFloat { self == .titlebar ? 28 : self == .compact ? 36 : PlatformWorkOutlineLayout.controlSize }
+    public var controlSurfaceDiameter: CGFloat { self == .titlebar ? 28 : self == .compact ? 30 : PlatformWorkOutlineLayout.controlSurfaceDiameter }
+    public var symbolSize: CGFloat { self == .regular ? PlatformWorkOutlineLayout.symbolSize : 14 }
+    public var controlSpacing: CGFloat { self == .titlebar ? 4 : self == .compact ? 5 : PlatformWorkOutlineLayout.controlSpacing }
+    public var horizontalInset: CGFloat { self == .regular ? PlatformWorkOutlineLayout.horizontalInset : 10 }
+    public var verticalInset: CGFloat { self == .titlebar ? 2 : self == .compact ? 4 : PlatformWorkOutlineLayout.verticalInset }
 }
 
 private struct WorkOutlineToolbarDensityKey: EnvironmentKey {
@@ -107,27 +109,39 @@ public struct PlatformWorkOutlineToolbarGlyph: View {
 private struct PlatformWorkOutlineToolbarControlModifier: ViewModifier {
     @Environment(\.workOutlineToolbarDensity) private var density
 
+    @ViewBuilder
+    private func styledControl(_ content: Content) -> some View {
+        #if os(macOS)
+        if density == .titlebar {
+            content
+                .menuStyle(.borderlessButton)
+                .buttonStyle(.borderless)
+        } else {
+            content
+                .menuStyle(.button)
+                .buttonStyle(PlatformTabButtonStyle(symbolFeedback: true))
+        }
+        #else
+        content.menuStyle(.borderlessButton).buttonStyle(.plain)
+        #endif
+    }
+
     func body(content: Content) -> some View {
-        content
-            #if os(macOS)
-            .menuStyle(.button)
-            .buttonStyle(PlatformTabButtonStyle(symbolFeedback: true))
-            #else
-            .menuStyle(.borderlessButton)
-            .buttonStyle(.plain)
-            #endif
+        styledControl(content)
             .frame(
                 width: density.controlSize,
                 height: density.controlSize
             )
             .background {
-                Color.clear
-                    .frame(
-                        width: density.controlSurfaceDiameter,
-                        height: density.controlSurfaceDiameter
-                    )
-                    .platformGlassSurface(in: Circle(), variant: .clear)
-                    .allowsHitTesting(false)
+                if density != .titlebar {
+                    Color.clear
+                        .frame(
+                            width: density.controlSurfaceDiameter,
+                            height: density.controlSurfaceDiameter
+                        )
+                        .platformGlassSurface(in: Circle(), variant: .clear)
+                        .allowsHitTesting(false)
+                }
             }
             .contentShape(Rectangle())
     }
