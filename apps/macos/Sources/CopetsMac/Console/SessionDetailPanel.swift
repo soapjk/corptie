@@ -29,7 +29,7 @@ struct SessionDetailPanel: View {
     @State private var providerCatalogLoadFailed = false
     @State private var showsAllContextReferences = false
     private enum DetailNativeSheet: Identifiable {
-        case artifact(WorkArtifact), task(CorptieTask), provider(String), worktree(String), work(Work), agent(Agent)
+        case artifact(WorkArtifact), task(CorptieTask), provider(String), worktree(String), work(Work), agent(Role)
         var id: String {
             switch self {
             case .artifact(let value): "artifact:\(value.artifactId)"
@@ -37,7 +37,7 @@ struct SessionDetailPanel: View {
             case .provider(let id): "provider:\(id)"
             case .worktree(let id): "worktree:\(id)"
             case .work(let value): "work:\(value.id)"
-            case .agent(let value): "agent:\(value.agentId)"
+            case .agent(let value): "agent:\(value.roleId)"
             }
         }
     }
@@ -49,7 +49,7 @@ struct SessionDetailPanel: View {
 
     private func updateDisplayValues() {
         let value = SessionDetailPanelValues(tasks: entityClient.tasks, works: entityClient.works,
-            agents: entityClient.agents, providers: modelCatalog.agentProviders,
+            roles: entityClient.roles, providers: modelCatalog.agentProviders,
             models: modelCatalog.models(for: session.external?.provider),
             defaultReasoning: modelCatalog.defaultReasoning(for: session.external?.provider),
             isSwitchingModel: backendClient.isSwitchingModel, isSwitchingReasoning: backendClient.isSwitchingReasoning)
@@ -152,7 +152,7 @@ struct SessionDetailPanel: View {
             case .task(let task):
                 CorptieTaskEditView(task: task) { }
             case .work(let work): WorkDetailView(work: work)
-            case .agent(let agent): AgentDetailView(agent: agent).environmentObject(AppTabRouter.shared)
+            case .agent(let agent): RoleDetailView(agent: agent).environmentObject(AppTabRouter.shared)
             case .provider:
                 VStack(alignment: .leading, spacing: 12) {
                     Text(L10n("Provider 管理")).font(.headline)
@@ -322,8 +322,8 @@ struct SessionDetailPanel: View {
                 if let value = backendClient.appState.task(reference.targetId ?? "") { detailNativeSheet = .task(value) }
                 else { AppTabRouter.shared.navigationError = "Task 暂不可用，请先刷新资源列表" }
             case .agent:
-                if let value = displayValues.agents.first(where: { $0.agentId == reference.targetId }) { detailNativeSheet = .agent(value) }
-                else { AppTabRouter.shared.navigationError = "Agent 暂不可用，请先刷新资源列表" }
+                if let value = displayValues.roles.first(where: { $0.roleId == reference.targetId }) { detailNativeSheet = .agent(value) }
+                else { AppTabRouter.shared.navigationError = "角色暂不可用，请先刷新资源列表" }
             case .session:
                 if let target = reference.targetId, let resolved = residentDetailSessionID(target) {
                     AppTabRouter.shared.openSession(resolved, source: .userSelection)
@@ -609,7 +609,7 @@ struct SessionDetailPanel: View {
                     Divider()
                     Button("Work…", systemImage: "scope") { contextReferenceAddMode = .work }
                     Button("CorptieTask…", systemImage: "checklist") { contextReferenceAddMode = .task }
-                    Button("Agent…", systemImage: "person.2") { contextReferenceAddMode = .agent }
+                    Button("Role…", systemImage: "person.2") { contextReferenceAddMode = .agent }
                     Button("其他会话…", systemImage: "bubble.left.and.bubble.right") { contextReferenceAddMode = .session }
             } label: { ConversationDetailHeaderIcon(systemName: "plus") }
             .menuStyle(.borderlessButton)
@@ -864,7 +864,7 @@ struct SessionDetailPanel: View {
     }
 
     private var runtimeFields: [(String, String)] {
-        var fields = [("Agent", agentDisplayName)]
+        var fields = [("Role", agentDisplayName)]
         if let cwd = session.external?.cwd, !cwd.isEmpty {
             fields.append(("工作空间", compactPath(cwd)))
         }
@@ -872,12 +872,12 @@ struct SessionDetailPanel: View {
     }
 
     private var agentDisplayName: String {
-        sessionAgentDisplayName(session: session, agents: displayValues.agents)
+        sessionAgentDisplayName(session: session, roles: displayValues.roles)
     }
 
-    private var assistantAgent: Agent? {
-        guard let agentId = session.agentId else { return nil }
-        return displayValues.agents.first { $0.agentId == agentId }
+    private var assistantAgent: Role? {
+        guard let roleId = session.roleId else { return nil }
+        return displayValues.roles.first { $0.roleId == roleId }
     }
 
     private var friendlyUpdatedAt: String {
@@ -903,7 +903,7 @@ struct SessionDetailPanel: View {
 private struct SessionDetailPanelValues: Equatable {
     var tasks: [CorptieTask] = []
     var works: [Work] = []
-    var agents: [Agent] = []
+    var roles: [Role] = []
     var providers: [AgentProviderDescriptor] = []
     var models: [CodexModel] = []
     var defaultReasoning: String?

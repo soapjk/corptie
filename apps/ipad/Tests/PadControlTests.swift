@@ -7,15 +7,15 @@ import CorptieClientCore
 struct PadControlTests {
     @Test func inspectorScheduleRoutesToExactAutomationAndPreservesOtherTabs() throws {
         let store = PadControlStore()
-        let other = PadControlSelection(kind: .agents, id: "agent:keep")
-        store.routes[.agents] = other
+        let other = PadControlSelection(kind: .roles, id: "agent:keep")
+        store.routes[.roles] = other
         let task = try JSONDecoder().decode(ClientInspectorValue.self, from:
             Data(#"{"taskId":"scheduled:one","logicalSessionId":"logical:target","name":"检查"}"#.utf8))
         let id = try #require(PadControlPresentation.automationID(task))
         #expect(store.selectAutomation(id: id) == .automations)
         #expect(store.selections[.automations] == "scheduled:one")
         #expect(store.routes[.automations] == PadControlSelection(kind: .automations, id: "scheduled:one"))
-        #expect(store.routes[.agents] == other)
+        #expect(store.routes[.roles] == other)
         #expect(store.automationNavigationRevision == 1)
         #expect(store.selectAutomation(id: id) == .automations)
         #expect(store.automationNavigationRevision == 2)
@@ -71,9 +71,9 @@ struct PadControlTests {
 
     @Test func optionalTabsIgnoreUnknownRequiredAndDuplicateStoredEntries() {
         #expect(PadTabPreferences.normalized(["settings", "workspace", "unknown", "agents", "agents"])
-            == [.agents])
+            == [.roles])
         #expect(PadTabPreferences.normalized(["resources", "agents", "worktrees", "automations"])
-            == [.automations, .worktrees, .agents])
+            == [.automations, .worktrees, .roles])
         #expect(PadTabPreferences.normalized([]).isEmpty)
     }
 
@@ -189,15 +189,15 @@ struct PadControlTests {
 
     @Test func tabsIncludeRequiredPagesAndMapSkillsUnderAgents() {
         #expect(Set(PadTab.allCases) == Set(PadTab.optionalTabs + [.workspace, .settings]))
-        #expect(PadTab.agents.resources == [.agents, .skills])
+        #expect(PadTab.roles.resources == [.roles, .skills])
         #expect(PadTab.worktrees.resources == [.repositories])
     }
 
     @Test func hiddenPagesDoNotFetchAndInvalidationPreservesSelection() async throws {
         let (connection, store) = try fixture()
         defer { store.pause() }
-        store.routes[.agents] = PadControlSelection(kind: .agents, id: "agent:1")
-        store.activate(.agents, connection: connection)
+        store.routes[.roles] = PadControlSelection(kind: .roles, id: "agent:1")
+        store.activate(.roles, connection: connection)
         try await Task.sleep(for: .milliseconds(600))
         #expect(ControlProtocol.calls.isEmpty)
         // Legacy hosts send invalidations; only that compatibility path reads.
@@ -206,17 +206,17 @@ struct PadControlTests {
             if store.items[.skills] != nil { break }
             try await Task.sleep(for: .milliseconds(50))
         }
-        #expect(store.items[.agents]?.first?.name == "Before")
+        #expect(store.items[.roles]?.first?.name == "Before")
         #expect(!ControlProtocol.calls.contains { $0.contains("repositories") || $0.contains("automations") })
         ControlProtocol.phase = 1
         store.invalidate(connection)
         for _ in 0..<40 {
-            if store.items[.agents]?.first?.name == "After" { break }
+            if store.items[.roles]?.first?.name == "After" { break }
             try await Task.sleep(for: .milliseconds(50))
         }
-        #expect(store.items[.agents]?.first?.name == "After")
-        #expect(store.routes[.agents]?.id == "agent:1")
-        #expect(store.visibleTab == .agents)
+        #expect(store.items[.roles]?.first?.name == "After")
+        #expect(store.routes[.roles]?.id == "agent:1")
+        #expect(store.visibleTab == .roles)
         store.pause()
         let calls = ControlProtocol.calls.count
         store.invalidate(connection)
@@ -226,14 +226,14 @@ struct PadControlTests {
 
     @Test func refreshAppliesDeletionsAndDenialIsNotEmptySuccess() async throws {
         let (connection, store) = try fixture()
-        await store.refresh(.agents, connection: connection)
-        #expect(store.items[.agents]?.count == 1)
+        await store.refresh(.roles, connection: connection)
+        #expect(store.items[.roles]?.count == 1)
         ControlProtocol.phase = 2
-        await store.refresh(.agents, connection: connection)
-        #expect(store.items[.agents]?.isEmpty == true)
+        await store.refresh(.roles, connection: connection)
+        #expect(store.items[.roles]?.isEmpty == true)
         ControlProtocol.fail = true
-        await store.refresh(.agents, connection: connection)
-        #expect(store.errors[.agents]?.contains("拒绝") == true)
+        await store.refresh(.roles, connection: connection)
+        #expect(store.errors[.roles]?.contains("拒绝") == true)
     }
 
     @Test func changingSessionClearsOldTimelineButReselectingDoesNot() {

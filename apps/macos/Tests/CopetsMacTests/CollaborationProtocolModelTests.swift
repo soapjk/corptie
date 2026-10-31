@@ -85,8 +85,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
         """#.utf8)
 
         let task = try JSONDecoder().decode(CollaborationTask.self, from: data)
-        XCTAssertEqual(task.initiatorAgentId, "agent:initiator")
-        XCTAssertEqual(task.recipientAgentId, "agent:recipient")
+        XCTAssertEqual(task.initiatorRoleId, "agent:initiator")
+        XCTAssertEqual(task.recipientRoleId, "agent:recipient")
         XCTAssertEqual(task.sourceWorkId, "work:source")
         XCTAssertEqual(task.targetWorkId, "work:target")
         XCTAssertEqual(task.initiatorSessionId, "session:historical-initiator")

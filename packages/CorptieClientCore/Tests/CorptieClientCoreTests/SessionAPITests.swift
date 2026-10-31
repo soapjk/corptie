@@ -67,9 +67,9 @@ struct SessionAPITests {
         let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
             bearerToken: "test-only", configuration: config)
         let api = ClientSessionAPI(transport: transport)
-        #expect(try await api.workCreationOptions().agents.map(\.id) == ["agent:test"])
+        #expect(try await api.workCreationOptions().roles.map(\.id) == ["agent:test"])
         let receipt = try await api.createWork(ClientWorkCreation(requestId: "work_create1", name: "NewWork",
-            description: "Scope", contributorAgentIds: ["agent:test"]))
+            description: "Scope", contributorRoleIds: ["agent:test"]))
         #expect(receipt.kind == "work_create")
         #expect(receipt.entityResult?.workId == "work:new")
     }
@@ -80,7 +80,7 @@ struct SessionAPITests {
             bearerToken: "test-only", configuration: config)
         let api = ClientSessionAPI(transport: transport)
         let input = ClientTaskCreation(requestId: "create_123", workId: "work:test", title: "Task",
-            mainAgentId: "agent:test", providerId: "provider:test")
+            mainRoleId: "agent:test", providerId: "provider:test")
         let receipt = try await api.createTask(sourceSessionId: "session:test", input: input)
         #expect(receipt.kind == "create_task")
         #expect(receipt.taskResult?.taskId == "task:new")
@@ -104,7 +104,7 @@ struct SessionAPITests {
         #expect(management.task.archived == false)
         #expect(management.actions.restart == ClientEntityAction(available: false, reason: "PROVIDER_INITIALIZING"))
         #expect(management.actions.delete.available)
-        #expect(management.agents.map(\.id) == ["agent:test"])
+        #expect(management.roles.map(\.id) == ["agent:test"])
         let plan = try await api.taskDeletionPlan(taskId: "task:one")
         #expect(plan.status == "risky")
         #expect(plan.worktree?.branchName == "task/abc")

@@ -189,7 +189,7 @@ export function createSessionApplicationComposition({
       // Refresh presentation capabilities at Turn boundaries, including already
       // running/resumed Sessions whose Provider thread predates this contract.
       const presentationContext = { contextKey: "presentation", contextReusable: true,
-        prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>` };
+        prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>\n\nRole is reusable user configuration; Provider is the execution engine; Session is the only executor and authorization/collaboration actor. Historical Agent resource labels mean Role. Selecting a Role never grants permissions.` };
       if (globalPreferenceContext) globalPreferenceContext.contextKey = "global-preferences";
       const contexts = [baseContext, globalPreferenceContext, discoveryContext, skillRoutingContext,
         presentationContext, mentionContext, directUserIntentContext, memoryContext]

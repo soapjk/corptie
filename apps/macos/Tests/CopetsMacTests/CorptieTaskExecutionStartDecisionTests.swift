@@ -7,7 +7,7 @@ struct CorptieTaskExecutionStartDecisionTests {
             CorptieTaskExecutionStartDecision.resolve(
                 status: "in_progress",
                 currentSessionId: "session:existing",
-                mainAgentId: "agent:bound"
+                mainRoleId: "agent:bound"
             ) == .resume(sessionId: "session:existing")
         )
     }
@@ -17,8 +17,8 @@ struct CorptieTaskExecutionStartDecisionTests {
             CorptieTaskExecutionStartDecision.resolve(
                 status: "todo",
                 currentSessionId: nil,
-                mainAgentId: "agent:bound"
-            ) == .createSession(agentId: "agent:bound")
+                mainRoleId: "agent:bound"
+            ) == .createSession(roleId: "agent:bound")
         )
     }
 
@@ -27,7 +27,7 @@ struct CorptieTaskExecutionStartDecisionTests {
             CorptieTaskExecutionStartDecision.resolve(
                 status: "todo",
                 currentSessionId: nil,
-                mainAgentId: "  "
+                mainRoleId: "  "
             ) == .chooseAgent
         )
     }
@@ -37,7 +37,7 @@ struct CorptieTaskExecutionStartDecisionTests {
             CorptieTaskExecutionStartDecision.resolve(
                 status: "done",
                 currentSessionId: "session:existing",
-                mainAgentId: "agent:bound"
+                mainRoleId: "agent:bound"
             ) == .restoreCompleted
         )
     }

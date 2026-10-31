@@ -31,7 +31,7 @@ struct EntityRefreshGeneration: Equatable {
 private struct SessionGroupingEntityState: Equatable {
     let tasks: [String: CorptieTask]
     let works: [String: Work]
-    let agents: [String: Agent]
+    let roles: [String: Role]
 }
 
 // 实体层轻量 API 客户端（15 Phase 5 净新增）。
@@ -44,7 +44,7 @@ final class EntityAPIClient: ObservableObject {
 
     private let appState: AppStateStore
     var works: [Work] { appState.works }
-    var agents: [Agent] { appState.agents }
+    var roles: [Role] { appState.roles }
     var tasks: [CorptieTask] { appState.tasks }
     @Published private(set) var tasksRevision: UInt64 = 0
     let sessionGroupingDidChange = PassthroughSubject<Void, Never>()
@@ -96,7 +96,7 @@ final class EntityAPIClient: ObservableObject {
                 SessionGroupingEntityState(
                     tasks: state.tasks,
                     works: state.works,
-                    agents: state.agents
+                    roles: state.roles
                 )
             }
             .removeDuplicates()
@@ -136,10 +136,10 @@ final class EntityAPIClient: ObservableObject {
         await refreshWorks()
         await refreshWorkspaces()
         await refreshRepositories()
-        await refreshAgents()
+        await refreshRoles()
     }
 
-    func refreshAgents() async {
+    func refreshRoles() async {
         await AppStateSyncController.shared.refreshSnapshot()
         errorMessage = appState.syncError
     }
@@ -334,7 +334,7 @@ final class EntityAPIClient: ObservableObject {
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
                         priority: String? = nil, lifecycleState: String? = nil,
-                        mainAgentId: String? = nil, autoTitleEnabled: Bool? = nil) async -> CorptieTask? {
+                        mainRoleId: String? = nil, autoTitleEnabled: Bool? = nil) async -> CorptieTask? {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -345,7 +345,7 @@ final class EntityAPIClient: ObservableObject {
         if let verificationCriteria { body["verificationCriteria"] = verificationCriteria }
         if let priority { body["priority"] = priority }
         if let lifecycleState { body["lifecycleState"] = lifecycleState }
-        if let mainAgentId { body["mainAgentId"] = mainAgentId }
+        if let mainRoleId { body["mainAgentId"] = mainRoleId }
         if let autoTitleEnabled { body["autoTitleEnabled"] = autoTitleEnabled }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return await performEntityMutation(request, as: CorptieTask.self)
@@ -677,7 +677,7 @@ final class EntityAPIClient: ObservableObject {
     func createCorptieTask(id: String? = nil, workId: String, title: String, description: String? = nil,
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
-                        mainAgentId: String? = nil,
+                        mainRoleId: String? = nil,
                         priority: String? = nil,
                         providerId: String,
                         model: String? = nil,
@@ -717,7 +717,7 @@ final class EntityAPIClient: ObservableObject {
         if let description, !description.isEmpty { body["description"] = description }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
         if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
-        if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
+        if let mainRoleId, !mainRoleId.isEmpty { body["mainAgentId"] = mainRoleId }
         if let priority { body["priority"] = priority }
         if let model, !model.isEmpty { body["model"] = model }
         if let reasoningLevel, !reasoningLevel.isEmpty { body["reasoningLevel"] = reasoningLevel }
@@ -1104,7 +1104,7 @@ final class EntityAPIClient: ObservableObject {
     @discardableResult
     func createSession(
         taskId: String,
-        agentId: String,
+        roleId: String,
         providerId: String,
         title: String? = nil,
         sourceSession explicitSourceSession: TaskSession? = nil,
@@ -1129,10 +1129,10 @@ final class EntityAPIClient: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(sourceSessionId, forHTTPHeaderField: "X-Corptie-Logical-Session-Id")
-        let idempotencyKey = "task-start:\(taskId):\(agentId):\(providerId)" + (dispatchInitialTurn ? "" : ":prepare-chat")
+        let idempotencyKey = "task-start:\(taskId):\(roleId):\(providerId)" + (dispatchInitialTurn ? "" : ":prepare-chat")
         let command = WorkSessionStartRequest(
             taskId: taskId,
-            assigneeAgentId: agentId,
+            assigneeRoleId: roleId,
             expectedTaskVersion: task.resourceVersion,
             providerId: providerId,
             title: title,
@@ -1182,13 +1182,13 @@ final class EntityAPIClient: ObservableObject {
 
     // Assistant Chat Session：仅凭 Assistant 开聊，不绑定 CorptieTask。
     @discardableResult
-    func startAgentSession(
-        agentId: String,
+    func startRoleSession(
+        roleId: String,
         providerId: String,
         title: String? = nil,
         prompt: String? = nil
     ) async -> EntitySessionLaunchResult {
-        var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)/sessions"))
+        var request = URLRequest(url: baseURL.appending(path: "agents/\(roleId)/sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["providerId": providerId]
@@ -1216,7 +1216,7 @@ final class EntityAPIClient: ObservableObject {
     @discardableResult
     func startWorkChat(
         workId: String,
-        agentId: String,
+        roleId: String,
         providerId: String,
         title: String? = nil,
         prompt: String? = nil
@@ -1224,7 +1224,7 @@ final class EntityAPIClient: ObservableObject {
         var request = URLRequest(url: baseURL.appending(path: "works/\(workId)/sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["agentId": agentId, "providerId": providerId]
+        var body: [String: Any] = ["agentId": roleId, "providerId": providerId]
         if let title, !title.isEmpty { body["title"] = title }
         if let prompt, !prompt.isEmpty { body["prompt"] = prompt }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -1249,7 +1249,7 @@ final class EntityAPIClient: ObservableObject {
     @discardableResult
     func updateWork(workId: String, name: String? = nil, description: String? = nil,
                          profile: String? = nil, tags: [String]? = nil,
-                         contributorAgentIds: [String]? = nil) async -> Work? {
+                         contributorRoleIds: [String]? = nil) async -> Work? {
         var request = URLRequest(url: baseURL.appending(path: "works/\(workId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1258,7 +1258,7 @@ final class EntityAPIClient: ObservableObject {
         if let description { body["description"] = description }
         if let profile { body["profile"] = profile }
         if let tags { body["tags"] = tags }
-        if let contributorAgentIds { body["contributorAgentIds"] = contributorAgentIds }
+        if let contributorRoleIds { body["contributorAgentIds"] = contributorRoleIds }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         if let work = await performEntityMutation(request, as: Work.self) {
             await refreshWorks()
@@ -1303,13 +1303,13 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // Agent 辅助填写：POST /assist/draft { fieldLabel, prompt, cwd?, agentId? } → { text, providerId }
-    func assistDraft(fieldLabel: String, prompt: String, cwd: String? = nil, agentId: String? = nil) async -> String? {
+    func assistDraft(fieldLabel: String, prompt: String, cwd: String? = nil, roleId: String? = nil) async -> String? {
         var request = URLRequest(url: baseURL.appending(path: "assist/draft"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["fieldLabel": fieldLabel, "prompt": prompt]
         if let cwd, !cwd.isEmpty { body["cwd"] = cwd }
-        if let agentId, !agentId.isEmpty { body["agentId"] = agentId }
+        if let roleId, !roleId.isEmpty { body["agentId"] = roleId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1333,7 +1333,7 @@ final class EntityAPIClient: ObservableObject {
         prompt: String,
         currentValues: [String: String],
         cwd: String? = nil,
-        agentId: String? = nil
+        roleId: String? = nil
     ) async -> AssistFormDraft? {
         var request = URLRequest(url: baseURL.appending(path: "assist/form-draft"))
         request.httpMethod = "POST"
@@ -1344,7 +1344,7 @@ final class EntityAPIClient: ObservableObject {
             "currentValues": currentValues
         ]
         if let cwd, !cwd.isEmpty { body["cwd"] = cwd }
-        if let agentId, !agentId.isEmpty { body["agentId"] = agentId }
+        if let roleId, !roleId.isEmpty { body["agentId"] = roleId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1388,7 +1388,7 @@ final class EntityAPIClient: ObservableObject {
     func createWork(id: String? = nil, name: String, description: String? = nil,
                          avatarPath: String? = nil, profile: String = "general", tags: [String] = [],
                          workspaceId: String? = nil,
-                         contributorAgentIds: [String] = []) async -> Work? {
+                         contributorRoleIds: [String] = []) async -> Work? {
         var request = URLRequest(url: baseURL.appending(path: "works"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1399,7 +1399,7 @@ final class EntityAPIClient: ObservableObject {
         body["profile"] = profile
         if !tags.isEmpty { body["tags"] = tags }
         if let workspaceId, !workspaceId.isEmpty { body["workspaceId"] = workspaceId }
-        if !contributorAgentIds.isEmpty { body["contributorAgentIds"] = contributorAgentIds }
+        if !contributorRoleIds.isEmpty { body["contributorAgentIds"] = contributorRoleIds }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         if let work = await performEntityMutation(request, as: Work.self) {
             await refreshWorks()
@@ -1490,10 +1490,10 @@ final class EntityAPIClient: ObservableObject {
 
     // 创建 Agent 资源包：Provider 由实际 Session 选择。
     @discardableResult
-    func createAgent(name: String, description: String? = nil,
+    func createRole(name: String, description: String? = nil,
                      systemPrompt: String? = nil, capabilities: [String] = [],
                      skillIds: [String] = [], workDir: String? = nil,
-                     idempotencyKey: String = UUID().uuidString) async -> Agent? {
+                     idempotencyKey: String = UUID().uuidString) async -> Role? {
         var request = URLRequest(url: baseURL.appending(path: "agents"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1511,11 +1511,11 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                errorMessage = envelope?.error ?? "保存 Agent 失败（HTTP \(http.statusCode)）"
+                errorMessage = envelope?.error ?? "保存角色失败（HTTP \(http.statusCode)）"
                 return nil
             }
-            let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
-            await refreshAgents()
+            let agent = try decoder.decode(RoleCreateEnvelope.self, from: data).agent
+            await refreshRoles()
             return agent
         } catch {
             errorMessage = error.localizedDescription
@@ -1525,10 +1525,10 @@ final class EntityAPIClient: ObservableObject {
 
     // 更新 Agent：PATCH /agents/:id → { agent }
     @discardableResult
-    func updateAgent(agentId: String, name: String? = nil, description: String? = nil,
+    func updateRole(roleId: String, name: String? = nil, description: String? = nil,
                      systemPrompt: String? = nil, skillIds: [String]? = nil,
-                     workDir: String? = nil) async -> Agent? {
-        var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)"))
+                     workDir: String? = nil) async -> Role? {
+        var request = URLRequest(url: baseURL.appending(path: "agents/\(roleId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [:]
@@ -1542,11 +1542,11 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                errorMessage = envelope?.error ?? "保存 Agent 失败（HTTP \(http.statusCode)）"
+                errorMessage = envelope?.error ?? "保存角色失败（HTTP \(http.statusCode)）"
                 return nil
             }
-            let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
-            await refreshAgents()
+            let agent = try decoder.decode(RoleCreateEnvelope.self, from: data).agent
+            await refreshRoles()
             return agent
         } catch {
             errorMessage = error.localizedDescription
@@ -1555,12 +1555,12 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 删除 Agent：DELETE /agents/:id → { ok }
-    func deleteAgent(agentId: String) async -> Bool {
-        var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)"))
+    func deleteRole(roleId: String) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "agents/\(roleId)"))
         request.httpMethod = "DELETE"
         do {
             _ = try await URLSession.shared.data(for: request)
-            await refreshAgents()
+            await refreshRoles()
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -1570,25 +1570,25 @@ final class EntityAPIClient: ObservableObject {
 
     // 设置 Agent 头像：PATCH /agents/:id { avatarPath: 源文件路径 } → { agent }
     @discardableResult
-    func setAgentAvatar(agentId: String, sourcePath: String) async -> Agent? {
-        await patchAgentAvatar(agentId: agentId, body: ["avatarPath": sourcePath])
+    func setRoleAvatar(roleId: String, sourcePath: String) async -> Role? {
+        await patchRoleAvatar(roleId: roleId, body: ["avatarPath": sourcePath])
     }
 
     // 清除 Agent 头像：PATCH /agents/:id { avatarPath: null } → { agent }
     @discardableResult
-    func clearAgentAvatar(agentId: String) async -> Agent? {
-        await patchAgentAvatar(agentId: agentId, body: ["avatarPath": NSNull()])
+    func clearRoleAvatar(roleId: String) async -> Role? {
+        await patchRoleAvatar(roleId: roleId, body: ["avatarPath": NSNull()])
     }
 
-    private func patchAgentAvatar(agentId: String, body: [String: Any]) async -> Agent? {
-        var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)"))
+    private func patchRoleAvatar(roleId: String, body: [String: Any]) async -> Role? {
+        var request = URLRequest(url: baseURL.appending(path: "agents/\(roleId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
-            let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
-            await refreshAgents()
+            let agent = try decoder.decode(RoleCreateEnvelope.self, from: data).agent
+            await refreshRoles()
             return agent
         } catch {
             errorMessage = error.localizedDescription
@@ -1753,8 +1753,8 @@ final class EntityAPIClient: ObservableObject {
 }
 
 // POST /agents 响应 envelope
-private struct AgentCreateEnvelope: Decodable {
-    let agent: Agent
+private struct RoleCreateEnvelope: Decodable {
+    let agent: Role
 }
 
 // POST /assist/draft 响应

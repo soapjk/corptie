@@ -96,7 +96,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
     func testWorkHeaderEqualityRequiresActionScopeAndAllDisplayInputs() {
         let owner = NSObject(), otherOwner = NSObject()
         let work = Work(id: "work:header-equality", workspaceId: "workspace:test", name: "Work",
-            description: "", status: "active", profile: "general", tags: [], contributorAgentIds: [],
+            description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
             createdAt: "", updatedAt: "")
         func header(_ scope: AnyObject?) -> ConsoleWorkOutlineHeader {
             ConsoleWorkOutlineHeader(work: work, isExpanded: false, isSelected: false,
@@ -129,7 +129,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
         _ = NSApplication.shared
         let owner = NSObject()
         let work = Work(id: "work:header-render", workspaceId: "workspace:test", name: "Work",
-            description: "", status: "active", profile: "general", tags: [], contributorAgentIds: [],
+            description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
             createdAt: "", updatedAt: "")
         func header(expanded: Bool = false, selected: Bool = false, working: Bool = false,
                     unread: Bool = false, chatSelected: Bool = false, chatRunning: Bool = false,
@@ -400,21 +400,21 @@ final class SessionSwitchOptimizationTests: XCTestCase {
             for id in ids { SessionTimelineRepository.shared.remove(id) }
             _ = store.apply(changeSet: .init(snapshotRequired: false, baseRevision: store.revision,
                 revision: store.revision + 1,
-                upserts: .init(sessions: [], tasks: [], works: [], agents: [], skills: [], repositories: [], integrationRuns: []),
-                deletes: .init(sessions: ids, tasks: taskIDs, works: workIDs, agents: [], skills: [], repositories: [], integrationRuns: [])))
+                upserts: .init(sessions: [], tasks: [], works: [], roles: [], skills: [], repositories: [], integrationRuns: []),
+                deletes: .init(sessions: ids, tasks: taskIDs, works: workIDs, roles: [], skills: [], repositories: [], integrationRuns: [])))
         }
         let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 2, rawItemCount: 10, longMessageCharacters: 200))
         for index in ids.indices {
             let work = Work(id: workIDs[index], workspaceId: "workspace:" + workIDs[index], name: "Switch work \(index)",
-                description: "", status: "active", profile: "general", tags: [], contributorAgentIds: [],
+                description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
                 createdAt: "2026-10-24", updatedAt: "2026-10-24")
             store.hydrate(works: [work])
             _ = store.acceptCorptieTask(CorptieTask(id: taskIDs[index], workId: workIDs[index],
                 title: "Switch task \(index)", description: "", acceptanceCriteria: "", priority: "medium",
-                lifecycleState: "todo", mainAgentId: nil, currentSessionId: ids[index], executionStatus: "idle",
+                lifecycleState: "todo", mainRoleId: nil, currentSessionId: ids[index], executionStatus: "idle",
                 createdAt: "2026-10-24", updatedAt: "2026-10-24"))
             _ = store.acceptCreatedSession(TaskSession(id: ids[index], title: "Switch task \(index)", agent: "Fixture",
-                agentId: nil, sessionKind: .worker, workId: workIDs[index], taskId: taskIDs[index], status: .complete,
+                roleId: nil, sessionKind: .worker, workId: workIDs[index], taskId: taskIDs[index], status: .complete,
                 progress: 1, summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
                 updatedAt: "2026-10-24", accent: .cyan, archived: false, pinned: false, sortOrder: 0, capabilities: nil, external: nil))
             client.storeCachedDetail(fixture.detail, for: ids[index])
@@ -576,13 +576,13 @@ final class SessionSwitchOptimizationTests: XCTestCase {
 
     private func task(_ id: String = "task:one", current: String? = nil) -> CorptieTask {
         CorptieTask(id: id, workId: "work:one", title: id, description: "", acceptanceCriteria: "",
-            priority: "medium", lifecycleState: "todo", mainAgentId: nil, currentSessionId: current,
+            priority: "medium", lifecycleState: "todo", mainRoleId: nil, currentSessionId: current,
             executionStatus: "idle", createdAt: "2026-09-01", updatedAt: "2026-09-01")
     }
 
     private func session(_ id: String, taskID: String? = "task:one", archived: Bool = false,
                          updatedAt: String = "2026-09-01", status: TaskStatus = .complete) -> TaskSession {
-        TaskSession(id: id, title: id, agent: "Fixture", agentId: nil, sessionKind: .worker,
+        TaskSession(id: id, title: id, agent: "Fixture", roleId: nil, sessionKind: .worker,
             workId: "work:one", taskId: taskID, status: status, progress: 0, summary: "",
             suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil, updatedAt: updatedAt,
             accent: .cyan, archived: archived, pinned: false, sortOrder: 0, capabilities: nil, external: nil)

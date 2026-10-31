@@ -16,7 +16,7 @@ enum ContextReferenceAddMode: String, Identifiable {
         case .webURL: "添加网页链接"
         case .work: "引用 Work"
         case .task: "引用 CorptieTask"
-        case .agent: "引用 Agent"
+        case .agent: "引用角色"
         case .session: "引用其他会话"
         }
     }
@@ -124,7 +124,7 @@ struct ContextReferenceAddSheet: View {
                 if let loaded = await entityClient.allCorptieTasks() {
                     tasks = loaded
                 }
-            case .agent: await entityClient.refreshAgents()
+            case .agent: await entityClient.refreshRoles()
             case .session, .webURL: break
             }
         }
@@ -137,9 +137,9 @@ struct ContextReferenceAddSheet: View {
         case .task:
             tasks.map { .init(id: $0.id, title: $0.title, subtitle: $0.lifecycleState, systemImage: "checklist") }
         case .agent:
-            entityClient.agents
-                .filter { $0.agentId != session.agentId }
-                .map { .init(id: $0.agentId, title: $0.name, subtitle: $0.description, systemImage: "person.2") }
+            entityClient.roles
+                .filter { $0.roleId != session.roleId }
+                .map { .init(id: $0.roleId, title: $0.name, subtitle: $0.description, systemImage: "person.2") }
         case .session:
             backendClient.sessions
                 .filter { $0.id != session.id }

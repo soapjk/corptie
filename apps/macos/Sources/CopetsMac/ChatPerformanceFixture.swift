@@ -22,7 +22,7 @@ struct ChatPerformanceFixture: Sendable {
             id: sessionId,
             title: "Chat Timeline Performance",
             agent: "Fixture",
-            agentId: nil,
+            roleId: nil,
             sessionKind: nil,
             status: .complete,
             progress: 1,
@@ -284,7 +284,7 @@ struct ChatPerformanceFixture: Sendable {
             id: "\(turnId)-answer",
             turnId: turnId,
             type: "agentMessage",
-            title: "Agent",
+            title: "Role",
             text: markdownBody(turnIndex: turnIndex, processIndex: 999),
             createdAt: createdAt,
             presentationRole: "final_answer"

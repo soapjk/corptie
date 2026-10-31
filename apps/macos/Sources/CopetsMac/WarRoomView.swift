@@ -352,7 +352,7 @@ struct WarRoomView: View {
             let owningWork = client.works.first(where: { $0.id == task.workId })
             CorptieTaskDetailView(
                 task: task,
-                contributorAgentIds: owningWork?.contributorAgentIds ?? [],
+                contributorRoleIds: owningWork?.contributorRoleIds ?? [],
                 isDeletionPending: pendingDeletionIds.contains(task.id),
                 onRequestDeletion: { Task { await prepareDeletion(task) } },
                 onRequestReload: { tasksReloadToken &+= 1 }

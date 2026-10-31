@@ -11,7 +11,7 @@ function tool(name, description, properties = {}, required = []) {
 const id = (description) => ({ type: "string", minLength: 1, description });
 export const workChatDynamicTools = Object.freeze([
   tool("corptie_work_context", "Read the current Work Chat scope. Mutating Task operations use the strict corptie_collaboration_tasks_* Session-scoped tools."),
-  tool("corptie_work_agents_list", "List contributor Agents in this Work. Discover their actual receiving Sessions before routing collaboration.")
+  tool("corptie_work_agents_list", "List contributor Roles in this Work (legacy agents wire name). Roles are configuration resources, never actors; discover actual receiving Sessions before routing collaboration.")
 ]);
 
 export function callWorkChatDynamicTool(service, input = {}) {
@@ -41,7 +41,7 @@ export class WorkChatOperationService {
         workId,
         this.#workPatch(workId, object(args.patch, "patch"))
       );
-      case "corptie_work_agents_list": return this.#agents(workId);
+      case "corptie_work_agents_list": return this.#roles(workId);
       case "corptie_work_tasks_manage": return this.#tasks(workId, args);
       case "corptie_work_task_start": {
         return this.workSessionStartApplicationService.start({
@@ -58,14 +58,14 @@ export class WorkChatOperationService {
     }
   }
 
-  #agents(workId) {
+  #roles(workId) {
     const work = this.workService.getWork(workId);
     const contributors = new Set(work.contributorAgentIds);
-    return this.store.listAgents().filter((agent) => contributors.has(agent.agentId)).map((agent) => ({
-      agentId: agent.agentId, name: agent.name,
-      description: agent.description, status: agent.status,
+    return this.store.listRoles().filter((role) => contributors.has(role.roleId)).map((role) => ({
+      agentId: role.roleId, name: role.name,
+      description: role.description, status: role.status,
       isContributor: true,
-      canStartTask: agent.status === "available"
+      canStartTask: role.status === "available"
     }));
   }
 
@@ -110,7 +110,7 @@ export class WorkChatOperationService {
       const agent = this.store.getAgent(agentId);
       if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
       if (!work.contributorAgentIds.includes(agentId)) {
-        throw coded("AGENT_OUTSIDE_WORK", "Task Agent must be attached to this Work.");
+        throw coded("AGENT_OUTSIDE_WORK", "Task Role must be attached to this Work.");
       }
     }
     return patch;

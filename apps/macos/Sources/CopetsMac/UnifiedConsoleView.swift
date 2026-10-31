@@ -657,7 +657,7 @@ struct UnifiedConsoleView: View {
         if router.pendingSessionId == nil {
             restoreConsoleContentIfNeeded()
         }
-        Task { await entityClient.refreshAgents() }
+        Task { await entityClient.refreshRoles() }
     }
 
     func deactivateSessions() {
@@ -1103,7 +1103,7 @@ struct UnifiedConsoleView: View {
         return sessionGroupProjectionStore.groups(for: key) {
             makeSessionGroups(
                 rows: searchFilteredRows,
-                agents: entityClient.agents,
+                roles: entityClient.roles,
                 tasks: entityClient.tasks,
                 works: entityClient.works,
                 category: selectedCategory,

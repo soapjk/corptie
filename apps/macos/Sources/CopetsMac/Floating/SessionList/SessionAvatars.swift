@@ -13,9 +13,9 @@ struct AgentAvatarView: View {
     var showsChrome = true
 
     // 会话统一继承其绑定 Agent 的头像：优先使用 Agent 自定义头像，否则用 Agent 级派生渐变+首字母。
-    private var boundAgent: Agent? {
-        guard let agentId = session.agentId, !agentId.isEmpty else { return nil }
-        return client.agents.first { $0.agentId == agentId }
+    private var boundAgent: Role? {
+        guard let roleId = session.roleId, !roleId.isEmpty else { return nil }
+        return client.roles.first { $0.roleId == roleId }
     }
 
     var body: some View {
@@ -48,7 +48,7 @@ struct AgentAvatarView: View {
     }
 
     private var variationSeed: String {
-        boundAgent?.agentId ?? session.agentId ?? session.agent
+        boundAgent?.roleId ?? session.roleId ?? session.agent
     }
 
     private var initials: String {

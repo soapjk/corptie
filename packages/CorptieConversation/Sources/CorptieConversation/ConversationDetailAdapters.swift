@@ -10,7 +10,7 @@ public enum ConversationReferenceAddKind: String, CaseIterable, Identifiable {
         case .webURL: "网页链接…"
         case .work: "Work…"
         case .task: "Task…"
-        case .agent: "Agent…"
+        case .agent: "Role…"
         case .session: "其他会话…"
         }
     }

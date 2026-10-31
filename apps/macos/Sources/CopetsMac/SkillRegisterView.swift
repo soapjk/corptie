@@ -258,7 +258,7 @@ struct SkillRegisterView: View {
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(.secondary)
                                 Text(package.discoveryMethod == "agent-assisted"
-                                     ? L10n("由 Agent 辅助识别，安装前将由后端重新校验")
+                                     ? L10n("由角色辅助识别，安装前将由后端重新校验")
                                      : L10n("由插件清单或标准目录确定性识别"))
                                     .font(.caption2)
                                     .foregroundStyle(package.discoveryMethod == "agent-assisted" ? Color.orange : Color.secondary)

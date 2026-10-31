@@ -49,7 +49,7 @@ struct AgentOrbBadge: View {
 // MARK: - 球本体
 
 struct AgentOrbView: View {
-    let agent: Agent
+    let agent: Role
     var badgeCount: Int = 0
     var onTap: (() -> Void)? = nil
     var onDoubleTap: (() -> Void)? = nil
@@ -77,7 +77,7 @@ struct AgentOrbView: View {
             } else {
                 DefaultInitialAvatarView(
                     familySeed: agent.name,
-                    variationSeed: agent.agentId,
+                    variationSeed: agent.roleId,
                     initials: DefaultAvatarInitials.make(from: agent.name),
                     size: 52
                 )
@@ -92,7 +92,7 @@ struct AgentOrbView: View {
 struct AgentOrbDemoView: View {
     var body: some View {
         VStack(spacing: 24) {
-            Text("Agent 浮球演示")
+            Text("角色浮球演示")
                 .font(.title3.bold())
 
             HStack(spacing: 32) {
@@ -120,18 +120,18 @@ struct AgentOrbDemoView: View {
         .frame(width: 480, height: 240)
     }
 
-    static let assistant = Agent(
-        agentId: "assistant", agentKind: "platformAssistant", name: "Corptie", description: "",
+    static let assistant = Role(
+        roleId: "assistant", roleKind: "platformAssistant", name: "Corptie", description: "",
         status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
-    static let contributor = Agent(
-        agentId: "backend-dev", name: "后端开发", description: "",
+    static let contributor = Role(
+        roleId: "backend-dev", name: "后端开发", description: "",
         status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
-    static let claude = Agent(
-        agentId: "frontend-dev", name: "前端开发", description: "",
+    static let claude = Role(
+        roleId: "frontend-dev", name: "前端开发", description: "",
         status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )

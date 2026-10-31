@@ -44,7 +44,7 @@ public struct ConversationEnvironmentCard<ProviderContent: View, Actions: View, 
     public var body: some View {
         ConversationDetailModuleCard(title: "工作空间与 Provider", systemImage: "cpu", headerActions: { actions }) {
             LabeledContent("Provider") { providerContent }
-            if let agent, !agent.isEmpty { LabeledContent("Agent", value: agent) }
+            if let agent, !agent.isEmpty { LabeledContent("Role", value: agent) }
             if let model, !model.isEmpty { LabeledContent("模型", value: model) }
             if let reasoning, !reasoning.isEmpty { LabeledContent("推理强度", value: reasoning) }
             if let workspacePath, !workspacePath.isEmpty {

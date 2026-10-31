@@ -6,7 +6,7 @@ import XCTest
 
 final class WorktreeManagementNavigationTests: XCTestCase {
     func testWorktreeTabIsAnIndependentMainNavigationDestination() {
-        XCTAssertEqual(AppTab.allCases, [.console, .automations, .scenes, .worktrees, .resources, .agents, .memory, .settings])
+        XCTAssertEqual(AppTab.allCases, [.console, .automations, .scenes, .worktrees, .resources, .roles, .memory, .settings])
         XCTAssertEqual(AppTab.worktrees.systemImage, "arrow.triangle.branch")
         XCTAssertEqual(AppTab.worktrees.index, 3)
     }
@@ -537,16 +537,16 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(console.contains("router.consumeSessionNavigation(requestedSessionId)"))
         XCTAssertTrue(view.contains("Task { await client.resolveConflictWithAgent() }"))
         XCTAssertTrue(view.contains("job.currentConflictResolution"))
-        XCTAssertTrue(view.contains("Let Agent Resolve Conflicts"))
+        XCTAssertTrue(view.contains("Resolve Conflicts in Session"))
         XCTAssertFalse(view.contains("currentConflictItem(job)?.associations.contains"))
-        XCTAssertTrue(view.contains("View Agent Session"))
+        XCTAssertTrue(view.contains("View Resolution Session"))
         XCTAssertTrue(view.contains("conflictAgentProgress(job: job, resolution: resolution)"))
         XCTAssertTrue(view.contains("validating and continuing automatically"))
         XCTAssertTrue(view.contains("main remains untouched until validation passes"))
-        XCTAssertTrue(view.contains("The Agent result was not promoted"))
+        XCTAssertTrue(view.contains("The Session result was not promoted"))
         XCTAssertTrue(view.contains("Revalidate and Continue"))
         XCTAssertTrue(view.contains("worktree.integrate.retry-agent-conflicts"))
-        XCTAssertTrue(view.contains("Restart Conflict Agent"))
+        XCTAssertTrue(view.contains("Restart Resolution Session"))
         XCTAssertTrue(view.contains("job.isStartingConflictAgent"))
         XCTAssertTrue(view.contains("Automatic conflict resolution is blocked at %@."))
         XCTAssertTrue(view.contains("Conflicting files: %@"))
@@ -595,12 +595,12 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"The integration state changed. Cancel this operation and start again.\" = \"Worktree 状态已变化，请取消本次操作后重新开始。\";",
             "\"Stopping at a safe boundary\" = \"正在安全步骤边界停止\";",
             "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";",
-            "\"Let Agent Resolve Conflicts\" = \"让 Agent 一键解决冲突\";",
-            "\"Restart Conflict Agent\" = \"重新启动冲突 Agent\";",
-            "\"Starting Conflict Agent…\" = \"正在启动冲突 Agent…\";",
-            "\"View Agent Session\" = \"查看 Agent 会话\";",
+            "\"Resolve Conflicts in Session\" = \"在会话中解决冲突\";",
+            "\"Restart Resolution Session\" = \"重新启动冲突解决会话\";",
+            "\"Starting Resolution Session…\" = \"正在启动冲突解决会话…\";",
+            "\"View Resolution Session\" = \"查看冲突解决会话\";",
             "\"Conflict resolved; continuing automatically\" = \"冲突已解决，正在自动继续\";",
-            "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";",
+            "\"Session resolved the conflicts; validating and continuing automatically…\" = \"会话已解决冲突，正在验证并自动继续…\";",
             "\"Blocking risk details\" = \"阻断风险详情\";",
             "\"Affected Worktree: %@\" = \"受影响的 Worktree：%@\";",
             "\"Affected Worktree ID: %@\" = \"受影响的 Worktree ID：%@\";",

@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum AgentSkillAssignment {
+enum RoleSkillAssignment {
     static func installedSkills(from skills: [Skill], selectedSkillIds: Set<String>) -> [Skill] {
         skills.filter { selectedSkillIds.contains($0.skillId) }
     }
@@ -14,14 +14,14 @@ enum AgentSkillAssignment {
     }
 }
 
-struct AgentInstalledSkillsView: View {
+struct RoleInstalledSkillsView: View {
     let skills: [Skill]
     @Binding var selectedSkillIds: Set<String>
     let isEnabled: Bool
     let onAdd: () -> Void
 
     private var installedSkills: [Skill] {
-        AgentSkillAssignment.installedSkills(from: skills, selectedSkillIds: selectedSkillIds)
+        RoleSkillAssignment.installedSkills(from: skills, selectedSkillIds: selectedSkillIds)
     }
 
     var body: some View {
@@ -42,7 +42,7 @@ struct AgentInstalledSkillsView: View {
             }
 
             Text(isEnabled
-                 ? L10n("这些 Skill 已加入该 Agent 的查询范围，并会在需要时按需加载。")
+                 ? L10n("这些 Skill 已加入该 角色 的查询范围，并会在需要时按需加载。")
                  : L10n("当前 Provider 不支持会话内 Skill 查询和懒加载。"))
                 .font(.caption2)
                 .foregroundStyle(isEnabled ? Color.secondary : Color.orange)
@@ -51,7 +51,7 @@ struct AgentInstalledSkillsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "shippingbox")
                         .foregroundStyle(.secondary)
-                    Text(L10n("尚未给此 Agent 安装 Skill。"))
+                    Text(L10n("尚未给此 角色 安装 Skill。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -104,14 +104,14 @@ struct AgentInstalledSkillsView: View {
             }
             .buttonStyle(.borderless)
             .disabled(!isEnabled)
-            .help(L10nFormat("从 Agent 移除 %@", skill.manifestName ?? skill.name))
-            .accessibilityLabel(L10nFormat("从 Agent 移除 %@", skill.manifestName ?? skill.name))
+            .help(L10nFormat("从 角色 移除 %@", skill.manifestName ?? skill.name))
+            .accessibilityLabel(L10nFormat("从 角色 移除 %@", skill.manifestName ?? skill.name))
         }
         .padding(.vertical, 8)
     }
 }
 
-struct AgentSkillPickerView: View {
+struct RoleSkillPickerView: View {
     let skills: [Skill]
     let selectedSkillIds: Set<String>
     let onConfirm: (Set<String>) -> Void
@@ -139,7 +139,7 @@ struct AgentSkillPickerView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(L10n("选择 Skill"))
                 .font(.headline)
-            Text(L10n("选择系统中已有的 Skill；确认后会更新 Agent Profile 中的已安装列表。"))
+            Text(L10n("选择系统中已有的 Skill；确认后会更新 角色 Profile 中的已安装列表。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TextField(L10n("搜索 Skill"), text: $query)
@@ -149,7 +149,7 @@ struct AgentSkillPickerView: View {
                 ContentUnavailableView(
                     L10n("No Skills"),
                     systemImage: "shippingbox",
-                    description: Text(L10n("请先在 Agent 页面登记 Skill。"))
+                    description: Text(L10n("请先在 角色 页面登记 Skill。"))
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredSkills.isEmpty {
@@ -192,7 +192,7 @@ struct AgentSkillPickerView: View {
     private func skillOption(_ skill: Skill) -> some View {
         let isSelected = draftSelection.contains(skill.skillId)
         return Button {
-            draftSelection = AgentSkillAssignment.toggled(skill.skillId, in: draftSelection)
+            draftSelection = RoleSkillAssignment.toggled(skill.skillId, in: draftSelection)
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: isSelected ? "checkmark.square.fill" : "square")
@@ -221,7 +221,7 @@ struct AgentSkillPickerView: View {
     }
 }
 
-struct AgentSkillSelectionView: View {
+struct RoleSkillSelectionView: View {
     let skills: [Skill]
     @Binding var selectedSkillIds: Set<String>
     let isEnabled: Bool
@@ -243,7 +243,7 @@ struct AgentSkillSelectionView: View {
             }
 
             Text(isEnabled
-                 ? L10n("选中的 Skill 会加入该 Agent 的查询范围，并在需要时按需加载。")
+                 ? L10n("选中的 Skill 会加入该 角色 的查询范围，并在需要时按需加载。")
                  : L10n("当前 Provider 不支持会话内 Skill 查询和懒加载。"))
                 .font(.caption2)
                 .foregroundStyle(isEnabled ? Color.secondary : Color.orange)

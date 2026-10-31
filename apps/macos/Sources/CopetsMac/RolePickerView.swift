@@ -3,7 +3,7 @@ import SwiftUI
 // Agent 选择弹窗：搜索 / 选择已有 Agent / 新建 Agent。
 // 由 WorkResourcesEditor 的 Contributor Agent 加号打开；选中的 id 直接写入 selectedIds。
 
-struct AgentPickerView: View {
+struct RolePickerView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @Binding var selectedIds: Set<String>
     var allowedAgentIds: Set<String>? = nil
@@ -19,13 +19,13 @@ struct AgentPickerView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField(L10n("搜索 Agent 名称"), text: $searchText)
+                TextField(L10n("搜索 角色 名称"), text: $searchText)
                     .textFieldStyle(.roundedBorder)
                 if allowedAgentIds == nil {
                     Button {
                         showCreate = true
                     } label: {
-                        Label(L10n("新建 Agent"), systemImage: "plus")
+                        Label(L10n("新建 角色"), systemImage: "plus")
                     }
                 }
             }
@@ -36,7 +36,7 @@ struct AgentPickerView: View {
             if filteredAgents.isEmpty {
                 VStack {
                     Spacer()
-                    Text(L10n(searchText.isEmpty ? "No Agents" : "No Matching Agents"))
+                    Text(L10n(searchText.isEmpty ? "No Roles" : "No Matching Roles"))
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -44,13 +44,13 @@ struct AgentPickerView: View {
             } else {
                 List(filteredAgents) { agent in
                     HStack(spacing: 8) {
-                        Image(systemName: selectedIds.contains(agent.agentId) ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(selectedIds.contains(agent.agentId) ? Color.accentColor : Color.secondary)
+                        Image(systemName: selectedIds.contains(agent.roleId) ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selectedIds.contains(agent.roleId) ? Color.accentColor : Color.secondary)
                         Label(agent.name, systemImage: agent.isPlatformAssistant ? "sparkles" : "person")
                         Spacer()
                     }
                     .contentShape(Rectangle())
-                    .onTapGesture { toggle(agent.agentId) }
+                    .onTapGesture { toggle(agent.roleId) }
                 }
                 .listStyle(.inset)
             }
@@ -58,7 +58,7 @@ struct AgentPickerView: View {
             Divider()
 
             HStack {
-                Text(L10nFormat("%lld Agents Selected", Int64(selectedIds.count)))
+                Text(L10nFormat("%lld Roles Selected", Int64(selectedIds.count)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -73,20 +73,20 @@ struct AgentPickerView: View {
         .frame(width: 420, height: 460)
         .onAppear {
             Task {
-                if client.agents.isEmpty { await client.refreshAgents() }
+                if client.roles.isEmpty { await client.refreshRoles() }
             }
         }
         .sheet(isPresented: $showCreate) {
-            AgentCreateView { created in
-                selectedIds.insert(created.agentId)
+            RoleCreateView { created in
+                selectedIds.insert(created.roleId)
             }
         }
     }
 
-    private var filteredAgents: [Agent] {
+    private var filteredAgents: [Role] {
         let scopeFiltered = allowedAgentIds.map { allowed in
-            client.agents.filter { allowed.contains($0.agentId) }
-        } ?? client.agents
+            client.roles.filter { allowed.contains($0.roleId) }
+        } ?? client.roles
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return scopeFiltered }
         return scopeFiltered.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }

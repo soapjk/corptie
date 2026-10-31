@@ -1,6 +1,6 @@
 import Foundation
 
-struct AgentCreationSubmission: Equatable {
+struct RoleCreationSubmission: Equatable {
     private(set) var idempotencyKey: String
     private(set) var isSubmitting = false
 

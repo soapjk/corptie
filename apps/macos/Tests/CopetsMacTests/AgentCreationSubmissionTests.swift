@@ -5,13 +5,13 @@ import Testing
 struct AgentCreationSubmissionTests {
     @Test
     func standaloneCreationRunsInBackgroundButPickerCreationWaitsForTheAgent() {
-        #expect(AgentCreateSubmissionPolicy.submitsInBackground(requiresCreatedAgent: false))
-        #expect(!AgentCreateSubmissionPolicy.submitsInBackground(requiresCreatedAgent: true))
+        #expect(RoleCreateSubmissionPolicy.submitsInBackground(requiresCreatedRole: false))
+        #expect(!RoleCreateSubmissionPolicy.submitsInBackground(requiresCreatedRole: true))
     }
 
     @Test
     func repeatedClickWhileRequestIsInFlightIsRejected() {
-        var submission = AgentCreationSubmission(idempotencyKey: "create-agent-1")
+        var submission = RoleCreationSubmission(idempotencyKey: "create-agent-1")
 
         #expect(submission.begin() == "create-agent-1")
         #expect(submission.begin() == nil)
@@ -19,7 +19,7 @@ struct AgentCreationSubmissionTests {
 
     @Test
     func retryAfterAmbiguousFailureReusesTheBusinessRequestKey() {
-        var submission = AgentCreationSubmission(idempotencyKey: "create-agent-1")
+        var submission = RoleCreationSubmission(idempotencyKey: "create-agent-1")
 
         #expect(submission.begin() == "create-agent-1")
         submission.finishAfterFailure()

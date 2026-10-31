@@ -43,10 +43,10 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_agents_manage",
-    "List, inspect, create, edit, or delete Corptie Agents. The built-in platform Assistant itself is protected.",
+    "List, inspect, create, edit, or delete Corptie Roles. The built-in platform Assistant itself is protected.",
     {
       action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
-      agent_id: id("Agent id for get, update, or delete."),
+      agent_id: id("Role id for get, update, or delete."),
       name: { type: "string", minLength: 1 },
       description: { type: "string" },
       system_prompt: { type: "string" },
@@ -59,7 +59,7 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_works_manage",
-    "Manage Works. Create requires contributorAgentIds, directory strategy and idempotency_key; atomically initializes a real local Workspace and Work Chat or compensates on failure. profile defaults to general. Work Chat Agent defaults to primaryAgentId or first contributor; Provider defaults to the registry default (create/delete capability required). Git defaults to detect; never assumes software requires Git. Success includes directory, workspace and workChat.logicalSessionId.",
+    "Manage Works. Create requires contributorAgentIds, directory strategy and idempotency_key; atomically initializes a real local Workspace and Work Chat or compensates on failure. profile defaults to general. Work Chat Role defaults to primaryAgentId or first contributor; Provider defaults to the registry default (create/delete capability required). Git defaults to detect; never assumes software requires Git. Success includes directory, workspace and workChat.logicalSessionId.",
     {
       action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
       work_id: id("Work id for get, update, or delete."),
@@ -77,7 +77,7 @@ export const platformDynamicTools = Object.freeze([
           branch: { type: "string", minLength: 1, description: "clone only." }, commit: { type: "string", minLength: 1, description: "clone only: optional detached commit." } },
         required: ["mode"]
       },
-      agent_id: id("Work Chat Agent, must be a contributor. Defaults to primary or first contributor."),
+      agent_id: id("Work Chat Role, must be a contributor. Defaults to primary or first contributor."),
       provider_id: id("Work Chat Provider; defaults to registry default."),
       idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
     },
@@ -144,7 +144,7 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_sessions_manage",
-    "Operate Sessions through the shared Agent Provider lifecycle, including conversation, lifecycle, approvals, changes, models, usage, permissions, presentation, and deletion.",
+    "Operate Sessions through the shared Role Provider lifecycle, including conversation, lifecycle, approvals, changes, models, usage, permissions, presentation, and deletion.",
     {
       action: {
         type: "string",
@@ -155,8 +155,8 @@ export const platformDynamicTools = Object.freeze([
         ]
       },
       session_id: id("Session id for all operations except list and create."),
-      agent_id: id("Agent that owns a newly created Session."),
-      provider_id: id("Agent Provider for a newly created Session."),
+      agent_id: id("Role that owns a newly created Session."),
+      provider_id: id("Role Provider for a newly created Session."),
       task_id: id("Optional Task for a new Worker Session."),
       title: { type: "string" },
       prompt: { type: "string" },
@@ -205,7 +205,7 @@ export const platformDynamicTools = Object.freeze([
     {
       action: { type: "string", enum: ["discover_sessions", "get_session", "create_task", "start_worker", "request"] },
       session_id: id("Exact logical or Provider Session id."), work_id: id("Explicit target Work id."),
-      agent_id: id("Agent resource used to configure a Worker Session; never a message recipient."),
+      agent_id: id("Role resource used to configure a Worker Session; never a message recipient."),
       task_id: id("Target Task id."), title: { type: "string", minLength: 1 }, description: { type: "string" },
       acceptance_criteria: { type: "array", items: { type: "string" } }, priority: { type: "string", enum: ["low", "medium", "high", "urgent"] },
       provider_id: id("Provider resource for Worker Session creation."), summary: { type: "string", minLength: 1 },

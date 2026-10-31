@@ -267,7 +267,7 @@ private struct GitHubPushConfirmationView: View {
                 CommitMessageEditor(
                     message: $commitMessage,
                     isGenerating: backendClient.isGeneratingGitHubCommitMessage,
-                    helpText: L10n("Enter your own message or generate one with Agent, then edit it before pushing."),
+                    helpText: L10n("Enter your own message or generate one with Role, then edit it before pushing."),
                     generate: { await backendClient.generateGitHubCommitMessage() }
                 )
             }
@@ -394,7 +394,7 @@ struct CommitMessageEditor: View {
                             Text(L10n("Generating…"))
                         }
                     } else {
-                        Label(L10n("Generate with Agent"), systemImage: "wand.and.stars")
+                        Label(L10n("Generate with Role"), systemImage: "wand.and.stars")
                     }
                 }
                 .disabled(isGenerating)

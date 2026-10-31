@@ -1044,7 +1044,7 @@ struct WorktreeManagementView: View {
                 } else if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
-                    Button(L10n("View Agent Session")) {
+                    Button(L10n("View Resolution Session")) {
                         openConflictSession(sessionId: sessionId, taskId: resolution.taskId)
                     }
                         .controlSize(.small)
@@ -1078,17 +1078,17 @@ struct WorktreeManagementView: View {
                     .accessibilityIdentifier("worktree.integrate.handle-markdown-policy")
                 } else if job.hasMergeConflict {
                     if let sessionId = job.conflictAutomation?.sessionId {
-                        Button(L10n("View Agent Session")) {
+                        Button(L10n("View Resolution Session")) {
                             openConflictSession(sessionId: sessionId, taskId: job.conflictAutomation?.taskId)
                         }
                             .controlSize(.small)
                             .accessibilityIdentifier("worktree.integrate.open-plan-conflict-agent")
                     }
                     Button(L10n(job.conflictAutomation?.status == "blocked"
-                        ? "Restart Conflict Agent"
+                        ? "Restart Resolution Session"
                         : (job.isStartingConflictAgent
-                            ? "Starting Conflict Agent…"
-                            : "Let Agent Resolve Conflicts"))) {
+                            ? "Starting Resolution Session…"
+                            : "Resolve Conflicts in Session"))) {
                         Task { await client.resolveConflictWithAgent() }
                     }
                     .controlSize(.small)
@@ -1174,7 +1174,7 @@ struct WorktreeManagementView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if job.isStartingConflictAgent {
-                Text(L10n("Corptie is starting the conflict Agent in the preserved Integration Worktree. The merge will be marked as running only after its first instruction is durably accepted."))
+                Text(L10n("Corptie is starting the conflict Session in the preserved Integration Worktree. The merge will be marked as running only after its first instruction is durably accepted."))
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if job.conflictAutomation?.status == "blocked" {
@@ -1183,7 +1183,7 @@ struct WorktreeManagementView: View {
                 conflictAgentProgress(job: job, resolution: resolution)
                 if job.phase == "failed", let error = job.error {
                     Text(L10nFormat(
-                        "The Agent result was not promoted: %@ Nothing changed in main. Fix the dedicated Integration Worktree, then revalidate and continue, or stop and re-preflight.",
+                        "The Session result was not promoted: %@ Nothing changed in main. Fix the dedicated Integration Worktree, then revalidate and continue, or stop and re-preflight.",
                         error
                     ))
                     .font(.caption)
@@ -1191,12 +1191,12 @@ struct WorktreeManagementView: View {
                     .textSelection(.enabled)
                 } else {
                     Text(resolution.status == "ready"
-                        ? L10n("The conflict Agent finished in its dedicated Integration Worktree. Corptie is validating the committed result and will continue automatically; main remains untouched until validation passes.")
+                        ? L10n("The conflict Session finished in its dedicated Integration Worktree. Corptie is validating the committed result and will continue automatically; main remains untouched until validation passes.")
                         : (resolution.status == "failed"
-                            ? L10n("The conflict Agent stopped before completing. Corptie did not promote anything to main; open its Session to inspect or resume it.")
+                            ? L10n("The conflict Session stopped before completing. Corptie did not promote anything to main; open its Session to inspect or resume it.")
                             : L10nFormat(
-                                "Agent %@ is resolving conflicts only in %@. main remains unchanged; Corptie will validate the result and continue automatically when it finishes.",
-                                resolution.agentName ?? L10n("Agent"),
+                                "Session %@ is resolving conflicts only in %@. main remains unchanged; Corptie will validate the result and continue automatically when it finishes.",
+                                resolution.agentName ?? L10n("Role"),
                                 resolution.workspace.branchName ?? resolution.workspace.path
                             )))
                     .font(.caption)
@@ -1307,15 +1307,15 @@ struct WorktreeManagementView: View {
         HStack(spacing: 7) {
             if resolution.status == "running" {
                 ProgressView().controlSize(.small)
-                Text(L10n("Agent is resolving conflicts…"))
+                Text(L10n("Role is resolving conflicts…"))
             } else if resolution.status == "ready" {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text(job.phase == "failed"
-                    ? L10n("Agent finished; automatic validation needs attention")
-                    : L10n("Agent resolved the conflicts; validating and continuing automatically…"))
+                    ? L10n("Role finished; automatic validation needs attention")
+                    : L10n("Session resolved the conflicts; validating and continuing automatically…"))
             } else {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
-                Text(L10n("Agent stopped before resolving the conflicts"))
+                Text(L10n("Role stopped before resolving the conflicts"))
             }
         }
         .font(.caption.weight(.semibold))
@@ -1346,7 +1346,7 @@ struct WorktreeManagementView: View {
     }
 
     private func agentConflictRetryButton() -> some View {
-        Button(L10n("Restart Conflict Agent")) {
+        Button(L10n("Restart Resolution Session")) {
             Task { await client.resolveConflictWithAgent() }
         }
         .controlSize(.small)
@@ -1372,7 +1372,7 @@ struct WorktreeManagementView: View {
                 .font(.caption)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
-            Text(L10n("The Integration Worktree, conflict files, and completed merge progress were preserved. Restart the Agent, inspect the failed Session, continue manually, or cancel safely."))
+            Text(L10n("The Integration Worktree, conflict files, and completed merge progress were preserved. Restart the Role, inspect the failed Session, continue manually, or cancel safely."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -2140,10 +2140,10 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "fast_forwarding": L10n("Publishing the unified commit")
     case "partial_completed": L10n("Partially completed")
     case "conflict": L10n("Waiting for conflict resolution")
-    case "conflict_resolution_preparing": L10n("Preparing the Agent conflict workspace")
-    case "conflict_resolution_running": L10n("Agent is resolving conflicts")
+    case "conflict_resolution_preparing": L10n("Preparing the Role conflict workspace")
+    case "conflict_resolution_running": L10n("Role is resolving conflicts")
     case "conflict_resolution_resume_queued": L10n("Conflict resolved; continuing automatically")
-    case "validating_resolution": L10n("Validating the Agent result")
+    case "validating_resolution": L10n("Validating the Session result")
     case "retry_queued": L10n("Retry queued")
     case "recovery_queued": L10n("Recovery queued")
     case "recovery_required": L10n("Revalidate and Continue")
@@ -2164,7 +2164,7 @@ private func localizedIntegrationRecovery(_ job: WorktreeIntegrationJob) -> Stri
     switch job.recovery?.kind {
     case "resolve_commit_policy": L10n("Choose an action for every blocked Markdown file, then continue.")
     case "repreflight": L10n("Repository state changed. Generate and review a fresh integration plan.")
-    case "resolve_conflict_with_agent": L10n("Resolve the preserved conflict with an Agent or manually, then retry.")
+    case "resolve_conflict_with_agent": L10n("Resolve the preserved conflict with a Role or manually, then retry.")
     case "retry": L10n("The operation is paused and can be retried from its preserved state.")
     default: job.recovery?.message ?? L10n("The integration state changed. Generate a new merge plan.")
     }

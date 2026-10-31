@@ -14,19 +14,19 @@ struct AgentOrbVisibilityPreferences {
         Set(defaults.stringArray(forKey: Self.storageKey) ?? [])
     }
 
-    func setEnabled(_ enabled: Bool, for agentID: String) {
+    func setEnabled(_ enabled: Bool, for roleID: String) {
         var ids = enabledAgentIDs
         if enabled {
-            ids.insert(agentID)
+            ids.insert(roleID)
         } else {
-            ids.remove(agentID)
+            ids.remove(roleID)
         }
         defaults.set(ids.sorted(), forKey: Self.storageKey)
     }
 }
 
 enum AgentOrbVisibilityPolicy {
-    static func shouldShow(agentID: String, explicitlyEnabledAgentIDs: Set<String>) -> Bool {
-        explicitlyEnabledAgentIDs.contains(agentID)
+    static func shouldShow(roleID: String, explicitlyEnabledAgentIDs: Set<String>) -> Bool {
+        explicitlyEnabledAgentIDs.contains(roleID)
     }
 }

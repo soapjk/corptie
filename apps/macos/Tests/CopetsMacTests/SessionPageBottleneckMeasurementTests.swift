@@ -30,7 +30,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
             id: "perf-session-\(index)",
             title: "Synthetic session \(index)",
             agent: "Fixture",
-            agentId: nil,
+            roleId: nil,
             sessionKind: nil,
             status: status,
             progress: status == .running ? 0.5 : 1,
@@ -291,7 +291,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         let p50 = measure("assistant grouping (2000 mixed classifications)", iterations: 20) {
             _ = makeSessionGroups(
                 rows: rows,
-                agents: [],
+                roles: [],
                 tasks: [],
                 works: [],
                 category: .assistant
@@ -299,7 +299,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         }
         let groups = makeSessionGroups(
             rows: rows,
-            agents: [],
+            roles: [],
             tasks: [],
             works: [],
             category: .assistant
@@ -319,7 +319,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
             let filtered = filteredSessionRows(rows, query: "session 1")
             _ = makeSessionGroups(
                 rows: filtered,
-                agents: [],
+                roles: [],
                 tasks: [],
                 works: [],
                 category: .assistant

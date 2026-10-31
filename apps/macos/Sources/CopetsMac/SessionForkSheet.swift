@@ -76,7 +76,7 @@ struct SessionForkSheet: View {
                             TextField(L10n("Name"), text: $title).focused($titleFocused)
                             EntityNameValidationMessage(value: title)
                             if let work = preview.workName { LabeledContent("Work", value: work) }
-                            if let agent = preview.agentName { LabeledContent("Agent", value: agent) }
+                            if let agent = preview.agentName { LabeledContent("Role", value: agent) }
                             LabeledContent(L10n("Model"), value: [preview.providerName, preview.model, preview.reasoningLevel]
                                 .compactMap { $0 }.joined(separator: " · "))
                             if preview.kind == "worker" {

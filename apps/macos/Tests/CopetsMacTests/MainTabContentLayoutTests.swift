@@ -5,13 +5,13 @@ import Testing
 struct MainTabContentLayoutTests {
     @Test
     func selectedIndexTracksTheStableTabOrder() {
-        #expect(AppTab.allCases == [.console, .automations, .scenes, .worktrees, .resources, .agents, .memory, .settings])
+        #expect(AppTab.allCases == [.console, .automations, .scenes, .worktrees, .resources, .roles, .memory, .settings])
         #expect(AppTab.console.index == 0)
         #expect(AppTab.automations.index == 1)
         #expect(AppTab.scenes.index == 2)
         #expect(AppTab.worktrees.index == 3)
         #expect(AppTab.resources.index == 4)
-        #expect(AppTab.agents.index == 5)
+        #expect(AppTab.roles.index == 5)
         #expect(AppTab.console.systemImage == "circle.hexagongrid.fill")
         #expect(AppTab.scenes.systemImage == "camera.macro")
     }
@@ -88,29 +88,29 @@ struct MainTabContentLayoutTests {
     func backwardAndRapidTransitionsNeverExposeAThirdOrWrongPage() {
         let container = makeContainer(animationDuration: 10)
         container.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
-        container.select(.agents, animated: false)
+        container.select(.roles, animated: false)
         container.select(.automations)
 
         #expect(container.transition?.direction == .backward)
-        #expect(container.attachedTabs == [.automations, .agents])
-        #expect(container.visibleTabs == [.automations, .agents])
+        #expect(container.attachedTabs == [.automations, .roles])
+        #expect(container.visibleTabs == [.automations, .roles])
 
         container.select(.worktrees)
         #expect(container.selectedTab == .automations)
         #expect(container.transition == MainTabTransition(
-            from: .agents,
+            from: .roles,
             to: .automations,
             direction: .backward
         ))
         #expect(container.pendingTab == .worktrees)
-        #expect(container.attachedTabs == [.automations, .agents])
-        #expect(container.visibleTabs == [.automations, .agents])
+        #expect(container.attachedTabs == [.automations, .roles])
+        #expect(container.visibleTabs == [.automations, .roles])
         #expect(container.attachedPageCount == 2)
 
         container.select(.console)
         #expect(container.pendingTab == .console)
-        #expect(container.attachedTabs == [.automations, .agents])
-        #expect(container.visibleTabs == [.automations, .agents])
+        #expect(container.attachedTabs == [.automations, .roles])
+        #expect(container.visibleTabs == [.automations, .roles])
         #expect(container.cachedPage(for: .worktrees) == nil)
 
         container.finishActiveTransition()
@@ -121,10 +121,10 @@ struct MainTabContentLayoutTests {
             direction: .backward
         ))
         #expect(container.pendingTab == nil)
-        #expect(container.attachedTabs == [.console, .automations, .agents])
+        #expect(container.attachedTabs == [.console, .automations, .roles])
         #expect(container.visibleTabs == [.console, .automations])
         #expect(container.attachedPageCount == 3)
-        #expect(container.cachedPage(for: .agents)?.isHidden == true)
+        #expect(container.cachedPage(for: .roles)?.isHidden == true)
     }
 
     @MainActor
@@ -137,22 +137,22 @@ struct MainTabContentLayoutTests {
         let fixedFrame = console.frame
         let layoutCount = container.activePageLayoutCount
 
-        container.select(.agents)
-        let agents = try #require(container.cachedPage(for: .agents))
+        container.select(.roles)
+        let roles = try #require(container.cachedPage(for: .roles))
 
         #expect(console.frame == fixedFrame)
-        #expect(agents.frame == fixedFrame)
+        #expect(roles.frame == fixedFrame)
         #expect(container.activePageLayoutCount == layoutCount + 1)
         #expect(console.layer?.animation(forKey: "main-tab-translation") != nil)
-        #expect(agents.layer?.animation(forKey: "main-tab-translation") != nil)
+        #expect(roles.layer?.animation(forKey: "main-tab-translation") != nil)
         #expect(console.layer?.animation(forKey: "main-tab-opacity") != nil)
-        #expect(agents.layer?.animation(forKey: "main-tab-opacity") != nil)
+        #expect(roles.layer?.animation(forKey: "main-tab-opacity") != nil)
 
         let outgoingTranslation = try #require(
             console.layer?.animation(forKey: "main-tab-translation") as? CABasicAnimation
         )
         let incomingTranslation = try #require(
-            agents.layer?.animation(forKey: "main-tab-translation") as? CABasicAnimation
+            roles.layer?.animation(forKey: "main-tab-translation") as? CABasicAnimation
         )
         #expect((outgoingTranslation.fromValue as? CGFloat) == 0)
         #expect((outgoingTranslation.toValue as? CGFloat) == -fixedFrame.width)

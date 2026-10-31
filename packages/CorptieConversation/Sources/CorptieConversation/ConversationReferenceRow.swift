@@ -38,7 +38,7 @@ public struct ConversationReferenceRow<Controls: View>: View {
                 if let localPath {
                     Text(localPath).font(.system(size: 9)).foregroundStyle(.secondary)
                         .lineLimit(2).truncationMode(.middle)
-                    Text("仅提供 Mac 文件路径，由 Agent 按需读取")
+                    Text("仅提供 Mac 文件路径，由角色按需读取")
                         .font(.system(size: 9)).foregroundStyle(.secondary)
                 }
                 if let checkError {

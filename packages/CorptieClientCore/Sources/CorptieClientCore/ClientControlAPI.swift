@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ClientControlKind: String, CaseIterable, Sendable {
-    case automations, repositories, agents, skills
+    case automations, repositories, roles = "agents", skills
 }
 
 /// Summary-only contract. Optional fields belong to the corresponding resource,

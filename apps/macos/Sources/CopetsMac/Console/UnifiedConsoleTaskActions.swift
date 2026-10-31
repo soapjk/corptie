@@ -28,16 +28,16 @@ extension UnifiedConsoleView {
 
     func prepareTaskChat(_ task: CorptieTask) {
         guard !pendingTaskChatIds.contains(task.id) else { return }
-        guard let agentId = task.mainAgentId,
+        guard let roleId = task.mainRoleId,
               let providerId = modelCatalog.defaultSessionProviderId else {
-            taskRestartError = L10n("无法准备聊天：请检查 Task 的 Agent 和默认 Provider 配置。")
+            taskRestartError = L10n("无法准备聊天：请检查 Task 的角色和默认 Provider 配置。")
             return
         }
         pendingTaskChatIds.insert(task.id)
         Task {
             defer { pendingTaskChatIds.remove(task.id) }
             let result = await entityClient.createSession(
-                taskId: task.id, agentId: agentId, providerId: providerId,
+                taskId: task.id, roleId: roleId, providerId: providerId,
                 title: task.title, dispatchInitialTurn: false
             )
             guard let session = result.session else {
