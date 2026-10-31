@@ -256,22 +256,23 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             for: collaboration,
             currentSessionTitle: "Fallback Session"
         ))
+        let route = try XCTUnwrap(presentation.route)
 
         XCTAssertTrue(presentation.title.contains(L10n("跨会话协作")))
         XCTAssertTrue(presentation.title.contains(L10n("修改请求")))
         XCTAssertTrue(presentation.metadata.contains(L10n("处理中")))
-        XCTAssertEqual(presentation.route.destinationKind, .existingSession)
-        XCTAssertEqual(presentation.route.routeLabel, L10n("发送到现有会话"))
-        XCTAssertEqual(presentation.route.sourceSession, "Session · Platform Work Chat")
-        XCTAssertEqual(presentation.route.sourceWork, "Work · Platform")
-        XCTAssertEqual(presentation.route.targetName, "Session · Sessions UI")
-        XCTAssertEqual(presentation.route.targetWork, "Work · macOS")
+        XCTAssertEqual(route.destinationKind, .existingSession)
+        XCTAssertEqual(route.routeLabel, L10n("发送到现有会话"))
+        XCTAssertEqual(route.sourceSession, "Session · Platform Work Chat")
+        XCTAssertEqual(route.sourceWork, "Work · Platform")
+        XCTAssertEqual(route.targetName, "Session · Sessions UI")
+        XCTAssertEqual(route.targetWork, "Work · macOS")
         let visibleContent = [
             presentation.bodyMarkdown,
-            presentation.route.sourceSession,
-            presentation.route.sourceWork,
-            presentation.route.targetName,
-            presentation.route.targetWork
+            route.sourceSession,
+            route.sourceWork,
+            route.targetName,
+            route.targetWork
         ].joined(separator: "\n")
         XCTAssertFalse(visibleContent.contains("Platform Agent"))
         XCTAssertFalse(visibleContent.contains("macOS Agent"))
@@ -309,11 +310,12 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             for: message,
             currentSessionTitle: "Source Work Chat"
         ))
+        let route = try XCTUnwrap(presentation.route)
 
         XCTAssertTrue(presentation.metadata.contains(L10n("已发送")))
-        XCTAssertEqual(presentation.route.destinationKind, .existingSession)
-        XCTAssertEqual(presentation.route.sourceSession, "Session · Source Work Chat")
-        XCTAssertEqual(presentation.route.targetName, "Session · Target Worker")
+        XCTAssertEqual(route.destinationKind, .existingSession)
+        XCTAssertEqual(route.sourceSession, "Session · Source Work Chat")
+        XCTAssertEqual(route.targetName, "Session · Target Worker")
         XCTAssertEqual(presentation.messageText, "Status update")
     }
 
@@ -339,19 +341,20 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             for: confirmation,
             currentSessionTitle: "Source Worker"
         ))
+        let route = try XCTUnwrap(presentation.route)
 
-        XCTAssertEqual(presentation.route.destinationKind, .newCorptieTask)
-        XCTAssertEqual(presentation.route.routeLabel, L10n("将创建新的 CorptieTask"))
-        XCTAssertEqual(presentation.route.sourceSession, "Session · Source Worker")
-        XCTAssertEqual(presentation.route.sourceWork, "Work · Platform")
-        XCTAssertEqual(presentation.route.targetName, "CorptieTask · Repair delivery")
-        XCTAssertEqual(presentation.route.targetWork, "Work · macOS")
+        XCTAssertEqual(route.destinationKind, .newCorptieTask)
+        XCTAssertEqual(route.routeLabel, L10n("将创建新的 CorptieTask"))
+        XCTAssertEqual(route.sourceSession, "Session · Source Worker")
+        XCTAssertEqual(route.sourceWork, "Work · Platform")
+        XCTAssertEqual(route.targetName, "CorptieTask · Repair delivery")
+        XCTAssertEqual(route.targetWork, "Work · macOS")
         let visibleContent = [
             presentation.bodyMarkdown,
-            presentation.route.sourceSession,
-            presentation.route.sourceWork,
-            presentation.route.targetName,
-            presentation.route.targetWork
+            route.sourceSession,
+            route.sourceWork,
+            route.targetName,
+            route.targetWork
         ].joined(separator: "\n")
         XCTAssertFalse(visibleContent.contains("session:source"))
         XCTAssertFalse(visibleContent.contains("work:platform"))
@@ -360,7 +363,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testIncompleteCollaborationEnvelopeDoesNotRenderAsCollaboration() throws {
+    func testIncompleteCollaborationEnvelopeKeepsCardWithoutInventingRoute() throws {
         var collaboration = item(id: "collaboration", type: "userMessage", text: "Need context")
         collaboration.sourceType = "collaboration"
         collaboration.presentationRole = "collaboration"
@@ -372,7 +375,10 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             currentSessionTitle: "Current Work Session"
         )
 
-        XCTAssertNil(presentation)
+        let card = try XCTUnwrap(presentation)
+        XCTAssertNil(card.route)
+        XCTAssertEqual(card.messageText, "Need context")
+        XCTAssertFalse(card.bodyMarkdown.contains(L10n("将创建新的 CorptieTask")))
     }
 
     @MainActor
@@ -399,15 +405,16 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             for: collaboration,
             currentSessionTitle: "Recipient Worker Session"
         ))
+        let route = try XCTUnwrap(presentation.route)
 
-        XCTAssertEqual(presentation.route.sourceSession, "Session · Historical Initiator Session")
-        XCTAssertEqual(presentation.route.targetName, "Session · Recipient Worker Session")
+        XCTAssertEqual(route.sourceSession, "Session · Historical Initiator Session")
+        XCTAssertEqual(route.targetName, "Session · Recipient Worker Session")
         let visibleContent = [
             presentation.bodyMarkdown,
-            presentation.route.sourceSession,
-            presentation.route.sourceWork,
-            presentation.route.targetName,
-            presentation.route.targetWork
+            route.sourceSession,
+            route.sourceWork,
+            route.targetName,
+            route.targetWork
         ].joined(separator: "\n")
         XCTAssertFalse(visibleContent.contains("agent:initiator"))
         XCTAssertFalse(visibleContent.contains("agent:recipient"))

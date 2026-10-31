@@ -23,7 +23,7 @@ final class ChatImageModelTests: XCTestCase {
         XCTAssertFalse(cell.updateLayoutIfContentUnchanged(row(nil), availableWidth: 500))
     }
     @MainActor func testUserAndModelImageGeometryDrivesBubbleCanvasAndRowHeightTogether() throws {
-        for type in ["userMessage", "imageView"] {
+        for type in ["userMessage", "agentMessage"] {
             let item = try JSONDecoder().decode(CodexThreadItem.self, from: Data("""
                 {"id":"\(type)","turnId":"turn","turnStatus":"complete","type":"\(type)","title":"image","text":"[localImage]",
                  "images":[{"managedPath":"chat-resources/\(type).png","pixelWidth":900,"pixelHeight":1600}]}
@@ -56,18 +56,22 @@ final class ChatImageModelTests: XCTestCase {
             XCTAssertLessThanOrEqual(button.frame.width, 96)
         }
     }
-    @MainActor func testImageViewUsesSharedMediaRuleWithoutHeaderOrHostPath() throws {
+    @MainActor func testToolImageStaysInProcessWithoutStandaloneGallery() throws {
         let data = Data(#"{"id":"qr","turnId":"turn","turnStatus":"complete","type":"imageView","title":"imageView","text":"/tmp/qr.png","images":[{"managedPath":"chat-resources/qr.png"}]}"#.utf8)
         let item = try JSONDecoder().decode(CodexThreadItem.self, from: data)
-        XCTAssertTrue(item.isStandaloneImage)
         let entries = makeChatDisplayEntries(from: [item])
         XCTAssertEqual(entries.count, 1)
         let builder = ConversationNativeRowBuilder(sessionTitle: nil, workingDirectory: nil,
             allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in URL(fileURLWithPath: "/tmp/qr.png") })
         let row = builder.nativeAppKitRow(try XCTUnwrap(entries.first), expandedTurnIds: [])
-        XCTAssertEqual(row.images.count, 1)
+        XCTAssertTrue(entries.first?.isProcessGroup == true)
+        XCTAssertTrue(row.images.isEmpty)
+        XCTAssertEqual(row.nativeStyle, .process)
         XCTAssertEqual(row.nativeText, "")
         XCTAssertFalse(row.showsHeader)
+        let expanded = builder.nativeAppKitRow(try XCTUnwrap(entries.first), expandedTurnIds: ["turn"])
+        XCTAssertTrue(expanded.images.isEmpty)
+        XCTAssertEqual(expanded.processSteps.count, 1)
     }
 
     @MainActor func testImageCardUsesSharedGalleryHeightAndSuppressesProviderPlaceholder() throws {

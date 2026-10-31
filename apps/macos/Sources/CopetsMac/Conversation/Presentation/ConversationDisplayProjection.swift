@@ -280,7 +280,7 @@ struct NativeCollaborationCardPresentation: Equatable {
     let metadata: String
     let bodyMarkdown: String
     let messageText: String
-    let route: NativeCollaborationRoutePresentation
+    let route: NativeCollaborationRoutePresentation?
 }
 
 struct NativeSpecialEventCardPresentation: Equatable {
@@ -334,17 +334,6 @@ func nativeCollaborationCardPresentation(
         return value
     }
 
-    if isMessage {
-        guard (nonEmpty(item.collaborationTaskId) != nil || nonEmpty(item.collaborationChannelId) != nil),
-              nonEmpty(item.collaborationInitiatorSessionId) != nil,
-              nonEmpty(item.collaborationRecipientSessionId) != nil,
-              nonEmpty(item.collaborationSourceWorkId) != nil,
-              nonEmpty(item.collaborationTargetWorkId) != nil,
-              nonEmpty(item.presentationText) != nil else {
-            return nil
-        }
-    }
-
     let kind: String = switch item.collaborationMessageKind?.lowercased() {
     case "change_request": L10n("修改请求")
     case "needs_information": L10n("澄清请求")
@@ -368,25 +357,32 @@ func nativeCollaborationCardPresentation(
     default: isConfirmation ? L10n("等待确认") : L10n("等待处理")
     }
     let hasTargetSession = nonEmpty(item.collaborationRecipientSessionId) != nil
+    let hasSourceSession = nonEmpty(item.collaborationInitiatorSessionId) != nil
+    let direction = item.collaborationDirection?.lowercased()
+    let directionLabel: String? = switch direction {
+    case "inbound": L10n("收到")
+    case "outbound": L10n("发出")
+    default: nil
+    }
     let sourceSession = readableName(
-        item.collaborationInitiatorSessionTitle ?? currentSessionTitle,
+        item.collaborationInitiatorSessionTitle ?? (direction == "outbound" ? currentSessionTitle : nil),
         id: item.collaborationInitiatorSessionId,
-        fallback: L10n("当前会话")
+        fallback: L10n("来源会话信息不可用")
     )
     let targetSession = readableName(
         item.collaborationRecipientSessionTitle,
         id: item.collaborationRecipientSessionId,
-        fallback: L10n("目标会话")
+        fallback: L10n("目标会话信息不可用")
     )
     let sourceWork = readableName(
         item.collaborationSourceWorkName,
         id: item.collaborationSourceWorkId,
-        fallback: L10n("来源 Work")
+        fallback: nonEmpty(item.collaborationSourceWorkId) == nil ? L10n("未关联 Work") : L10n("来源 Work")
     )
     let targetWork = readableName(
         item.collaborationTargetWorkName,
         id: item.collaborationTargetWorkId,
-        fallback: L10n("目标 Work")
+        fallback: nonEmpty(item.collaborationTargetWorkId) == nil ? L10n("未关联 Work") : L10n("目标 Work")
     )
     let message = nonEmpty(item.presentationText)
         ?? nonEmpty(item.text)
@@ -397,6 +393,13 @@ func nativeCollaborationCardPresentation(
         fallback: L10n("未命名协作任务")
     )
     var lines = ["**\(L10n("消息"))**", message]
+    // Work is optional metadata. Missing Session endpoints only suppress the
+    // route diagram, never the collaboration card or its authored message.
+    let hasRoute = (hasSourceSession && hasTargetSession)
+        || (isConfirmation && item.collaborationAuthorizationKind != "session_channel")
+    if isMessage && !hasRoute {
+        lines.append(L10n("部分协作来源或目标信息不可用。"))
+    }
     if isConfirmation, item.collaborationAuthorizationKind == "session_channel", statusSource == "pending" {
         lines.insert(L10n("首次与此会话建立通道，或原通道已撤销。授权仅适用于这两个 Session。"), at: 0)
     }
@@ -418,10 +421,10 @@ func nativeCollaborationCardPresentation(
     return NativeCollaborationCardPresentation(
         title: isConfirmation && item.collaborationAuthorizationKind == "session_channel"
             ? L10n("首次授权并发送") : "\(L10n("跨会话协作")) · \(kind)",
-        metadata: [status, timestamp].compactMap { $0 }.joined(separator: " · "),
+        metadata: [directionLabel, status, timestamp].compactMap { $0 }.joined(separator: " · "),
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: message,
-        route: NativeCollaborationRoutePresentation(
+        route: hasRoute ? NativeCollaborationRoutePresentation(
             destinationKind: hasTargetSession ? .existingSession : .newCorptieTask,
             routeLabel: hasTargetSession ? L10n("发送到现有会话") : L10n("将创建新的 CorptieTask"),
             sourceLabel: L10n("来源"),
@@ -432,7 +435,7 @@ func nativeCollaborationCardPresentation(
                 ? "Session · \(targetSession)"
                 : "CorptieTask · \(targetCorptieTask)",
             targetWork: "Work · \(targetWork)"
-        )
+        ) : nil
     )
 }
 
