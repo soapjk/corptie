@@ -1,5 +1,5 @@
 import { logSessionMessageLatency } from "../utils/sessionMessageLatency.mjs";
-import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError, validateConversationSendReceipt } from "./contracts.mjs";
 import { SingleFlight } from "../utils/singleFlight.mjs";
 import { SessionContextDelivery } from "../application/sessionContextDelivery.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
@@ -764,22 +764,33 @@ export class SessionApplicationService {
         omissionReasons: sessionContext.contextBudget?.omissionReasons ?? {}
       })}`);
     }
+    let result;
     try {
-      const result = await this.registry.invoke(
+      result = await this.registry.invoke(
         dispatchReference.providerId,
         AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
         dispatchReference,
         message,
         sessionContext ? { ...context, sessionContext } : context
       );
-      contextReceipt.commit();
-      this.#recordMemoryDispatch(sessionContext, "provider_accepted");
-      return result;
     } catch (error) {
       contextReceipt.reject();
       this.#recordMemoryDispatch(sessionContext, "provider_rejected");
       throw error;
     }
+    // The Provider has returned from dispatch. Keep context admission committed
+    // even when its receipt is malformed; rejecting it as unsent can replay work.
+    contextReceipt.commit();
+    this.#recordMemoryDispatch(sessionContext, "provider_accepted");
+    const receipt = validateConversationSendReceipt(result);
+    return { ...receipt,
+      sessionId: dispatchReference.sessionId,
+      logicalSessionId: dispatchReference.logicalSessionId ?? null,
+      providerId: dispatchReference.providerId,
+      providerSessionId: dispatchReference.providerSessionId,
+      bindingId: dispatchReference.bindingId ?? null,
+      routingVersion: dispatchReference.routingVersion ?? null
+    };
   }
 
   #recordMemoryDispatch(sessionContext, status) {
