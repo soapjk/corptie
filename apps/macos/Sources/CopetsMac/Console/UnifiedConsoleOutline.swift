@@ -189,7 +189,7 @@ extension UnifiedConsoleView {
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SessionSelectionPressStyle())
             .accessibilityLabel(L10n("Chat"))
             .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
         }
@@ -225,7 +225,7 @@ extension UnifiedConsoleView {
     }
 
     func outlineWorkIsExpanded(_ workID: String) -> Bool {
-        outlineExpansionPreferences.expandedWorkIDs.contains(workID)
+        outlineExpansionPreferences.isWorkExpanded(workID)
             || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
