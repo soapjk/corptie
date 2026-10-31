@@ -39,7 +39,7 @@ export function interruptedAgentWorkRecoveryPatch(task) {
       lastError: "Provider stopped before the workspace continuation settled; it was requeued."
     };
   }
-  if (task.targetTurnId) {
+  if (task.targetTurnId || task.source?.batchId || task.source?.mailboxDispatchAttempted) {
     return {
       status: "cancelled",
       lastError: "Provider stopped after dispatch; message was not resent."

@@ -111,3 +111,15 @@ test("main loopback router delegates the closed client surface to the device gat
   });
   assert.deepEqual(calls, [{ receivedRequest: request, receivedResponse: response }]);
 });
+
+test("preview permits inbox reads but denies processing and settings commands", () => {
+  for (const [method, path, blocked] of [
+    ["GET", "/sessions/session%3Aone/mailbox", false],
+    ["GET", "/sessions/session%3Aone/mailbox/messages/mailbox%3Aone", false],
+    ["POST", "/sessions/session%3Aone/mailbox/settings", true],
+    ["POST", "/sessions/session%3Aone/mailbox/messages/mailbox%3Aone/process", true]
+  ]) {
+    assert.equal(rejectDevelopmentPreviewWrite({ request: { method }, response: {},
+      url: new URL(path, "http://localhost"), developmentPreview: true, sendJson() {} }), blocked);
+  }
+});
