@@ -40,10 +40,9 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.equal(createTask.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createTask.inputSchema.properties.file_reference.required[0], "path");
   assert.match(createTask.description, /explicit current direct-user request/);
-  assert.match(createTask.description, /collaboration and Automation are not authorization/);
+  assert.match(createTask.description, /Child creation is autonomous/);
   assert.deepEqual(createTask.inputSchema.required, [
-    "title", "agent_id", "logical_session_id", "user_message_event_id",
-    "user_message_sequence", "turn_id", "idempotency_key"
+    "title", "agent_id", "idempotency_key"
   ]);
 });
 

@@ -70,7 +70,7 @@ export class SessionCollaborationService {
       taskHierarchyCapabilities: { ...taskHierarchyCapabilities, createChild: !childReason },
       taskCreation: { independent: canCreate && !requestDenial, child: !childReason,
         parentTaskId: scope.session.sessionKind === "worker" ? scope.session.taskId : null,
-        requiresExplicitUserIntent: true, requiresParentPreflight: true,
+        requiresExplicitUserIntent: false, independentRequiresExplicitUserIntent: true, requiresParentPreflight: true,
         childCountPolicy: "session_decides", childBatch: !childReason, maxChildBatchSize: MAX_CHILD_TASK_BATCH_SIZE },
       channelPolicy: {
         actor: "authenticated_session",
@@ -139,7 +139,7 @@ export class SessionCollaborationService {
     const parentTaskId = required(input.parentTaskId, "parentTaskId");
     const scope = this.#scope(metadata, actorId, { mutation: true });
     this.#assertCreationSource(scope);
-    this.#authorizeDirectUserTaskCreation(scope, input);
+    this.#authorizeTaskCreation(scope, input);
     this.#assertCreationParent(scope, { ...input, parentTaskId });
     const keys = new Set();
     for (const item of input.items) {
@@ -172,7 +172,7 @@ export class SessionCollaborationService {
 
   async createTaskAndSession(metadata, actorId, input = {}) {
     const scope = this.#scope(metadata, actorId, { mutation: true });
-    const authorization = this.#authorizeDirectUserTaskCreation(scope, input);
+    const authorization = this.#authorizeTaskCreation(scope, input);
     const intent = this.#creationIntent(scope, input, authorization);
     const key = JSON.stringify([scope.logicalSessionId, required(input.idempotencyKey, "idempotency_key")]);
     const inFlight = this.taskCreations.get(key);
@@ -213,7 +213,7 @@ export class SessionCollaborationService {
         || current.session.workId !== scope.session.workId || current.session.taskId !== scope.session.taskId) {
         throw coded("SOURCE_SESSION_CHANGED", "The source Session binding changed during creation.", 409);
       }
-      this.#authorizeDirectUserTaskCreation(current, input);
+      this.#authorizeTaskCreation(current, input);
       this.#assertCreationParent(current, input);
       this.#requireContributor(scope.session.workId, intent.taskInput.mainAgentId);
     };
@@ -280,7 +280,7 @@ export class SessionCollaborationService {
     const scope = this.#scope(metadata, actorId, { mutation: true });
     this.#assertCreationParent(scope, input);
     if (input.providerId != null && (typeof input.providerId !== "string" || !input.providerId.trim())) throw coded("INVALID_PROVIDER_ID", "Provider override must be an explicit nonempty identifier.", 400);
-    if (input.parentTaskId && (!prepared || !creationAuthorization)) throw coded("DIRECT_USER_MESSAGE_REQUIRED", "Child creation requires the authorized common workflow.", 403);
+    if (input.parentTaskId && (!prepared || !creationAuthorization)) throw coded("TASK_CREATION_WORKFLOW_REQUIRED", "Child creation must use the common Task and Session startup workflow.", 409);
     const title = validateEntityName(input.title, "title", "Task");
     const kind = scope.session.sessionKind;
     if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {
@@ -457,6 +457,19 @@ export class SessionCollaborationService {
       turnId: input.turnId,
       ttlMs: this.directUserTaskCreationTtlMs
     });
+  }
+
+  #authorizeTaskCreation(scope, input) {
+    if(input.parentTaskId == null) return this.#authorizeDirectUserTaskCreation(scope,input);
+    // Child decomposition is an authenticated Session capability, not a
+    // per-message user grant. Keep the existing ownership/startup boundaries,
+    // and never manufacture user-message provenance for autonomous creation.
+    this.#assertCreationSource(scope);
+    this.#assertCreationParent(scope,input);
+    if(input.logicalSessionId != null && input.logicalSessionId!==scope.logicalSessionId) {
+      throw coded("LOGICAL_SESSION_MISMATCH","The supplied logical Session does not match the authenticated Session.",403);
+    }
+    return {logicalSessionId:scope.logicalSessionId,eventId:null};
   }
 
   #prepareArtifactReference(scope, input) {

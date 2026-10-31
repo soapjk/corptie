@@ -74,6 +74,10 @@ const COMPATIBILITY = Object.freeze({
 });
 
 const EXAMPLE_OVERRIDES = Object.freeze({
+  corptie_collaboration_tasks_create: Object.freeze({
+    title:"Child_task",agent_id:"agent:example",parent_task_id:"task:example",
+    expected_parent_resource_version:1,idempotency_key:"child:example"
+  }),
   corptie_artifact_materialize: Object.freeze({
     artifact_id: "artifact:example", version: 1, content_hash: "0".repeat(64), path: "artifacts/example.md"
   }),
