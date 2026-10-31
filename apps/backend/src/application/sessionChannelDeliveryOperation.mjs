@@ -28,7 +28,7 @@ export function createSessionChannelDeliveryOperation({
       error.code = "SESSION_BUSY";
       throw error;
     }
-    return { turnId: response.result?.turn?.id ?? response.result?.turnId ?? null };
+    return { turnId: response.result?.turnId ?? response.result?.turn?.id ?? null };
   }
 
   async function dispatchSessionChannelDelivery(deliveryId, resolvedRoute = null) {

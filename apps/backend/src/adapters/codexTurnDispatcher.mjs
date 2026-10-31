@@ -98,7 +98,7 @@ export function createCodexTurnDispatcher({
       durationMs: Date.now() - turnStartedAt,
       turnId: result.turn?.id ?? null
     });
-    return result;
+    return { ...result, turnId: result?.turn?.id, delivery: "accepted" };
   }
 
   return { sendCodexProviderMessage };

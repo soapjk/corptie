@@ -150,7 +150,10 @@ function fixture(capabilities = [
       calls.push(["listModels", ...args]);
       return { models: [{ id: "fake-model" }] };
     },
-    send: async (...args) => calls.push(["send", ...args]),
+    send: async (...args) => {
+      calls.push(["send", ...args]);
+      return { turnId: "turn:fake", delivery: "accepted" };
+    },
     clearConversation: async (...args) => {
       calls.push(["clearConversation", ...args]);
       return { id: "legacy-a", title: "Cleared" };
@@ -212,7 +215,10 @@ function fixture(capabilities = [
 
 test("Session application service resolves stable logical ids before Provider calls", async () => {
   const { calls, service } = fixture();
-  await service.sendMessage("logical-a", "hello", { source: "desktop" });
+  const receipt = await service.sendMessage("logical-a", "hello", { source: "desktop" });
+  assert.deepEqual(receipt, { turnId: "turn:fake", delivery: "accepted", sessionId: "legacy-a",
+    logicalSessionId: "logical-a", providerId: "fake.provider", providerSessionId: "native-a",
+    bindingId: "binding-a", routingVersion: 3 });
   assert.deepEqual(calls, [[
     "send",
     {
@@ -510,7 +516,7 @@ test("existing Worker Session applies required domains at the next message Turn 
   }, {
     send: async (_reference, _message, context) => {
       calls.push(["send", context.sessionContext.prompt]);
-      return { accepted: true };
+      return { turnId: "turn:boundary", delivery: "accepted" };
     }
   });
   let applied = false;
@@ -1263,7 +1269,7 @@ test("an unavailable Provider binding is preserved and an unsent message is not 
         error.recoveryAction = "replace_provider_binding";
         throw error;
       }
-      return { turn: { id: "turn:recovered" } };
+      return { turn: { id: "turn:recovered" }, turnId: "turn:recovered", delivery: "accepted" };
     }
   });
   const recoveries = [];

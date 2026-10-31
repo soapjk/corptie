@@ -92,7 +92,7 @@ function fixture(overrides = {}) {
     dispatchSessionChannelDelivery: async () => { throw new Error("unexpected channel dispatch"); },
     sendUnifiedSessionMessage: async (...args) => {
       sends.push(args);
-      return { result: { turn: { id: "turn" } } };
+      return { result: { turnId: "turn", turn: { id: "legacy-field-must-not-win" }, delivery: "accepted" } };
     },
     emitEvent: (...args) => events.push(args),
     syncSessionChannelDeliveriesIntoAgentWorkQueue: async () => syncs.push("channel"),
@@ -197,6 +197,20 @@ test("already dispatched work is not retried and runtime instances do not share 
   await assert.rejects(f.queue.drainAgentWork("session"), /busy/);
   assert.equal(f.tasks.get("work").status, "failed");
   assert.equal(f.queue.runtimeQueuePosition("session", "work"), 0);
+});
+
+test("unknown delivery and invalid send receipts never requeue or announce running execution", async () => {
+  for (const code of ["DELIVERY_UNKNOWN", "PROVIDER_SEND_RECEIPT_INVALID", "PROVIDER_SEND_RECEIPT_CORRELATION_CONFLICT"]) {
+    let sends = 0;
+    const failure = Object.assign(new Error("uncertain dispatch"), { code, dispatchState: "unknown" });
+    const f = fixture({ sendUnifiedSessionMessage: async () => { sends++; throw failure; } });
+    f.add("work");
+    await assert.rejects(f.queue.drainAgentWork("session"), error => error === failure);
+    assert.equal(f.tasks.get("work").status, "failed");
+    assert.equal(f.events.some(([type]) => type === "AgentWorkStarted"), false);
+    await f.queue.drainAgentWork("session");
+    assert.equal(sends, 1);
+  }
 });
 
 test("orphaned dispatched work is cancelled without resending", async () => {

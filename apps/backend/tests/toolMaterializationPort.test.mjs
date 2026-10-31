@@ -206,7 +206,7 @@ test("Claude startup reaches the strict domain gate after an authenticated MCP o
       assert.equal(resumed, true);
       assert.equal(value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one").status, "applied");
       sent = true;
-      return { id: "session:one" };
+      return { id: "session:one", turnId: "turn:one", delivery: "accepted" };
     },
     async reconnect() {
       const pending = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one");

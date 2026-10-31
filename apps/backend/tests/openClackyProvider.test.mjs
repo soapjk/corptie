@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenClackyManager, openClackySessionSummary } from "../src/adapters/openClackyManager.mjs";
 import { createOpenClackyProvider } from "../src/agent-provider/providers/openClackyProvider.mjs";
-import { AGENT_PROVIDER_CAPABILITIES, validateAgentProvider } from "../src/agent-provider/contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, validateAgentProvider, validateConversationSendReceipt } from "../src/agent-provider/contracts.mjs";
 
 class FakeWebSocket {
   static instances = [];
@@ -75,6 +75,13 @@ test("OpenClacky validates create/send state through REST and sends content thro
   assert.equal(socket.sent[0].type, "subscribe");
   assert.equal(socket.sent[1].turn_id, "turn:stable");
   assert.equal(delivery.delivery, "accepted");
+  assert.equal(validateConversationSendReceipt(delivery).turnId, "turn:stable");
+  manager.sendSocket = () => false;
+  const unknown = await createOpenClackyProvider(manager).send({ providerSessionId: "clacky-created" }, "Uncertain", {
+    idempotencyKey: "turn:uncertain"
+  });
+  assert.equal(validateConversationSendReceipt(unknown).delivery, "unknown");
+  assert.equal(unknown.turnId, "turn:uncertain");
 });
 
 test("OpenClacky replaces stale process-local model ids with the persisted current model", async () => {

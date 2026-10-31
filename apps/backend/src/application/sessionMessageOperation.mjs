@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { normalizeConversationMessage } from "./conversationMessage.mjs";
-import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, validateConversationSendReceipt } from "../agent-provider/contracts.mjs";
 import { assertAgentWorkSessionReference, shouldReportAgentWorkQueued } from "../utils/agentWorkQueue.mjs";
 import { normalizeSessionMessageLatencyTrace, logSessionMessageLatency } from "../utils/sessionMessageLatency.mjs";
 import { isClearCommand, parseSlashCommand } from "../commands/unifiedCommands.mjs";
@@ -187,7 +187,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   });
   let result;
   try {
-    result = await sessionApplicationService.sendMessage(
+    result = validateConversationSendReceipt(await sessionApplicationService.sendMessage(
       sessionId,
       await resolvedConversationMessage(reference, message, latencyTrace),
       {
@@ -198,7 +198,15 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
       submit: options.submit,
       idempotencyKey: deliveryId
       }
-    );
+    ));
+    const currentDelivery = delivery ? store.getMessageDelivery(deliveryId) ?? delivery : null;
+    if (currentDelivery && (["sessionId", "bindingId", "routingVersion", "providerId", "providerSessionId"]
+      .some(key => result[key] != null && result[key] !== currentDelivery[key])
+      || (currentDelivery.providerTurnId && currentDelivery.providerTurnId !== result.turnId))) {
+      throw Object.assign(new Error("The Provider send receipt conflicts with the Delivery correlation."), {
+        code: "PROVIDER_SEND_RECEIPT_CORRELATION_CONFLICT", dispatchState: "unknown", stage: "provider_dispatch"
+      });
+    }
   } catch (error) {
     // A failed Provider dispatch makes the last-known-ready proof suspect. The
     // next dispatch performs one real probe before retrying this Binding.
@@ -207,15 +215,22 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     }
     if (delivery) {
       const status = providerDeliveryFailureStatus(error);
-      store.updateMessageDelivery(deliveryId, {
-        status,
-        lastError: error.message
-      });
-      error.deliveryStatus = status;
+      const currentDelivery = store.getMessageDelivery(deliveryId) ?? delivery;
+      const provenTurn = currentDelivery.providerTurnId && store.getSessionTurn?.(
+        routedSessionId, currentDelivery.bindingId, currentDelivery.providerTurnId);
+      // A malformed/late acknowledgement cannot invalidate a Turn already
+      // proven by Provider events. Preserve that correlation and execution fact.
+      if (["running", "blocked", "completed", "failed", "cancelled"].includes(provenTurn?.execution_status)) {
+        error.deliveryStatus = store.settleMessageDeliveryFromTurn(deliveryId)?.status ?? currentDelivery.status;
+      } else {
+        store.updateMessageDelivery(deliveryId, { status, lastError: error.message });
+        error.deliveryStatus = status;
+      }
     }
     throw error;
   }
-  const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
+  const providerTurnId = result.turnId;
+  const dispatchAccepted = result.delivery === "accepted";
   const routedDelivery = delivery ? store.getMessageDelivery(deliveryId) ?? delivery : null;
   const dispatchBindingId = routedDelivery?.bindingId ?? reference.bindingId;
   const dispatchBinding = dispatchBindingId ? store.getAgentSessionBinding(dispatchBindingId) : null;
@@ -225,7 +240,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   // Native events may already have won the race; never overwrite a settled Turn.
   // Recovery may have atomically rebound the durable Delivery while sendMessage
   // was in flight, so prefer that post-CAS binding over the pre-dispatch reference.
-  if (providerTurnId && dispatchBindingId
+  if (dispatchAccepted && dispatchBindingId
     && !store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)) {
     const timestamp = now();
     store.upsertSessionTurn({
@@ -258,34 +273,42 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     const alreadySettledTurn = providerTurnId
       ? store.getSessionTurn(routedSessionId, routedDelivery.bindingId, providerTurnId)
       : null;
-    const acknowledgedStatus = alreadySettledTurn
-      ? ({ completed: "completed", failed: "failed", cancelled: "cancelled" }[alreadySettledTurn.execution_status]
-        ?? "accepted")
-      : "accepted";
+    const acknowledgedStatus = ({ completed: "completed", failed: "failed", cancelled: "cancelled",
+      running: "processing", blocked: "processing" }[alreadySettledTurn?.execution_status])
+      ?? (dispatchAccepted ? "accepted" : "delivery_unknown");
     store.updateMessageDelivery(deliveryId, {
       status: acknowledgedStatus,
       providerTurnId,
-      providerAcknowledgedAt: now(),
+      providerAcknowledgedAt: dispatchAccepted || alreadySettledTurn ? now() : null,
       lastError: null
     });
     store.settleMessageDeliveryFromTurn(deliveryId);
   }
   logSessionMessageLatency(latencyTrace, "provider_dispatch_completed", {
     providerId: reference.providerId,
-    turnId: result?.turn?.id ?? result?.turnId ?? null
+    turnId: providerTurnId
   });
-  logSessionMessageLatency(latencyTrace, "session_execution_started", {
+  if (!dispatchAccepted && !["running", "blocked", "completed", "failed", "cancelled"].includes(
+    dispatchBindingId ? store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)?.execution_status : null
+  )) {
+    // The queue must not announce running work based solely on a Turn ID that
+    // the Provider allocated before confirming admission.
+    throw Object.assign(new Error("Provider message delivery is unknown; do not resend automatically."), {
+      code: "DELIVERY_UNKNOWN", dispatchState: "unknown", deliveryStatus: "delivery_unknown"
+    });
+  }
+  if (dispatchAccepted) logSessionMessageLatency(latencyTrace, "session_execution_started", {
     providerId: reference.providerId,
-    turnId: result?.turn?.id ?? result?.turnId ?? null
+    turnId: providerTurnId
   });
 
-  emitEvent("SessionRunStarted", {
+  if (dispatchAccepted) emitEvent("SessionRunStarted", {
     sessionId: routedSessionId,
     logicalSessionId: reference.logicalSessionId,
     source
   }, { sessionId: routedSessionId, source });
   return {
-    accepted: true,
+    accepted: dispatchAccepted,
     cleared: false,
     sessionId: publicSessionId,
     legacySessionId: routedSessionId,
