@@ -85,6 +85,7 @@ struct ResidentSessionPageRoot: View {
                 .frame(maxHeight: .infinity)
                 .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
         }
+        .modifier(SessionChromeAlignment())
         .padding(MainWindowPageLayoutMetrics.outerPadding)
         .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
         .environment(\.detailColumnVisibility, $showsDetailColumn)
