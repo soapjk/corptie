@@ -108,15 +108,24 @@ struct SessionModelMenuSurface: View {
                 }
             }
         } label: {
-            ComposerModelMenuLabel(
-                modelLabel: currentModelLabel,
-                reasoningShortLabel: reasoningLabel(currentReasoningLevel),
-                isBusy: switchingModel || switchingReasoning
-                    || loadingModels,
-                maxWidth: maxWidth,
-                showsSurface: true, presentation: .regular,
-                showsDisclosureIndicator: true
-            )
+            HStack(spacing: 4) {
+                if let icon = ProviderBrandIcon.image(for: currentProvider,
+                    providers: renderInputs?.providers ?? backendClient.modelCatalog.agentProviders) {
+                    Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
+                        .frame(width: 14, height: 14).accessibilityHidden(true)
+                } else {
+                    Image(systemName: "cpu").frame(width: 14, height: 14).accessibilityHidden(true)
+                }
+                ComposerModelMenuLabel(
+                    modelLabel: currentModelLabel,
+                    reasoningShortLabel: reasoningLabel(currentReasoningLevel),
+                    isBusy: switchingModel || switchingReasoning
+                        || loadingModels,
+                    maxWidth: max(0, maxWidth - 18),
+                    showsSurface: false, presentation: .regular,
+                    showsDisclosureIndicator: true
+                )
+            }
         }
         .buttonStyle(.plain)
         .menuIndicator(.hidden)

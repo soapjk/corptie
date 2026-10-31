@@ -267,19 +267,22 @@ public struct ConversationComposerChrome<Header: View, Content: View>: View {
     private let content: Content
     private let verticalPadding: CGFloat
     private let contentSpacing: CGFloat
+    private let headerAtBottom: Bool
 
-    public init(verticalPadding: CGFloat = 6, contentSpacing: CGFloat = 2,
+    public init(verticalPadding: CGFloat = 6, contentSpacing: CGFloat = 2, headerAtBottom: Bool = false,
                 @ViewBuilder header: () -> Header, @ViewBuilder content: () -> Content) {
         self.header = header()
         self.content = content()
         self.verticalPadding = verticalPadding
         self.contentSpacing = contentSpacing
+        self.headerAtBottom = headerAtBottom
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: contentSpacing) {
-            header.padding(.horizontal, 8)
+            if !headerAtBottom { header.padding(.horizontal, 8) }
             content
+            if headerAtBottom { header.padding(.horizontal, 8) }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, verticalPadding)
@@ -358,9 +361,13 @@ public struct ConversationComposerEditorRow<Attachments: View, Editor: View, Sen
 #if os(macOS)
 /// Repositions the same editor and model views; unlike switching two view
 /// trees, crossing the breakpoint cannot recreate NSTextView or lose its focus.
-private struct ComposerEditorRowLayout: Layout {
+public struct ComposerEditorRowLayout: Layout {
     private let spacing: CGFloat = 8
-    private let minimumEditorWidth: CGFloat = 176
+    private let minimumEditorWidth: CGFloat
+
+    public init(minimumEditorWidth: CGFloat = 176) {
+        self.minimumEditorWidth = minimumEditorWidth
+    }
 
     private func measure(width: CGFloat, subviews: Subviews)
         -> (editor: CGSize, model: CGSize, stacked: Bool, total: CGSize) {
@@ -375,12 +382,12 @@ private struct ComposerEditorRowLayout: Layout {
                 CGSize(width: modelWidth, height: model.height), stacked, CGSize(width: width, height: height))
     }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? 384
         return measure(width: width, subviews: subviews).total
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard !subviews.isEmpty else { return }
         let plan = measure(width: max(0, bounds.width), subviews: subviews)
         let editorY = plan.stacked ? bounds.minY : bounds.minY + (plan.total.height - plan.editor.height) / 2

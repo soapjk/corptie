@@ -381,7 +381,7 @@ struct UnifiedConsoleView: View {
         .frame(maxHeight: .infinity)
         .modifier(ConsoleTopEdgeEffectModifier())
         .safeAreaInset(edge: .top, spacing: 0) {
-            PlatformWorkOutlineToolbar(density: .compact) {
+            PlatformWorkOutlineToolbar(density: .titlebar) {
                 outlineSortMenu
                 navigationModeToggle.labelsHidden()
                 searchToggleButton
@@ -408,7 +408,7 @@ struct UnifiedConsoleView: View {
                 }
             }
         } label: {
-            PlatformWorkOutlineToolbarGlyph(symbol: "arrow.up.arrow.down")
+            PlatformWorkOutlineToolbarGlyph(symbol: "line.3.horizontal.decrease")
         }
         .platformWorkOutlineToolbarControl()
         .menuIndicator(.hidden)
@@ -423,7 +423,7 @@ struct UnifiedConsoleView: View {
             navigationModeOption(.taskCards, title: "卡片 · 实验")
         } label: {
             PlatformWorkOutlineToolbarGlyph(
-                symbol: navigationMode == .taskCards ? "rectangle.grid.2x2" : "rectangle.3.group"
+                symbol: navigationMode == .taskCards ? "square.grid.2x2" : "list.bullet"
             )
         }
         .platformWorkOutlineToolbarControl()

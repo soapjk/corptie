@@ -116,7 +116,7 @@ public enum MessageMarkdown {
     private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true, typography: ConversationTypography = .classic) -> NSAttributedString {
         let baseFont: MessageFont = switch style {
         case .user: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .regular : .medium)
-        case .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .light : .medium)
+        case .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
         }
         let color = style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText

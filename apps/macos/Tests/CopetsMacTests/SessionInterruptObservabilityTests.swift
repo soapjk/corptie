@@ -34,8 +34,8 @@ struct SessionInterruptObservabilityTests {
         #expect(stopSource.contains("surface: .sessionDetailComposerControl"))
         #expect(stopSource.contains("session.executionTaskStatus == .running"))
         #expect(stopSource.contains("session.canInterruptNow"))
-        #expect(stopSource.contains(".disabled(!backendClient.isOnline)"))
-        #expect(rootSource.contains("SessionComposerStopButton(session: session)"))
+        #expect(stopSource.contains(".disabled(!online)"))
+        #expect(rootSource.contains("SessionComposerStopSurface(session: session, online: online"))
         for name in ["Conversation/ConversationHeader.swift", "WorkspaceMessagePanel.swift", "DetachedChatWindowManager.swift"] {
             #expect(try !source(named: name).contains("SessionHeaderStopButton"))
         }
@@ -43,15 +43,16 @@ struct SessionInterruptObservabilityTests {
     }
 
     @Test
-    func stopButtonHasDefinedCircleInComposerHeader() throws {
+    func stopButtonHasDefinedCircleInComposerFooter() throws {
         let button = try source(named: "SessionComposerStopButton.swift")
         #expect(button.contains(".conversationGlassControl(tint: .red)"))
         #expect(button.contains(".contentShape(Rectangle())"))
-        #expect(button.contains(".frame(width: 44, height: 32)"))
+        #expect(button.contains(".frame(width: compact ? ComposerShellMetrics.actionHitEdge : 44,"))
         let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
-        let chrome = try #require(composer.range(of: "ConversationComposerChrome {"))
-        let status = try #require(composer.range(of: "ThreadMetaView(", range: chrome.lowerBound..<composer.endIndex))
-        let stop = try #require(composer.range(of: "SessionComposerStopButton(session: session)", range: chrome.lowerBound..<composer.endIndex))
+        #expect(composer.contains("headerAtBottom: true"))
+        let footer = try #require(composer.range(of: "private var composerToolbar:"))
+        let status = try #require(composer.range(of: "statusRow", range: footer.lowerBound..<composer.endIndex))
+        let stop = try #require(composer.range(of: "stopButton(compact: false)", range: footer.lowerBound..<composer.endIndex))
         #expect(status.lowerBound < stop.lowerBound)
     }
 
