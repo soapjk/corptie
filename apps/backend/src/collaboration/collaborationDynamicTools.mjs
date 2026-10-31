@@ -91,7 +91,7 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Omit parent_task_id for an independent Task; specify it and expected_parent_resource_version for a child. Worker may create children only under its own bound root Task; Work Chat may select a root in its Work. Read the parent first. For multiple children prefer corptie_collaboration_tasks_create_batch (1-10 per call). The parent Session decides child count; the user need not specify a number. Never use platform administration tools as a fallback. Call only for an explicit current direct-user request to create Tasks, with authoritative turn evidence; planning, assistant initiative, collaboration and Automation are not authorization. Creation origin and parent relationship are independent.", {
+  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Child creation is autonomous: the authenticated parent Session decides when and how many children to create, without explicit user creation requests, message evidence, confirmation or a total creation quota. Specify parent_task_id and expected_parent_resource_version; Worker may target only its bound root Task, Work Chat a root in its Work. Read the parent first; prefer create_batch for 1-10 children per call. Independent Tasks (parent omitted/null) still require an explicit current direct-user request and authoritative turn evidence. Never use platform administration as a fallback.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
@@ -103,17 +103,17 @@ export const collaborationDynamicTools = Object.freeze([
     provider_id: { type: "string", minLength: 1, description: "Optional explicit Provider override. Omit to use the user's Task creation defaults, including configured model and reasoning. Do not infer this from the calling Session's Provider." },
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
-    logical_session_id: { type: "string", minLength: 1, description: "Authoritative logical Session from the current Corptie direct-user evidence block; this is not a Provider Session id." },
-    user_message_event_id: { type: "string", minLength: 1, description: "Authoritative direct-user message event id from the current Corptie turn." },
-    user_message_sequence: { type: "integer", minimum: 1, description: "Authoritative direct-user message sequence from the current Corptie turn." },
-    turn_id: { type: "string", minLength: 1, description: "Authoritative current delivery/turn id from the direct-user evidence block." },
+    logical_session_id: { type: "string", minLength: 1, description: "Required only for independent Tasks: authoritative logical Session, not a Provider Session id." },
+    user_message_event_id: { type: "string", minLength: 1, description: "Required only for independent Tasks: authoritative direct-user message event id." },
+    user_message_sequence: { type: "integer", minimum: 1, description: "Required only for independent Tasks: direct-user message sequence." },
+    turn_id: { type: "string", minLength: 1, description: "Required only for independent Tasks: authoritative current delivery/turn id." },
     idempotency_key: { type: "string", minLength: 1 }
-  }, ["title", "agent_id", "logical_session_id", "user_message_event_id",
-    "user_message_sequence", "turn_id", "idempotency_key"], {
+  }, ["title", "agent_id", "idempotency_key"], {
       allOf: [{ if: { required: ["parent_task_id"], properties: { parent_task_id: { type: "string" } } },
-        then: { required: ["expected_parent_resource_version"] } }]
+        then: { required: ["expected_parent_resource_version"] },
+        else: {required:["logical_session_id","user_message_event_id","user_message_sequence","turn_id"]} }]
     }),
-  tool("corptie_collaboration_tasks_create_batch", "Create 1-10 child Tasks and companion Worker Sessions in ONE call under one same-Work root parent. The parent Session decides how many children are needed; no user-specified count or total child-creation quota applies. Use this instead of repeated single-item calls. Worker may target only its own bound root; Work Chat may choose a root in its Work. Read the parent first. Requires authoritative direct-user creation intent and turn evidence, not a numeric allowance. Each item needs its own stable idempotency_key. Returns per-item success/failure and recovery; retry failed items with the SAME keys. Partial success is not rolled back. Never fall back to platform administration.", {
+  tool("corptie_collaboration_tasks_create_batch", "Autonomously create 1-10 child Tasks and companion Worker Sessions in ONE call. The parent Session decides when and how many; no explicit user creation request, message/turn evidence, confirmation or total child quota is required. Worker may target only its bound root Task; Work Chat a root in its Work. Read the parent first. Each item needs a stable idempotency_key; retry failed items with the SAME keys. Returns per-item success/failure and recovery; partial success is not rolled back. Never fall back to platform administration.", {
     parent_task_id: taskIdSchema,
     expected_parent_resource_version: { type: "integer", minimum: 1 },
     logical_session_id: { type: "string", minLength: 1 },
@@ -131,7 +131,7 @@ export const collaborationDynamicTools = Object.freeze([
         idempotency_key: { type: "string", minLength: 1, description: "Stable per-child key, preserved on retries and independent of batch position." }
       }, required: ["title", "agent_id", "idempotency_key"]
     } }
-  }, ["parent_task_id", "expected_parent_resource_version", "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "items"]),
+  }, ["parent_task_id", "expected_parent_resource_version", "items"]),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,

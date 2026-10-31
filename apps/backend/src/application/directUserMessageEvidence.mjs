@@ -22,7 +22,7 @@ export function buildDirectUserMessageEvidence(store, reference, context = {}) {
     turn_id: delivery.deliveryId
   };
   return {
-    prompt: `<corptie_direct_user_message_evidence ${Object.entries(attributes).map(([key, value]) => `${key}="${escapeAttribute(value)}"`).join(" ")}>\nThis evidence identifies only this direct user turn; it is not authorization by itself. Use it for Task lifecycle tools only as explicitly requested by the user. Never create a new Task unless this user message explicitly requests creation of a new Task.\n</corptie_direct_user_message_evidence>`
+    prompt: `<corptie_direct_user_message_evidence ${Object.entries(attributes).map(([key, value]) => `${key}="${escapeAttribute(value)}"`).join(" ")}>\nThis evidence identifies only this direct user turn; it is not authorization by itself. Use it for Task lifecycle tools only as explicitly requested by the user. Independent root Task creation requires an explicit direct-user creation request. Child Task decomposition is autonomous through the scoped collaboration tools: no explicit user creation request or message evidence is needed. This exception does not authorize acceptance, deletion, or other lifecycle operations.\n</corptie_direct_user_message_evidence>`
   };
 }
 
