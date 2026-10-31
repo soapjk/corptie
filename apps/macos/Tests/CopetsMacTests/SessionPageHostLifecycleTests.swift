@@ -312,21 +312,24 @@ import CorptieConversation
         XCTAssertEqual(Set(controller.entries.map { $0.inputs.scope.sessionID }), ["a", "c", "d", "e", "f", "g", "h", "i"])
         select("c"); select("d")
         controller.handleMemoryPressure(.warning)
-        XCTAssertEqual(controller.capacity, 2)
+        XCTAssertEqual(controller.capacity, 8)
         await settle()
-        XCTAssertEqual(controller.entries.count, 2)
+        XCTAssertEqual(controller.entries.count, 8)
         let before = allocations
+        for id in ["a", "c", "d", "e", "f", "g", "h", "i"] { select(id) }
         for _ in 0..<5 { select("c"); select("d") }
         XCTAssertEqual(allocations, before)
         controller.handleMemoryPressure(.critical)
-        XCTAssertEqual(controller.entries.count, 2, "Destruction must not run inside the pressure callback")
+        XCTAssertEqual(controller.entries.count, 8)
         await settle()
-        XCTAssertEqual(controller.entries.count, 1)
-        XCTAssertEqual(controller.current?.inputs.scope.sessionID, "d")
+        XCTAssertEqual(controller.capacity, 8)
+        XCTAssertEqual(controller.entries.count, 8)
+        for id in ["a", "c", "d", "e", "f", "g", "h", "i"] { select(id) }
+        XCTAssertEqual(allocations, before, "Critical pressure must preserve all eight cached pages")
         controller.handleMemoryPressure(.normal)
         select("a"); select("b")
         XCTAssertEqual(controller.capacity, 8)
-        XCTAssertEqual(controller.entries.count, 3)
+        XCTAssertEqual(controller.entries.count, 8)
         // Same-page SwiftUI updates must not repeatedly resume native children.
         var nativeResumes = 0
         controller.current?.inputs.resumeNativePresentation = { nativeResumes += 1 }
@@ -405,7 +408,8 @@ import CorptieConversation
         print("[resident-memory] fixture 240 items/page; footprint bytes baseline/pages1-through-9 (8-page LRU)=\(memory)")
         XCTAssertLessThan(synchronous[28], 16)
         controller.handleMemoryPressure(.critical); await settle()
-        print("[resident-memory] after critical eviction to 1 page=\(try footprint()) bytes")
+        XCTAssertEqual(controller.entries.count, 8)
+        print("[resident-memory] after critical pressure, 8 pages retained=\(try footprint()) bytes")
         controller.disposeAll(); await settle()
         print("[resident-memory] after disposal=\(try footprint()) bytes (allocator/shared caches may retain memory)")
         XCTAssertTrue(controller.entries.isEmpty)
