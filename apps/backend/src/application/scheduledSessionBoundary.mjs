@@ -2,7 +2,7 @@
 // against current persisted state on each call, including paired-device grants.
 export function createScheduledSessionBoundary({
   store, environmentName, collaborationCore, canDeliverScheduledMessage,
-  registerRuntimeQueuedWork, runtimeQueuePosition, emitEvent, scheduleAgentWorkDrain
+  registerRuntimeQueuedWork, runtimeQueuePosition, emitEvent, scheduleAgentWorkDrain, sessionMailbox
 }) {
   function authorizeScheduledSessionTask({ actor, logicalSessionId, environment }) {
     if (environment !== environmentName) {
@@ -42,7 +42,9 @@ export function createScheduledSessionBoundary({
   }
 
   function enqueueScheduledSessionWork(input) {
-    const { task, inserted } = store.enqueueAgentTaskWithResult(input);
+    const { task, inserted } = sessionMailbox
+      ? sessionMailbox.enqueueExternalOperation(input, { sourceType: "automation", authorization: { sourceId: input.source?.scheduledTaskId } })
+      : store.enqueueAgentTaskWithResult(input);
     const deliveryId = input.source?.deliveryId ?? input.taskId;
     console.info(
       `[automation-delivery] result=${inserted ? "inserted" : "deduplicated"}`

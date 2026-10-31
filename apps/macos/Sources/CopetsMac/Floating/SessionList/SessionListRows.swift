@@ -151,6 +151,10 @@ struct CompactSessionRow: View {
                 .layoutPriority(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 4)
+                if (session.mailboxPendingCount ?? 0) > 0 {
+                    Image(systemName: "envelope.badge").font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityLabel("信箱有待处理消息")
+                }
                 if isUnread {
                     Circle()
                         .fill(Color.red)

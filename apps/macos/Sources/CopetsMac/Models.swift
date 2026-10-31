@@ -97,6 +97,8 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var executionStatus: String? = nil
     var deliveryStatus: String? = nil
     var hasPendingScheduledWake: Bool? = nil
+    var mailboxPendingCount: Int? = nil
+    var mailboxUnreadCount: Int? = nil
     var providerConnectionStatus: String? = nil
     var syncHealth: String? = nil
     var transitionState: String? = nil
@@ -811,6 +813,10 @@ struct CollaborationOverviewResponse: Decodable {
 struct SessionCollaborationChannelResponse: Decodable {
     let channel: SessionCollaborationChannel
     let messages: [SessionCollaborationMessage]
+    let hasMore: Bool?
+    let pendingCount: Int?
+    let beforeCursor: String?
+    let afterCursor: String?
 }
 
 struct SessionCollaborationChannel: Identifiable, Decodable, Equatable {
@@ -835,11 +841,23 @@ struct SessionCollaborationMessage: Identifiable, Decodable, Equatable {
     let senderSessionId: String
     let recipientSessionId: String
     let messageKind: String
+    let deliveryIntent: String?
+    let cursor: String?
+    let delivery: SessionChannelDeliveryReceipt?
     let body: String
     let inReplyToMessageId: String?
     let resourceContext: [String: JSONValue]?
     let idempotencyKey: String
     let createdAt: String
+}
+
+struct SessionChannelDeliveryReceipt: Decodable, Equatable {
+    let status: String
+    let batchId: String?
+    let batchStatus: String?
+    let executionStatus: String?
+    let messageCount: Int?
+    let targetTurnId: String?
 }
 
 struct CollaborationTaskResponse: Decodable {

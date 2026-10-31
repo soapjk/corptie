@@ -264,8 +264,9 @@ export function handleCollaborationHttpRequest({
         if (!channel) throw apiError("CHANNEL_NOT_FOUND", "Channel was not found in this Session scope.", 404);
         return sendJson(response, 200, {
           channel,
-          messages: sessionChannelService.listMessages(channelId, sessionMetadata.sessionId, {
-            limit: url.searchParams.get("limit")
+          ...sessionChannelService.listMessagePage(channelId, sessionMetadata.sessionId, {
+            limit: url.searchParams.get("limit"),
+            beforeCursor: url.searchParams.get("beforeCursor"), afterCursor: url.searchParams.get("afterCursor")
           })
         });
       }
@@ -657,7 +658,10 @@ async function handleProductRequest({ request, response, url, core, sessionChann
     if (!channel) throw apiError("CHANNEL_NOT_FOUND", "Channel was not found.", 404);
     return sendJson(response, 200, {
       channel,
-      messages: sessionChannelService.listMessages(channelId, channel.sessionAId, { limit: 500 })
+      ...sessionChannelService.listMessagePage(channelId, channel.sessionAId, {
+        limit: url.searchParams.get("limit") ?? 100,
+        beforeCursor: url.searchParams.get("beforeCursor"), afterCursor: url.searchParams.get("afterCursor")
+      })
     });
   }
 

@@ -52,6 +52,7 @@ export class SessionChannelService {
           senderSessionId: source.logicalSessionId,
           body,
           messageKind: input.messageKind,
+          deliveryIntent: input.deliveryIntent,
           inReplyToMessageId: input.inReplyToMessageId,
           idempotencyKey
         });
@@ -71,6 +72,7 @@ export class SessionChannelService {
     const request = {
       body,
       messageKind: normalizeMessageKind(input.messageKind),
+      deliveryIntent: normalizeDeliveryIntent(input.deliveryIntent),
       inReplyToMessageId: optionalText(input.inReplyToMessageId),
       targetWorkId: optionalText(input.targetWorkId),
       sessionAgentId: optionalText(input.sessionAgentId),
@@ -178,6 +180,7 @@ export class SessionChannelService {
         senderSessionId: source.logicalSessionId,
         body: request.request.body,
         messageKind: request.request.messageKind,
+        deliveryIntent: request.request.deliveryIntent,
         inReplyToMessageId: request.request.inReplyToMessageId,
         idempotencyKey: request.idempotencyKey,
         resourceContext: {
@@ -292,6 +295,7 @@ export class SessionChannelService {
       if (existing.channel_id !== channel.channelId
         || existing.body !== requiredText(input.body, "body")
         || existing.message_kind !== requestedKind
+        || existing.delivery_intent !== normalizeDeliveryIntent(input.deliveryIntent)
         || (existing.in_reply_to_message_id ?? null) !== optionalText(input.inReplyToMessageId)) {
         throw channelError(
           "CHANNEL_IDEMPOTENCY_CONFLICT",
@@ -313,6 +317,7 @@ export class SessionChannelService {
         senderSessionId: sender.logicalSessionId,
         body: input.body,
         messageKind: input.messageKind,
+        deliveryIntent: input.deliveryIntent,
         inReplyToMessageId: input.inReplyToMessageId,
         idempotencyKey: input.idempotencyKey,
         resourceContext: input.resourceContext ?? {
@@ -331,13 +336,50 @@ export class SessionChannelService {
   }
 
   listMessages(channelId, actorSessionId, options = {}) {
+    return this.listMessagePage(channelId, actorSessionId, options).messages;
+  }
+
+  listMessagePage(channelId, actorSessionId, options = {}) {
     const channel = this.#requireParticipantChannel(channelId, actorSessionId);
+    if (options.beforeCursor && options.afterCursor) throw channelError("INVALID_CHANNEL_CURSOR", "Use one cursor direction.");
+    const cursor = options.beforeCursor ?? options.afterCursor;
+    if (cursor != null && !/^[1-9][0-9]*$/.test(String(cursor))) throw channelError("INVALID_CHANNEL_CURSOR", "Invalid message cursor.");
+    const ascending = Boolean(options.afterCursor);
+    const limit = boundedLimit(options.limit, 100);
     const rows = this.store.selectAll(
-      `SELECT * FROM session_collaboration_messages WHERE channel_id=?
-       ORDER BY created_at ASC, message_id ASC LIMIT ?`,
-      [channel.channelId, boundedLimit(options.limit, 500)]
+      `SELECT m.*, o.sequence FROM session_collaboration_messages m
+       JOIN session_collaboration_message_order o ON o.message_id=m.message_id
+       WHERE m.channel_id=? ${cursor ? `AND o.sequence ${ascending ? ">" : "<"} ?` : ""}
+       ORDER BY o.sequence ${ascending ? "ASC" : "DESC"} LIMIT ?`,
+      [channel.channelId, ...(cursor ? [Number(cursor)] : []), limit + 1]
     );
-    return rows.map((row) => this.#presentMessage(row));
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    if (!ascending) page.reverse();
+    const deliveries = page.length ? this.store.selectAll(
+      `SELECT d.*, i.batch_id, b.status AS batch_status, op.status AS execution_status,
+        (SELECT COUNT(*) FROM session_collaboration_batch_items bi WHERE bi.batch_id=i.batch_id) AS message_count
+       FROM session_collaboration_deliveries d
+       LEFT JOIN session_collaboration_batch_items i ON i.delivery_id=d.delivery_id
+       LEFT JOIN session_collaboration_batches b ON b.batch_id=i.batch_id
+       LEFT JOIN agent_operations op ON op.task_id=b.operation_id
+       WHERE d.message_id IN (${page.map(() => "?").join(",")})`, page.map(row => row.message_id)
+    ) : [];
+    const receipts = new Map(deliveries.map(row => [row.message_id, presentDelivery(row)]));
+    const pendingCount = Number(this.store.selectOne(
+      `SELECT COUNT(*) AS count FROM session_collaboration_deliveries d
+       JOIN session_collaboration_messages m ON m.message_id=d.message_id
+       WHERE m.channel_id=? AND d.status IN ('pending','queued')
+       AND m.delivery_intent NOT IN ('notification','acknowledgement')`, [channel.channelId]
+    )?.count ?? 0);
+    return {
+      pendingCount,
+      messages: page.map(row => ({ ...this.#presentMessage(row), cursor: String(row.sequence),
+        delivery: receipts.get(row.message_id) ?? null })),
+      hasMore,
+      beforeCursor: page.length ? String(page[0].sequence) : null,
+      afterCursor: page.length ? String(page.at(-1).sequence) : null
+    };
   }
 
   revokeChannel(channelId, actorSessionId, reason, evidence = {}) {
@@ -388,7 +430,12 @@ export class SessionChannelService {
 
   getDelivery(deliveryId) {
     const row = this.store.selectOne(
-      "SELECT * FROM session_collaboration_deliveries WHERE delivery_id=?",
+      `SELECT d.*, i.batch_id, b.status AS batch_status, op.status AS execution_status,
+        (SELECT COUNT(*) FROM session_collaboration_batch_items bi WHERE bi.batch_id=i.batch_id) AS message_count
+       FROM session_collaboration_deliveries d
+       LEFT JOIN session_collaboration_batch_items i ON i.delivery_id=d.delivery_id
+       LEFT JOIN session_collaboration_batches b ON b.batch_id=i.batch_id
+       LEFT JOIN agent_operations op ON op.task_id=b.operation_id WHERE d.delivery_id=?`,
       [deliveryId]
     );
     return row ? presentDelivery(row) : null;
@@ -399,7 +446,7 @@ export class SessionChannelService {
       "SELECT * FROM session_collaboration_deliveries WHERE message_id=?",
       [messageId]
     );
-    return row ? presentDelivery(row) : null;
+    return row ? this.getDelivery(row.delivery_id) : null;
   }
 
   updateDelivery(deliveryId, patch = {}) {
@@ -437,7 +484,7 @@ export class SessionChannelService {
   getDeliveryEnvelope(deliveryId) {
     const row = this.store.selectOne(
       `SELECT d.*, m.channel_id, m.sender_session_id, m.recipient_session_id AS message_recipient_session_id,
-              m.message_kind, m.body, m.in_reply_to_message_id, m.resource_context_json,
+              m.delivery_intent, m.message_kind, m.body, m.in_reply_to_message_id, m.resource_context_json,
               m.idempotency_key, m.created_at AS message_created_at,
               c.session_a_id, c.session_b_id, c.status AS channel_status,
               c.requested_by_session_id, c.authorized_at, c.resource_version
@@ -463,6 +510,7 @@ export class SessionChannelService {
         recipientAgentId: recipientAgent?.agentId ?? null,
         recipientAgentName: recipientAgent?.name ?? null,
         messageKind: row.message_kind,
+        deliveryIntent: row.delivery_intent ?? "action_required",
         body: row.body,
         inReplyToMessageId: row.in_reply_to_message_id ?? null,
         resourceContext: parseJson(row.resource_context_json, {}),
@@ -510,11 +558,11 @@ export class SessionChannelService {
     const deliveryId = `channel_delivery:${this.idFactory()}`;
     this.store.db.run(
       `INSERT INTO session_collaboration_messages (
-         message_id, channel_id, sender_session_id, recipient_session_id, message_kind,
+         message_id, channel_id, sender_session_id, recipient_session_id, message_kind, delivery_intent,
          body, in_reply_to_message_id, resource_context_json, idempotency_key, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [messageId, channel.channelId, senderSessionId, recipientSessionId,
-        normalizeMessageKind(input.messageKind), requiredText(input.body, "body"),
+        normalizeMessageKind(input.messageKind), normalizeDeliveryIntent(input.deliveryIntent), requiredText(input.body, "body"),
         inReplyToMessageId, JSON.stringify(input.resourceContext ?? {}),
         requiredText(input.idempotencyKey, "idempotencyKey"), timestamp]
     );
@@ -599,6 +647,7 @@ export class SessionChannelService {
       senderSessionId: row.sender_session_id,
       recipientSessionId: row.recipient_session_id,
       messageKind: row.message_kind,
+      deliveryIntent: row.delivery_intent ?? "action_required",
       body: row.body,
       inReplyToMessageId: row.in_reply_to_message_id ?? null,
       resourceContext: parseJson(row.resource_context_json, {}),
@@ -648,6 +697,7 @@ function sameChannelRequest(existing, input, recipientSessionId) {
   return existing.requestedRecipientSessionId === recipientSessionId
     && stored.body === requiredText(input.body, "body")
     && stored.messageKind === normalizeMessageKind(input.messageKind)
+    && (stored.deliveryIntent ?? "action_required") === normalizeDeliveryIntent(input.deliveryIntent)
     && (stored.inReplyToMessageId ?? null) === optionalText(input.inReplyToMessageId)
     && (stored.targetWorkId ?? null) === optionalText(input.targetWorkId)
     && (stored.sessionAgentId ?? null) === optionalText(input.sessionAgentId)
@@ -668,7 +718,11 @@ function presentDelivery(row) {
     targetTurnId: row.target_turn_id ?? null,
     lastError: row.last_error ?? null,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    batchId: row.batch_id ?? null,
+    batchStatus: row.batch_status ?? null,
+    executionStatus: row.execution_status ?? null,
+    messageCount: Number(row.message_count ?? 0)
   };
 }
 
@@ -698,4 +752,12 @@ function channelError(code, message, statusCode = 400) {
   error.code = code;
   error.statusCode = statusCode;
   return error;
+}
+
+function normalizeDeliveryIntent(value) {
+  const intent = optionalText(value) ?? "action_required";
+  if (!["action_required", "response_required", "notification", "acknowledgement"].includes(intent)) {
+    throw channelError("INVALID_DELIVERY_INTENT", `Unsupported delivery intent: ${intent}.`);
+  }
+  return intent;
 }

@@ -16,6 +16,7 @@ export class BackgroundAgentService {
     this.registry = options.registry;
     this.defaultProviderId = options.defaultProviderId ?? null;
     this.getModelSettings = options.getModelSettings ?? (() => ({ mode: "default" }));
+    this.onCompletionDelivery = options.onCompletionDelivery ?? null;
     this.onOperationEvent = options.onOperationEvent ?? (() => {});
     // provider-neutral Agent 上下文解析器：resolveAgentContext(agentId, { intent }) → { agent, instructions }。
     // 由组合根注入（agentContextService），BackgroundAgentService 不依赖具体 Provider 或 store。
@@ -163,6 +164,7 @@ export class BackgroundAgentService {
         purpose: request.purpose,
         ...performanceMeasurement
       });
+      await this.deliverCompletion(input, result.text ?? "Background operation completed.", "completed");
       return { ...result, operationId, providerId, historyPolicy: "hidden", validatedOutput, performance: performanceMeasurement };
     } catch (error) {
       const performanceMeasurement = {
@@ -179,7 +181,19 @@ export class BackgroundAgentService {
         error: error.message,
         ...performanceMeasurement
       });
+      await this.deliverCompletion(input, `Background operation failed: ${error.message}`, "failed");
       throw error;
+    }
+  }
+
+  async deliverCompletion(input, body, phase) {
+    if (!input.completionDelivery || !this.onCompletionDelivery) return;
+    try {
+      await this.onCompletionDelivery({ ...input.completionDelivery, sourceType: "background", sourceId: input.operationId,
+        idempotencyKey: `${input.operationId}:${phase}`, body,
+        authorization: { ownerLogicalSessionId: input.completionDelivery.recipientSessionId, sourceId: input.operationId } });
+    } catch (error) {
+      this.onOperationEvent("BackgroundCompletionDeliveryFailed", { operationId: input.operationId, error: error.message });
     }
   }
 

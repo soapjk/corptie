@@ -136,7 +136,7 @@ struct SessionConversationHeaderSurface: View {
                     .help(L10n("Back to task list"))
                 }
             }
-            .frame(width: detailColumnVisibility == nil ? 66 : 104, alignment: .leading)
+            .frame(width: detailColumnVisibility == nil ? 66 : 142, alignment: .leading)
 
             HStack {
                 Spacer(minLength: 0)
@@ -148,6 +148,16 @@ struct SessionConversationHeaderSurface: View {
             HStack(spacing: 10) {
                 if session != nil {
                     if let visibility = detailColumnVisibility {
+                        Button {
+                            guard canAct, let session else { return }
+                            visibility.wrappedValue = true
+                            NotificationCenter.default.post(name: .sessionMailboxRequested, object: session.id)
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "envelope")
+                                if let count = session?.mailboxPendingCount, count > 0 { Text(count > 99 ? "99+" : "\(count)").font(.caption2) }
+                            }.frame(minWidth: 28, minHeight: 28)
+                        }.buttonStyle(.plain).help("打开会话信箱").accessibilityLabel("打开会话信箱")
                         Button {
                             visibility.wrappedValue.toggle()
                         } label: {
@@ -202,7 +212,7 @@ struct SessionConversationHeaderSurface: View {
                     .accessibilityIdentifier("session.detail.actions")
                 }
             }
-            .frame(width: detailColumnVisibility == nil ? 66 : 104, alignment: .trailing)
+            .frame(width: detailColumnVisibility == nil ? 66 : 142, alignment: .trailing)
         }
     }
 

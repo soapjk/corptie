@@ -1,3 +1,5 @@
+import { migrateSessionMailbox } from "./sessionMailboxMigrations.mjs";
+import { migrateChannelMailbox } from "./channelMailboxMigrations.mjs";
 import { migrateTaskProjectionColumns, migrateTaskCreationOrigins, migrateTaskLifecycleGuards } from "./taskEvolutionMigrations.mjs";
 import { migrateArtifactTaxonomy } from "./artifactTaxonomyMigrations.mjs";
 import { migrateStartupOperations } from "./startupOperationMigrations.mjs";
@@ -118,6 +120,8 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     );
     db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_operations_channel_delivery
       ON agent_operations(channel_delivery_id) WHERE channel_delivery_id IS NOT NULL`);
+    migrateChannelMailbox({ db, ensureColumn });
+    migrateSessionMailbox({ db });
     migrateTaskProjectionColumns({
       ensureColumn: (...args) => ensureColumn(...args),
       db: db,

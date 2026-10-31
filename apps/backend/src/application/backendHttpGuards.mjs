@@ -7,6 +7,7 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
       "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/resources", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|context-references|images|resources|fork|worktree-detail)$/.test(url.pathname)
+      || /^\/sessions\/[^/]+\/mailbox(?:\/messages\/[^/]+)?$/.test(url.pathname)
       || /^\/sessions\/[^/]+\/detail(?:\/(events|capabilities))?$/.test(url.pathname)
       || /^\/sessions\/[^/]+\/detail\/receipts\/[A-Za-z0-9_-]{8,128}$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts|task-hierarchy|local-state))?$/.test(url.pathname)

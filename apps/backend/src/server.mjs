@@ -1,3 +1,5 @@
+import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
+import { SessionChannelMailboxService } from "./collaboration/sessionChannelMailboxService.mjs";
 import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
@@ -501,11 +503,41 @@ const workChatContextService = new WorkChatContextService({ store, artifactServi
 let workChatOperationService = null;
 let sessionCollaborationService = null;
 const sessionChannelService = new SessionChannelService({ store, collaborationCore });
+const channelMailbox = new SessionChannelMailboxService({
+  store, sessionChannelService, enabled: process.env.CORPTIE_CHANNEL_BATCHING_ENABLED !== "0"
+});
+
+const sessionMailbox = new SessionMailboxService({ store, channelService: sessionChannelService, channelMailbox,
+  resolveActor: id => collaborationCore.getAgentForSession(id)?.agentId,
+  wake: (sessionId, taskId) => {
+    if (taskId) scheduleAgentWorkDrain(sessionId, null, taskId);
+    else void tickAgentWorkQueue().catch(error => console.error(`[mailbox] ${error.code ?? error.message}`));
+  },
+  changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
+  validateExternal: (row, authorization) => {
+    if (row.source_type === "automation") {
+      const task = store.getScheduledSessionTask(row.source_id);
+      const work = row.operation_id ? store.getAgentTask(row.operation_id) : null;
+      const run = work?.source?.scheduledRunId ? store.getScheduledSessionRun(work.source.scheduledRunId) : null;
+      if (!task || task.logicalSessionId !== row.recipient_session_id || task.status === "cancelled" || !run
+          || ["cancelled", "failed", "skipped", "missed"].includes(run.status)) {
+        throw Object.assign(new Error("MAILBOX_AUTOMATION_AUTHORIZATION_REVOKED"), { code: "MAILBOX_AUTOMATION_AUTHORIZATION_REVOKED" });
+      }
+      return authorizeScheduledSessionTask({ actor: { type: task.creatorType, id: task.creatorId },
+        logicalSessionId: row.recipient_session_id, environment: environmentName });
+    }
+    if (authorization.ownerLogicalSessionId !== row.recipient_session_id || authorization.sourceId !== row.source_id) {
+      throw Object.assign(new Error("MAILBOX_EVENT_SCOPE_REQUIRED"), { code: "MAILBOX_EVENT_SCOPE_REQUIRED" });
+    }
+  },
+  workEvent: (type, work) => scheduledSessionTaskService.handleAgentWorkEvent(type, work)
+});
+channelMailbox.sessionMailbox = sessionMailbox;
 const {
   dispatchSessionChannelDelivery, inspectCollaborationSession,
   resumeCollaborationSession, startCollaborationTurn
 } = createSessionChannelDeliveryOperation({
-  store, sessionChannelService, now,
+  store, sessionChannelService, now, channelMailbox,
   resumeSession: (sessionId, context) => sessionApplicationService.resumeSession(sessionId, context),
   sendMessage: sendUnifiedSessionMessage
 });
@@ -546,7 +578,7 @@ const taskSessionProjection = createTaskSessionProjection({
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
 const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
-  store, emitEvent,
+  store, emitEvent, sessionMailbox,
   recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
   settleEntityTaskFromSession, collaborationCore,
   refreshWorkspaceInventoryAfterTurn: (...args) => refreshWorkspaceInventoryAfterTurn(...args),
@@ -668,7 +700,7 @@ const {
   authorizeScheduledSessionTask, enqueueScheduledSessionWork,
   scheduledSessionHttpActor, scheduledSessionHttpLogicalSessionId
 } = createScheduledSessionBoundary({
-  store, environmentName, collaborationCore, emitEvent, scheduleAgentWorkDrain,
+  store, environmentName, collaborationCore, emitEvent, scheduleAgentWorkDrain, sessionMailbox,
   canDeliverScheduledMessage: (deviceId) => clientDeviceGateway?.authority.canDeliverScheduledMessage(deviceId),
   registerRuntimeQueuedWork: (...args) => registerRuntimeQueuedWork(...args),
   runtimeQueuePosition: (...args) => runtimeQueuePosition(...args)
@@ -687,10 +719,20 @@ const scheduledSessionTaskService = new ScheduledSessionTaskService({
   enqueue: enqueueScheduledSessionWork,
   activate: async (payload) => {
     emitEvent("AutomationSessionActivationRequested", payload, { sessionId: payload.sessionId });
+    const owner = sessionMailbox.logical(payload.sessionId);
+    sessionMailbox.receiveEvent({ recipientSessionId: owner.logicalSessionId, sourceType: "system",
+      sourceId: payload.taskId ?? payload.runId, body: "自动化请求激活此会话。", intent: "notification",
+      idempotencyKey: `${payload.runId}:activation`,
+      authorization: { ownerLogicalSessionId: owner.logicalSessionId, sourceId: payload.taskId ?? payload.runId } });
     return { delivered: true };
   },
   notify: async (payload) => {
     emitEvent("AutomationLocalNotificationRequested", payload, { sessionId: payload.sessionId });
+    const owner = sessionMailbox.logical(payload.sessionId);
+    sessionMailbox.receiveEvent({ recipientSessionId: owner.logicalSessionId, sourceType: "system",
+      sourceId: payload.taskId ?? payload.runId, body: payload.body ?? payload.message ?? payload.title ?? "自动化通知。", intent: "notification",
+      idempotencyKey: `${payload.runId}:notification`,
+      authorization: { ownerLogicalSessionId: owner.logicalSessionId, sourceId: payload.taskId ?? payload.runId } });
     return { delivered: true };
   },
   onEvent: (type, payload) => emitEvent(type, payload, {
@@ -714,6 +756,7 @@ const hostToolCatalog = createHostToolCatalog({
   reviseTaskForSession, sceneService,
   getToolMaterializationPort: () => toolMaterializationPort,
   getPlatformOperationService: () => platformOperationService,
+  getSessionMailboxService: () => sessionMailbox,
   getWorkChatOperationService: () => workChatOperationService,
   contextReadService
 });
@@ -1153,6 +1196,10 @@ sessionCollaborationService = createSessionCollaborationComposition({
   defaultProviderId: agentProviderRegistry.defaultProviderId
 });
 const { setProviderRuntimeReadiness, decorateSessionForClient } = createSessionReadinessProjection({
+  readMailboxSummary: sessionId => {
+    const logical = store.getLogicalSessionByLegacySessionId(sessionId) ?? store.getLogicalSession(sessionId);
+    return logical ? sessionMailbox.summary(logical.logicalSessionId) : null;
+  },
   store, agentProviderRegistry, scheduleStateSyncPublish,
   readBindingProbe: () => sessionBindingReadinessProbe,
   readFallbackBindingReadiness: (logicalSessionId) => emptyCodexBindingPreflight.readiness(logicalSessionId)
@@ -1366,6 +1413,11 @@ const backgroundAgentService = new BackgroundAgentService({
   defaultProviderId: agentProviderRegistry.defaultProviderId,
   resolveProviderId: (provider) => resolveSessionProviderId(provider),
   resolveAgentContext: (agentId, { intent } = {}) => agentContextService.buildAgentContext(agentId, { intent }),
+  onCompletionDelivery: input => {
+    const owner = sessionMailbox.logical(input.recipientSessionId);
+    return sessionMailbox.receiveEvent({ ...input, recipientSessionId: owner.logicalSessionId,
+      authorization: { ...input.authorization, ownerLogicalSessionId: owner.logicalSessionId } });
+  },
   onOperationEvent: (type, payload) => {
     emitEvent(type, payload);
     if (type === "BackgroundAgentCompleted" || type === "BackgroundAgentFailed") {
@@ -1573,7 +1625,7 @@ const {
   syncCollaborationDeliveriesIntoAgentWorkQueue,
   resolveCollaborationDeliveryRoute
 } = createCollaborationDeliveryQueue({
-  store, sessionChannelService, collaborationCore, collaborationDispatcher,
+  store, sessionChannelService, collaborationCore, collaborationDispatcher, channelMailbox,
   collaborationDeliveryRouteResolver, emitEvent, scheduleAgentWorkDrain,
   registerRuntimeQueuedWork: (...args) => registerRuntimeQueuedWork(...args),
   moveRuntimeQueuedWork: (...args) => moveRuntimeQueuedWork(...args)
@@ -1622,7 +1674,7 @@ const {
   registerRuntimeQueuedWork, forgetRuntimeQueuedWork, moveRuntimeQueuedWork,
   runtimeQueuePosition, drainAgentWork, tickAgentWorkQueue
 } = createRuntimeAgentWorkQueue({
-  store, collaborationCore, sessionChannelService, collaborationDispatcher,
+  store, collaborationCore, sessionChannelService, collaborationDispatcher, channelMailbox, sessionMailbox,
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
@@ -1918,6 +1970,7 @@ function manageCodexTurnChanges(reference, turnId, action) {
 function projectSessionChannelMessageForSender(result) {
   const message = result?.message;
   if (!message?.messageId || !message.senderSessionId) return;
+  sessionMailbox.notify(sessionMailbox.logical(message.recipientSessionId));
   emitEvent("SessionChannelMessageSent", {
     sessionId: message.senderSessionId,
     channel: result.channel,
@@ -2150,6 +2203,7 @@ const backendHttpPorts = Object.freeze({
   get handleSessionToolHttpRequest() { return handleSessionToolHttpRequest; },
   get collaborationCore() { return collaborationCore; },
   get toolHostService() { return toolHostService; },
+  get sessionMailbox() { return sessionMailbox; },
   get sessionToolMetadata() { return sessionToolMetadata; },
   get handleCollaborationRoutes() { return handleCollaborationRoutes; },
   get handleArtifactHttpRequest() { return handleArtifactHttpRequest; },
@@ -2389,6 +2443,8 @@ function startBackendRuntime() {
     console.log("[development-preview] read-only browsing; recovery, providers, schedules and integrations disabled");
     return;
   }
+  channelMailbox.recoverInterruptedBatches();
+  sessionMailbox.importQueuedAutomations();
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();
