@@ -390,7 +390,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             ConsoleConversationCardLabel(title: task.title, execution: execution, needsAttention: needsAttention,
                 status: status(task, session), isSelected: selectedTaskID == task.id,
                 isFixed: displayPreferences.taskIDs.contains(task.id), hasScheduledWake: task.hasPendingScheduledWake == true,
-                isUnread: session.map(isSessionUnread) ?? false, isActive: isActive) {
+                isUnread: session.map(isSessionUnread) ?? false, isActive: isActive, session: session) {
                 interventionSummary(task, session: session)
             }
         }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }

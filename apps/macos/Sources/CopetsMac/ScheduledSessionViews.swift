@@ -199,10 +199,13 @@ struct ScheduledTaskEditorSheet: View {
                 )
                 .font(.system(size: 15, weight: .semibold))
                 Spacer()
-                Text(session.title)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(session.title)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    SessionTitleBadges(session: session, size: 12)
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {

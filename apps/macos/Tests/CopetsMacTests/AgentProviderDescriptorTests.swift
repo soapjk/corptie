@@ -3,7 +3,10 @@ import XCTest
 
 final class AgentProviderDescriptorTests: XCTestCase {
     @MainActor
-    func testProviderBrandIconsResolveKnownProvidersAndAliases() {
+    func testProviderBrandIconsResolveKnownProvidersAndAliases() throws {
+        // XCTest runs from its own bundle; SwiftPM places the product resources beside it.
+        let resourceBundle = try XCTUnwrap(Bundle(url: Bundle(for: Self.self).bundleURL
+            .deletingLastPathComponent().appendingPathComponent("CorptieMac_CorptieMac.bundle")))
         let providers: [AgentProviderDescriptor] = []
         XCTAssertEqual(ProviderBrandIcon.assetName(for: "codex-app-server", providers: providers), "codex")
         XCTAssertEqual(ProviderBrandIcon.assetName(for: "codex", providers: providers), "codex")
@@ -11,9 +14,9 @@ final class AgentProviderDescriptorTests: XCTestCase {
         XCTAssertEqual(ProviderBrandIcon.assetName(for: "claude-code", providers: providers), "claude-code")
         XCTAssertEqual(ProviderBrandIcon.assetName(for: "openclacky", providers: providers), "openclacky")
         XCTAssertNil(ProviderBrandIcon.assetName(for: "future-provider", providers: providers))
-        XCTAssertNotNil(ProviderBrandIcon.image(for: "codex", providers: providers))
-        XCTAssertNotNil(ProviderBrandIcon.image(for: "claude-sdk", providers: providers))
-        XCTAssertNotNil(ProviderBrandIcon.image(for: "openclacky", providers: providers))
+        XCTAssertNotNil(ProviderBrandIcon.image(for: "codex", providers: providers, resourceBundle: resourceBundle))
+        XCTAssertNotNil(ProviderBrandIcon.image(for: "claude-sdk", providers: providers, resourceBundle: resourceBundle))
+        XCTAssertNotNil(ProviderBrandIcon.image(for: "openclacky", providers: providers, resourceBundle: resourceBundle))
     }
 
     func testProviderCatalogDecodesCapabilitiesAndConfiguration() throws {

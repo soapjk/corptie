@@ -11,6 +11,7 @@ struct ConsoleConversationCardLabel<Summary: View>: View {
     let hasScheduledWake: Bool
     let isUnread: Bool
     let isActive: Bool
+    var session: TaskSession? = nil
     @ViewBuilder let summary: Summary
 
     var body: some View {
@@ -23,6 +24,7 @@ struct ConsoleConversationCardLabel<Summary: View>: View {
                     .help(status).accessibilityLabel(status)
                 ConsoleWorkTitle(title: title, isWorking: execution == .running, isActive: isActive)
                     .font(.system(size: 13, weight: .semibold)).lineLimit(2).help(title)
+                if let session { SessionTitleBadges(session: session) }
                 if isFixed {
                     Image(systemName: "bookmark.fill")
                         .font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.accentColor)
