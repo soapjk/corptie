@@ -28,6 +28,15 @@ export class TaskDeletionService {
     }
   }
 
+  async requestAfterChildDelivery(operation) {
+    if(operation.phase!=="cleanup" || !operation.progress.codeDelivered || !operation.progress.artifactsDelivered) {
+      throw coded("CHILD_DELIVERY_INCOMPLETE","交付尚未完成，不能清理。",409);
+    }
+    return this.request(operation.taskId,{mode:"safe",deleteWorktree:true,artifactDisposition:"retain",
+      idempotencyKey:`child-delivery:${operation.operationId}:cleanup:${operation.progress.cleanupAttempt ?? 0}`},
+    {type:"child_delivery",id:operation.operationId});
+  }
+
   async request(taskId, input = {}, actor = null) {
     const requestedKey = String(input.idempotencyKey ?? "").trim();
     if (requestedKey) {
@@ -61,9 +70,19 @@ export class TaskDeletionService {
   }
 
   recoverInterruptedDeletions() {
-    const operations = this.store.listRecoverableTaskDeletionOperations();
+    // Delivery-owned deletions resume only after Artifact/Git recovery and
+    // revalidation by their coordinator, never as independent startup work.
+    const operations = this.store.listRecoverableTaskDeletionOperations().filter(operation => operation.input?.actor?.type !== "child_delivery");
     for (const operation of operations) this.#schedule(operation.operationId);
     return operations.length;
+  }
+
+  resumeChildDeliveryDeletion(operationId, deliveryId) {
+    const operation = this.getOperation(operationId);
+    if (operation.input?.actor?.type !== "child_delivery" || operation.input.actor.id !== deliveryId) {
+      throw coded("TASK_DELETE_FORBIDDEN", "Deletion is not owned by this delivery.", 403);
+    }
+    return this.#schedule(operationId);
   }
 
   #schedule(operationId) {

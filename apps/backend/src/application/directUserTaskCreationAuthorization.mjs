@@ -49,8 +49,8 @@ export function authorizeDirectUserTaskCreation(input = {}) {
     maxTaskCount: explicitTaskCreationCount(message) };
 }
 
-// A bounded creation grant, not a model-selected quota. Unspecified quantity
-// permits one creation; the user must explicitly request a batch for more.
+// Legacy independent-Task grants remain bounded. Child Task count is decided
+// by the parent Session and is not governed by this natural-language parser.
 function explicitTaskCreationCount(text) {
   const cleaned = String(text).replace(/```[\s\S]*?```|`[^`]*`|“[^”]*”|「[^」]*」|"[^"\n]*"/gu, "");
   const match = /(?:创建|新建|新增|拆成|拆分为|分成)\s*([0-9]{1,3}|[一二两三四五六七八九十])\s*(?:个|项)?\s*(?:子\s*)?(?:任务|Task)/iu.exec(cleaned)
@@ -99,7 +99,7 @@ export function directUserTaskCreationRejection(event) {
 export function containsExplicitTaskCreationIntent(text) {
   const message = String(text ?? "")
     .replace(/```[\s\S]*?```|`[^`]*`|“[^”]*”|「[^」]*」|"[^"\n]*"/gu, "")
-    .replace(/\bsub[ -]?tasks?\b/giu, "task");
+    .replace(/\b(?:sub[ -]?tasks?|child\s+tasks?)\b/giu, "task");
   if (/(?:如何|怎么|怎样).{0,40}(?:创建|新建|拆分|拆成)/u.test(message)
     || /(?:创建|新建).{0,30}(?:任务|Task).{0,10}的(?:方案|设计|流程|功能)/iu.test(message)
     || /(?:how\s+(?:to|can|do)|design|discuss|explain).{0,60}(?:creat|split)/iu.test(message)) return false;

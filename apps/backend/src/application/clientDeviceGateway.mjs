@@ -14,6 +14,7 @@ import { ClientResourceAPI } from "./clientResourceAPI.mjs";
 import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
 import { TaskIntegrationAcceptanceService } from "./taskIntegrationAcceptanceService.mjs";
 import { worktreeErrorBody } from "./projectWorkspaceHttpApi.mjs";
+import { handleChildTaskDeliveryHttp } from "./childTaskDeliveryHttp.mjs";
 
 export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
@@ -65,6 +66,7 @@ export class ClientDeviceGateway {
     this.authority = authority;
     this.readAPI = readAPI;
     this.sessionAPI = sessionAPI;
+    this.resourceWritesAllowed=resourceWritesAllowed;
     this.detailWritesAllowed = detailWritesAllowed;
     this.detailActions = detailActionService ?? (sessionAPI?.inspector?.store ? createDetailBusinessActionService({ commandAPI: sessionAPI,
       inspector: sessionAPI.inspector, documentService: detailServiceFor(sessionAPI.inspector.store) }) : null);
@@ -153,6 +155,7 @@ export class ClientDeviceGateway {
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|task-startup|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
+          && !/^\/client\/v1\/tasks\/[^/]+\/child-deliveries$/.test(path)
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "task-startup", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
@@ -167,6 +170,12 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const deliveryAPI=this.sessionAPI?.entityCommands?.childDelivery;
+      if(await handleChildTaskDeliveryHttp({request,response,url,prefix:"/client/v1",
+        service:deliveryAPI?.service(),completion:deliveryAPI?.completion(),actor:{type:"user",id:`user:paired-device:${identity.deviceId}`},
+        writesAllowed:this.resourceWritesAllowed,
+        revalidate:()=>{if(this.authenticateRequest(request).deviceId!==identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED",403);},
+        readJson:body,sendJson:reply})) return;
       const userApproval = path.match(/^\/client\/v1\/tasks\/([^/]+)\/integration-acceptance-(intents|confirmations)$/);
       if(userApproval && this.readAPI?.store) {
         if(request.method!=="POST") throw deviceError("REQUEST_NOT_ALLOWED",405);

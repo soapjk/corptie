@@ -197,6 +197,8 @@ struct CorptieTaskDetailView: View {
                         }
                         isUpdatingAutoTitle = false
                     }
+                }, deliveryTaskID:task.id,deliveryRefreshID:String(task.resourceVersion),deliveryAPI:{
+                    ClientTaskHierarchyAPI(transport:try BackendTransport(endpoint:BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),surface:.local)
                 }) {
                 Button { showEdit = true } label: { ConversationDetailHeaderIcon(systemName: "pencil") }
                     .buttonStyle(.plain)

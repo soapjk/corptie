@@ -576,6 +576,26 @@ export class WorktreeIntegrationJobService {
     return plan;
   }
 
+  async createAcceptedChildDelivery(operation) {
+    const row=this.store.selectOne("SELECT * FROM child_task_delivery_operations WHERE operation_id=?",[operation.operationId]);
+    if(!row || row.state!=="running" || row.phase!=="code") throw new WorktreeIntegrationJobError("CHILD_DELIVERY_APPROVAL_INVALID","No active approved child delivery.",403);
+    const snapshot=JSON.parse(row.snapshot_json), approval=this.store.getTaskCompletionOperation(row.approval_operation_id);
+    if(approval?.result!=="succeeded" || approval.details?.childDelivery?.git?.headOid!==snapshot.git?.headOid
+      || !snapshot.git) throw new WorktreeIntegrationJobError("CHILD_DELIVERY_APPROVAL_INVALID","Approval does not bind this child version.",403);
+    const key=`child-delivery:${operation.operationId}:merge`;
+    const prior=this.store.getWorktreeIntegrationJobByIdempotencyKey(snapshot.git.repositoryId,key);
+    if(prior) return this.get(prior.id);
+    const root=this.store.getTask(snapshot.parentTaskId), binding=this.store.getTaskDeliveryBinding(root.id);
+    const options={operationType:"merge",sourceWorktreeIds:[snapshot.git.worktreeId],targetWorktreeId:binding.worktree_id,
+      taskScope:{version:1,rootTaskId:root.id,action:"merge_children",expectedHierarchyRevision:root.hierarchy_revision,
+        expectedBindingRevision:binding.binding_revision}};
+    const candidate=await this.createCandidate(snapshot.git.repositoryId,options);
+    const source=candidate.plan.items.find(item=>item.worktreeId===snapshot.git.worktreeId);
+    if(source?.sourceHeadBefore!==snapshot.git.headOid || source.dirty) throw new WorktreeIntegrationJobError("CHILD_DELIVERY_VERSION_CHANGED","The accepted source version changed.");
+    return this.startCandidate(snapshot.git.repositoryId,{...options,candidateId:candidate.id,
+      candidateFingerprint:candidate.planFingerprint,idempotencyKey:key});
+  }
+
   async createCandidate(repositoryId, options = {}) {
     const repository = this.#requireRepository(repositoryId);
     const input = requestObject(options);

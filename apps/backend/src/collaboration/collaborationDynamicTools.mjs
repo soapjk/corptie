@@ -91,7 +91,7 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Omit parent_task_id for an independent Task; specify it and expected_parent_resource_version for a child. Worker may create children only under its own bound root Task; Work Chat may select a root in its Work. Read the parent first. Never use platform administration tools as a fallback. Call only for an explicit current direct-user request to create Tasks, with authoritative turn evidence; planning, assistant initiative, collaboration and Automation are not authorization. Creation origin and parent relationship are independent.", {
+  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Omit parent_task_id for an independent Task; specify it and expected_parent_resource_version for a child. Worker may create children only under its own bound root Task; Work Chat may select a root in its Work. Read the parent first. For multiple children prefer corptie_collaboration_tasks_create_batch (1-10 per call). The parent Session decides child count; the user need not specify a number. Never use platform administration tools as a fallback. Call only for an explicit current direct-user request to create Tasks, with authoritative turn evidence; planning, assistant initiative, collaboration and Automation are not authorization. Creation origin and parent relationship are independent.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
@@ -113,6 +113,25 @@ export const collaborationDynamicTools = Object.freeze([
       allOf: [{ if: { required: ["parent_task_id"], properties: { parent_task_id: { type: "string" } } },
         then: { required: ["expected_parent_resource_version"] } }]
     }),
+  tool("corptie_collaboration_tasks_create_batch", "Create 1-10 child Tasks and companion Worker Sessions in ONE call under one same-Work root parent. The parent Session decides how many children are needed; no user-specified count or total child-creation quota applies. Use this instead of repeated single-item calls. Worker may target only its own bound root; Work Chat may choose a root in its Work. Read the parent first. Requires authoritative direct-user creation intent and turn evidence, not a numeric allowance. Each item needs its own stable idempotency_key. Returns per-item success/failure and recovery; retry failed items with the SAME keys. Partial success is not rolled back. Never fall back to platform administration.", {
+    parent_task_id: taskIdSchema,
+    expected_parent_resource_version: { type: "integer", minimum: 1 },
+    logical_session_id: { type: "string", minLength: 1 },
+    user_message_event_id: { type: "string", minLength: 1 },
+    user_message_sequence: { type: "integer", minimum: 1 },
+    turn_id: { type: "string", minLength: 1 },
+    items: { type: "array", minItems: 1, maxItems: 10, items: {
+      type: "object", additionalProperties: false,
+      properties: {
+        title: { type: "string", minLength: 1 }, description: taskFieldsSchema.description,
+        acceptance_criteria: taskFieldsSchema.acceptance_criteria, verification_criteria: taskFieldsSchema.verification_criteria,
+        priority: taskFieldsSchema.priority, agent_id: agentIdSchema,
+        provider_id: { type: "string", minLength: 1, description: "Optional override; omit to use configured creation defaults, not the caller's Provider." },
+        artifact_reference: artifactReferenceSchema, file_reference: fileReferenceSchema,
+        idempotency_key: { type: "string", minLength: 1, description: "Stable per-child key, preserved on retries and independent of batch position." }
+      }, required: ["title", "agent_id", "idempotency_key"]
+    } }
+  }, ["parent_task_id", "expected_parent_resource_version", "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "items"]),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,
@@ -181,33 +200,12 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     corptie_sessions_get: () => client.get(`/internal/collaboration/sessions/${encodeURIComponent(input.session_id)}`),
     corptie_collaboration_tasks_list: () => client.get("/internal/collaboration/tasks"),
     corptie_collaboration_tasks_get: () => client.get(`/internal/collaboration/tasks/${encodeURIComponent(input.task_id)}`),
-    corptie_collaboration_tasks_create: () => client.post("/internal/collaboration/tasks", compact({
-      title: input.title,
-      description: input.description,
-      acceptanceCriteria: input.acceptance_criteria,
-      verificationCriteria: input.verification_criteria,
-      parentTaskId: input.parent_task_id,
-      expectedParentResourceVersion: input.expected_parent_resource_version,
-      priority: input.priority,
-      agentId: input.agent_id,
-      providerId: input.provider_id,
-      artifactReference: input.artifact_reference ? {
-        artifactId: input.artifact_reference.artifact_id,
-        relation: input.artifact_reference.relation,
-        required: input.artifact_reference.required,
-        versionPolicy: input.artifact_reference.version_policy,
-        version: input.artifact_reference.version
-      } : undefined,
-      fileReference: input.file_reference ? {
-        path: input.file_reference.path,
-        relation: input.file_reference.relation,
-        required: input.file_reference.required
-      } : undefined,
-      logicalSessionId: input.logical_session_id,
-      userMessageEventId: input.user_message_event_id,
-      userMessageSequence: input.user_message_sequence,
-      turnId: input.turn_id,
-      idempotencyKey: input.idempotency_key
+    corptie_collaboration_tasks_create: () => client.post("/internal/collaboration/tasks", taskCreationBody(input)),
+    corptie_collaboration_tasks_create_batch: () => client.post("/internal/collaboration/tasks/batch", compact({
+      parentTaskId: input.parent_task_id, expectedParentResourceVersion: input.expected_parent_resource_version,
+      logicalSessionId: input.logical_session_id, userMessageEventId: input.user_message_event_id,
+      userMessageSequence: input.user_message_sequence, turnId: input.turn_id,
+      items: input.items.map(taskCreationBody)
     })),
     corptie_collaboration_tasks_relate: () => client.post("/internal/collaboration/task-relations", {
       taskId: input.task_id,
@@ -297,4 +295,18 @@ const afterSendToolNames = new Set([
 
 function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function taskCreationBody(input) {
+  return compact({ title: input.title, description: input.description,
+    acceptanceCriteria: input.acceptance_criteria, verificationCriteria: input.verification_criteria,
+    parentTaskId: input.parent_task_id, expectedParentResourceVersion: input.expected_parent_resource_version,
+    priority: input.priority, agentId: input.agent_id, providerId: input.provider_id,
+    artifactReference: input.artifact_reference ? { artifactId: input.artifact_reference.artifact_id,
+      relation: input.artifact_reference.relation, required: input.artifact_reference.required,
+      versionPolicy: input.artifact_reference.version_policy, version: input.artifact_reference.version } : undefined,
+    fileReference: input.file_reference ? { path: input.file_reference.path,
+      relation: input.file_reference.relation, required: input.file_reference.required } : undefined,
+    logicalSessionId: input.logical_session_id, userMessageEventId: input.user_message_event_id,
+    userMessageSequence: input.user_message_sequence, turnId: input.turn_id, idempotencyKey: input.idempotency_key });
 }

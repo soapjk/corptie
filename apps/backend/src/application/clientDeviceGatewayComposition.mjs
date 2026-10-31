@@ -179,6 +179,7 @@ export function startClientDeviceGateway({
         readSessionUsage(sessionId, undefined, { requireFreshAccount }),
       // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
       entityCommands: {
+        childDelivery: { service:()=>workService.childTaskDeliveryService, completion:()=>workService.taskCompletionService },
         createWork: input => workInitializationService.createForClient(input),
         inspectWorkLocalState: workId => workInitializationService.localState(workId),
         repairWorkLocalState: workId => workInitializationService.localState(workId, { repair: true }),

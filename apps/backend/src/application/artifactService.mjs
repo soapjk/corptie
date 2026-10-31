@@ -151,7 +151,8 @@ export class ArtifactService {
       input.revalidateUser?.();
       const workId = input.workId == null ? null : requiredText(input.workId, "workId");
       if (workId && !this.store.getWork(workId)) throw artifactError("ARTIFACT_WORK_NOT_FOUND", "Work not found.", 404);
-      return { kind: "local_user", actorId: input.actorId ?? "local-user", workId, sessionId: null, taskId: null, revalidateUser: input.revalidateUser };
+      return { kind: "local_user", actorId: input.actorId ?? "local-user", workId, sessionId: null, taskId: null, revalidateUser: input.revalidateUser,
+        childDeliveryOperationId:input.childDeliveryOperationId };
     }
     const resolved = this.sessionAuthorizationResolver.resolve({
       actorId: input.actorId,
@@ -510,6 +511,9 @@ export class ArtifactService {
     });
     try {
       this.store.runInTransaction(() => {
+        const currentContext=this.context(contextInput);
+        this.#validateBinding(currentContext.workId,visibility,input);
+        this.#assertCanManageArtifact(currentContext,{workId:currentContext.workId,scope,...binding});
         this.store.createArtifactMetadata({
           artifactId, workId: context.workId, title: requiredText(input.title, "title"),
           summary: optionalText(input.summary) ?? "", visibility, scope, ...taxonomy, ...binding,
@@ -549,6 +553,7 @@ export class ArtifactService {
   }
 
   async #createWorkerArtifact(context, input) {
+    this.#assertCanManageArtifact(context, { workId: context.workId, scope:"task", boundTaskId: context.taskId });
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
     if (idempotencyKey.length > 200) {
       throw artifactError("ARTIFACT_IDEMPOTENCY_KEY_INVALID", "idempotencyKey must not exceed 200 characters.", 400);
@@ -612,6 +617,7 @@ export class ArtifactService {
           || currentTask.deletion_status === "deleting") {
           throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Worker Session no longer has an active authoritative Task binding.", 403);
         }
+        this.#assertCanManageArtifact(context,{workId:context.workId,scope:"task",boundTaskId:context.taskId});
         this.store.createArtifactMetadata({
           artifactId, workId: context.workId, title, summary,
           visibility: "task_private", scope: "task", ...taxonomy,
@@ -1117,6 +1123,20 @@ export class ArtifactService {
     });
     this.#audit(context, reference.artifactId, "artifact.access_revoked", { referenceId, reason });
     return revoked;
+  }
+
+  async transferChildDeliveryArtifact(operation,pin,revalidate) {
+    revalidate();
+    if(!operation.snapshot.artifacts.some(item=>item.artifactId===pin.artifactId)
+      || operation.snapshot.parentTaskId!==operation.parentTaskId) throw artifactError("ARTIFACT_WRITE_FORBIDDEN","Artifact is outside the accepted delivery.",403);
+    const context={kind:"local_user",actorId:operation.actor.id,workId:operation.workId,
+      revalidateUser:revalidate,childDeliveryOperationId:operation.operationId};
+    const receipt=await this.transferOwnership(context,pin.artifactId,{scope:"task",taskId:operation.parentTaskId,
+      expectedResourceVersion:pin.resourceVersion,idempotencyKey:`child-delivery:${operation.operationId}:${pin.artifactId}`});
+    if(!this.store.listArtifactReferences({artifactId:pin.artifactId}).some(ref=>ref.taskId===operation.parentTaskId && !ref.revokedAt)) {
+      this.createReference(context,pin.artifactId,{taskId:operation.parentTaskId,relation:"handoff",versionPolicy:"fixed",version:pin.currentVersion});
+    }
+    return {artifactId:pin.artifactId,resourceVersion:receipt.resourceVersion};
   }
 
   async transferOwnership(contextInput, artifactId, input = {}) {
@@ -2020,6 +2040,10 @@ export class ArtifactService {
   }
 
   #assertCanManageArtifact(context, artifact) {
+    const closing=this.store.selectOne(`SELECT operation_id FROM child_task_delivery_operations
+      WHERE state IN ('queued','running','waiting') AND (child_task_id=? OR EXISTS
+        (SELECT 1 FROM sessions s WHERE s.task_id=child_task_id AND s.id=?)) LIMIT 1`,[artifact.boundTaskId ?? null,artifact.boundSessionId ?? null]);
+    if(closing && context.childDeliveryOperationId!==closing.operation_id) throw artifactError("CHILD_DELIVERY_IN_PROGRESS","子任务正在交付，暂不允许修改其 Artifact。",409);
     if (this.#canManageArtifact(context, artifact)) return;
     if (context.kind !== "worker") throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Session cannot manage Work Artifacts.", 403);
     throw artifactError(

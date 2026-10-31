@@ -54,6 +54,16 @@ function catalogFixture() {
   })));
 }
 
+test("batch Task creation intent recommends the real batch contract", () => {
+  const candidates = collaborationDynamicTools.map(definition => ({ name: definition.name, definition, domainId: "collaboration" }));
+  for (const intent of ["批量创建多个子任务", "create a batch of child tasks"]) {
+    assert.equal(rankDiscoveryCandidates(candidates, { intent })[0].name, "corptie_collaboration_tasks_create_batch");
+  }
+  const definition = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create_batch");
+  assert.equal(definition.inputSchema.properties.items.maxItems, 10);
+  assert.equal(definition.inputSchema.properties.items.minItems, 1);
+});
+
 test("all required deferred domains expose one recommended tool and self-contained machine contracts", async () => {
   const catalog = catalogFixture();
   const context = { actorId: "agent:test", metadata: { sessionKind: "worker", workId: "work:test", sessionId: "session:test" } };

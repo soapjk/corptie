@@ -58,7 +58,7 @@ export function createHostToolCatalog({
     }),
     {
       id: "collaboration",
-      domainRevision: "2",
+      domainRevision: "3",
       tools: sessionCollaborationV2Enabled
         ? collaborationDynamicTools
         : collaborationDynamicTools.filter((tool) => !tool.name.startsWith("corptie_sessions_")
