@@ -76,17 +76,16 @@ struct ResidentSessionPageRoot: View {
                     onTimelinePositionChange: { viewport.store($0, for: inputs.scope.sessionID) }, renderInputs: inputs)
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             }
-            // Keep the legacy conversation viewport without changing the
-            // Detail rail's native scroll insets or adding another observer.
-            .padding(.top, -inputs.conversationTopInset)
             .modifier(ConversationColumnSurface(.transcript))
             SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
                 activity: inputs.activity, detailPresentation: detailPresentation)
                 .frame(maxHeight: .infinity)
                 .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
         }
-        .modifier(SessionChromeAlignment())
         .padding(MainWindowPageLayoutMetrics.outerPadding)
+        // Both columns share the full-height viewport. Compensating only the
+        // transcript leaves Detail's clip edge below the floating controls.
+        .padding(.top, -inputs.conversationTopInset)
         .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
         .environment(\.detailColumnVisibility, $showsDetailColumn)
         .modifier(ConversationSkinHost())

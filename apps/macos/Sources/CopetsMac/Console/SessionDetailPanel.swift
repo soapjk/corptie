@@ -6,13 +6,11 @@ import AppKit
 import SwiftUI
 
 struct SessionDetailPanel: View {
-    @Environment(\.sessionChromeCenterY) private var sessionChromeCenterY
     private let modelCatalog = BackendClient.shared.modelCatalog
     private let entityClient = EntityAPIClient.shared
     private let backendClient = BackendClient.shared
     let session: TaskSession
     var railWidth: CGFloat = 280
-    var chromeCenterY: CGFloat? = nil
     var activity: ConversationDetailPresentationActivity? = nil
     private var isPresentationActive: Bool {
         guard let activity else { return true }
@@ -221,8 +219,10 @@ struct SessionDetailPanel: View {
             detailTabButton("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")", tab: "mailbox")
         }
         .padding(2)
+        .fixedSize()
         .platformGlassSurface(in: Capsule(), interactive: true)
-        .offset(y: (chromeCenterY ?? sessionChromeCenterY) - 15)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 12)
     }
 
     private func detailTabButton(_ title: String, tab: String) -> some View {

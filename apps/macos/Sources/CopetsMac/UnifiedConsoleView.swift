@@ -1231,7 +1231,6 @@ struct UnifiedConsoleView: View {
                 }
                 .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
             }
-            .modifier(SessionChromeAlignment())
             .padding(MainWindowPageLayoutMetrics.outerPadding)
             .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
             .environment(\.detailColumnVisibility, $showsDetailColumn)
