@@ -264,6 +264,111 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertFalse(rows[2].isCommentary)
     }
 
+    func testCollaborationCardsAcceptEverySessionKindAndOptionalWorkInBothSkins() throws {
+        for direction in ["inbound", "outbound"] {
+            for sourceKind in ["assistantChat", "workChat", "worker"] {
+                for targetKind in ["assistantChat", "workChat", "worker"] {
+                    let message = try item([
+                        "id": "collaboration", "type": "userMessage", "presentationRole": "collaboration",
+                        "text": "Authored collaboration message", "presentationText": NSNull(),
+                        "collaborationDirection": direction, "collaborationChannelId": "channel:one",
+                        "collaborationInitiatorSessionId": "logical:source", "collaborationInitiatorSessionTitle": "Source",
+                        "collaborationRecipientSessionId": "logical:target", "collaborationRecipientSessionTitle": "Target",
+                        "collaborationInitiatorSessionKind": sourceKind, "collaborationRecipientSessionKind": targetKind,
+                        "collaborationSourceWorkId": sourceKind == "assistantChat" ? NSNull() : "work:source",
+                        "collaborationTargetWorkId": targetKind == "assistantChat" ? NSNull() : "work:target"
+                    ])
+                    let row = builder().nativeAppKitRow(.init(kind: .message(message)), expandedTurnIds: [])
+                    XCTAssertEqual(row.nativeStyle, .agent)
+                    XCTAssertTrue(row.isCollaboration)
+                    XCTAssertTrue(row.showsHeader)
+                    XCTAssertEqual(row.contentSurfaceRole, .interaction)
+                    XCTAssertNil(row.messageStatus, "Collaboration must not get the user status halo")
+                    XCTAssertEqual(row.copyText, "Authored collaboration message")
+                    XCTAssertFalse(MacSharedMessageTextCard.supports(row))
+                    XCTAssertTrue(row.metadata.contains(L10n(direction == "inbound" ? "收到" : "发出")))
+                    let route = try XCTUnwrap(row.collaborationRoute)
+                    XCTAssertEqual(route.destinationKind, .existingSession)
+                    if sourceKind == "assistantChat" { XCTAssertEqual(route.sourceWork, "Work · " + L10n("未关联 Work")) }
+                    if targetKind == "assistantChat" { XCTAssertEqual(route.targetWork, "Work · " + L10n("未关联 Work")) }
+                    for skin in [ConversationSkin.classic, .codexFlat] {
+                        XCTAssertEqual(skin.surface(for: row.contentSurfaceRole), .legacy)
+                        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 900,
+                            typography: skin.typography(for: .assistant), skin: skin)
+                        XCTAssertEqual(layout.typography, .classic)
+                        XCTAssertLessThanOrEqual(layout.cardWidth, ChatBubbleWidthPolicy.functionalCardMaximumWidth)
+                        XCTAssertFalse(layout.scrollsUserContent)
+                    }
+                }
+            }
+        }
+    }
+
+    func testNativeCollaborationSurfaceStaysDistinctAcrossSkinAndCellReuse() throws {
+        _ = NSApplication.shared
+        let cell = AppKitChatNativeTextCell(identifier: .init("collaboration-surface"))
+        let user = builder().nativeAppKitRow(.init(kind: .message(try item([
+            "id": "user", "type": "userMessage", "presentationRole": NSNull()]))), expandedTurnIds: [])
+        let partial = builder().nativeAppKitRow(.init(kind: .message(try item([
+            "id": "partial", "type": "userMessage", "presentationRole": "collaboration",
+            "text": "Historic message", "presentationText": NSNull()]))), expandedTurnIds: [])
+        var classicColor: CGColor?
+        for skin in [ConversationSkin.classic, .codexFlat, .classic] {
+            cell.updateAppearance(skin: skin)
+            cell.setContent(user, availableWidth: 800, onToggleExpansion: { _ in })
+            let surface = try XCTUnwrap(cell.subviews.compactMap { $0 as? NativeContentCardSurface }.first)
+            let userColor = try XCTUnwrap(surface.layer?.backgroundColor)
+            cell.setContent(partial, availableWidth: 800, onToggleExpansion: { _ in })
+            let collaborationColor = try XCTUnwrap(surface.layer?.backgroundColor)
+            XCTAssertNotEqual(collaborationColor, userColor)
+            if let classicColor { XCTAssertEqual(collaborationColor, classicColor) }
+            else { classicColor = collaborationColor }
+            XCTAssertEqual(surface.layer?.borderWidth, 0.5)
+            XCTAssertNil(partial.messageStatus)
+        }
+    }
+
+    func testPartialCollaborationKeepsCardAndCannotInventConfirmationActions() throws {
+        for role in ["collaboration", "collaboration_confirmation"] {
+            for confirmationID: Any in [NSNull(), "", "   "] {
+                let message = try item([
+                    "type": "userMessage", "presentationRole": role, "status": "pending",
+                    "collaborationAuthorizationKind": "session_channel",
+                    "collaborationConfirmationId": confirmationID, "text": "Historic collaboration"
+                ])
+                let row = builder().nativeAppKitRow(.init(kind: .message(message)), expandedTurnIds: [])
+                XCTAssertTrue(row.isCollaboration)
+                XCTAssertEqual(row.nativeStyle, .agent)
+                XCTAssertNil(row.collaborationRoute)
+                XCTAssertTrue(row.actions.isEmpty)
+                XCTAssertEqual(row.copyText, "Historic collaboration")
+                XCTAssertFalse(row.nativeText.contains(L10n("将创建新的 CorptieTask")))
+            }
+        }
+        let pending = try item(["type": "userMessage", "presentationRole": "collaboration_confirmation",
+            "status": "pending", "collaborationConfirmationId": "confirmation:one"])
+        XCTAssertEqual(builder().nativeAppKitRow(.init(kind: .message(pending)), expandedTurnIds: []).actions.count, 2)
+        let completed = try item(["type": "userMessage", "presentationRole": "collaboration_confirmation",
+            "status": "confirmed", "collaborationConfirmationId": "confirmation:one"])
+        XCTAssertTrue(builder().nativeAppKitRow(.init(kind: .message(completed)), expandedTurnIds: []).actions.isEmpty)
+    }
+
+    func testFixingCollaborationAppearancePreservesProcessAndFinalReplyOrder() throws {
+        let items = try [item(["id": "user", "type": "userMessage", "presentationRole": NSNull()]),
+            item(["id": "tool", "type": "mcpToolCall", "presentationRole": NSNull()]),
+            item(["id": "collaboration", "type": "userMessage", "presentationRole": "collaboration",
+                "turnId": "channel-message:one", "collaborationDirection": "outbound",
+                "collaborationInitiatorSessionId": "logical:source", "collaborationRecipientSessionId": "logical:target"]),
+            item(["id": "final", "presentationRole": "final_answer"])]
+        let entries = ConversationReplyProgressProjection.entries(ConversationTimeline.makeEntries(from: items))
+        XCTAssertEqual(entries.map(\.id), ["message:user", "process:turn:one", "message:collaboration", "message:final"])
+        let rows = entries.map { builder().nativeAppKitRow($0, expandedTurnIds: []) }
+        XCTAssertEqual(rows[0].nativeStyle, .user)
+        XCTAssertTrue(rows[2].isCollaboration)
+        XCTAssertFalse(rows[3].isCollaboration)
+        XCTAssertEqual(rows.map(\.id), entries.map(\.id))
+    }
+
     private func item(_ overrides: [String: Any] = [:]) throws -> CodexThreadItem {
         var fields: [String: Any] = [
             "id": "message:one", "turnId": "turn:one", "turnStatus": "completed",
