@@ -7,35 +7,35 @@ struct SessionTitleIdentity: Equatable {
     struct Request: Equatable {
         let provider: String
         let model: String?
-        let agentID: String?
+        let roleID: String?
 
         init(session: TaskSession) {
             provider = session.external?.provider ?? session.agent
             model = session.external?.currentModel
-            agentID = session.agentId
+            roleID = session.roleId
         }
     }
 
     let providerID: String
     let providerName: String
     let model: String?
-    let agentID: String?
-    let agentName: String?
+    let roleID: String?
+    let roleName: String?
     let avatarPath: String?
 
-    static func resolve(_ request: Request, agents: [String: Agent], providers: [AgentProviderDescriptor]) -> Self {
-        let agent = request.agentID.flatMap { agents[$0] }
+    static func resolve(_ request: Request, roles: [String: Role], providers: [AgentProviderDescriptor]) -> Self {
+        let role = request.roleID.flatMap { roles[$0] }
         return Self(providerID: providers.canonicalProviderId(for: request.provider) ?? request.provider,
                     providerName: providers.displayName(for: request.provider) ?? request.provider,
-                    model: nonempty(request.model), agentID: nonempty(request.agentID),
-                    agentName: agent?.name, avatarPath: nonempty(agent?.avatarPath))
+                    model: nonempty(request.model), roleID: nonempty(request.roleID),
+                    roleName: role?.name, avatarPath: nonempty(role?.avatarPath))
     }
 
     static func updates(session: TaskSession, state: AnyPublisher<NormalizedAppState, Never>,
                         providers: AnyPublisher<[AgentProviderDescriptor], Never>) -> AnyPublisher<Self, Never> {
         Publishers.CombineLatest(state, providers)
             .map { state, providers in
-                Self.resolve(.init(session: state.sessions[session.id] ?? session), agents: state.agents, providers: providers)
+                Self.resolve(.init(session: state.sessions[session.id] ?? session), roles: state.roles, providers: providers)
             }
             .removeDuplicates()
             .eraseToAnyPublisher()
@@ -47,7 +47,7 @@ struct SessionTitleIdentity: Equatable {
     }
 
     var providerHelp: String { [providerName, model].compactMap { $0 }.joined(separator: " · ") }
-    @MainActor var agentHelp: String { agentName ?? agentID ?? L10n("Agent") }
+    @MainActor var roleHelp: String { roleName ?? roleID ?? L10n("Role") }
 }
 
 struct SessionTitleBadges: View {
@@ -62,7 +62,7 @@ struct SessionTitleBadges: View {
     }
 
     private static func resolve(_ request: SessionTitleIdentity.Request) -> SessionTitleIdentity {
-        .resolve(request, agents: AppStateStore.shared.state.agents,
+        .resolve(request, roles: AppStateStore.shared.state.roles,
                  providers: BackendClient.shared.modelCatalog.agentProviders)
     }
 
@@ -96,19 +96,19 @@ struct SessionTitleIdentityIcons: View {
             .accessibilityLabel(identity.providerHelp)
             .accessibilityIdentifier("session.title.provider")
 
-            if let agentID = identity.agentID {
+            if let roleID = identity.roleID {
                 Group {
                     if let path = identity.avatarPath {
                         AnimatedAvatarImage(path: path, animates: false)
                     } else {
-                        DefaultInitialAvatarView(familySeed: identity.agentName ?? agentID, variationSeed: agentID,
-                            initials: DefaultAvatarInitials.make(from: identity.agentName ?? L10n("Agent")), size: size)
+                        DefaultInitialAvatarView(familySeed: identity.roleName ?? roleID, variationSeed: roleID,
+                            initials: DefaultAvatarInitials.make(from: identity.roleName ?? L10n("Role")), size: size)
                     }
                 }
                 .frame(width: size, height: size)
                 .clipShape(Circle())
-                .help(identity.agentHelp)
-                .accessibilityLabel(identity.agentHelp)
+                .help(identity.roleHelp)
+                .accessibilityLabel(identity.roleHelp)
                 .accessibilityIdentifier("session.title.agent")
             }
         }
