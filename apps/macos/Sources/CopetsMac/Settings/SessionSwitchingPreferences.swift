@@ -4,6 +4,7 @@ import Foundation
 /// once per launch so a settings edit cannot dismantle a live editor tree.
 @MainActor
 enum SessionSwitchingPreferences {
+    static let maximumResidentPages = 8
     static let preferenceKey = "performance.sessionPageResidency"
     static let launchEnabled = resolve(defaults: CorptieAppEnvironment.userDefaults,
         isDevelopment: CorptieAppEnvironment.isDevelopment, environment: ProcessInfo.processInfo.environment)

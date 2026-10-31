@@ -8,7 +8,7 @@ import CorptieConversation
     var settledSessionID: String? { get }
     @discardableResult
     func presentOpeningPage(sessionID: String, title: String,
-                            activate: @escaping @MainActor (SessionPresentationFrameGate.Outcome) -> Void) -> Bool
+                            activate: @escaping @MainActor () -> Void) -> Bool
     func cancelPendingPresentation()
 }
 
@@ -28,10 +28,8 @@ extension SessionPagePresenting { var settledSessionID: String? { nil } }
         requestedSessionID = sessionID
         let request = generation
         guard let presenter else { return false }
-        return presenter.presentOpeningPage(sessionID: sessionID, title: title) { [weak self] outcome in
+        return presenter.presentOpeningPage(sessionID: sessionID, title: title) { [weak self] in
             guard let self, self.generation == request else { return }
-            SessionSwitchTrace.shared.mark(outcome == .timedOut ? .presentationGateTimedOut : .presentationDeferredWorkAllowed,
-                                           sessionID: sessionID)
             activate()
         }
     }
@@ -49,7 +47,7 @@ extension SessionPagePresenting { var settledSessionID: String? { nil } }
 
 /// Typed inputs for one retained page. This is presentation state, not a
 /// BackendClient proxy or an alternative owner of commands and business data.
-/// The native page controller resumes it only after the display opportunity.
+/// The native page controller resumes it when the target page is selected.
 @MainActor @Observable
 final class SessionPageRenderInputs {
     let scope: ClientDetailBusinessScope
@@ -204,9 +202,13 @@ final class SessionPageRenderInputs {
         if active { quickMessageRevision &+= 1 } else { needsQuickMessageRefresh = true }
     }
     func suspendActions() { active = false; activity.suspendActions(); suspendNativePresentation?() }
-    func freeze() { active = false; suspendNativePresentation?(); retainedEditor?.suspendPresentation(); activity.deactivate() }
+    func freeze() {
+        guard active || activity.isActive else { return }
+        active = false; suspendNativePresentation?(); retainedEditor?.suspendPresentation(); activity.deactivate()
+    }
     func resume() {
-        guard !retired, validBinding() else { retire(); return }
+        guard !retired else { return }
+        guard !active else { flush(); return }
         active = true
         flush()
         if needsQuickMessageRefresh { needsQuickMessageRefresh = false; quickMessageRevision &+= 1 }

@@ -1,16 +1,18 @@
 import AppKit
 import SwiftUI
 import XCTest
+import Darwin
 import CorptieClientCore
+import CorptieConversation
 @testable import CorptieMac
 
 @MainActor final class SessionPageHostLifecycleTests: XCTestCase {
     private final class Presenter: SessionPagePresenting {
-        var callbacks: [@MainActor (SessionPresentationFrameGate.Outcome) -> Void] = []
+        var callbacks: [@MainActor () -> Void] = []
         var accepts = true
         var cancellations = 0
         func presentOpeningPage(sessionID: String, title: String,
-                                activate: @escaping @MainActor (SessionPresentationFrameGate.Outcome) -> Void) -> Bool {
+                                activate: @escaping @MainActor () -> Void) -> Bool {
             callbacks.append(activate); return accepts
         }
         func cancelPendingPresentation() { cancellations += 1 }
@@ -22,15 +24,15 @@ import CorptieClientCore
         var selected: [String] = []
         XCTAssertTrue(state.request(sessionID: "a", title: "A") { selected.append("a") })
         XCTAssertTrue(state.request(sessionID: "b", title: "B") { selected.append("b") })
-        presenter.callbacks[0](.displayOpportunity)
+        presenter.callbacks[0]()
         XCTAssertTrue(selected.isEmpty)
         state.businessSelectionWillChange(to: "c")
-        presenter.callbacks[1](.displayOpportunity)
+        presenter.callbacks[1]()
         XCTAssertTrue(selected.isEmpty)
         XCTAssertEqual(presenter.cancellations, 1)
         state.request(sessionID: "d", title: "D") { selected.append("d") }
         state.businessSelectionWillChange(to: "d")
-        presenter.callbacks[2](.timedOut)
+        presenter.callbacks[2]()
         XCTAssertEqual(selected, ["d"])
     }
 
@@ -42,7 +44,7 @@ import CorptieClientCore
         state.presenter = presenter
         state.request(sessionID: "a", title: "A") { count += 1 }
         state.cancel()
-        presenter.callbacks[0](.displayOpportunity)
+        presenter.callbacks[0]()
         XCTAssertEqual(count, 0)
     }
 
@@ -54,7 +56,7 @@ import CorptieClientCore
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = controller.view; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
-        XCTAssertFalse(controller.presentOpeningPage(sessionID: "b", title: "B") { _ in XCTFail("No placeholder activation") })
+        XCTAssertFalse(controller.presentOpeningPage(sessionID: "b", title: "B") { XCTFail("No placeholder activation") })
         XCTAssertFalse(controller.host.view.isHiddenOrHasHiddenAncestor)
         XCTAssertEqual(controller.view.subviews, [controller.host.view])
         XCTAssertNil(controller.pendingSessionID)
@@ -65,7 +67,7 @@ import CorptieClientCore
         controller.loadViewIfNeeded()
         controller.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 700)
         let host = controller.host
-        XCTAssertFalse(controller.presentOpeningPage(sessionID: "b", title: "B") { _ in XCTFail("Offscreen") })
+        XCTAssertFalse(controller.presentOpeningPage(sessionID: "b", title: "B") { XCTFail("Offscreen") })
         controller.update(root: ConsolePaneContent { Text("Changed") }, selectedSessionID: "b", isActive: true)
         XCTAssertTrue(controller.host === host)
         XCTAssertEqual(controller.children.count, 1)
@@ -253,22 +255,18 @@ import CorptieClientCore
         return view.subviews.lazy.compactMap { self.findEditor($0) }.first
     }
 
-    func testWholeNativePagesReuseHostsAfterGateAndEvictBeforeFourthAllocation() async throws {
+    func testWholeNativePagesKeepEightAndEvictBeforeNinthAllocation() async throws {
         _ = NSApplication.shared
         let source = AppStateStore(), client = BackendClient()
-        for id in ["a", "b", "c", "d"] { source.acceptCreatedSession(session(id, task: "task-" + id)) }
+        for id in ["a", "b", "c", "d", "e", "f", "g", "h", "i"] { source.acceptCreatedSession(session(id, task: "task-" + id)) }
         client.sessionSelectionController.select("a")
-        let gate = SessionPresentationFrameGate(automaticallySchedules: false, isVisible: { _ in true })
-        let content = SessionPresentationFrameGate(automaticallySchedules: false, isVisible: { _ in true })
         var allocations = 0
-        let cleanup = SessionPresentationFrameGate(automaticallySchedules: false, isVisible: { _ in true })
-        let readiness = SessionPresentationFrameGate(automaticallySchedules: false, isVisible: { _ in true })
         weak var observed: ResidentSessionPageHostController<Text, Text>?
-        let controller = ResidentSessionPageHostController(fallback: ConsolePaneContent { Text("None") }, gate: gate, contentGate: content, cleanupGate: cleanup, readinessGate: readiness, isVisible: { _ in true },
+        let controller = ResidentSessionPageHostController(fallback: ConsolePaneContent { Text("None") }, isVisible: { _ in true },
             makeInputs: { id in
                 guard let value = source.session(id) else { return nil }
                 allocations += 1
-                XCTAssertLessThan(observed?.entries.count ?? 0, 3, "Evict before allocating the fourth native page")
+                XCTAssertLessThan(observed?.entries.count ?? 0, 8)
                 return SessionPageRenderInputs(session: value,
                     scope: .init(serverID: client.baseURL.absoluteString, ownerID: client.detailBusinessOwnerID,
                         principalID: "local-user", sessionID: id, taskID: value.taskId, workID: value.workId),
@@ -278,107 +276,139 @@ import CorptieClientCore
         observed = controller
         controller.loadViewIfNeeded(); controller.view.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
         controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
-        var original = try XCTUnwrap(controller.current)
+        let original = try XCTUnwrap(controller.current)
         let window = NSWindow(contentRect: controller.view.bounds, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = controller.view; window.orderFront(nil)
         defer { controller.disposeAll(); window.contentView = nil; window.close() }
-        await settle(); controller.view.layoutSubtreeIfNeeded()
-        func deliver(_ target: SessionPresentationFrameGate) async {
-            target.nativeDrawPrepared(at: 1); target.runLoopDidCommit()
-            target.displayTick(timestamp: 2); target.displayTick(timestamp: 3); target.displayTick(timestamp: 4); target.displayTick(timestamp: 5)
-            await settle()
-        }
-        XCTAssertFalse(original.eligibleForWarmPresentation)
-        await deliver(readiness)
-        XCTAssertTrue(original.eligibleForWarmPresentation)
-        // Supersede B after it is built, while A still covers it. C must keep
-        // A visible and must never promote B when B's old gate fires.
-        controller.presentOpeningPage(sessionID: "b", title: "b") { _ in client.sessionSelectionController.select("b") }
-        await deliver(gate)
-        XCTAssertTrue(controller.visiblePage === original)
-        controller.presentOpeningPage(sessionID: "c", title: "c") { _ in client.sessionSelectionController.select("c") }
-        XCTAssertTrue(controller.current === original)
-        await deliver(content)
-        XCTAssertTrue(controller.visiblePage === original)
-        controller.cancelPendingPresentation()
-        // Discard the never-presented B from this preflight so allocation
-        // counts below continue to check the hard three-page bound.
-        controller.disposeAll()
-        controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
-        await deliver(gate); await deliver(content); await deliver(readiness)
-        allocations = 1
-        original = try XCTUnwrap(controller.current)
-        for id in ["b", "c"] {
-            XCTAssertTrue(controller.presentOpeningPage(sessionID: id, title: id) { _ in client.sessionSelectionController.select(id) })
-            let visible = try XCTUnwrap(controller.visiblePage)
-            XCTAssertFalse(visible.surface.isHidden, "Cold requests must retain the previous page")
-            XCTAssertEqual(allocations, id == "b" ? 1 : 2)
-            await deliver(gate)
-            XCTAssertTrue(controller.visiblePage === visible, "Preparation must not cover the last page")
-            XCTAssertFalse(visible.surface.isHidden)
-            XCTAssertNotEqual(controller.current?.inputs.scope.sessionID, visible.inputs.scope.sessionID)
-            XCTAssertEqual(controller.current?.surface.alphaValue, 0, "Staged content must not bleed through the old transparent page")
-            XCTAssertEqual(visible.surface.alphaValue, 1)
-            await deliver(content)
-            XCTAssertEqual(controller.current?.surface.alphaValue, 1)
+        func select(_ id: String) {
+            XCTAssertTrue(controller.presentOpeningPage(sessionID: id, title: id) {
+                XCTAssertEqual(controller.visiblePage?.inputs.scope.sessionID, id, "Display must precede business activation")
+                client.sessionSelectionController.select(id)
+            })
             XCTAssertEqual(controller.visiblePage?.inputs.scope.sessionID, id)
-            XCTAssertTrue(visible.surface.isHidden)
-            XCTAssertFalse(controller.current?.eligibleForWarmPresentation ?? true)
-            await deliver(readiness)
-            XCTAssertTrue(controller.current?.eligibleForWarmPresentation ?? false)
+            XCTAssertEqual(controller.settledSessionID, id)
+            XCTAssertTrue(controller.current?.inputs.acceptsPresentationUpdates == true)
+            XCTAssertNil(controller.pendingSessionID)
         }
-        XCTAssertEqual(controller.entries.count, 3)
-        XCTAssertEqual(original.layoutSize, controller.view.bounds.size)
-        XCTAssertTrue(controller.presentOpeningPage(sessionID: "a", title: "a") { _ in client.sessionSelectionController.select("a") })
+        select("b"); select("c"); select("a")
         XCTAssertTrue(controller.current === original)
-        XCTAssertFalse(original.surface.isHidden)
-        XCTAssertFalse(original.host.view.isHiddenOrHasHiddenAncestor)
-        XCTAssertEqual(client.sessionSelectionController.selectedSessionID, "c", "Warm visibility must precede business selection")
         XCTAssertEqual(allocations, 3)
-        XCTAssertFalse(original.inputs.acceptsPresentationUpdates)
-        await deliver(gate)
-        XCTAssertTrue(original.inputs.acceptsPresentationUpdates)
-        XCTAssertEqual(controller.pendingSessionID, nil)
-        XCTAssertEqual(allocations, 3)
-        // A size change invalidates the previously displayed layout even if
-        // the same host and Session remain mounted.
-        let oldBounds = controller.view.frame
-        controller.view.setFrameSize(NSSize(width: oldBounds.width + 80, height: oldBounds.height))
-        controller.view.needsLayout = true; controller.view.layoutSubtreeIfNeeded()
-        XCTAssertFalse(original.eligibleForWarmPresentation)
-        // A layout-invalidated cached page is still real content. It must not
-        // be replaced by a loading screen merely because it needs relayout.
-        controller.presentOpeningPage(sessionID: "a", title: "a") { _ in client.sessionSelectionController.select("a") }
-        XCTAssertTrue(controller.visiblePage === original)
-        XCTAssertFalse(original.surface.isHidden)
-        await deliver(gate)
-        controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
-        await deliver(readiness)
-        XCTAssertTrue(original.eligibleForWarmPresentation)
-        controller.view.frame = oldBounds
-        controller.view.needsLayout = true; controller.view.layoutSubtreeIfNeeded()
-        controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "a", isActive: true)
-        await deliver(readiness)
-        // Superseded warm requests must never activate the intermediate page.
-        XCTAssertTrue(controller.presentOpeningPage(sessionID: "b", title: "b") { _ in client.sessionSelectionController.select("b") })
-        XCTAssertTrue(controller.presentOpeningPage(sessionID: "c", title: "c") { _ in client.sessionSelectionController.select("c") })
-        XCTAssertEqual(client.sessionSelectionController.selectedSessionID, "a")
-        await deliver(gate)
-        XCTAssertEqual(client.sessionSelectionController.selectedSessionID, "c")
-        XCTAssertEqual(allocations, 3)
-        XCTAssertTrue(controller.presentOpeningPage(sessionID: "d", title: "d") { _ in client.sessionSelectionController.select("d") })
-        XCTAssertEqual(allocations, 3)
-        await deliver(gate); await deliver(content)
-        XCTAssertEqual(allocations, 4); XCTAssertEqual(controller.entries.count, 3)
-        XCTAssertEqual(Set(controller.entries.map { $0.inputs.scope.sessionID }), ["a", "c", "d"])
+        controller.view.setFrameSize(NSSize(width: 720, height: 400))
+        select("a")
+        XCTAssertTrue(controller.current === original)
+        XCTAssertEqual(original.surface.frame.size, controller.view.bounds.size)
+        select("b"); select("c")
+        XCTAssertEqual(allocations, 3, "Rapid changes must not recreate retained pages")
+        select("d")
+        XCTAssertEqual(allocations, 4)
+        for id in ["e", "f", "g", "h"] { select(id) }
+        XCTAssertEqual(controller.entries.count, 8)
+        XCTAssertEqual(allocations, 8)
+        for id in ["a", "b", "c", "d", "e", "f", "g", "h"] { select(id) }
+        XCTAssertEqual(allocations, 8, "All eight recently visited pages must remain reusable")
+        select("a"); select("i")
+        XCTAssertEqual(controller.entries.count, 8)
+        XCTAssertEqual(allocations, 9)
+        XCTAssertEqual(Set(controller.entries.map { $0.inputs.scope.sessionID }), ["a", "c", "d", "e", "f", "g", "h", "i"])
+        select("c"); select("d")
+        controller.handleMemoryPressure(.warning)
+        XCTAssertEqual(controller.capacity, 2)
+        await settle()
+        XCTAssertEqual(controller.entries.count, 2)
+        let before = allocations
+        for _ in 0..<5 { select("c"); select("d") }
+        XCTAssertEqual(allocations, before)
         controller.handleMemoryPressure(.critical)
-        XCTAssertEqual(controller.entries.count, 3, "Heavy destruction waits for a display opportunity")
-        await deliver(cleanup)
+        XCTAssertEqual(controller.entries.count, 2, "Destruction must not run inside the pressure callback")
+        await settle()
         XCTAssertEqual(controller.entries.count, 1)
         XCTAssertEqual(controller.current?.inputs.scope.sessionID, "d")
-        XCTAssertTrue(controller.presentOpeningPage(sessionID: "a", title: "a") { _ in client.sessionSelectionController.select("a") })
-        await deliver(gate); await deliver(content)
-        XCTAssertEqual(allocations, 5); XCTAssertEqual(controller.entries.count, 1)
+        controller.handleMemoryPressure(.normal)
+        select("a"); select("b")
+        XCTAssertEqual(controller.capacity, 8)
+        XCTAssertEqual(controller.entries.count, 3)
+        // Same-page SwiftUI updates must not repeatedly resume native children.
+        var nativeResumes = 0
+        controller.current?.inputs.resumeNativePresentation = { nativeResumes += 1 }
+        for _ in 0..<20 { controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: "b", isActive: true) }
+        XCTAssertEqual(nativeResumes, 0)
+    }
+
+    func testRealResidentPagesWarmSwitchLatencyAndIncrementalMemory() async throws {
+        _ = NSApplication.shared
+        let client = BackendClient(), drafts = ComposerDraftRepository()
+        let source = client.appState
+        let cache = SessionPresentationCache(), viewport = SessionViewportController(repository: nil)
+        let detailPresentation = ConversationDetailPresentationRepository(), layout = PanelLayoutState()
+        let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 12, rawItemCount: 240, longMessageCharacters: 2000))
+        var allocations = 0
+        for id in ["memory-a", "memory-b", "memory-c", "memory-d", "memory-e", "memory-f", "memory-g", "memory-h", "memory-i"] {
+            source.acceptCreatedSession(session(id, task: "task-" + id))
+            client.storeCachedDetail(fixture.detail, for: id)
+            cache.store(makeDetailDisplayCache(for: fixture.detail, sessionId: id, visibleMessageLimit: 7))
+        }
+        let controller = ResidentSessionPageHostController(fallback: ConsolePaneContent { Text("None") }, isVisible: { _ in true }, makeInputs: { id in
+            guard let value = source.session(id) else { return nil }
+            allocations += 1
+            let timeline = SessionTimelineRepository.shared.state(for: id)
+            return SessionPageRenderInputs(session: value,
+                scope: .init(serverID: client.baseURL.absoluteString, ownerID: client.detailBusinessOwnerID,
+                    principalID: "local-user", sessionID: id, taskID: value.taskId, workID: value.workId),
+                backend: client, timeline: timeline, projection: cache.state(for: id),
+                entities: EntityAPIClient(appState: source), search: UnifiedSearchNavigation(), sourceState: source)
+        }, root: { inputs in
+            ResidentSessionPageRoot(inputs: inputs, backend: client, cache: cache, drafts: drafts,
+                viewport: viewport, detailPresentation: detailPresentation, layout: layout)
+        })
+        controller.loadViewIfNeeded(); controller.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+        let window = NSWindow(contentRect: controller.view.bounds, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = controller.view; window.orderBack(nil)
+        defer { controller.disposeAll(); window.contentView = nil; window.close() }
+        func footprint() throws -> UInt64 {
+            var info = task_vm_info_data_t()
+            var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+                }
+            }
+            XCTAssertEqual(result, KERN_SUCCESS)
+            return info.phys_footprint
+        }
+        func show(_ id: String) {
+            XCTAssertTrue(controller.presentOpeningPage(sessionID: id, title: id) {
+                if let value = source.session(id) { client.select(session: value) }
+            })
+            XCTAssertEqual(controller.visiblePage?.inputs.scope.sessionID, id)
+        }
+        let baseline = try footprint()
+        var memory: [UInt64] = [baseline]
+        for id in ["memory-a", "memory-b", "memory-c", "memory-d", "memory-e", "memory-f", "memory-g", "memory-h", "memory-i"] {
+            show(id); controller.view.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await settle()
+            memory.append(try footprint())
+        }
+        let hosts = controller.entries.map { ObjectIdentifier($0.host) }
+        let before = allocations
+        var synchronous: [Double] = [], throughLayout: [Double] = []
+        for index in 0..<30 {
+            let start = ProcessInfo.processInfo.systemUptime
+            show(index.isMultiple(of: 2) ? "memory-c" : "memory-d")
+            synchronous.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            controller.view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            throughLayout.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            await settle()
+        }
+        XCTAssertEqual(allocations, before)
+        XCTAssertEqual(controller.entries.map { ObjectIdentifier($0.host) }, hosts)
+        synchronous.sort(); throughLayout.sort()
+        print("[resident-perf] warm synchronous p95=\(synchronous[28])ms; through AppKit layout/display submission p95=\(throughLayout[28])ms (not physical display latency)")
+        print("[resident-memory] fixture 240 items/page; footprint bytes baseline/pages1-through-9 (8-page LRU)=\(memory)")
+        XCTAssertLessThan(synchronous[28], 16)
+        controller.handleMemoryPressure(.critical); await settle()
+        print("[resident-memory] after critical eviction to 1 page=\(try footprint()) bytes")
+        controller.disposeAll(); await settle()
+        print("[resident-memory] after disposal=\(try footprint()) bytes (allocator/shared caches may retain memory)")
+        XCTAssertTrue(controller.entries.isEmpty)
     }
 
     func testDetailHandleRevocationRetiresWholeFrozenPage() async {
