@@ -4,6 +4,25 @@ import CorptieClientCore
 @testable import CorptieMobileState
 
 @MainActor struct PadTaskHierarchyOutlineTests {
+    @Test func disclosureTrailsTheTaskAndProgressWithoutLeadingPlaceholder() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/PadWorkOutline.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let start = try #require(contents.range(of: "private func hierarchyTaskRow("))
+        let end = try #require(contents.range(of: "@ViewBuilder private func childrenFooter("))
+        let row = String(contents[start.lowerBound..<end.lowerBound])
+        let title = try #require(row.range(of: "taskRow(task, sessionID: sessionID)"))
+        let progress = try #require(row.range(of: "Text(\"\\(task.hierarchy?.completedChildCount"))
+        let disclosure = try #require(row.range(of: "Image(systemName: expanded ?"))
+        #expect(title.lowerBound < progress.lowerBound)
+        #expect(progress.lowerBound < disclosure.lowerBound)
+        #expect(row.contains(".frame(width: 44, height: 44).contentShape(Rectangle())"))
+        #expect(!row.contains("Color.clear"))
+        #expect(row.contains(".disabled(hasSearch)"))
+        #expect(row.contains(".padding(.leading, task.parentTaskId == nil ? 0 : 44)"))
+        #expect(row.contains("workspace.loadTaskChildren(task, connection: connection)"))
+    }
+
     private func task(_ id: String = "parent", parent: String? = nil) throws -> ClientTask {
         try JSONDecoder().decode(ClientTask.self, from: Data("""
         {"id":"\(id)","title":"\(id)","workId":"work","lifecycleState":"in_progress",
