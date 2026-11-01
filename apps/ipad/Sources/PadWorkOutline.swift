@@ -542,7 +542,18 @@ struct PadWorkOutline: View {
         let expanded = hasSearch || expandedParentIDs.contains(task.id)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
+                if task.parentTaskId != nil {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .frame(width: 20).accessibilityHidden(true)
+                }
+                taskRow(task, sessionID: sessionID)
+                    .frame(minHeight: 44)
                 if parent {
+                    Text("\(task.hierarchy?.completedChildCount ?? 0)/\(count)")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .accessibilityLabel("子任务已完成 \(task.hierarchy?.completedChildCount ?? 0) 个，共 \(count) 个")
                     Button {
                         if !expandedParentIDs.insert(task.id).inserted {
                             expandedParentIDs.remove(task.id)
@@ -559,20 +570,6 @@ struct PadWorkOutline: View {
                     .accessibilityLabel("\(expanded ? "收起" : "展开")\(task.title)的子任务")
                     .accessibilityValue(expanded ? "已展开" : "已收起")
                     .accessibilityIdentifier("task-children-disclosure-\(task.id)")
-                } else if task.parentTaskId != nil {
-                    Image(systemName: "arrow.turn.down.right")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                        .frame(width: 20).accessibilityHidden(true)
-                } else {
-                    Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
-                }
-                taskRow(task, sessionID: sessionID)
-                    .frame(minHeight: 44)
-                if parent {
-                    Text("\(task.hierarchy?.completedChildCount ?? 0)/\(count)")
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .accessibilityLabel("子任务已完成 \(task.hierarchy?.completedChildCount ?? 0) 个，共 \(count) 个")
                 }
             }
             .padding(.leading, task.parentTaskId == nil ? 0 : 44)
