@@ -18,6 +18,12 @@ import { Readable } from "node:stream";
 import { createDetailBusinessActionPorts } from "../src/application/detailBusinessActionPorts.mjs";
 import { createDetailActionRegistry } from "../src/application/detailActionService.mjs";
 import { projectNativeBusinessDocument } from "../src/application/detailNativeBusinessProjection.mjs";
+import { createLocalDetailBusinessActionService } from "../src/application/detailBusinessActionComposition.mjs";
+import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+import { ClientInspectorAPI } from "../src/application/clientInspectorAPI.mjs";
+import { ClientDeviceAuthority } from "../src/application/clientDeviceAuthority.mjs";
+import { ClientDeviceGateway } from "../src/application/clientDeviceGateway.mjs";
+import { createServer } from "node:http";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(t, providerId = "codex-app-server") {
@@ -321,7 +327,7 @@ test("native Detail toggle is user-command scoped, revision checked and absent f
   const f = await fixture(t);
   const identity = { kind: "local_user", principalId: "owner" };
   const bound = () => ({ sessionId: "logical:parent", logicalSessionId: "logical:parent", task: f.store.getTask(f.parent.id) });
-  const ports = createDetailBusinessActionPorts({ inspector: { scope: bound,
+  const ports = createDetailBusinessActionPorts({ inspector: { scope: bound, updateTask: (id, fields) => f.workService.updateTask(id, fields),
     perform: (_scope, operation, fields) => { assert.equal(operation, "task.update"); return f.workService.updateTask(f.parent.id, fields); } } });
   const registry = createDetailActionRegistry(ports), scope = { sessionId: "logical:parent", identity };
   const document = projectNativeBusinessDocument({ logicalSessionId: "logical:parent", session: f.store.getSession(f.source.sessionId),
@@ -337,4 +343,79 @@ test("native Detail toggle is user-command scoped, revision checked and absent f
   const child = f.child("Child_view");
   const childDoc = projectNativeBusinessDocument({ logicalSessionId: "logical:child", session: { sessionKind: "worker" }, task: child, work: f.work }, {}, "test-generation", { editors: true });
   assert.equal(childDoc.cards.find(row => row.kind === "taskInfo").actions.some(row => row.operation === "task.coordination.update"), false);
+});
+
+test("desktop production composition saves enable and disable through real inspector commands and durable receipts", async t => {
+  const f = await fixture(t);
+  const identity = { kind: "local_user", principalId: "local-user" };
+  const authenticate = () => identity;
+  const snapshot = () => projectNativeBusinessDocument({ logicalSessionId: "logical:parent",
+    session: f.store.getSession(f.source.sessionId), task: f.store.getTask(f.parent.id), work: f.work }, {}, "desktop-integration", { editors: true });
+  const options = { store: f.store, commandAPI: new ClientSessionAPI({ store: f.store }), workService: f.workService,
+    documentService: { nativeActionDocument: () => ({ state: snapshot(), revalidate: authenticate }) },
+    resolveSession: () => ({ sessionId: f.source.sessionId, logicalSessionId: "logical:parent" }) };
+  assert.throws(() => createLocalDetailBusinessActionService({ ...options, workService: {} }), /updateTask/);
+  const actions = createLocalDetailBusinessActionService(options).forProfile({ catalog: "native-business-v1" });
+  const request = (enabled, requestId) => {
+    const document = snapshot(), card = document.cards.find(card => card.kind === "taskInfo");
+    const action = card.actions.find(action => action.operation === "task.coordination.update");
+    return { schemaVersion: 1, documentId: document.documentId, cardId: card.id, actionId: action.id,
+      requestId, expectedResourceRevision: action.expectedResourceRevision, fields: { coordinationEnabled: enabled } };
+  };
+  const enable = request(true, "desktop_enable_coordination");
+  assert.equal(enable.actionId, "task-coordination-setting", "new user actions must not reconcile the broken legacy action identity");
+  const enabled = await actions.command(identity, "logical:parent", enable, authenticate);
+  assert.equal(enabled.status, "completed", JSON.stringify(enabled));
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 1);
+  const disabled = await actions.command(identity, "logical:parent", request(false, "desktop_disable_coordination"), authenticate);
+  assert.equal(disabled.status, "completed", JSON.stringify(disabled));
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 0);
+  assert.equal((await actions.command(identity, "logical:parent", enable, authenticate)).status, "completed");
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 0, "receipt recovery must not replay an old enable mutation");
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_command_receipts WHERE status='unknown'").n, 0);
+});
+
+test("paired mobile HTTP toggle uses the injected shared Detail service, persists and recovers without replay", async t => {
+  const f = await fixture(t);
+  const authority = new ClientDeviceAuthority(join(f.store.dataRoot, "test-devices"));
+  await authority.initialize();
+  const invitation = authority.invite();
+  const claim = authority.claim({ ...invitation, name: "Test iPhone" });
+  await authority.approve(invitation.pairingId, true);
+  const credentials = await authority.exchange(claim);
+  const authenticate = () => authority.authenticate(credentials.accessToken);
+  const snapshot = () => projectNativeBusinessDocument({ logicalSessionId: "logical:parent",
+    session: f.store.getSession(f.source.sessionId), task: f.store.getTask(f.parent.id), work: f.work }, {}, "mobile-integration", { editors: true });
+  const resolveSession = () => ({ sessionId: f.source.sessionId, logicalSessionId: "logical:parent" });
+  const detailActionService = createLocalDetailBusinessActionService({ store: f.store, workService: f.workService,
+    commandAPI: new ClientSessionAPI({ store: f.store }), resolveSession,
+    documentService: { nativeActionDocument: () => ({ state: snapshot(), revalidate: authenticate }) } });
+  const gateway = new ClientDeviceGateway(authority, { detailActionService, detailWritesAllowed: true,
+    sessionAPI: { inspector: new ClientInspectorAPI({ store: f.store, resolveSession,
+      updateTask: () => { throw new Error("Mobile fallback inspector must not shadow the shared Detail service"); } }) } });
+  const server = createServer((request, response) => gateway.handle(request, response));
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${server.address().port}/client/v1/sessions/logical:parent/detail`;
+  const headers = { authorization: `Bearer ${credentials.accessToken}`,
+    accept: "application/json; corptie-detail=native-business-v1", "content-type": "application/json" };
+  const command = async (enabled, requestId) => {
+    const document = snapshot(), card = document.cards.find(card => card.kind === "taskInfo");
+    const action = card.actions.find(action => action.operation === "task.coordination.update");
+    const response = await fetch(`${base}/actions`, { method: "POST", headers, body: JSON.stringify({ schemaVersion: 1,
+      requestId, documentId: document.documentId, cardId: card.id, actionId: action.id,
+      expectedResourceRevision: action.expectedResourceRevision, fields: { coordinationEnabled: enabled } }) });
+    const receipt = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(receipt));
+    assert.equal(receipt.status, "completed", JSON.stringify(receipt));
+  };
+  await command(true, "mobile_enable_coordination");
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 1);
+  await command(false, "mobile_disable_coordination");
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 0);
+  const recovered = await fetch(`${base}/receipts/mobile_enable_coordination`, { headers });
+  assert.equal(recovered.status, 200);
+  assert.equal((await recovered.json()).status, "completed");
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 0);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_command_receipts WHERE device_id=? AND status='completed'", [credentials.deviceId]).n, 2);
 });
