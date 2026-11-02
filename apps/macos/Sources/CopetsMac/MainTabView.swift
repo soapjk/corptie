@@ -150,33 +150,16 @@ enum AppTab: String, CaseIterable, Identifiable {
     }
 }
 
-enum MainTabSlideDirection: Equatable {
-    case forward
-    case backward
-
-    var unitOffset: CGFloat {
-        switch self {
-        case .forward: 1
-        case .backward: -1
-        }
-    }
-}
-
 struct MainTabTransition: Equatable {
     let from: AppTab
     let to: AppTab
-    let direction: MainTabSlideDirection
 }
 
-/// Retains every visited tab's attached hosting view and SwiftUI state. During a
-/// switch, only the old and new hosts are unhidden. Both keep an exact, stationary
-/// frame equal to `bounds`; Core Animation translates their backing layers instead
-/// of changing SwiftUI layout geometry on every animation frame. Cached inactive
-/// hosts stay hidden and keep their previous frame, so resize cannot re-propose all
-/// six heavyweight page layouts.
+/// Retains visited pages and their local state. Only the selected host is visible
+/// and laid out; a short opacity animation never moves or reflows page content.
 @MainActor
 final class MainTabPageContainer: NSView {
-    static let defaultAnimationDuration: TimeInterval = 0.22
+    static let defaultAnimationDuration: TimeInterval = 0.12
 
     private let pageProvider: (AppTab) -> NSView
     private let animationDuration: TimeInterval
@@ -184,7 +167,6 @@ final class MainTabPageContainer: NSView {
     private var transitionGeneration: UInt = 0
     private(set) var selectedTab: AppTab?
     private(set) var transition: MainTabTransition?
-    private(set) var pendingTab: AppTab?
     private(set) var activePageLayoutCount = 0
 
     init(
@@ -219,22 +201,16 @@ final class MainTabPageContainer: NSView {
     }
 
     func select(_ tab: AppTab, animated: Bool = true) {
-        if transition != nil {
-            if animated {
-                // Keep the in-flight pair continuous and coalesce rapid clicks
-                // to the latest destination. Interrupting a composited slide by
-                // snapping either layer to its model value causes a visible jump.
-                pendingTab = tab == selectedTab ? nil : tab
-            } else {
-                pendingTab = nil
-                finishTransition(generation: transitionGeneration, startsPendingTransition: false)
-                select(tab, animated: false)
-            }
-            return
-        }
         guard selectedTab != tab else {
+            if !animated, transition != nil {
+                finishTransition(generation: transitionGeneration)
+            }
             needsLayout = true
             return
+        }
+        if transition != nil {
+            // A fade can be interrupted immediately; never queue the next click.
+            finishTransition(generation: transitionGeneration)
         }
 
         guard let previousTab = selectedTab else {
@@ -248,8 +224,7 @@ final class MainTabPageContainer: NSView {
 
         let oldPage = page(for: previousTab)
         let newPage = page(for: tab)
-        let direction: MainTabSlideDirection = tab.index > previousTab.index ? .forward : .backward
-        let nextTransition = MainTabTransition(from: previousTab, to: tab, direction: direction)
+        let nextTransition = MainTabTransition(from: previousTab, to: tab)
 
         selectedTab = tab
         transition = nextTransition
@@ -265,7 +240,7 @@ final class MainTabPageContainer: NSView {
             finishTransition(generation: generation)
             return
         }
-        animate(nextTransition, oldPage: oldPage, newPage: newPage, generation: generation)
+        animate(newPage: newPage, generation: generation)
     }
 
     var cachedPageCount: Int { pages.count }
@@ -311,16 +286,9 @@ final class MainTabPageContainer: NSView {
         page.isHidden = false
     }
 
-    private func animate(
-        _ transition: MainTabTransition,
-        oldPage: NSView,
-        newPage: NSView,
-        generation: UInt
-    ) {
-        let travel = max(1, bounds.width) * transition.direction.unitOffset
-        resetLayer(of: oldPage)
+    private func animate(newPage: NSView, generation: UInt) {
+        guard let layer = newPage.layer else { return }
         resetLayer(of: newPage)
-
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         CATransaction.setCompletionBlock { [weak self] in
@@ -328,82 +296,36 @@ final class MainTabPageContainer: NSView {
                 self?.finishTransition(generation: generation)
             }
         }
-        addCompositeAnimation(
-            to: oldPage,
-            fromX: 0,
-            toX: -travel,
-            fromOpacity: 1,
-            toOpacity: 0.92
-        )
-        addCompositeAnimation(
-            to: newPage,
-            fromX: travel,
-            toX: 0,
-            fromOpacity: 0.92,
-            toOpacity: 1
-        )
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = Float.zero
+        opacity.toValue = Float(1)
+        opacity.duration = animationDuration
+        opacity.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(opacity, forKey: "main-tab-opacity")
         CATransaction.commit()
     }
 
-    private func addCompositeAnimation(
-        to page: NSView,
-        fromX: CGFloat,
-        toX: CGFloat,
-        fromOpacity: Float,
-        toOpacity: Float
-    ) {
-        guard let layer = page.layer else { return }
-        layer.setValue(toX, forKeyPath: "transform.translation.x")
-        layer.opacity = toOpacity
-
-        let translation = CABasicAnimation(keyPath: "transform.translation.x")
-        translation.fromValue = fromX
-        translation.toValue = toX
-        translation.duration = animationDuration
-        translation.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.9, 0.24, 1)
-
-        let opacity = CABasicAnimation(keyPath: "opacity")
-        opacity.fromValue = fromOpacity
-        opacity.toValue = toOpacity
-        opacity.duration = animationDuration
-        opacity.timingFunction = translation.timingFunction
-
-        layer.add(translation, forKey: "main-tab-translation")
-        layer.add(opacity, forKey: "main-tab-opacity")
-    }
-
-    private func finishTransition(
-        generation: UInt,
-        startsPendingTransition: Bool = true
-    ) {
+    private func finishTransition(generation: UInt) {
         guard generation == transitionGeneration, transition != nil else { return }
-        let nextTab = startsPendingTransition ? pendingTab : nil
-        pendingTab = nil
-        for page in pages.values {
-            page.layer?.removeAllAnimations()
+        if let page = selectedTab.flatMap({ pages[$0] }) {
+            page.layer?.removeAnimation(forKey: "main-tab-opacity")
             resetLayer(of: page)
         }
         transition = nil
         updateVisibilityAndAccessibility()
-        if let nextTab, nextTab != selectedTab {
-            select(nextTab, animated: true)
-        }
     }
 
     private func updateVisibilityAndAccessibility() {
         for (tab, page) in pages {
             let participates = participatingTabs.contains(tab)
             page.isHidden = !participates
-            // The destination owns interaction and accessibility immediately;
-            // the outgoing page is visual transition material only.
+            // The outgoing page disappears immediately, including hit testing
+            // and accessibility. Cached hosts remain attached for state reuse.
             page.setAccessibilityHidden(tab != selectedTab)
         }
     }
 
     private var participatingTabs: Set<AppTab> {
-        if let transition {
-            return [transition.from, transition.to]
-        }
         if let selectedTab {
             return [selectedTab]
         }
