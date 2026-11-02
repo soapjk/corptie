@@ -329,16 +329,16 @@ enum ChatBubbleWidthPolicy {
         if row.scheduledTrigger != nil { return fullAvailableWidth }
         if row.nativeStyle == .process {
             let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             ]).width)
             let secondaryWidth = row.processCurrentStepTitle.map {
                 ceil(($0 as NSString).size(withAttributes: [
-                    .font: NSFont.systemFont(ofSize: 9.5)
+                    .font: NSFont.systemFont(ofSize: 12)
                 ]).width)
             } ?? 0
             let progressWidth = row.processPlanProgressLabel.map {
                 ceil(($0 as NSString).size(withAttributes: [
-                    .font: NSFont.systemFont(ofSize: 9, weight: .semibold)
+                    .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
                 ]).width)
             } ?? 0
             if !row.isExpanded {

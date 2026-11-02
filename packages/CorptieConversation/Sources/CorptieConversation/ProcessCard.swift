@@ -62,9 +62,9 @@ public enum ProcessCollapsePlacementPolicy {
 
 public struct ProcessCard<Details: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ScaledMetric(relativeTo: .caption) private var summarySize: CGFloat = 10.5
-    @ScaledMetric(relativeTo: .caption) private var secondarySize: CGFloat = 9.5
-    @ScaledMetric(relativeTo: .caption) private var progressSize: CGFloat = 9
+    @ScaledMetric(relativeTo: .caption) private var summarySize: CGFloat = 12
+    @ScaledMetric(relativeTo: .caption) private var secondarySize: CGFloat = 12
+    @ScaledMetric(relativeTo: .caption) private var progressSize: CGFloat = 12
     @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 22
     private let summary: String
     private let summaryOverride: ProcessCardSummary?

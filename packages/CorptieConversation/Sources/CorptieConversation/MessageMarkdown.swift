@@ -116,7 +116,7 @@ public enum MessageMarkdown {
     private static func makeMarkdown(text: String, style: Style, rendersMath: Bool = true, typography: ConversationTypography = .classic) -> NSAttributedString {
         let baseFont: MessageFont = switch style {
         case .user: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .regular : .medium)
-        case .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: .medium)
+        case .agent: .systemFont(ofSize: typography.bodySize(for: style), weight: typography.isReading ? .regular : .medium)
         case .process: .systemFont(ofSize: 10.5, weight: .semibold)
         }
         let color = style == .user ? MessageTextCardPalette.userNativeForeground : secondaryText
@@ -177,22 +177,30 @@ public enum MessageMarkdown {
                     rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
                 ))
             } else if let listItem = unorderedListItem(in: displayLine) {
+                let marker = "•  "
+                let indent = CGFloat(listItem.depth) * (typography.isReading ? 20 : 14)
+                let hanging = typography.isReading ? (marker as NSString).size(withAttributes: [.font: baseFont]).width : 0
                 attributed.append(blockLine(
-                    "\(String(repeating: "  ", count: listItem.depth))•  \(listItem.text)",
+                    "\(typography.isReading ? "" : String(repeating: "  ", count: listItem.depth))\(marker)\(listItem.text)",
                     baseFont: baseFont,
                     color: color,
-                    headIndent: CGFloat(listItem.depth * 14),
-                    firstLineHeadIndent: CGFloat(listItem.depth * 14),
-                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
+                    headIndent: indent + hanging,
+                    firstLineHeadIndent: indent,
+                    rendersMath: rendersMath, typography: typography,
+                    bodyParagraphSpacing: typography.isReading ? 4 : nil, toleratesModelStrong: style == .agent
                 ))
             } else if let listItem = orderedListItem(in: displayLine) {
+                let marker = "\(listItem.ordinal).  "
+                let indent = CGFloat(listItem.depth) * (typography.isReading ? 20 : 14)
+                let hanging = typography.isReading ? (marker as NSString).size(withAttributes: [.font: baseFont]).width : 0
                 attributed.append(blockLine(
-                    "\(String(repeating: "  ", count: listItem.depth))\(listItem.ordinal).  \(listItem.text)",
+                    "\(typography.isReading ? "" : String(repeating: "  ", count: listItem.depth))\(marker)\(listItem.text)",
                     baseFont: baseFont,
                     color: color,
-                    headIndent: CGFloat(listItem.depth * 14),
-                    firstLineHeadIndent: CGFloat(listItem.depth * 14),
-                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
+                    headIndent: indent + hanging,
+                    firstLineHeadIndent: indent,
+                    rendersMath: rendersMath, typography: typography,
+                    bodyParagraphSpacing: typography.isReading ? 4 : nil, toleratesModelStrong: style == .agent
                 ))
             } else if let quote = blockQuote(in: displayLine) {
                 attributed.append(blockLine(
@@ -207,8 +215,6 @@ public enum MessageMarkdown {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor, typography: typography))
             } else {
                 attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography,
-                    lineSpacing: style == .agent ? typography.lineSpacing / 2 : nil,
-                    bodyParagraphSpacing: style == .agent ? typography.paragraphSpacing * 0.6 : nil,
                     toleratesModelStrong: style == .agent))
             }
         }
@@ -349,6 +355,13 @@ public enum MessageMarkdown {
         paragraphStyle.paragraphSpacingBefore = paragraphSpacingBefore
         paragraphStyle.paragraphSpacing = typography.isReading && font == nil ? max(paragraphSpacing, bodyParagraphSpacing ?? typography.paragraphSpacing) : paragraphSpacing
         paragraphStyle.lineSpacing = lineSpacing ?? typography.lineSpacing
+        if typography.isReading && font == nil {
+            // CSS line-height is a baseline line box, not extra native leading.
+            // Leave the maximum open so emoji and formula attachments can grow.
+            paragraphStyle.minimumLineHeight = effectiveFont.pointSize *
+                (effectiveFont.pointSize > typography.bodySize ? 1.25 : typography.proseLineHeightMultiple)
+            paragraphStyle.lineSpacing = 0
+        }
         // Chat messages regularly contain URLs, hashes, file paths, and model
         // identifiers with no whitespace. Word wrapping lets those runs escape
         // the fixed card width; character wrapping preserves the card boundary.

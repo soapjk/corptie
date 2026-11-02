@@ -305,7 +305,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         guard self.skin != skin else { return }
         self.skin = skin
         cardView.updateSkin(skin, role: surfaceRole)
-        if let row = renderedRow { _ = updateLayoutIfContentUnchanged(row, availableWidth: renderedWidth) }
+        if let row = renderedRow {
+            configureMessageStatus(row.messageStatus)
+            if let identity = row.replyIdentity { replyHeader?.rootView = MacReplyIdentityHeader(identity: identity, skin: skin) }
+            _ = updateLayoutIfContentUnchanged(row, availableWidth: renderedWidth)
+        }
     }
 
     func setContent(
@@ -333,9 +337,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         representedRowID = row.id
         representedReplyIdentity = row.replyIdentity
         if let identity = row.replyIdentity {
-            if let replyHeader { replyHeader.rootView = MacReplyIdentityHeader(identity: identity) }
+            if let replyHeader { replyHeader.rootView = MacReplyIdentityHeader(identity: identity, skin: skin) }
             else {
-                let header = NSHostingView(rootView: MacReplyIdentityHeader(identity: identity))
+                let header = NSHostingView(rootView: MacReplyIdentityHeader(identity: identity, skin: skin))
                 header.sizingOptions = []
                 header.translatesAutoresizingMaskIntoConstraints = false
                 addSubview(header)
@@ -743,7 +747,10 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             messageStatusDetail = ""
             return
         }
-        if let messageGlow {
+        if skin != .classic {
+            messageGlow?.removeFromSuperview()
+            messageGlow = nil
+        } else if let messageGlow {
             messageGlow.configure(status)
         } else {
             let glow = NativeMessageStatusGlow(frame: .zero)
