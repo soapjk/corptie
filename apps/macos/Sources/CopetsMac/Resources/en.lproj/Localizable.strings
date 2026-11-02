@@ -253,13 +253,11 @@
 "Commit These Files" = "Commit These Files";
 "Could not inspect commit contents." = "Could not inspect commit contents.";
 "%d unmerged commits will be permanently deleted" = "%d unmerged commits will be permanently deleted";
-"Continue to branch-name confirmation" = "Continue to branch-name confirmation";
+"Continue to permanent deletion confirmation" = "Continue to permanent deletion confirmation";
 "Deleting this Worktree will permanently delete all changes on branch %@. This action cannot be undone." = "Deleting this Worktree will permanently delete all changes on branch %@. This action cannot be undone.";
 "Confirm permanent Worktree deletion" = "Confirm permanent Worktree deletion";
 "%d commits have not been merged into main." = "%d commits have not been merged into main.";
 "This will permanently delete the Worktree directory, its branch, and all changes unique to that branch. This action cannot be undone." = "This will permanently delete the Worktree directory, its branch, and all changes unique to that branch. This action cannot be undone.";
-"Type the full branch name exactly as shown to confirm:" = "Type the full branch name exactly as shown to confirm:";
-"Full branch name" = "Full branch name";
 "Permanently Delete Worktree" = "Permanently Delete Worktree";
 "This session's workspace is missing" = "This session's workspace is missing";
 "The workspace at %@ is unavailable. Corptie can delete only the session and its local conversation record; no Worktree files or Git branches will be changed." = "The workspace at %@ is unavailable. Corptie can delete only the session and its local conversation record; no Worktree files or Git branches will be changed.";
@@ -1659,7 +1657,6 @@
 "我已知晓当前存在未通过的自动验证结果，仍确认人工验收通过。" = "I acknowledge the failed automated verification and still approve this version manually.";
 "确认通过" = "Confirm approval";
 "无法读取验收状态，请刷新重试。" = "Could not read approval status. Refresh to retry.";
-"输入完整分支名以确认" = "Enter the full branch name to confirm";
 "先合并到父分支" = "Merge into parent first";
 "子任务未删除。可在 Worktree 管理中将分支 %@ 合并到父分支，或重新选择强制删除。" = "Child task was not deleted. Merge branch %@ into its parent in Worktree management, or choose force delete.";
 "可先将子分支合并到父分支，或重新选择强制删除。" = "Merge the child branch into its parent first, or choose force delete.";
@@ -1678,3 +1675,5 @@
 "目标会话信息不可用" = "Target session information unavailable";
 
 "部分协作来源或目标信息不可用。" = "Some collaboration source or destination information is unavailable.";
+"协调模式" = "Coordination mode";
+"自动派发给子任务，当前会话继续讨论；关闭后已派发任务仍会执行并回报。" = "Delegate execution to child tasks while this conversation stays available. Disabling this mode does not cancel accepted tasks or their reports.";

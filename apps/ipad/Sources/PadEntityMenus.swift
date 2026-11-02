@@ -533,7 +533,6 @@ struct PadDeleteTaskSheet: View {
     @State private var inspectError: String?
     @State private var showForceConfirmation = false
     @State private var acknowledgeDataLoss = false
-    @State private var confirmedBranchName = ""
     @State private var deleteWorktree = true
     @State private var artifactDisposition = "delete"
     @State private var submitting = false
@@ -570,7 +569,6 @@ struct PadDeleteTaskSheet: View {
             }
             .task { await loadPlan() }
             .onChange(of: deleteWorktree) { _, enabled in
-                confirmedBranchName = ""
                 if !enabled {
                     showForceConfirmation = false
                     acknowledgeDataLoss = false
@@ -661,9 +659,6 @@ struct PadDeleteTaskSheet: View {
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.red)
                 Toggle("我理解这些内容可能永久丢失", isOn: $acknowledgeDataLoss)
-                TextField("输入完整分支名以确认", text: $confirmedBranchName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
             }
         }
 
@@ -684,7 +679,6 @@ struct PadDeleteTaskSheet: View {
                 Button("进入强制删除确认", role: .destructive) {
                     showForceConfirmation = true
                     acknowledgeDataLoss = false
-                    confirmedBranchName = ""
                 }
                 .disabled(submitting || commands.isBusy || !blockers.isEmpty || !canForceDelete(plan))
             } else {
@@ -705,8 +699,7 @@ struct PadDeleteTaskSheet: View {
                     submitting
                         || commands.isBusy
                         || !blockers.isEmpty
-                        || (requiresForce(for: plan) && (!canForceDelete(plan) || !acknowledgeDataLoss
-                            || !TaskDeletionConfirmationPolicy.confirmsBranch(confirmedBranchName, expected: plan.worktree?.branchName)))
+                        || (requiresForce(for: plan) && (!canForceDelete(plan) || !acknowledgeDataLoss))
                 )
             }
         }
@@ -746,7 +739,6 @@ struct PadDeleteTaskSheet: View {
     private func loadPlan() async {
         showForceConfirmation = false
         acknowledgeDataLoss = false
-        confirmedBranchName = ""
         loading = true
         inspectError = nil
         deleteNotice = nil
@@ -776,7 +768,6 @@ struct PadDeleteTaskSheet: View {
                 request.artifactDisposition = artifactDisposition
                 if force {
                     request.acknowledgeDataLoss = true
-                    request.confirmedBranchName = confirmedBranchName
                 }
                 return try await api.taskCommand(taskId: task.id, command: .delete, body: request)
             }

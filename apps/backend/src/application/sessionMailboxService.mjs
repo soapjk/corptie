@@ -72,7 +72,7 @@ export class SessionMailboxService {
   selectSql(body) {
     return `SELECT mm.sequence,mm.message_id,mm.recipient_session_id,mm.source_type,mm.source_id,mm.intent,mm.priority,
       mm.disposition,mm.manual_requested,mm.read_at,mm.adopted_turn_id,mm.created_at, ${body ? "COALESCE(m.body,mm.body)" : "substr(COALESCE(m.body,mm.body),1,240)"} AS content,
-      m.sender_session_id,m.message_id AS original_message_id,m.created_at AS sent_at,
+      COALESCE(m.sender_session_id,json_extract(mm.authorization_json,'$.sourceSessionId')) AS sender_session_id,m.message_id AS original_message_id,m.created_at AS sent_at,
       d.status AS delivery_status,d.target_turn_id,b.batch_id,b.status AS batch_status,
       COALESCE(adopted.execution_status,external_turn.execution_status,op.status,cop.status) AS execution_status,
       COALESCE(op.target_turn_id,cop.target_turn_id,external_delivery.provider_turn_id) AS execution_turn_id,
@@ -213,8 +213,10 @@ export class SessionMailboxService {
           [turnId, logical.activeBinding.bindingId, logical.legacySessionId, this.clock(), this.clock(), messageId]);
         if (row.channel_delivery_id) this.channelService.updateDelivery(row.channel_delivery_id, {
           status: "delivered", deliveredAt: this.clock(), targetTurnId: turnId });
-        if (row.source_type === "automation" && row.operation_id) {
-          const work = this.store.getAgentTask(row.operation_id);
+        if ((row.source_type === "automation" || decode(row.authorization_json).coordinationDispatchId) && row.operation_id) {
+          const work = decode(row.authorization_json).coordinationDispatchId
+            ? this.store.updateAgentTask(row.operation_id, { targetTurnId: turnId })
+            : this.store.getAgentTask(row.operation_id);
           startedWork.push({ ...work, status: "running", targetTurnId: turnId });
         }
       }
@@ -261,9 +263,10 @@ export class SessionMailboxService {
     return result;
   }
 
-  receiveEvent({ recipientSessionId, sourceType, sourceId, body, authorization, intent = "notification", idempotencyKey }) {
+  receiveEvent({ recipientSessionId, sourceType, sourceId, body, authorization, intent = "notification", priority = 50, idempotencyKey }) {
     if (!["background", "system"].includes(sourceType) || !["notification", "acknowledgement", "action_required", "response_required"].includes(intent)
-      || typeof body !== "string" || !body.trim() || Buffer.byteLength(body) > 60 * 1024 || !idempotencyKey) fail("MAILBOX_INVALID_EVENT", 400);
+      || typeof body !== "string" || !body.trim() || Buffer.byteLength(body) > 60 * 1024 || !idempotencyKey
+      || !Number.isInteger(priority) || priority < 0 || priority > 100) fail("MAILBOX_INVALID_EVENT", 400);
     const logical = this.logical(recipientSessionId);
     if (authorization?.ownerLogicalSessionId !== logical.logicalSessionId || authorization?.sourceId !== sourceId) fail("MAILBOX_EVENT_SCOPE_REQUIRED", 403);
     const existing = this.store.selectOne("SELECT message_id FROM session_mailbox_messages WHERE source_type=? AND source_id=? AND recipient_session_id=? AND json_extract(authorization_json,'$.idempotencyKey')=?",
@@ -277,7 +280,9 @@ export class SessionMailboxService {
       const session = this.store.getSession(logical.legacySessionId);
       const id = `mailbox-event:${randomUUID()}`;
       const result = this.enqueueExternalOperation({ taskId: id, sessionId: session.id, agentId: session.agentId ?? this.resolveActor?.(session.id),
-        kind: "user", priority: 50, text: body, source: { type: "mailbox_event", sourceType, sourceId }, createdAt: this.clock() },
+        kind: "user", priority, text: body, source: { type: "mailbox_event", sourceType, sourceId,
+          ...(authorization.coordinationDispatchId ? { coordinationDispatchId: authorization.coordinationDispatchId } : {}),
+          ...(authorization.purpose ? { coordinationPurpose: authorization.purpose } : {}) }, createdAt: this.clock() },
         { sourceType, intent, authorization: { ...authorization, idempotencyKey } });
       this.wake(logical.legacySessionId, result.task.taskId);
       return this.get(logical.logicalSessionId, `mailbox:${id}`);
@@ -318,7 +323,8 @@ export class SessionMailboxService {
     const logical = this.store.getLogicalSession(sessionId) ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
     if (!logical) return;
     const rows = this.store.selectAll(`SELECT operation_id FROM session_mailbox_messages
-      WHERE recipient_session_id=? AND adopted_turn_id=? AND source_type='automation'`, [logical.logicalSessionId, turnId]);
+      WHERE recipient_session_id=? AND adopted_turn_id=? AND (source_type='automation'
+        OR json_extract(authorization_json,'$.coordinationDispatchId') IS NOT NULL)`, [logical.logicalSessionId, turnId]);
     if (!rows.length) return;
     for (const row of rows) {
       const work = this.store.getAgentTask(row.operation_id);

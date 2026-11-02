@@ -91,6 +91,24 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
+  tool("corptie_task_dispatch", "Quickly admit 1-10 asynchronous child instructions. The authenticated parent Session decides create versus reuse. Receipt means accepted, NOT started or completed. Return control to the user immediately; never poll waiting. Follow-up instructions use action=send with the original child Task id. Read authoritative Task/mailbox status rather than old chat status. Available in normal and coordination modes; only direct children, no grandchildren.", {
+    items: { type: "array", minItems: 1, maxItems: 10, items: { type: "object", additionalProperties: false,
+      properties: { action: { type: "string", enum: ["create", "send"] }, task_id: taskIdSchema,
+        text: { type: "string", minLength: 1, maxLength: 49152 }, idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
+        creation: { type: "object", additionalProperties: false, properties: { title: { type: "string", minLength: 1 },
+          description: taskFieldsSchema.description, acceptance_criteria: taskFieldsSchema.acceptance_criteria,
+          verification_criteria: taskFieldsSchema.verification_criteria, priority: taskFieldsSchema.priority,
+          agent_id: agentIdSchema, provider_id: { type: "string", minLength: 1 },
+          artifact_reference: artifactReferenceSchema, file_reference: fileReferenceSchema }, required: ["title", "agent_id"] } },
+      required: ["action", "text", "idempotency_key"],
+      allOf: [{ if: { properties: { action: { const: "create" } } }, then: { required: ["creation"] }, else: { required: ["task_id"] } }] } }
+  }, ["items"]),
+  tool("corptie_task_dispatch_retry", "Retry failed child preparation with the original dispatch identity and frozen runtime settings. Only failed pre-mailbox preparation is retryable. Never replay a possibly accepted Provider instruction; inspect authoritative mailbox state instead.", {
+    dispatch_id: { type: "string", minLength: 1 }
+  }, ["dispatch_id"]),
+  tool("corptie_collaboration_tasks_delete_child", "Autonomously request safe deletion of this Session's direct child Task without user confirmation. Asynchronous receipt; never poll. Running work, undelivered Git changes, or unpreserved Artifacts block safe deletion. This tool cannot force-discard data. Available regardless of coordination mode. Exact parent/child and authenticated Session checks remain mandatory.", {
+    child_task_id: taskIdSchema, idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
+  }, ["child_task_id", "idempotency_key"]),
   tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Child creation is autonomous: the authenticated parent Session decides when and how many children to create, without explicit user creation requests, message evidence, confirmation or a total creation quota. Specify parent_task_id and expected_parent_resource_version; Worker may target only its bound root Task, Work Chat a root in its Work. Read the parent first; prefer create_batch for 1-10 children per call. Independent Tasks (parent omitted/null) still require an explicit current direct-user request and authoritative turn evidence. Never use platform administration as a fallback.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
@@ -204,6 +222,12 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     corptie_sessions_get: () => client.get(`/internal/collaboration/sessions/${encodeURIComponent(input.session_id)}`),
     corptie_collaboration_tasks_list: () => client.get("/internal/collaboration/tasks"),
     corptie_collaboration_tasks_get: () => client.get(`/internal/collaboration/tasks/${encodeURIComponent(input.task_id)}`),
+    corptie_task_dispatch: () => client.post("/internal/collaboration/tasks/dispatch", { items: input.items?.map(item => compact({
+      action: item.action, taskId: item.task_id, text: item.text, idempotencyKey: item.idempotency_key,
+      creation: item.creation ? taskCreationBody(item.creation) : undefined
+    })) }),
+    corptie_task_dispatch_retry: () => client.post("/internal/collaboration/tasks/dispatch/retry", { dispatchId: input.dispatch_id }),
+    corptie_collaboration_tasks_delete_child: () => client.post("/internal/collaboration/tasks/delete-child", { childTaskId: input.child_task_id, idempotencyKey: input.idempotency_key }),
     corptie_collaboration_tasks_create: () => client.post("/internal/collaboration/tasks", taskCreationBody(input)),
     corptie_collaboration_tasks_create_batch: () => client.post("/internal/collaboration/tasks/batch", compact({
       parentTaskId: input.parent_task_id, expectedParentResourceVersion: input.expected_parent_resource_version,

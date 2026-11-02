@@ -136,9 +136,8 @@ struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
 
 struct ForceDeleteWorktreeConfirmationView: View {
     let deletion: PendingWorktreeDeletion
-    let onConfirm: (String) -> Void
+    let onConfirm: () -> Void
     let onCancel: () -> Void
-    @State private var typedBranchName = ""
 
     private var branchName: String {
         deletion.worktree.branchName ?? ""
@@ -167,17 +166,12 @@ struct ForceDeleteWorktreeConfirmationView: View {
                 .foregroundStyle(.red)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Type the full branch name exactly as shown to confirm:"))
-                    .font(.system(size: 11, weight: .medium))
                 Text(branchName.isEmpty ? L10n("detached HEAD") : branchName)
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                TextField(L10n("Full branch name"), text: $typedBranchName)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
             }
 
             HStack {
@@ -185,10 +179,10 @@ struct ForceDeleteWorktreeConfirmationView: View {
                 Button(L10n("Cancel"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Button(L10n("Permanently Delete Worktree"), role: .destructive) {
-                    onConfirm(typedBranchName)
+                    onConfirm()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(branchName.isEmpty || typedBranchName != branchName)
+                .disabled(branchName.isEmpty)
             }
         }
         .padding(20)

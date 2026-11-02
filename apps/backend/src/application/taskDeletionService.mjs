@@ -38,6 +38,9 @@ export class TaskDeletionService {
   }
 
   async request(taskId, input = {}, actor = null) {
+    if (actor?.type === "parent_session" && (input.mode !== "safe" || input.artifactDisposition !== "retain" || input.deleteWorktree !== true)) {
+      throw coded("TASK_DELETE_FORBIDDEN", "Parent Sessions may request only safe deletion with Artifact retention.", 403);
+    }
     const requestedKey = String(input.idempotencyKey ?? "").trim();
     if (requestedKey) {
       const replay = this.store.getTaskDeletionOperationByKey(taskId, requestedKey);
@@ -49,7 +52,7 @@ export class TaskDeletionService {
       taskId,
       { mode: input.mode ?? "safe", deleteWorktree: input.deleteWorktree !== false,
         artifactDisposition: input.artifactDisposition ?? "delete", acknowledgeDataLoss: input.acknowledgeDataLoss === true,
-        confirmedBranchName: input.confirmedBranchName, actor: { type: actor?.type, id: actor?.id },
+        actor: { type: actor?.type, id: actor?.id },
         resumeCleanup: plan.inspection?.pendingCleanup ?? null,
         target: this.#target(taskId, plan) },
       requestedKey || `task-delete:${randomUUID()}`
@@ -142,6 +145,8 @@ export class TaskDeletionService {
     const associations = this.store.listTaskDeletionBlockingAssociations(taskId);
     const artifacts = Array.isArray(associations?.artifacts) ? associations.artifacts : [];
     const associatedSessionCount = this.store.listSessionsByTask(taskId).length;
+    if (actor?.type === "parent_session" && artifacts.length) return deletionPlan(item, null, [], [{ code: "CHILD_ARTIFACT_DELIVERY_REQUIRED",
+      message: "先交付或保留子任务 Artifact；父 Session 的自主删除不能丢弃资源。" }], associatedSessionCount, artifacts);
     if (this.store.listSessionsByTask(taskId).some(session => sessionHasActiveRun(session)
       || this.store.getSessionRuntimeBlocker?.(session.id, { includeQueued: true }))) {
       return deletionPlan(item, null, [], [{ code: "SESSION_BUSY", message: "该任务的会话仍在执行或有未完成投递，请先停止后重试。" }], associatedSessionCount, artifacts);
@@ -221,7 +226,7 @@ export class TaskDeletionService {
       if (deleteWorktree && (plan.worktree || (operationId && input.target?.worktreeId
         && !this.store.getTask(taskId).deletion_worktree_removed_at))) {
         cleanup = await this.removeWorktree({ taskId, inspection: plan.inspection,
-          force: input.mode === "force", confirmedBranchName: input.confirmedBranchName,
+          force: input.mode === "force",
           operationId, target: input.target });
         this.store.markTaskWorktreeRemoved(taskId);
       }
@@ -286,10 +291,10 @@ export class TaskDeletionService {
       throw coded("TASK_DELETE_BLOCKED", "此风险不能通过强制确认绕过。", 409, { deletion: plan });
     }
     const branch = plan.worktree?.branchName ?? "";
-    if (input.acknowledgeDataLoss !== true || !branch || input.confirmedBranchName !== branch) {
+    if (input.acknowledgeDataLoss !== true || !branch) {
       throw coded(
         "TASK_FORCE_DELETE_CONFIRMATION_REQUIRED",
-        `强制删除会永久丢弃未提交文件和未合并提交。请输入完整分支名 ${branch} 并确认数据丢失风险。`,
+        "强制删除会永久丢弃未提交文件和未合并提交。请确认数据丢失风险。",
         409,
         { deletion: plan }
       );

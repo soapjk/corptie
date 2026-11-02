@@ -482,8 +482,7 @@ final class ProjectWorkspaceCommandController: ObservableObject {
         deleteWorktree: Bool,
         deleteSessions: Bool,
         restartService: Bool,
-        forceDeleteUnmerged: Bool = false,
-        confirmedBranchName: String? = nil
+        forceDeleteUnmerged: Bool = false
     ) {
         var body: [String: Any] = [
             "mergeIntoMain": mergeIntoMain,
@@ -492,10 +491,9 @@ final class ProjectWorkspaceCommandController: ObservableObject {
             "deleteSessions": deleteSessions,
             "restartService": restartService
         ]
-        if forceDeleteUnmerged, let confirmedBranchName {
+        if forceDeleteUnmerged {
             body["forceDeleteUnmerged"] = true
             body["acknowledgeIrrecoverable"] = true
-            body["confirmedBranchName"] = confirmedBranchName
         }
         performProtectedProjectWorktreeAction(
             worktree,

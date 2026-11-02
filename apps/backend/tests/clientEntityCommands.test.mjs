@@ -211,11 +211,11 @@ test("commands dispatch through shared services once, replay receipts and classi
     assert.match(context.idempotencyKey, /^task-restart:device:[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(restart).includes("PRIVATE"), false);
 
-    const remove = await api.taskCommand(tasks, f.task.id, "delete", { requestId: "req_delete_1", mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/abc", artifactDisposition: "retain" });
+    const remove = await api.taskCommand(tasks, f.task.id, "delete", { requestId: "req_delete_1", mode: "force", acknowledgeDataLoss: true, artifactDisposition: "retain" });
     assert.deepEqual(remove.entityResult, { taskId: f.task.id, operationId: "op:1", state: "queued" });
     const [, , input, actor] = f.calls.pop();
     assert.deepEqual(actor, { type: "user", id: "user:paired-device:device:test" });
-    assert.deepEqual({ ...input, idempotencyKey: undefined }, { mode: "force", deleteWorktree: true, artifactDisposition: "retain", acknowledgeDataLoss: true, confirmedBranchName: "task/abc", idempotencyKey: undefined });
+    assert.deepEqual({ ...input, idempotencyKey: undefined }, { mode: "force", deleteWorktree: true, artifactDisposition: "retain", acknowledgeDataLoss: true, idempotencyKey: undefined });
     assert.match(input.idempotencyKey, new RegExp(`^task-delete:${f.task.id}:device:[a-f0-9]{64}$`));
 
     // Validation errors thrown by the shared services (no HTTP status) are still definite rejections.

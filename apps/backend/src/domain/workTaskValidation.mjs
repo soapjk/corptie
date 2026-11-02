@@ -14,9 +14,9 @@ const TASK_CREATE_FIELDS = [
   "verificationCriteria", "priority", "lifecycleState", "mainAgentId", "autoTitleEnabled", "parentTaskId"
 ];
 
-const TASK_UPDATE_FIELDS = TASK_CREATE_FIELDS.filter(
+const TASK_UPDATE_FIELDS = [...TASK_CREATE_FIELDS.filter(
   (field) => field !== "id" && field !== "workId" && field !== "parentTaskId"
-);
+), "coordinationEnabled"];
 
 export const ENTITY_FIELD_ALLOWLISTS = Object.freeze({
   workCreate: Object.freeze(WORK_CREATE_FIELDS),
@@ -125,6 +125,10 @@ export function validateTaskInput(input, operation = "create") {
       throw new EntityValidationError("INVALID_FIELD_TYPE", "autoTitleEnabled", "boolean", input.autoTitleEnabled);
     }
     normalized.autoTitleEnabled = input.autoTitleEnabled;
+  }
+  if (has(input, "coordinationEnabled")) {
+    if (typeof input.coordinationEnabled !== "boolean") throw new EntityValidationError("INVALID_FIELD_TYPE", "coordinationEnabled", "boolean", input.coordinationEnabled);
+    normalized.coordinationEnabled = input.coordinationEnabled;
   }
 
   if (operation === "create" && !has(input, "workId")) {

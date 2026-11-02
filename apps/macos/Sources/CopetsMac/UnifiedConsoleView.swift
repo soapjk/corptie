@@ -294,11 +294,10 @@ struct UnifiedConsoleView: View {
                         presentation.plan.worktree?.branchName ?? ""
                     )
                 },
-                onDelete: { force, branch, deleteWorktree, artifactDisposition in
+                onDelete: { force, deleteWorktree, artifactDisposition in
                     deleteTask(
                         presentation.task,
                         force: force,
-                        confirmedBranchName: branch,
                         deleteWorktree: deleteWorktree,
                         artifactDisposition: artifactDisposition
                     )

@@ -110,6 +110,8 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var priority: String
     var lifecycleState: String
     var autoTitleEnabled: Bool? = nil
+    var coordinationEnabled: Bool? = nil
+    var coordinationDispatches: [ClientTaskCoordinationDispatch]? = nil
     var archived: Bool? = nil
     var mainRoleId: String?
     var currentSessionId: String?
@@ -140,6 +142,8 @@ struct CorptieTask: Identifiable, Codable, Hashable {
         case priority
         case lifecycleState
         case autoTitleEnabled
+        case coordinationEnabled
+        case coordinationDispatches
         case archived
         case mainRoleId = "mainAgentId"
         case currentSessionId

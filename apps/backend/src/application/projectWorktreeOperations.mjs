@@ -147,7 +147,6 @@ export function createProjectWorktreeOperations({
         deleteBranch: true,
         forceDeleteUnmerged: input.forceDeleteUnmerged === true,
         acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
-        confirmedBranchName: input.confirmedBranchName
       });
     }
 

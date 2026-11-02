@@ -166,11 +166,10 @@ struct WarRoomView: View {
                         retryItem: presentation.task
                     )
                 },
-                onDelete: { force, branch, deleteWorktree, artifactDisposition in
+                onDelete: { force, deleteWorktree, artifactDisposition in
                     enqueueDeletion(
                         presentation.task,
                         force: force,
-                        confirmedBranchName: branch,
                         deleteWorktree: deleteWorktree,
                         artifactDisposition: artifactDisposition
                     )
@@ -460,7 +459,6 @@ struct WarRoomView: View {
     private func enqueueDeletion(
         _ task: CorptieTask,
         force: Bool,
-        confirmedBranchName: String?,
         deleteWorktree: Bool,
         artifactDisposition: CorptieTaskArtifactDisposition
     ) {
@@ -476,7 +474,6 @@ struct WarRoomView: View {
             let deleted = await client.deleteCorptieTask(
                 taskId: task.id,
                 force: force,
-                confirmedBranchName: confirmedBranchName,
                 deleteWorktree: deleteWorktree,
                 artifactDisposition: artifactDisposition
             )

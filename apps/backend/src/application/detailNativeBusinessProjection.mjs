@@ -53,9 +53,13 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
   if (scope.session.sessionKind === "worker" && scope.task) {
     const task = scope.task, data = { taskId: task.id, title: task.title ?? "", status: task.lifecycle_state ?? "", description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "", resourceRevision: String(task.revision), summary: summary(task) };
     data.parentTaskId = task.parent_task_id ?? null;
+    data.coordinationEnabled = task.coordination_enabled === 1;
+    data.coordinationDispatches = task.coordinationDispatches ?? [];
     data.parentSessionId = scope.parentSessionId ?? null;
     if (scope.taskHierarchy) data.hierarchy = scope.taskHierarchy;
     const actions = editors ? [nav("editor.open", "task", task.id, "编辑 Task", { expectedResourceRevision: data.resourceRevision })] : [];
+    if (editors && !task.parent_task_id) actions.push({ id: "task-coordination", kind: "command", operation: "task.coordination.update",
+      label: { fallback: "协调模式" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
     if (scope.parentSessionId) actions.push(nav("resource.open", "session", scope.parentSessionId, "打开父任务"));
     cards.push(card("task-information", "taskInfo", data, actions));
   }

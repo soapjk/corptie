@@ -148,6 +148,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     public let autoTitleEnabled: Bool?
     public let autoTitleLabel: String
     public let autoTitleUpdating: Bool
+    private let coordinationEnabled: Bool?
+    private let coordinationUpdating: Bool
+    private let coordinationDispatches: [ClientTaskCoordinationDispatch]
+    private let onCoordinationChange: ((Bool) -> Void)?
     public let hierarchy: TaskHierarchySummary?
     private let deliveryTaskID: String?
     private let deliveryRefreshID: String
@@ -163,6 +167,9 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                 collapseLabel: String = "收起", showsWhenEmpty: Bool = false,
                 autoTitleEnabled: Bool? = nil, autoTitleLabel: String = "自动更新 Task 标题",
                 autoTitleUpdating: Bool = false, onAutoTitleChange: ((Bool) -> Void)? = nil,
+                coordinationEnabled: Bool? = nil, coordinationUpdating: Bool = false,
+                coordinationDispatches: [ClientTaskCoordinationDispatch] = [],
+                onCoordinationChange: ((Bool) -> Void)? = nil,
                 hierarchy: TaskHierarchySummary? = nil,
                 deliveryTaskID: String? = nil, deliveryRefreshID: String = "",
                 deliveryAPI: (@MainActor () async throws -> ClientTaskHierarchyAPI)? = nil,
@@ -181,6 +188,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
         self.autoTitleLabel = autoTitleLabel
         self.autoTitleUpdating = autoTitleUpdating
         self.onAutoTitleChange = onAutoTitleChange
+        self.coordinationEnabled = coordinationEnabled
+        self.coordinationUpdating = coordinationUpdating
+        self.coordinationDispatches = coordinationDispatches
+        self.onCoordinationChange = onCoordinationChange
         self.hierarchy = hierarchy
         self.deliveryTaskID=deliveryTaskID; self.deliveryRefreshID=deliveryRefreshID; self.deliveryAPI=deliveryAPI
         self.actions = actions()
@@ -196,6 +207,10 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     ConversationTaskSummaryView(summary: summary, title: summaryTitle)
+                    if let coordinationEnabled, let onCoordinationChange {
+                        ConversationTaskCoordinationControl(enabled: coordinationEnabled,
+                            updating: coordinationUpdating, dispatches: coordinationDispatches, onChange: onCoordinationChange)
+                    }
                     if let deliveryTaskID, let deliveryAPI {
                         ConversationChildDelivery(taskID:deliveryTaskID,refreshID:deliveryRefreshID,api:deliveryAPI)
                             .id(deliveryTaskID)
