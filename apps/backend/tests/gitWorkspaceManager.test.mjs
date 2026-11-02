@@ -139,7 +139,7 @@ test("child deletion uses parent delivery and safely retries partial Git cleanup
       }
       if (mode === "locked") await git(["worktree", "lock", childPath], f.repository);
       const input = { mode: plan.risks.length ? "force" : "safe", acknowledgeDataLoss: true,
-        confirmedBranchName: "child-deletion", idempotencyKey: `delete-${mode}` };
+        idempotencyKey: `delete-${mode}` };
       let accepted = await deletion.request(child.id, input, actor);
       await deletion.inFlight.get(accepted.operation.operationId);
       let result = deletion.getOperation(accepted.operation.operationId);
@@ -1630,7 +1630,7 @@ test("completed merge removes the worktree and its merged branch", async () => {
   }
 });
 
-test("unmerged worktree deletion requires irreversible confirmation and the exact branch name", async () => {
+test("unmerged worktree deletion requires only irreversible risk confirmation", async () => {
   const fixture = await createFixture("force-delete", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
     store: fixture.store,
@@ -1652,7 +1652,7 @@ test("unmerged worktree deletion requires irreversible confirmation and the exac
         ignoreLogicalSessionIds: ["logical:one"],
         deleteBranch: true
       }),
-      /has 2 commits.*Confirm the full branch name/
+      /has 2 commits.*Confirm permanent data loss/
     );
     await assert.rejects(
       () => manager.removeMergedWorktree({
@@ -1661,10 +1661,9 @@ test("unmerged worktree deletion requires irreversible confirmation and the exac
         ignoreLogicalSessionIds: ["logical:one"],
         deleteBranch: true,
         forceDeleteUnmerged: true,
-        acknowledgeIrrecoverable: true,
-        confirmedBranchName: "feature/wrong-name"
+        acknowledgeIrrecoverable: false,
       }),
-      /Confirm the full branch name/
+      /Confirm permanent data loss/
     );
 
     const removed = await manager.removeMergedWorktree({
@@ -1674,7 +1673,6 @@ test("unmerged worktree deletion requires irreversible confirmation and the exac
       deleteBranch: true,
       forceDeleteUnmerged: true,
       acknowledgeIrrecoverable: true,
-      confirmedBranchName: "feature/session-worktree"
     });
     assert.equal(removed.removed, true);
     assert.equal(removed.forced, true);
@@ -1713,7 +1711,6 @@ test("confirmed permanent deletion also discards uncommitted worktree changes", 
       deleteBranch: true,
       forceDeleteUnmerged: true,
       acknowledgeIrrecoverable: true,
-      confirmedBranchName: "feature/session-worktree"
     });
     assert.equal(removed.forced, true);
     assert.equal(removed.discardedCommitCount, 0);
@@ -1741,7 +1738,6 @@ test("safe-only deletion blocks uncommitted changes even when force flags are su
         safeOnly: true,
         forceDeleteUnmerged: true,
         acknowledgeIrrecoverable: true,
-        confirmedBranchName: "feature/session-worktree"
       }),
       (error) => error.code === "UNCOMMITTED_CHANGES" && /uncommitted changes/.test(error.message)
     );

@@ -70,7 +70,7 @@ public actor ClientDetailActionCoordinator {
     private var readKeys: Set<Key> = []
     private var dispatched: Set<Key> = []
     private var active = true
-    private static let commands: Set<String> = ["schedule.cancel", "memory.update", "memory.delete", "reference.add", "reference.remove"]
+    private static let commands: Set<String> = ["schedule.cancel", "memory.update", "memory.delete", "reference.add", "reference.remove", "task.coordination.update"]
     private static let destructive: Set<String> = ["schedule.cancel", "memory.delete", "reference.remove"]
 
     public nonisolated static func supports(_ action: ClientDetailAction) -> Bool {

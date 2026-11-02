@@ -54,6 +54,7 @@ export class SessionCollaborationService {
     const childReason = requestDenial?.code ?? (!canCreate ? "COLLABORATION_CREATE_FORBIDDEN"
       : parent?.parent_task_id ? "TASK_MAX_DEPTH_EXCEEDED"
       : parent && (parent.archived || parent.deletion_status) ? "TASK_PARENT_UNAVAILABLE" : null);
+    const managesChildren = canCreate && !childReason && scope.session.sessionKind === "worker" && parent?.lifecycle_state !== "done";
     return {
       actorAgentId: scope.agent.agentId,
       sourceSessionId: scope.logicalSessionId,
@@ -62,7 +63,7 @@ export class SessionCollaborationService {
       workId: scope.session.workId,
       taskId: scope.session.taskId,
       actions: ["sessions.discover", "sessions.get", "channels.open", "channels.list", "channels.get",
-        "channels.message_send", "channels.revoke", ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
+        "channels.message_send", "channels.revoke", ...(managesChildren ? ["tasks.dispatch", "tasks.delete_child"] : []), ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
         ? ["tasks.create", ...(!childReason ? ["tasks.create_child", "tasks.create_batch"] : []), "tasks.relate", "tasks.share_artifact"]
         : [])],
       denials: { ...(requestDenial ? { "tasks.create": requestDenial } : {}),
@@ -78,7 +79,7 @@ export class SessionCollaborationService {
         activeChannel: "endpoint_members_only",
         createsTaskImplicitly: false
       },
-      destructiveActions: [],
+      destructiveActions: managesChildren ? ["tasks.delete_child_safe"] : [],
       arbitraryUpdate: false
     };
   }
@@ -170,7 +171,7 @@ export class SessionCollaborationService {
       status: succeeded === results.length ? "completed" : succeeded === 0 ? "failed" : "partial", results };
   }
 
-  async createTaskAndSession(metadata, actorId, input = {}) {
+  async createTaskAndSession(metadata, actorId, input = {}, options = {}) {
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const authorization = this.#authorizeTaskCreation(scope, input);
     const intent = this.#creationIntent(scope, input, authorization);
@@ -181,7 +182,7 @@ export class SessionCollaborationService {
       return inFlight.promise;
     }
     const entry = { fingerprint: intent.fingerprint };
-    entry.promise = this.#createTaskAndSession(metadata, actorId, input, scope, authorization, intent);
+    entry.promise = this.#createTaskAndSession(metadata, actorId, input, scope, authorization, intent, options.runtimeConfiguration);
     this.taskCreations.set(key, entry);
     try { return await entry.promise; }
     catch (error) {
@@ -199,13 +200,13 @@ export class SessionCollaborationService {
     finally { if (this.taskCreations.get(key) === entry) this.taskCreations.delete(key); }
   }
 
-  async #createTaskAndSession(metadata, actorId, input, scope, authorization, intent) {
+  async #createTaskAndSession(metadata, actorId, input, scope, authorization, intent, frozenRuntime) {
     const prior = this.#creationReplay(scope, input, intent);
     const taskInput = prior?.creation_intent_fingerprint
       ? { id: prior.id, workId: prior.work_id, parentTaskId: prior.parent_task_id ?? null }
       : { ...intent.taskInput, ...(prior ? { id: prior.id } : {}) };
     const runtime = prior?.creation_intent_json ? JSON.parse(prior.creation_intent_json).runtime
-      : resolveTaskCreationDefaults({ providerId: input.providerId }, this.store.settings?.().newSessionDefaults ?? {}, this.defaultProviderId);
+      : frozenRuntime ?? resolveTaskCreationDefaults({ providerId: input.providerId }, this.store.settings?.().newSessionDefaults ?? {}, this.defaultProviderId);
     const revalidate = () => {
       const current = this.#scope(metadata, actorId, { mutation: true });
       this.#assertCreationSource(current);
@@ -531,12 +532,81 @@ export class SessionCollaborationService {
     };
   }
 
+  coordinationScope(metadata, actorId) {
+    const scope = this.#scope(metadata, actorId, { mutation: true });
+    this.#assertCreationSource(scope);
+    const parent = this.store.getTask(scope.session.taskId);
+    if (scope.session.sessionKind !== "worker" || !parent || parent.parent_task_id || parent.archived
+      || parent.deletion_status || parent.lifecycle_state === "done") throw coded("TASK_PARENT_UNAVAILABLE", "An active root Task Session is required.", 403);
+    if (metadata.providerBindingId && metadata.providerBindingId !== scope.logical.activeBinding.bindingId) throw coded("STALE_SESSION_ROUTE", "Refresh the Session route.", 409);
+    return { ...scope, parent };
+  }
+
+  assertDirectChild(scope, child) {
+    if (!child || child.parent_task_id !== scope.parent.id || child.work_id !== scope.parent.work_id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Only direct children of this Session's Task are allowed.", 403);
+    if (child.archived || child.deletion_status || child.lifecycle_state === "done") throw coded("RECIPIENT_TASK_UNAVAILABLE", "The child is archived, deleting or completed.", 409);
+  }
+
+  prepareCoordinationDispatch(scope, item, { replay = false } = {}) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw coded("INVALID_DISPATCH", "Invalid dispatch.", 400);
+    assertKnown(item, ["action", "taskId", "text", "idempotencyKey", "creation"]);
+    const request = { action: item.action, taskId: item.taskId ?? null, text: required(item.text, "text"),
+      idempotencyKey: required(item.idempotencyKey, "idempotencyKey"), creation: null };
+    if (Buffer.byteLength(request.text) > 48 * 1024 || request.idempotencyKey.length > 200) throw coded("DISPATCH_TOO_LARGE", "Dispatch exceeds its input budget.", 400);
+    if (request.action === "send") {
+      required(request.taskId, "taskId");
+      if (!replay) this.assertDirectChild(scope, this.store.getTask(request.taskId));
+      if (item.creation != null) throw coded("INVALID_DISPATCH", "send cannot create a Task.", 400);
+    } else if (request.action === "create") {
+      if (request.taskId !== null) throw coded("INVALID_DISPATCH", "create cannot target an existing Task.", 400);
+      const creation = item.creation ?? {};
+      assertKnown(creation, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId", "providerId", "artifactReference", "fileReference"]);
+      required(creation.agentId, "agentId");
+      if (!replay) this.#requireContributor(scope.session.workId, creation.agentId);
+      const normalized = validateTaskInput({ title: creation.title, workId: scope.parent.work_id, mainAgentId: creation.agentId,
+        description: creation.description ?? "", acceptanceCriteria: creation.acceptanceCriteria ?? "", verificationCriteria: creation.verificationCriteria ?? "", priority: creation.priority ?? "medium" });
+      if (!replay && creation.artifactReference != null) this.#prepareArtifactReference(scope, creation.artifactReference);
+      if (!replay && creation.fileReference != null) this.#prepareFileReference(scope, creation.fileReference);
+      if (creation.artifactReference && creation.fileReference) throw coded("TASK_REFERENCE_CONFLICT", "Choose one reference.", 400);
+      request.creation = { title: normalized.title, description: normalized.description, acceptanceCriteria: normalized.acceptanceCriteria,
+        verificationCriteria: normalized.verificationCriteria, priority: normalized.priority, agentId: creation.agentId,
+        ...(creation.providerId ? { providerId: creation.providerId } : {}),
+        ...(creation.artifactReference ? { artifactReference: creation.artifactReference } : {}),
+        ...(creation.fileReference ? { fileReference: creation.fileReference } : {}) };
+    } else throw coded("INVALID_DISPATCH", "action must be create or send.", 400);
+    return { request, runtime: resolveTaskCreationDefaults({ providerId: request.creation?.providerId }, this.store.settings?.().newSessionDefaults ?? {}, this.defaultProviderId) };
+  }
+
+  async deleteChildTask(metadata, actorId, input = {}) {
+    assertKnown(input, ["childTaskId", "idempotencyKey"]);
+    const scope = this.coordinationScope(metadata, actorId);
+    const key = `parent:${scope.logicalSessionId}:${required(input.idempotencyKey, "idempotencyKey")}`;
+    const replay = this.store.getTaskDeletionOperationByKey(required(input.childTaskId, "childTaskId"), key);
+    if (replay) {
+      if (replay.input?.actor?.type !== "parent_session" || replay.input.actor.id !== scope.logicalSessionId
+        || replay.input.target?.parentTaskId !== scope.parent.id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Deletion receipt does not belong to this parent Session.", 403);
+      return { accepted: true, operation: replay, idempotentReplay: true };
+    }
+    const child = this.store.getTask(required(input.childTaskId, "childTaskId"));
+    // Deletion retries may revisit a child whose deletion is already queued.
+    if (!child || child.parent_task_id !== scope.parent.id || child.work_id !== scope.parent.work_id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Only this Session's direct child may be deleted.", 403);
+    const service = this.taskCoordinationService?.deletion;
+    if (!service) throw coded("CAPABILITY_UNAVAILABLE", "Task deletion is unavailable.", 503);
+    const actor = { type: "parent_session", id: scope.logicalSessionId };
+    const plan = await service.inspect(child.id, actor);
+    if (plan.artifacts?.length) throw coded("CHILD_ARTIFACT_DELIVERY_REQUIRED", "Preserve/deliver the child's Artifacts before deletion; autonomous deletion never discards them.", 409);
+    return service.request(child.id, { mode: "safe", deleteWorktree: true, artifactDisposition: "retain",
+      idempotencyKey: key }, actor);
+  }
+
   #presentTask(item, hierarchy = undefined, referencesAvailable = true) {
     const { creation_intent_json, creation_intent_fingerprint, ...fields } = item;
     return {
       ...fields,
       parentTaskId: item.parent_task_id ?? null,
       resourceVersion: item.resource_version,
+      coordinationEnabled: item.coordination_enabled === 1,
+      coordinationDispatches: this.taskCoordinationService?.listForParent(item.id) ?? [],
       hierarchy: hierarchy ?? this.store.hierarchySummaries([item.id]).get(item.id),
       creationOrigin: this.store.getTaskCreationOrigin(item.id),
       referencesAvailable,

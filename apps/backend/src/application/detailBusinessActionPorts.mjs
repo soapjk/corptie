@@ -43,6 +43,19 @@ export function createDetailBusinessActionPorts({ inspector, schedules }) {
     }
   });
   return {
+    "task.coordination.update": {
+      capability: () => typeof inspector.perform === "function",
+      resource: (scope, target) => { const value = bound(scope); return value.task?.id === target.id ? value.task : null; },
+      revision: row => String(row.resource_version),
+      authorize: (scope, target, row) => !row.parent_task_id && !row.archived && !row.deletion_status && bound(scope).task?.id === target.id,
+      validateFields: (_scope, _target, fields) => typeof fields.coordinationEnabled === "boolean",
+      execute: (scope, target, fields, { resource, fingerprint }) => {
+        scope.revalidateSync?.(); scope.readGuard?.();
+        const value = bound(scope);
+        if (value.task?.id !== target.id || value.task.resource_version !== resource.resource_version) deny("DETAIL_REVISION_CONFLICT");
+        return inspector.perform(value, "task.update", fields, fingerprint);
+      }
+    },
     "reference.add": {
       capability: (scope, target) => target.resourceType === "session" && target.id === scope.sessionId
         && typeof inspector.references?.create === "function",

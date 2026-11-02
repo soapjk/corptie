@@ -20,7 +20,7 @@ test("empty leaf children are deletable but parents with live children are not",
 test("force cannot bypass busy Sessions, including metadata-only deletion", async () => {
   const f = fixture({ sessions: [{ id: "session:busy", status: "running" }] });
   for (const deleteWorktree of [true, false]) await assert.rejects(f.service.delete("task:one", {
-    mode: "force", deleteWorktree, acknowledgeDataLoss: true, confirmedBranchName: "task/one"
+    mode: "force", deleteWorktree, acknowledgeDataLoss: true
   }), { code: "TASK_DELETE_BLOCKED" });
   assert.deepEqual(f.calls, []);
 });
@@ -109,7 +109,7 @@ test("deletion preflight reports tracked, untracked, and unmerged risks separate
   );
 });
 
-test("force deletion requires the exact branch and cleans Worktree before metadata", async () => {
+test("force deletion needs risk acknowledgement and cleans Worktree before metadata", async () => {
   const { service, calls } = fixture({
     inspection: {
       status: "available", blocker: "NOT_MERGED_INTO_MAIN",
@@ -121,11 +121,11 @@ test("force deletion requires the exact branch and cleans Worktree before metada
     }
   });
   await assert.rejects(
-    service.delete("task:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "wrong" }),
+    service.delete("task:one", { mode: "force" }),
     (error) => error.code === "TASK_FORCE_DELETE_CONFIRMATION_REQUIRED"
   );
   const result = await service.delete("task:one", {
-    mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one"
+    mode: "force", acknowledgeDataLoss: true
   });
   assert.equal(result.ok, true);
   assert.deepEqual(calls.map(([name]) => name), ["mark", "remove", "removed", "finalize"]);
@@ -166,7 +166,7 @@ test("main and shared Worktrees can never be force deleted", async () => {
       }
     });
     await assert.rejects(
-      service.delete("task:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "main" }),
+      service.delete("task:one", { mode: "force", acknowledgeDataLoss: true }),
       (error) => error.code === "TASK_DELETE_BLOCKED"
     );
     assert.equal(calls.some(([name]) => name === "remove"), false);

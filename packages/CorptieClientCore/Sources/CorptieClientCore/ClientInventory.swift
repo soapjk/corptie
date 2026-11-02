@@ -26,6 +26,28 @@ public struct ClientWork: Decodable, Sendable, Identifiable, Equatable {
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }
 }
+public struct ClientTaskCoordinationDispatch: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public var id: String { dispatchId }
+    public let dispatchId: String
+    public let taskId: String?
+    public let title: String
+    public let status: String
+    public let errorCode: String?
+    public var statusLabel: String {
+        switch status {
+        case "accepted", "preparing": "准备中"
+        case "queued": "排队中"
+        case "running": "执行中"
+        case "blocked": "等待处理"
+        case "completed": "本轮执行完成 · 未代表验收"
+        case "failed": "执行失败"
+        case "cancelled": "已取消"
+        case "unknown": "投递结果待核实"
+        default: "状态待核实"
+        }
+    }
+}
+
 public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let parentTaskId: String?
     public let hierarchy: TaskHierarchySummary?
@@ -36,6 +58,8 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let id: String
     public let title: String
     public let autoTitleEnabled: Bool
+    public let coordinationEnabled: Bool
+    public let coordinationDispatches: [ClientTaskCoordinationDispatch]
     public let workId: String
     public let lifecycleState: String
     public let executionStatus: String
@@ -49,7 +73,7 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case parentTaskId, hierarchy, resourceVersion
+        case parentTaskId, hierarchy, resourceVersion, coordinationEnabled, coordinationDispatches
         case id, title, autoTitleEnabled, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt, description, acceptanceCriteria, verificationCriteria
     }
     public init(from decoder: Decoder) throws {
@@ -60,6 +84,8 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
         autoTitleEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTitleEnabled) ?? true
+        coordinationEnabled = try container.decodeIfPresent(Bool.self, forKey: .coordinationEnabled) ?? false
+        coordinationDispatches = try container.decodeIfPresent([ClientTaskCoordinationDispatch].self, forKey: .coordinationDispatches) ?? []
         description = try container.decodeIfPresent(String.self, forKey: .description)
         acceptanceCriteria = try container.decodeIfPresent(String.self, forKey: .acceptanceCriteria)
         verificationCriteria = try container.decodeIfPresent(String.self, forKey: .verificationCriteria)

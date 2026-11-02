@@ -98,7 +98,6 @@ extension UnifiedConsoleView {
     func deleteTask(
         _ task: CorptieTask,
         force: Bool,
-        confirmedBranchName: String?,
         deleteWorktree: Bool,
         artifactDisposition: CorptieTaskArtifactDisposition
     ) {
@@ -112,7 +111,6 @@ extension UnifiedConsoleView {
             let deleted = await entityClient.deleteCorptieTask(
                 taskId: task.id,
                 force: force,
-                confirmedBranchName: confirmedBranchName,
                 deleteWorktree: deleteWorktree,
                 artifactDisposition: artifactDisposition
             )

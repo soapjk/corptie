@@ -24,7 +24,7 @@ const ACTION_FIELDS = {
   "memory.rollback": ["id", "auditId", "confirmed", "expectedVersion"],
   "memory.confirm": ["id", "content", "confirmed", "expectedVersion"],
   "memory.reject": ["id", "reason", "confirmed", "expectedVersion"],
-  "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId", "autoTitleEnabled"],
+  "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId", "autoTitleEnabled", "coordinationEnabled"],
   "task.reclaimWorktree": ["confirmed"],
   "worktree.autoFollow": ["enabled", "expectedWorktreeId", "expectedTargetWorktreeId", "expectedHierarchyRevision", "expectedBindingRevision"],
 };
@@ -83,6 +83,8 @@ export class ClientInspectorAPI {
         verificationCriteria: task.verification_criteria ?? "", summary: parseSummary(task.user_summary_json),
         title: task.title, revision: task.revision, priority: task.priority, mainAgentId: task.main_agent_id, lifecycleState: task.lifecycle_state,
         autoTitleEnabled: task.auto_title_enabled !== 0,
+        coordinationEnabled: task.coordination_enabled === 1,
+        coordinationDispatches: !task.parent_task_id ? this.store.listTaskCoordinationDispatches?.(task.id) ?? [] : [],
         parentTaskId: task.parent_task_id ?? null,
         hierarchy: this.store.hierarchySummaries?.([task.id]).get(task.id) ?? null,
         agents: (this.store.getWork(workId)?.contributorAgentIds ?? []).map(id => {

@@ -70,6 +70,7 @@ function projectTask(task) {
     acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "",
     priority: task.priority, lifecycleState: task.lifecycle_state, archived: Boolean(task.archived),
     autoTitleEnabled: task.auto_title_enabled !== 0,
+    coordinationEnabled: task.coordination_enabled === 1,
     mainAgentId: task.main_agent_id ?? null,
     deletionStatus: ["deleting", "delete_failed"].includes(task.deletion_status) ? task.deletion_status : null };
 }
@@ -235,12 +236,16 @@ function validateTaskCommand(api, task, command, input) {
   const code = "INVALID_TASK_COMMAND";
   switch (command) {
     case "update": {
-      knownFields(input, ["requestId", "title", ...TASK_TEXT_FIELDS, "priority", "mainAgentId", "autoTitleEnabled"], code);
+      knownFields(input, ["requestId", "title", ...TASK_TEXT_FIELDS, "priority", "mainAgentId", "autoTitleEnabled", "coordinationEnabled"], code);
       const fields = {};
       if ("title" in input) fields.title = name(input.title, "title", "Task", code);
       if ("autoTitleEnabled" in input) {
         if (typeof input.autoTitleEnabled !== "boolean") throw deviceError(code, 400);
         fields.autoTitleEnabled = input.autoTitleEnabled;
+      }
+      if ("coordinationEnabled" in input) {
+        if (typeof input.coordinationEnabled !== "boolean") throw deviceError(code, 400);
+        fields.coordinationEnabled = input.coordinationEnabled;
       }
       for (const key of TASK_TEXT_FIELDS) if (key in input) fields[key] = text(input[key], code);
       if ("priority" in input) {
@@ -265,7 +270,7 @@ function validateTaskCommand(api, task, command, input) {
       knownFields(input, ["requestId"], code);
       return {};
     case "delete": {
-      knownFields(input, ["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss", "confirmedBranchName"], code);
+      knownFields(input, ["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss"], code);
       const fields = { mode: input.mode ?? "safe", deleteWorktree: input.deleteWorktree ?? true,
         artifactDisposition: input.artifactDisposition ?? "delete" };
       if (!["safe", "force"].includes(fields.mode) || typeof fields.deleteWorktree !== "boolean"
@@ -274,7 +279,6 @@ function validateTaskCommand(api, task, command, input) {
         if (typeof input.acknowledgeDataLoss !== "boolean") throw deviceError(code, 400);
         fields.acknowledgeDataLoss = input.acknowledgeDataLoss;
       }
-      if ("confirmedBranchName" in input) fields.confirmedBranchName = text(input.confirmedBranchName, code, { limit: 512 });
       return fields;
     }
     default: throw deviceError("ROUTE_NOT_AVAILABLE", 404);

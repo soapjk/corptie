@@ -121,7 +121,7 @@ struct SessionAPITests {
         #expect(renamed.entityResult?.title == "Renamed")
         #expect(renamed.taskResult == nil && renamed.commandResult == nil)
         var deletion = ClientTaskDeletion(requestId: "delete_12345")
-        deletion.mode = "force"; deletion.acknowledgeDataLoss = true; deletion.confirmedBranchName = "task/abc"
+        deletion.mode = "force"; deletion.acknowledgeDataLoss = true
         let deleted = try await api.taskCommand(taskId: "task:one", command: .delete, body: deletion)
         #expect(deleted.entityResult?.operationId == "op:1")
         let removed = try await api.workCommand(workId: "work:one", command: .delete, body: ClientEntityRequest(requestId: "delete_work12"))
@@ -370,7 +370,7 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
             case ("/client/v1/tasks/task:one/delete", _, "POST"):
                 #expect(body?["mode"] as? String == "force")
                 #expect(body?["acknowledgeDataLoss"] as? Bool == true)
-                #expect(body?["confirmedBranchName"] as? String == "task/abc")
+                #expect(Set(body?.keys.map { $0 } ?? []) == Set(["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss"]))
                 #expect(body?["deleteWorktree"] as? Bool == true)
                 json = #"{"schemaVersion":1,"requestId":"delete_12345","sessionId":"","kind":"task_delete","status":"completed","errorCode":null,"updatedAt":"now","entityResult":{"taskId":"task:one","operationId":"op:1","state":"queued"}}"#
             case ("/client/v1/works/work:one/delete", _, "POST"):

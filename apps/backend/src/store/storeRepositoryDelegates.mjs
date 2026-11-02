@@ -149,6 +149,7 @@ const domainDelegates = Object.freeze({
     "updateWork", "deleteWork", "assertWorkAssociations"
   ],
   taskRepository: [
+    "listTaskCoordinationDispatches",
     "createTask", "setTaskCreationState", "getTaskCreationOrigin", "listTasks",
     "listTasksByWork", "listTaskPage", "getTask",
     "getTaskWorkspaceContext", "getTaskBySessionId", "setTaskArchived",

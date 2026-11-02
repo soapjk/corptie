@@ -71,11 +71,11 @@ test("workspace mutations require fresh management inspection and commit protect
 test("deletion forwards explicit irreversible-operation acknowledgements", async () => {
   const f = fixture();
   await f.handlers.performProjectWorkspaceAction(f.project, "tree", "delete", {
-    deleteBranch: false, forceDeleteUnmerged: true, acknowledgeIrrecoverable: true, confirmedBranchName: "task"
+    deleteBranch: false, forceDeleteUnmerged: true, acknowledgeIrrecoverable: true
   });
   assert.deepEqual(f.calls[1], ["remove", {
     repositoryId: "project", workingDirectory: "/main", sourceWorktreeId: "tree",
-    deleteBranch: false, forceDeleteUnmerged: true, acknowledgeIrrecoverable: true, confirmedBranchName: "task"
+    deleteBranch: false, forceDeleteUnmerged: true, acknowledgeIrrecoverable: true
   }]);
 });
 

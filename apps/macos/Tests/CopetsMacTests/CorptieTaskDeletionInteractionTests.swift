@@ -3,19 +3,23 @@ import Testing
 @testable import CorptieMac
 
 struct CorptieTaskDeletionInteractionTests {
-    @Test func forceDeletionUsesTypedBranchOnDesktopAndMobile() throws {
+    @Test func forceDeletionUsesRiskConfirmationWithoutTextEntry() throws {
         let desktop = try warRoomSource("WorkTasks/TaskDeletionConfirmation.swift")
         let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let mobile = try String(contentsOf: package.appendingPathComponent("../ipad/Sources/PadEntityMenus.swift"), encoding: .utf8)
         for source in [desktop, mobile] {
-            #expect(source.contains("TaskDeletionConfirmationPolicy.confirmsBranch(confirmedBranchName"))
             #expect(source.contains("TaskDeletionConfirmationPolicy.isTaskLevelBlocker"))
-            #expect(source.contains("输入完整分支名以确认"))
             #expect(source.contains("不影响父任务、兄弟任务"))
         }
-        #expect(desktop.contains("onDelete(true, confirmedBranchName"))
-        #expect(mobile.contains("request.confirmedBranchName = confirmedBranchName"))
-        #expect(!mobile.contains("request.confirmedBranchName = plan.worktree?.branchName"))
+        #expect(!desktop.contains("TextField("))
+        #expect(desktop.contains("onDelete(true, deleteWorktree, artifactDisposition)"))
+        #expect(mobile.contains("request.acknowledgeDataLoss = true"))
+        let mobileDeletion = try #require(mobile.components(separatedBy: "struct PadDeleteTaskSheet: View").last)
+        #expect(!mobileDeletion.contains("TextField("))
+        let worktree = try warRoomSource("ProjectWorkspace/WorktreeOperationViews.swift")
+        let worktreeDeletion = try #require(worktree.components(separatedBy: "struct ForceDeleteWorktreeConfirmationView: View").last?.components(separatedBy: "struct WorktreeCommitReviewView").first)
+        #expect(!worktreeDeletion.contains("TextField("))
+        #expect(worktreeDeletion.contains("onConfirm()"))
     }
     @Test
     func taskCardsExposeTheSafeDeletionFlowFromAContextMenu() throws {
