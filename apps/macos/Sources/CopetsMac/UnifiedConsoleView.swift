@@ -159,7 +159,9 @@ struct UnifiedConsoleView: View {
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
         .modifier(ConversationSkinHost())
+        .task(id: outlinePreparationKey) { await prepareOutline() }
         .onAppear {
+            sessionIndexStore.updateWorkTasks(entityClient.tasks)
             PerfStopwatch.event("UnifiedConsoleView·onAppear", value: 1)
             restoreInitialSessionIfAvailable(backendClient.sessions)
             restoreConsoleSpaceIfNeeded()
@@ -226,6 +228,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .onReceive(entityClient.sessionGroupingDidChange) { _ in
+            sessionIndexStore.updateWorkTasks(entityClient.tasks)
             entityGroupingRevision &+= 1
             guard sidebarState.isSelected, router.pendingSessionId == nil else { return }
             restoreConsoleSpaceIfNeeded()
@@ -551,18 +554,7 @@ struct UnifiedConsoleView: View {
     }
 
     func workChatSession(for workId: String) -> TaskSession? {
-        let indexedSession = sessionIndexStore.rows.lazy
-            .map(\.session)
-            .first {
-                $0.resolvedSessionKind == .workChat
-                    && $0.workId == workId
-                    && $0.archived != true
-            }
-        return indexedSession ?? backendClient.sessions.first {
-            $0.resolvedSessionKind == .workChat
-                && $0.workId == workId
-                && $0.archived != true
-        }
+        sessionIndexStore.taskSessionLookup.workChat(for: workId)
     }
 
     func openWorkChat(for work: Work, session: TaskSession) {

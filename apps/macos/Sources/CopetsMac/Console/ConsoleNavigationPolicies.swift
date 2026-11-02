@@ -114,6 +114,20 @@ final class ConsoleOutlineExpansionPreferences {
 
 typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle
 
+/// Read the Chat expansion in its own observation scope, not the Console root.
+struct ConsoleAssistantExpansionScope<Content: View>: View {
+    let preferences: ConsoleOutlineExpansionPreferences
+    let forceExpanded: Bool
+    let content: (Bool) -> Content
+
+    init(preferences: ConsoleOutlineExpansionPreferences, forceExpanded: Bool,
+         @ViewBuilder content: @escaping (Bool) -> Content) {
+        self.preferences = preferences; self.forceExpanded = forceExpanded; self.content = content
+    }
+
+    var body: some View { content(forceExpanded || !preferences.isAssistantCollapsed) }
+}
+
 /// Shared by list rows and experimental Task cards; body lives in CorptieConversation.
 struct ConsoleScheduledWakeIcon: View {
     var isActive = true
