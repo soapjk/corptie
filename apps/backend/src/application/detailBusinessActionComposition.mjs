@@ -10,7 +10,9 @@ import { ClientInspectorAPI } from "./clientInspectorAPI.mjs";
 export function createLocalDetailBusinessActionService({ commandAPI, documentService, workService, ...inspectorOptions }) {
   if (typeof workService?.updateTask !== "function") throw new TypeError("Local Detail actions require WorkApplicationService.updateTask.");
   return createDetailBusinessActionService({ commandAPI, documentService,
-    inspector: new ClientInspectorAPI({ ...inspectorOptions, updateTask: (id, fields) => workService.updateTask(id, fields) }) });
+    inspector: new ClientInspectorAPI({ ...inspectorOptions,
+      assertCoordinationCanEnable: task => workService.assertCoordinationCanEnable?.(task),
+      updateTask: (id, fields) => workService.updateTask(id, fields) }) });
 }
 
 /** One host-owned action profile, never inferred from an ActionRequest. A

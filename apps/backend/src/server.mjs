@@ -1,5 +1,6 @@
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
+import { CoordinationTurnService } from "./application/coordinationTurnService.mjs";
 import { SessionChannelMailboxService } from "./collaboration/sessionChannelMailboxService.mjs";
 import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
@@ -1585,6 +1586,25 @@ taskCoordinationService = new TaskCoordinationService({ store, collaboration: se
   changed: taskId => { if (taskId) emitEvent("TaskChanged", { taskId, action: "coordination-state",
     entity: { ...store.getTask(taskId), coordinationDispatches: store.listTaskCoordinationDispatches(taskId) } }); } });
 sessionCollaborationService.taskCoordinationService = taskCoordinationService;
+sessionApplicationService.coordinationTurns = new CoordinationTurnService({
+  store, registry: agentProviderRegistry, planner: backgroundAgentService,
+  dispatch: taskCoordinationService, emitEvent, resolveReference: requireSessionReference,
+  onTerminal: ({ reference, turnId, status }) => handleCommittedProviderTerminalLifecycle({
+    event: { type: `turn.${status}`, turnId, source: "host-coordination" },
+    projection: { session: store.getSession(reference.sessionId), terminalStatus: status },
+    logicalRoute: store.getLogicalSession(reference.logicalSessionId)
+  })
+});
+workService.assertCoordinationCanEnable = task => sessionApplicationService.coordinationTurns.assertCanEnable(task);
+workService.onCoordinationChanged = taskId => sessionApplicationService.coordinationTurns.policyChanged(taskId);
+toolHostService.assertExecutionAllowed = input => {
+  const id = input.metadata?.logicalSessionId;
+  if (id && sessionApplicationService.coordinationTurns.enabled(requireSessionReference(id))) {
+    throw Object.assign(new Error("强协调模式禁止父会话调用原生工具；开发必须由子任务执行。"), {
+      code: "COORDINATION_NATIVE_TOOL_DENIED", statusCode: 403
+    });
+  }
+};
 ({ workSessionStartupCoordinator, workSessionStartApplicationService } = createWorkSessionStartupComposition({
   store, workService, agentProviderRegistry, sessionApplicationService,
   forkContextForTask: (taskId) => sessionForkService.contextForTask(taskId),
@@ -2425,6 +2445,7 @@ await seedDevelopmentFixtures({
   bundledCollaborationSkillPath, now, marker: developmentFixtureMarker,
   enabled: shouldSeedDevelopmentFixtures
 });
+detailServiceFor(store, detailMigration).coordinationState = id => sessionApplicationService.coordinationTurns.state(requireSessionReference(id));
 detailServiceFor(store, detailMigration).configureBusinessPorts(createDetailBusinessReadPorts({
   store, references: sessionContextReferenceService, artifacts: artifactService,
   schedules: scheduledSessionTaskService, observability: turnObservability,
