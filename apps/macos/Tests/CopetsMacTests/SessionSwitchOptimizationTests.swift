@@ -641,23 +641,51 @@ final class SessionSwitchOptimizationTests: XCTestCase {
         XCTAssertEqual(cache.peek("two"), 2)
     }
 
-    func testOutlineProjectionIgnoresSelectionAndInvalidatesEachInput() {
+    func testOutlineProjectionIgnoresSelectionAndInvalidatesEachInput() async {
         let store = ConsoleOutlineProjectionStore()
         let base = ConsoleOutlineProjectionKey(entityRevision: 1, sessionRevision: 1, search: "", sort: .standard)
-        var builds = 0
-        func make() -> ConsoleOutlineProjection {
-            builds += 1
-            return ConsoleOutlineProjection(tasksByWorkID: ["work:one": [task()]], works: [], processingWorkIDs: [])
+        for _ in 0..<100 {
+            await store.prepare(key: base, tasks: [task()], works: [], sessions: [])
+            XCTAssertEqual(store.prepared.tasksByWorkID["work:one"]?.count, 1)
         }
-        for _ in 0..<100 { XCTAssertEqual(store.value(for: base, make: make).tasksByWorkID["work:one"]?.count, 1) }
-        XCTAssertEqual(builds, 1)
+        XCTAssertEqual(store.computationCount, 1)
+        XCTAssertFalse(store.lastComputationUsedMainThread)
         for key in [
             ConsoleOutlineProjectionKey(entityRevision: 2, sessionRevision: 1, search: "", sort: .standard),
             ConsoleOutlineProjectionKey(entityRevision: 2, sessionRevision: 2, search: "", sort: .standard),
             ConsoleOutlineProjectionKey(entityRevision: 2, sessionRevision: 2, search: "query", sort: .standard),
-            ConsoleOutlineProjectionKey(entityRevision: 2, sessionRevision: 2, search: "query", sort: .updated)
-        ] { _ = store.value(for: key, make: make) }
-        XCTAssertEqual(builds, 5)
+            ConsoleOutlineProjectionKey(entityRevision: 2, sessionRevision: 2, search: "query", sort: .updated),
+            ConsoleOutlineProjectionKey(entityRevision: 2, sessionRevision: 2, search: "query", sort: .updated,
+                expandedTaskIDs: ["task:parent"])
+        ] { await store.prepare(key: key, tasks: [task()], works: [], sessions: []) }
+        XCTAssertEqual(store.computationCount, 6)
+    }
+
+    func testProjectionRejectsAnObsoleteInventoryBeforePublishing() async {
+        let store = ConsoleOutlineProjectionStore()
+        let key = ConsoleOutlineProjectionKey(entityRevision: 1, sessionRevision: 0, search: "", sort: .standard)
+        await store.prepare(key: key, tasks: [task()], works: [], sessions: [], isCurrent: { false })
+        XCTAssertNil(store.preparedKey)
+        XCTAssertEqual(store.computationCount, 0)
+        XCTAssertTrue(store.prepared.works.isEmpty)
+    }
+
+    func testArchiveProjectionPreparesDeduplicatedRowsAndSearchBeforeDisclosure() async {
+        var archivedTask = task("task:archive")
+        archivedTask.archived = true
+        let duplicate = session("duplicate", taskID: archivedTask.id, archived: true)
+        let history = session("history", taskID: "task:history", archived: true)
+        let rows = [SessionRowModel(session: duplicate), SessionRowModel(session: history)]
+        let store = ConsoleOutlineProjectionStore()
+        let key = ConsoleOutlineProjectionKey(entityRevision: 1, sessionRevision: 0, search: "", sort: .standard,
+            showsArchive: true)
+        await store.prepare(key: key, tasks: [archivedTask], works: [], sessions: [], archivedRows: rows)
+        XCTAssertEqual(store.prepared.archivedTasksByWorkID["work:one"]?.map(\.id), [archivedTask.id])
+        XCTAssertEqual(store.prepared.archivedRowsByWorkID["work:one"]?.map(\.id), [history.id])
+        await store.prepare(key: .init(entityRevision: 1, sessionRevision: 0, search: "history", sort: .standard,
+            showsArchive: true), tasks: [archivedTask], works: [], sessions: [], archivedRows: rows)
+        XCTAssertTrue(store.prepared.archivedTasksByWorkID.isEmpty)
+        XCTAssertEqual(store.prepared.archivedRowsByWorkID["work:one"]?.map(\.id), [history.id])
     }
 
     func testTaskLookupBenchmarkReportsEquivalentResults() {

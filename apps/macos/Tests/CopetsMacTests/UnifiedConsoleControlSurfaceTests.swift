@@ -63,14 +63,14 @@ struct UnifiedConsoleControlSurfaceTests {
     func primaryWorkOutlineUsesTheSameCollapsibleTaskRowsAsTaskSidebar() throws {
         let outline = try source(named: "Console/UnifiedConsoleOutline.swift")
         let rows = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
-        #expect(outline.contains("let tasks = hierarchyTasks(tasksByWorkID[work.id] ?? [])"))
+        #expect(outline.contains("let workRows = workRowsByWorkID[work.id] ?? .empty"))
         #expect(outline.contains("ForEach(visibleTasks)"))
         #expect(outline.contains("hierarchyTaskRow(task)"))
-        #expect(outline.contains("ForEach(hierarchyTasks(archivedTasks))"))
+        #expect(outline.contains("ForEach(orderedTasks)"))
         // Limit root groups, not flattened rows: expanding a parent must never
         // truncate its children at the Work's initial Task limit.
-        #expect(outline.contains("totalCount: roots.count"))
-        #expect(outline.contains("visibleRootIDs.contains($0.parentTaskId ?? $0.id)"))
+        #expect(outline.contains("totalCount: workRows.rootCount"))
+        #expect(outline.contains("workRows.rows(showsAll:"))
         #expect(!outline.contains("ForEach(tasks.prefix(visibleTaskCount))"))
         #expect(rows.contains("func hierarchyTaskRow(_ task: CorptieTask)"))
         #expect(rows.contains("task.parentTaskId == nil ? 0 : 24"))

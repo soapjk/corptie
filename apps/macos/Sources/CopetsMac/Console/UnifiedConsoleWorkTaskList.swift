@@ -167,7 +167,7 @@ extension UnifiedConsoleView {
     @ViewBuilder
     func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View {
         let session = workerSession(for: task)
-            ?? backendClient.archivedSessions.first { $0.taskId == task.id }
+            ?? archivedSessionIndexStore.taskSessionLookup.firstSession(for: task.id)
         let sessionActivity = sessionIndexStore.taskSessionLookup.activity(for: task)
         let rowView = ConsoleTaskRowContent(
             task: task,

@@ -4,6 +4,55 @@ import Testing
 
 @MainActor
 struct SessionCollectionPatchTests {
+    @Test func outlineSummariesAndLookupsStayEquivalentAcrossContentStatusAndMembershipPatches() {
+        let store = SessionIndexStore()
+        var task = makeCorptieTask(id: "task:one", lifecycleState: "in_progress")
+        task.currentSessionId = "worker"
+        task.executionStatus = "idle"
+        store.updateWorkTasks([task])
+        var sessions = [
+            makeSession(id: "worker", sessionKind: .worker, taskId: task.id, workId: task.workId,
+                status: .running, lastAgentMessageSequence: 4, lastReadMessageSequence: 1),
+            makeSession(id: "chat", sessionKind: .workChat, workId: task.workId),
+            makeSession(id: "archive", sessionKind: .worker, taskId: task.id, workId: task.workId, archived: true),
+            makeSession(id: "assistant", sessionKind: .assistantChat, lastAgentMessageSequence: 7, lastReadMessageSequence: 1)
+        ]
+        func apply() {
+            store.replaceAll(with: sessions)
+            #expect(store.workUnreadSummary == WorkRailUnreadSummary(sessions: sessions))
+            #expect(store.processingWorkIDs == ConsoleWorkActivityPolicy.processingWorkIDs(tasks: [task], sessions: sessions))
+            #expect(store.taskSessionLookup.workChat(for: task.workId)?.id == sessions.first {
+                $0.resolvedSessionKind == .workChat && $0.workId == task.workId && $0.archived != true
+            }?.id)
+            #expect(store.taskSessionLookup.session(for: task)?.id == TaskSessionLookup(sessions: sessions).session(for: task)?.id)
+        }
+        apply()
+        let activityRevision = store.outlineActivityRevision
+        for index in 0..<20 {
+            sessions[0] = makeSession(id: "worker", summary: "Streaming summary \(index)", sessionKind: .worker,
+                taskId: task.id, workId: task.workId, status: .running,
+                lastAgentMessageSequence: 4, lastReadMessageSequence: 1)
+            apply()
+            #expect(store.taskSessionLookup.session(for: task)?.summary == sessions[0].summary)
+        }
+        #expect(store.outlineActivityRevision == activityRevision)
+        sessions[0].executionStatus = "completed"
+        apply()
+        sessions[0].lastReadMessageSequence = 4
+        apply()
+        sessions[1].workId = "work:other"
+        apply()
+        #expect(store.taskSessionLookup.workChat(for: "work:other")?.id == "chat")
+        sessions[1] = makeSession(id: "chat", sessionKind: .workChat, workId: "work:other", archived: true)
+        apply()
+        #expect(store.taskSessionLookup.workChat(for: "work:other") == nil)
+        sessions.removeFirst()
+        apply()
+        sessions = []
+        apply()
+        #expect(store.workUnreadSummary.workIDs.isEmpty)
+    }
+
     @Test func authoritativeExecutionCompletionInvalidatesOnlyTheChangedStatusRow() {
         let previous = makeSession(id: "status", status: .running)
         var completed = previous
