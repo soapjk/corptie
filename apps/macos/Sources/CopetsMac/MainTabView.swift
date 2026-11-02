@@ -69,17 +69,13 @@ private struct MainWindowPageCardModifier: ViewModifier {
             .overlay {
                 shape.strokeBorder(
                     Color.primary.opacity(
-                        appearance == .lightweight
-                            ? (increasedContrast
-                                ? MainWindowPageLayoutMetrics.increasedContrastCardBorderOpacity
-                                : MainWindowPageLayoutMetrics.cardBorderOpacity)
-                            : 0.42
+                        increasedContrast
+                            ? MainWindowPageLayoutMetrics.increasedContrastCardBorderOpacity
+                            : MainWindowPageLayoutMetrics.cardBorderOpacity
                     ),
-                    lineWidth: appearance == .lightweight
-                        ? (increasedContrast
-                            ? MainWindowPageLayoutMetrics.increasedContrastCardBorderWidth
-                            : MainWindowPageLayoutMetrics.cardBorderWidth)
-                        : 1
+                    lineWidth: increasedContrast
+                        ? MainWindowPageLayoutMetrics.increasedContrastCardBorderWidth
+                        : MainWindowPageLayoutMetrics.cardBorderWidth
                 )
                 .allowsHitTesting(false)
             }
@@ -419,6 +415,7 @@ private struct MemoryCenterPage: View {
 // MARK: - 左侧导航与常驻页面
 
 struct MainWindowContentView: View {
+    @AppStorage("ui.navigation.showLabels", store: CorptieAppEnvironment.userDefaults) private var showsNavigationLabels = false
     @StateObject private var router = AppTabRouter.shared
     @StateObject private var selectionState = AppTabRouter.shared.selectionState
     @EnvironmentObject private var resizeState: MainWindowResizeState
@@ -429,7 +426,7 @@ struct MainWindowContentView: View {
                 get: { selectionState.selectedTab },
                 set: { router.selectTab($0) }
             ))
-            .frame(width: MainNavigationRailLayout.width)
+            .frame(width: showsNavigationLabels ? 168 : MainNavigationRailLayout.width)
 
             MainTabPageHost(
                 selection: selectionState.selectedTab,

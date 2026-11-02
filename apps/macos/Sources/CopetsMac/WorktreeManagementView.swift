@@ -499,13 +499,25 @@ struct WorktreeManagementView: View {
                 dismissButton: .cancel(Text(L10n("OK")))
             )
         }
-        .alert(L10n("Worktree operation failed"), isPresented: Binding(
-            get: { backendClient.isOnline && client.errorMessage != nil },
-            set: { if !$0 { client.dismissError() } }
-        )) {
-            Button(L10n("OK"), role: .cancel) { client.dismissError() }
-        } message: {
-            Text(client.errorMessage ?? "")
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let error = client.errorMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label(L10n("Worktree operation failed"), systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button(L10n("刷新状态")) { Task { await client.refreshSelected() } }
+                            .disabled(client.isLoading || client.isMutating)
+                        Button(L10n("关闭")) { client.dismissError() }
+                    }
+                    Text(L10n("读取或操作未完成。刷新只检查当前状态，不会重复执行合并、推送或删除。"))
+                        .font(.callout).foregroundStyle(.secondary)
+                    DisclosureGroup(L10n("技术详情")) {
+                        Text(error).font(.caption).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }.padding(14).background(.regularMaterial)
+            }
         }
     }
 

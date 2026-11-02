@@ -25,6 +25,7 @@ struct RoleManagementView: View {
     @State private var isCreatingRole = false
     @State private var isRegisteringSkill = false
     @State private var isShowingSkillsSheet = false
+    @AppStorage("ui.roles.showSkills", store: CorptieAppEnvironment.userDefaults) private var showsSkillsColumn = true
     @State private var isShowingMcpSheet = false
     @State private var selectedRoleForDetail: Role?
     @State private var roleForSessionCreation: Role?
@@ -40,10 +41,10 @@ struct RoleManagementView: View {
             let layoutMode = RolesSkillsLayoutMetrics.mode(for: geometry.size.width)
 
             HStack(spacing: 0) {
-                rolesColumn(showsSkillsButton: sidebarState.isVisible && layoutMode == .compact)
+                rolesColumn(showsSkillsButton: true, compactSkills: layoutMode == .compact)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if sidebarState.isVisible && layoutMode == .split {
+                if sidebarState.isVisible && layoutMode == .split && showsSkillsColumn {
                     Divider()
                     skillsColumn
                         .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
@@ -102,7 +103,7 @@ struct RoleManagementView: View {
         }
     }
 
-    private func rolesColumn(showsSkillsButton: Bool) -> some View {
+    private func rolesColumn(showsSkillsButton: Bool, compactSkills: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(L10n("Roles"))
@@ -116,7 +117,9 @@ struct RoleManagementView: View {
                 Spacer()
                 if showsSkillsButton {
                     Button {
-                        isShowingSkillsSheet = true
+                        if compactSkills {
+                            isShowingSkillsSheet = true
+                        } else { showsSkillsColumn.toggle() }
                     } label: {
                         Label(L10n("Skills"), systemImage: "shippingbox")
                     }
@@ -353,11 +356,11 @@ struct RoleCard: View {
 
                 Spacer(minLength: 0)
 
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 9, height: 9)
-                    .padding(.top, 4)
-                    .help(agent.statusReason ?? statusText)
+                if agent.status == "unavailable" {
+                    Label(statusText, systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(statusColor)
+                        .help(agent.statusReason ?? statusText)
+                }
             }
 
             // 描述
@@ -391,10 +394,8 @@ struct RoleCard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .disabled(agent.status == "unavailable")
                 }
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(statusColor)
             }
         }
         .padding(14)

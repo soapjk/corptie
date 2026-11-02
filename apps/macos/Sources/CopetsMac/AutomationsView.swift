@@ -1,7 +1,7 @@
 import SwiftUI
 import CorptieConversation
 
-private enum AutomationCategory: String, CaseIterable, Identifiable {
+enum AutomationCategory: String, CaseIterable, Identifiable {
     case all
     case running
     case failed
@@ -10,7 +10,7 @@ private enum AutomationCategory: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     @MainActor var title: String {
         switch self {
-        case .all: L10n("All Automations")
+        case .all: L10n("当前任务")
         case .running: L10n("Running")
         case .failed: L10n("Failed")
         case .history: L10n("History")
@@ -26,6 +26,24 @@ private enum AutomationCategory: String, CaseIterable, Identifiable {
     }
 }
 
+enum AutomationOverviewPolicy {
+    static func items(in category: AutomationCategory, from automations: [ScheduledSessionTask]) -> [ScheduledSessionTask] {
+        switch category {
+        case .all: automations.filter {
+            $0.status == .active || $0.status == .error
+                || [.claimed, .queued, .running].contains($0.lastRunStatus ?? .missed)
+        }
+        case .running: automations.filter {
+            [.claimed, .queued, .running].contains($0.lastRunStatus ?? .missed)
+        }
+        case .failed: automations.filter { $0.status == .error || $0.lastRunStatus == .failed }
+        case .history: automations.filter {
+            $0.status != .active && $0.status != .error || !$0.runs.isEmpty
+        }
+        }
+    }
+}
+
 struct AutomationsView: View {
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
@@ -35,22 +53,35 @@ struct AutomationsView: View {
     @State private var category: AutomationCategory? = .all
     @State private var editingAutomation: ScheduledSessionTask?
     @State private var focusedAutomationID: String?
+    @State private var searchText = ""
+    @State private var showsCreationHelp = false
+    @State private var focusRevision = 0
+    @AppStorage("ui.automations.cards", store: CorptieAppEnvironment.userDefaults) private var showsCards = false
 
+    private func tasks(in category: AutomationCategory) -> [ScheduledSessionTask] {
+        AutomationOverviewPolicy.items(in: category, from: scheduling.automations)
+    }
     private var visibleAutomations: [ScheduledSessionTask] {
-        switch category ?? .all {
-        case .all: scheduling.automations
-        case .running: scheduling.automations.filter {
-            $0.lastRunStatus == .claimed || $0.lastRunStatus == .queued || $0.lastRunStatus == .running
-        }
-        case .failed: scheduling.automations.filter { $0.status == .error || $0.lastRunStatus == .failed }
-        case .history: scheduling.automations.filter { !$0.runs.isEmpty }
+        tasks(in: category ?? .all).filter {
+            searchText.isEmpty || "\($0.name) \($0.message) \(targetName(for: $0))".localizedCaseInsensitiveContains(searchText)
+        }.sorted { left, right in
+            let leftRank = left.status == .error ? 0 : (left.lastRunStatus == .running ? 1 : 2)
+            let rightRank = right.status == .error ? 0 : (right.lastRunStatus == .running ? 1 : 2)
+            if leftRank != rightRank { return leftRank < rightRank }
+            if category != .history {
+                let leftNext = left.nextRunAt.flatMap(ScheduledSessionDateFormatting.date(from:)) ?? .distantFuture
+                let rightNext = right.nextRunAt.flatMap(ScheduledSessionDateFormatting.date(from:)) ?? .distantFuture
+                if leftNext != rightNext { return leftNext < rightNext }
+            }
+            if left.updatedAt != right.updatedAt { return left.updatedAt > right.updatedAt }
+            return left.id < right.id
         }
     }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             List(AutomationCategory.allCases, selection: $category) { item in
-                ManagementCategoryRow(title: item.title, systemImage: item.symbol,
+                ManagementCategoryRow(title: "\(item.title) · \(tasks(in: item).count)", systemImage: item.symbol,
                                       isSelected: category == item)
                     .padding(.vertical, 2)
                     .tag(Optional(item))
@@ -69,6 +100,13 @@ struct AutomationsView: View {
         } detail: {
             VStack(spacing: 0) {
                 header
+                HStack(spacing: 12) {
+                    TextField(L10n("搜索自动化名称、消息或会话"), text: $searchText).textFieldStyle(.roundedBorder)
+                    Picker(L10n("视图"), selection: $showsCards) {
+                        Text(L10n("列表")).tag(false)
+                        Text(L10n("卡片")).tag(true)
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 120)
+                }.padding(.horizontal, 20).padding(.bottom, 12)
                 Divider()
                 content
             }
@@ -76,7 +114,18 @@ struct AutomationsView: View {
             .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .safeAreaInset(edge: .bottom) {
+            if let error = scheduling.automationsError {
+                HStack {
+                    Label(error, systemImage: "exclamationmark.triangle").textSelection(.enabled)
+                    Spacer()
+                    Button(L10n("Retry")) { Task { await scheduling.loadAutomations() } }
+                }.font(.callout).padding(12).background(.regularMaterial)
+            }
+        }
         .task { await scheduling.loadAutomations() }
+        .onChange(of: router.pendingAutomationId, initial: true) { _, _ in focusPendingAutomation() }
+        .onChange(of: scheduling.automations.map(\.id)) { _, _ in focusPendingAutomation() }
         .sheet(item: $editingAutomation) { automation in
             if let session = targetSession(for: automation) {
                 ScheduledTaskEditorSheet(
@@ -99,6 +148,17 @@ struct AutomationsView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button(L10n("创建自动化")) { showsCreationHelp = true }
+                .popover(isPresented: $showsCreationHelp) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(L10n("选择承载自动化的会话")).font(.headline)
+                        Text(L10n("在会话输入区的更多菜单中创建定时或条件触发任务。结果会保留在对应会话中。"))
+                        Button(L10n("前往工作台选择会话")) {
+                            showsCreationHelp = false
+                            router.selectTab(.console)
+                        }
+                    }.padding(20).frame(width: 320)
+                }
             if scheduling.isLoadingAutomations { ProgressView().controlSize(.small) }
             Button {
                 Task { await scheduling.loadAutomations() }
@@ -123,13 +183,19 @@ struct AutomationsView: View {
                     ? "Create an Automation from a Session’s message composer."
                     : "Tasks in this category will appear here."))
                     .font(WorkbenchTypography.font(for: .help))
+            } actions: {
+                if category != .history && !scheduling.automations.isEmpty {
+                    Button(L10n("查看执行历史")) { category = .history; searchText = "" }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 300, maximum: 430), spacing: 12, alignment: .top)],
+                        columns: showsCards
+                            ? [GridItem(.adaptive(minimum: 340, maximum: 520), spacing: 12, alignment: .top)]
+                            : [GridItem(.flexible(), alignment: .top)],
                         alignment: .leading,
                         spacing: 12
                     ) {
@@ -142,7 +208,7 @@ struct AutomationsView: View {
                                 edit: { edit(automation) },
                                 perform: { action in
                                     Task { await scheduling.performAutomationAction(action, task: automation) }
-                                }
+                                }, isList: !showsCards
                             )
                             .id(automation.id)
                             .overlay {
@@ -154,34 +220,23 @@ struct AutomationsView: View {
                     }
                     .padding(20)
                 }
-                .onChange(of: router.pendingAutomationId, initial: true) { _, automationID in
-                    guard let automationID,
-                          scheduling.automations.contains(where: { $0.id == automationID }) else { return }
-                    category = .all
-                    focusedAutomationID = automationID
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(automationID, anchor: .center) }
-                    router.consumeAutomation(automationID)
-                }
-                .onChange(of: scheduling.automations.map(\.id)) { _, automationIDs in
-                    guard let automationID = router.pendingAutomationId,
-                          automationIDs.contains(automationID) else { return }
-                    category = .all
-                    focusedAutomationID = automationID
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(automationID, anchor: .center) }
-                    router.consumeAutomation(automationID)
+                .onChange(of: focusRevision, initial: true) { _, _ in
+                    guard let focusedAutomationID else { return }
+                    proxy.scrollTo(focusedAutomationID, anchor: .center)
                 }
             }
-            .overlay(alignment: .bottomLeading) {
-                if let error = scheduling.automationsError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(12)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                        .padding()
-                }
-            }
+
         }
+    }
+
+    private func focusPendingAutomation() {
+        guard let id = router.pendingAutomationId,
+              scheduling.automations.contains(where: { $0.id == id }) else { return }
+        category = tasks(in: .history).contains(where: { $0.id == id }) ? .history : .all
+        searchText = ""
+        focusedAutomationID = id
+        focusRevision += 1
+        router.consumeAutomation(id)
     }
 
     private func targetName(for automation: ScheduledSessionTask) -> String {
@@ -222,12 +277,21 @@ private struct AutomationCard: View {
     let perform: (ScheduledSessionTaskAction) -> Void
     @State private var isShowingDetails = false
 
+    var isList = false
+
     var body: some View {
+        Group {
+            if isList { listBody }
+            else { cardBody }
+        }
+    }
+
+    private var cardBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 Text(automation.name)
                     .font(WorkbenchTypography.font(for: .cardTitle))
-                    .lineLimit(1)
+                    .lineLimit(2)
                 Spacer()
                 statusBadge
             }
@@ -290,6 +354,65 @@ private struct AutomationCard: View {
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 11))
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color(nsColor: .separatorColor).opacity(0.55)))
+    }
+
+    private var listBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 16) {
+                    listIdentity.frame(minWidth: 200, maxWidth: .infinity, alignment: .leading)
+                    triggerSummary.frame(width: 210, alignment: .leading)
+                    statusBadge
+                    listActions
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    listIdentity
+                    triggerSummary
+                    HStack { statusBadge; Spacer(); listActions }
+                }
+            }
+            if isShowingDetails { Divider(); details }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+    }
+
+    private var listIdentity: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(automation.name).font(WorkbenchTypography.font(for: .cardTitle))
+                .lineLimit(2).help(automation.name)
+            Button(action: openTarget) {
+                Label(targetName, systemImage: "bubble.left.and.bubble.right").lineLimit(1)
+            }.buttonStyle(.link).font(.callout)
+        }
+    }
+
+    private var triggerSummary: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(triggerLabel, systemImage: "bolt.badge.clock")
+            if automation.scheduleType.hasPredictableNextRun, let next = optionalDateLabel(automation.nextRunAt) {
+                Text("\(L10n("下次执行"))：\(next)")
+            } else if let last = optionalDateLabel(automation.lastRunAt) {
+                Text("\(L10n("最近执行"))：\(last)")
+            }
+        }.font(.callout).foregroundStyle(.secondary)
+    }
+
+    private var listActions: some View {
+        HStack {
+            Button(L10n("详情")) { isShowingDetails.toggle() }
+            Menu {
+                Button(L10n("Edit"), action: edit)
+                    .disabled(!automation.status.permitsEditing || ![ScheduledSessionScheduleType.once, .interval].contains(automation.scheduleType))
+                if automation.status.permitsResume { Button(L10n("Retry")) { perform(.retry) } }
+                Button(L10n("Run Now")) { perform(.runNow) }.disabled(!automation.status.permitsRunNow)
+                Button(L10n("Cancel"), role: .destructive) { perform(.cancel) }.disabled(!automation.status.permitsCancel)
+            } label: { Image(systemName: "ellipsis").frame(width: 28, height: 24) }
+            if isMutating { ProgressView().controlSize(.small) }
+        }.disabled(isMutating || automation.operationsDisabledReason != nil)
+            .help(automation.operationsDisabledReason ?? "")
     }
 
     @ViewBuilder

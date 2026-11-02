@@ -359,7 +359,7 @@
 "Reply..." = "回复…";
 "Reply" = "回复";
 "Show Main Window" = "显示主窗口";
-"Skills" = "Skills";
+"Skills" = "技能";
 "Show Skills" = "查看 Skills";
 "No Skills" = "暂无 Skills";
 "Registered" = "已登记";
@@ -1304,20 +1304,20 @@
 "This branch is already up to date with GitHub and has the correct upstream branch." = "此分支已与 GitHub 同步，并已关联正确的上游分支。";
 "Push committed branch changes to GitHub. Uncommitted files are not included." = "将已提交的分支修改推送到 GitHub；未提交文件不会包含在内。";
 "Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "将此本地分支推送到已配置的 GitHub 仓库，并在需要时设置上游分支。";
-"CorptieTask Memory" = "工作项记忆";
-"Work Memory" = "目标记忆";
-"Role Long-term Memory" = "角色长期记忆";
-"Kept by me" = "我保留的";
-"Suggested by Role" = "角色建议保存的";
+"CorptieTask Memory" = "任务记忆";
+"Work Memory" = "Work 记忆";
+"Role Long-term Memory" = "角色记忆";
+"Kept by me" = "我保留的记忆";
+"Suggested by Role" = "待审核的记忆";
 "Confirmed Role Memory" = "已确认的角色记忆";
 "System checkpoints and consolidation" = "系统检查点与整合记录";
 "Disabled, replaced or expired" = "已停用、已替代或已过期";
-"Memories explicitly kept or manually added by you." = "由你明确 Keep 或手动新增的记忆。";
+"Memories explicitly kept or manually added by you." = "由你明确保留或手动新增的记忆。";
 "Untrusted candidates learned from Session activity; they are not recalled automatically." = "角色从会话活动中提炼的不可信候选，不会自动参与召回。";
 "Trusted durable knowledge available within this scope." = "已经确认、可在当前作用域内使用的长期知识。";
 "Recoverable pre-compaction checkpoints and audited consolidation results." = "可恢复的压缩前检查点和带审计的整合结果。";
 "Preserved for audit but excluded from normal recall." = "保留用于审计，但不会参与正常召回。";
-"Layered Memory Inspector" = "分层 Memory 检查器";
+"Layered Memory Inspector" = "记忆管理";
 "Structured Memory" = "结构化 Memory";
 "CorptieTask → Work → Role is the recall priority. Memories are grouped by both scope and origin." = "召回优先级为工作项 → 目标 → 角色，并同时按作用域和来源分组。";
 "Only this Role's long-term layer is managed here. Work and CorptieTask memories remain in their own context pages." = "这里仅管理该角色的长期记忆；目标和工作项记忆分别在对应上下文页面管理。";
@@ -1325,7 +1325,7 @@
 "Shared Work context. CorptieTask-local and Role long-term memories are managed separately." = "目标范围内共享的上下文；工作项局部记忆和角色长期记忆分开管理。";
 "The most specific task-local layer and the first layer considered during recall." = "最具体的任务局部记忆，也是召回时最先检查的一层。";
 "Structured Memory for the selected owner." = "当前对象的结构化 Memory。";
-"Add Memory" = "新增 Memory";
+"Add Memory" = "新增记忆";
 "Add structured Memory" = "新增结构化 Memory";
 "Choose the narrowest scope that should be affected. CorptieTask is local, Work is shared by the work, and Role is long-term." = "请选择应受影响的最窄作用域：工作项是局部记忆，目标是在目标内共享，角色是长期记忆。";
 "Memory layer" = "Memory 层级";
@@ -1345,7 +1345,7 @@
 "Edit Memory" = "编辑记忆";
 "Active extracted Memory" = "已生效的提取记忆";
 "Candidates awaiting review; they do not participate in recall." = "等待审核的候选记忆，不参与召回。";
-"Task → Work → Global memories apply across their scopes. Role memories remain a separate legacy layer." = "Task、Work、全局记忆按各自范围生效；角色记忆仍是独立的旧层级。";
+"Task → Work → Global memories apply across their scopes. Role memories remain a separate legacy layer." = "按任务、Work、全局或角色管理记忆；待审核的内容不会参与召回。";
 "Choose the scope where this memory should apply. Global memories follow you across Works and Tasks." = "选择记忆的生效范围。全局记忆会跨 Work 和 Task 使用。";
 "Owner" = "归属对象";
 "Keep Memory" = "Keep Memory";
@@ -1903,7 +1903,7 @@
 /* Management and composer presentation. */
 "All Automations" = "全部任务";
 "Automations" = "自动化任务";
-"History" = "执行记录";
+"History" = "历史记录";
 "No Automations" = "暂无自动化任务";
 "No matching Automations" = "当前分类暂无任务";
 "Tasks in this category will appear here." = "此分类中的任务会显示在这里。";
@@ -1950,3 +1950,153 @@
 "目标会话信息不可用" = "目标会话信息不可用";
 
 "部分协作来源或目标信息不可用。" = "部分协作来源或目标信息不可用。";
+
+"Scenes" = "场景";
+
+"No Scenes" = "还没有场景";
+
+"Create Scene" = "创建场景";
+
+"Select a Scene" = "选择一个场景";
+
+"Scene Error" = "场景加载失败";
+
+"使用场景整理每日清单或记录数据。选择一个模板即可开始。" = "使用场景整理每日清单或记录数据。选择一个模板即可开始。";
+
+"Close details" = "关闭详情";
+
+"Context used" = "上下文已用";
+
+"Quota remaining" = "额度剩余";
+
+"Provider" = "执行引擎";
+
+"Platform managed" = "平台助手";
+
+"Available for chat and tasks" = "可用于聊天和任务";
+
+"Search memories" = "搜索记忆内容";
+
+"All kinds" = "全部类型";
+
+"All statuses" = "全部状态";
+
+"显示已停用" = "显示已停用";
+
+"来源与技术详情" = "来源与技术详情";
+
+"当前任务" = "当前任务";
+
+"搜索自动化名称、消息或会话" = "搜索自动化名称、消息或会话";
+
+"视图" = "视图";
+
+"列表" = "列表";
+
+"卡片" = "卡片";
+
+"创建自动化" = "创建自动化";
+
+"查看执行历史" = "查看执行历史";
+
+"选择承载自动化的会话" = "选择承载自动化的会话";
+
+"在会话输入区的更多菜单中创建定时或条件触发任务。结果会保留在对应会话中。" = "在会话输入区的更多菜单中创建定时或条件触发任务。结果会保留在对应会话中。";
+
+"前往工作台选择会话" = "前往工作台选择会话";
+
+"下次执行" = "下次执行";
+
+"最近执行" = "最近执行";
+
+"显示导航文字" = "显示导航文字";
+
+"展开左侧导航名称，也可右键导航栏切换。" = "展开左侧导航名称，也可右键导航栏切换。";
+
+"创建并启动" = "创建并启动";
+
+"正在创建…" = "正在创建…";
+
+"执行配置与更多选项" = "执行配置与更多选项";
+
+"执行配置" = "执行配置";
+
+"默认模型" = "默认模型";
+
+"加载中…" = "加载中…";
+
+"当前 Work 没有可用角色，请先在 Work 详情中添加角色。" = "当前 Work 没有可用角色，请先在 Work 详情中添加角色。";
+
+"执行配置尚未就绪，请检查后重试。" = "执行配置尚未就绪，请检查后重试。";
+
+"展开查看失败原因与诊断" = "展开查看失败原因与诊断";
+
+"刷新状态" = "刷新状态";
+
+"技术详情" = "技术详情";
+
+"读取或操作未完成。刷新只检查当前状态，不会重复执行合并、推送或删除。" = "读取或操作未完成。刷新只检查当前状态，不会重复执行合并、推送或删除。";
+
+"本地服务暂时无法完成请求（HTTP %lld）。请刷新状态后再检查。" = "本地服务暂时无法完成请求（HTTP %lld）。请刷新状态后再检查。";
+
+"最近保存" = "最近保存";
+
+"Database, configuration, logs, Artifacts, Provider runtimes, Skills, cache, state, and backups are migrated and verified before a controlled Backend restart. The old Data Root is retained and is never deleted automatically." = "移动前会验证数据、配置和备份；完成后重启本地服务。原目录会保留，不会自动删除。";
+
+"技能" = "技能";
+
+"操作方法" = "操作方法";
+
+"开发经验" = "开发经验";
+
+"事实" = "事实";
+
+"经验教训" = "经验教训";
+
+"偏好" = "偏好";
+
+"反馈" = "反馈";
+
+"经历" = "经历";
+
+"已生效" = "已生效";
+
+"待审核" = "待审核";
+
+"已替换" = "已替换";
+
+"已转为技能" = "已转为技能";
+
+"已归档" = "已归档";
+
+"已回退" = "已回退";
+
+"未生效" = "未生效";
+
+"待审核 · 尚未生效" = "待审核 · 尚未生效";
+
+"source" = "来源";
+
+"trust" = "可信状态";
+
+"confidence" = "置信度";
+
+"usage" = "使用次数";
+
+"updated" = "更新时间";
+
+"promoted" = "关联技能";
+
+"impact" = "作用范围";
+
+"New Task" = "新建 Task";
+
+"New Assistant Session" = "新建聊天";
+
+"无可用执行引擎，请检查设置" = "无可用执行引擎，请检查设置";
+
+"展开全文" = "展开全文";
+
+"收起全文" = "收起全文";
+
+"场景暂时无法加载" = "场景暂时无法加载";

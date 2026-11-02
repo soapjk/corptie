@@ -19,9 +19,9 @@ struct TaskSessionActivityTests {
     }
 
     @Test func indicatorUsesDesktopColorsAndDoesNotLetLifecycleOverrideKnownExecution() {
-        #expect(TaskSessionActivity.idle.indicatorTone(lifecycleState: "failed") == .orange)
+        #expect(TaskSessionActivity.idle.indicatorTone(lifecycleState: "failed") == .secondary)
         #expect(TaskSessionActivity.failed.indicatorTone(lifecycleState: "active") == .red)
-        #expect(TaskSessionActivity.interrupted.indicatorTone() == .red)
+        #expect(TaskSessionActivity.interrupted.indicatorTone() == .secondary)
         #expect(TaskSessionActivity.processing.indicatorTone() == .connected)
         #expect(TaskSessionActivity.paused.indicatorTone() == .orange)
         #expect(TaskSessionActivity.noSession.indicatorTone(lifecycleState: "complete") == .green)

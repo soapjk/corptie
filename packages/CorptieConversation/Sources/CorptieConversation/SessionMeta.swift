@@ -408,20 +408,22 @@ public struct ConversationComposerStatusRow<Usage: View>: View {
     public var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 2) {
-                Button {
-                    if !isReady { showingNotReadyReason = true }
-                } label: {
-                    SessionReadinessLight(isReady: isReady)
-                        .frame(width: 16, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(isReady)
-                .accessibilityLabel(isReady ? "Session Ready" : "Session Not Ready")
-                .accessibilityIdentifier("conversation-readiness")
-                .popover(isPresented: $showingNotReadyReason, arrowEdge: .top) {
-                    SessionNotReadyDetail(title: readinessTitle, message: readinessMessage, code: readinessCode)
-                        .presentationCompactAdaptation(.popover)
+                if !isReady {
+                    Button {
+                        showingNotReadyReason = true
+                    } label: {
+                        SessionReadinessLight(isReady: isReady)
+                            .frame(width: 16, height: 28)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isReady)
+                    .accessibilityLabel(isReady ? "Session Ready" : "Session Not Ready")
+                    .accessibilityIdentifier("conversation-readiness")
+                    .popover(isPresented: $showingNotReadyReason, arrowEdge: .top) {
+                        SessionNotReadyDetail(title: readinessTitle, message: readinessMessage, code: readinessCode)
+                            .presentationCompactAdaptation(.popover)
+                    }
                 }
                 Button { showingActivity = true } label: {
                     Group {
@@ -432,7 +434,7 @@ public struct ConversationComposerStatusRow<Usage: View>: View {
                         }
                     }
                     .lineLimit(1)
-                    .frame(width: 32, height: 32, alignment: .leading)
+                    .frame(minWidth: 32, minHeight: 32, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -453,7 +455,7 @@ public struct ConversationComposerStatusRow<Usage: View>: View {
             }
             .padding(.leading, 2)
             .padding(.trailing, 5)
-            .frame(width: 58, height: 32, alignment: .leading)
+            .frame(height: 32, alignment: .leading)
             .accessibilityIdentifier("conversation-execution-state")
             usage
         }

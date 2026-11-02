@@ -225,7 +225,7 @@ struct MainWindowResizeLayoutTests {
         }
         #expect(contents.contains("if automation.scheduleType.hasPredictableNextRun"))
         #expect(contents.contains("ScheduledSessionManagementTimeFormatting.string"))
-        #expect(contents.contains("GridItem(.adaptive(minimum: 300, maximum: 430)"))
+        #expect(contents.contains("GridItem(.flexible(), alignment: .top)"))
         #expect(contents.contains("if isShowingDetails { details }"))
         #expect(contents.contains("compactActionButton"))
         let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView {"))

@@ -386,7 +386,7 @@ struct ConsoleWorkOutlineHeader: View {
                     ConsoleWorkTitle(title: work.name, isWorking: isWorking,
                         isActive: isActive && controlActiveState != .inactive)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                        .foregroundStyle(Color.primary)
                         .lineLimit(1)
                 }
                 .padding(.vertical, 3)
