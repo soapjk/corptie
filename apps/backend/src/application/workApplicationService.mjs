@@ -164,12 +164,17 @@ export class WorkApplicationService {
     }
     const normalized = validateTaskInput(patch, "update");
     if (normalized.coordinationEnabled === true && current.parent_task_id) throw new TaskAcceptanceError("TASK_MAX_DEPTH_EXCEEDED", "Only root Tasks support coordination mode.");
+    if (normalized.coordinationEnabled === true) this.assertCoordinationCanEnable?.(current);
     const nextPatch = { ...normalized };
     if (Object.prototype.hasOwnProperty.call(normalized, "acceptanceCriteria")
       && String(normalized.acceptanceCriteria ?? "").trim() !== String(current.acceptance_criteria ?? "").trim()) {
       nextPatch.acceptanceAssessment = null;
     }
-    return this.emit("TaskChanged", this.store.updateTask(id, nextPatch), "updated");
+    const updated = this.store.updateTask(id, nextPatch);
+    if (Object.hasOwn(normalized, "coordinationEnabled") && updated.coordination_enabled !== current.coordination_enabled) {
+      this.onCoordinationChanged?.(updated.id);
+    }
+    return this.emit("TaskChanged", updated, "updated");
   }
 
   reviseTask(id, input = {}) {

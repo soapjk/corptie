@@ -217,7 +217,8 @@ export function createSessionApplicationComposition({
           memoryContext,
           mentionContext,
           referenceContext,
-          requiredContexts: [globalPreferenceContext, discoveryContext, skillRoutingContext, presentationContext].filter(Boolean)
+          requiredContexts: [globalPreferenceContext, discoveryContext, skillRoutingContext, presentationContext,
+            sessionApplicationService.coordinationTurns?.handoffContext(reference)].filter(Boolean)
         });
         recordInjection(Boolean(result), Boolean(result.memoryRecall));
         return { ...result, globalPreferenceRecall: globalPreferences };

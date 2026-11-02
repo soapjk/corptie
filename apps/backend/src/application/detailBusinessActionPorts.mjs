@@ -48,7 +48,10 @@ export function createDetailBusinessActionPorts({ inspector, schedules }) {
       resource: (scope, target) => { const value = bound(scope); return value.task?.id === target.id ? value.task : null; },
       revision: row => String(row.resource_version),
       authorize: (scope, target, row) => !row.parent_task_id && !row.archived && !row.deletion_status && bound(scope).task?.id === target.id,
-      validateFields: (_scope, _target, fields) => typeof fields.coordinationEnabled === "boolean",
+      validateFields: (_scope, _target, fields, resource) => {
+        if (fields.coordinationEnabled === true) inspector.assertCoordinationCanEnable?.(resource);
+        return typeof fields.coordinationEnabled === "boolean";
+      },
       execute: (scope, target, fields, { resource, fingerprint }) => {
         scope.revalidateSync?.(); scope.readGuard?.();
         const value = bound(scope);
