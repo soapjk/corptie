@@ -532,8 +532,8 @@ struct SessionConversationSurface: View {
                     .padding(.bottom, 4)
                     .background { conversationChromeFrame(.composer) }
                 }
-                .frame(maxWidth: showsWelcome ? 720 : .infinity)
-                .padding(.horizontal, showsWelcome ? 24 : 0)
+                .frame(maxWidth: compactComposer ? .infinity : 720)
+                .padding(.horizontal, compactComposer ? 0 : 24)
                 .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)
                 .padding(.top, showsWelcome ? headerClearance : 0)
             }
