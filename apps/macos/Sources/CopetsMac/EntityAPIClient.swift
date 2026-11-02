@@ -334,7 +334,7 @@ final class EntityAPIClient: ObservableObject {
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
                         priority: String? = nil, lifecycleState: String? = nil,
-                        mainRoleId: String? = nil, autoTitleEnabled: Bool? = nil) async -> CorptieTask? {
+                        mainRoleId: String? = nil, autoTitleEnabled: Bool? = nil, coordinationEnabled: Bool? = nil) async -> CorptieTask? {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -347,6 +347,7 @@ final class EntityAPIClient: ObservableObject {
         if let lifecycleState { body["lifecycleState"] = lifecycleState }
         if let mainRoleId { body["mainAgentId"] = mainRoleId }
         if let autoTitleEnabled { body["autoTitleEnabled"] = autoTitleEnabled }
+        if let coordinationEnabled { body["coordinationEnabled"] = coordinationEnabled }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return await performEntityMutation(request, as: CorptieTask.self)
     }
@@ -405,7 +406,6 @@ final class EntityAPIClient: ObservableObject {
     func deleteCorptieTask(
         taskId: String,
         force: Bool = false,
-        confirmedBranchName: String? = nil,
         deleteWorktree: Bool = true,
         artifactDisposition: CorptieTaskArtifactDisposition = .delete
     ) async -> Bool {
@@ -420,7 +420,6 @@ final class EntityAPIClient: ObservableObject {
         ]
         if force {
             body["acknowledgeDataLoss"] = true
-            body["confirmedBranchName"] = confirmedBranchName ?? ""
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         var notificationOutcome: OperationNotificationOutcome = .failed

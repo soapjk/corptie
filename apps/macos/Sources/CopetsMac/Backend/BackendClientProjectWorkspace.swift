@@ -117,13 +117,12 @@ extension BackendClient {
     func operateProjectWorktree(
         _ worktree: ProjectWorktreeStatus, mergeIntoMain: Bool, synchronizeWithMain: Bool,
         deleteWorktree: Bool, deleteSessions: Bool, restartService: Bool,
-        forceDeleteUnmerged: Bool = false, confirmedBranchName: String? = nil
+        forceDeleteUnmerged: Bool = false
     ) {
         projectWorkspaceCommandController.operateProjectWorktree(
             worktree, mergeIntoMain: mergeIntoMain, synchronizeWithMain: synchronizeWithMain,
             deleteWorktree: deleteWorktree, deleteSessions: deleteSessions,
-            restartService: restartService, forceDeleteUnmerged: forceDeleteUnmerged,
-            confirmedBranchName: confirmedBranchName
+            restartService: restartService, forceDeleteUnmerged: forceDeleteUnmerged
         )
     }
 

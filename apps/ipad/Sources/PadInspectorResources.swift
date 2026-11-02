@@ -369,6 +369,13 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 onAutoTitleChange: { enabled in
                     Task { await store.command("task.update", fields: ["autoTitleEnabled": .bool(enabled)],
                         sessionID: sessionID, connection: connection) }
+                }, coordinationEnabled: (definition?["parentTaskId"].text ?? task?.parentTaskId) == nil
+                    ? (definition?["coordinationEnabled"].flag ?? false) : nil,
+                coordinationUpdating: locked,
+                coordinationDispatches: task?.coordinationDispatches ?? [],
+                onCoordinationChange: { enabled in
+                    Task { await store.command("task.update", fields: ["coordinationEnabled": .bool(enabled)],
+                        sessionID: sessionID, connection: connection) }
                 }, hierarchy: taskHierarchy(definition) ?? task?.hierarchy,
                 deliveryTaskID:store.snapshot?.taskId ?? task?.id,
                 deliveryRefreshID:String(task?.resourceVersion ?? 0),deliveryAPI:{

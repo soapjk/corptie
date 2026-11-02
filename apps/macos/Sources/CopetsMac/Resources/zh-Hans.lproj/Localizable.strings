@@ -602,13 +602,11 @@
 "Commit These Files" = "仍然提交这些文件";
 "Could not inspect commit contents." = "无法检查本次提交内容。";
 "%d unmerged commits will be permanently deleted" = "%d 个未合并提交将被永久删除";
-"Continue to branch-name confirmation" = "继续验证分支名称";
+"Continue to permanent deletion confirmation" = "继续确认永久删除";
 "Deleting this Worktree will permanently delete all changes on branch %@. This action cannot be undone." = "删除此 Worktree 将彻底删除分支 %@ 下的所有改动，且不可恢复。";
 "Confirm permanent Worktree deletion" = "确认永久删除 Worktree";
 "%d commits have not been merged into main." = "%d 个提交尚未合并到主分支。";
 "This will permanently delete the Worktree directory, its branch, and all changes unique to that branch. This action cannot be undone." = "此操作将彻底删除 Worktree 文件夹、对应分支以及该分支独有的全部改动，且不可恢复。";
-"Type the full branch name exactly as shown to confirm:" = "请输入下方显示的完整分支名称以确认：";
-"Full branch name" = "完整分支名称";
 "Permanently Delete Worktree" = "永久删除 Worktree";
 "This session's workspace is missing" = "此会话的工作区已丢失";
 "The workspace at %@ is unavailable. Corptie can delete only the session and its local conversation record; no Worktree files or Git branches will be changed." = "路径 %@ 下的工作区已不可用。Corptie 将仅删除此会话及其本地对话记录，不会修改任何 Worktree 文件或 Git 分支。";

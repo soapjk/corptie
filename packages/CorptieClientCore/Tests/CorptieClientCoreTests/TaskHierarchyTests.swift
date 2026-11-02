@@ -3,13 +3,10 @@ import Testing
 @testable import CorptieClientCore
 
 struct TaskHierarchyTests {
-    @Test func childDeletionConfirmationRequiresExactUserInputAndKeepsUnknownRisksBlocked() {
+    @Test func childDeletionKeepsUnknownRisksAndAmbiguousTargetsBlocked() {
         #expect(TaskDeletionConfirmationPolicy.canForceDelete(riskCodes: ["NOT_DELIVERED_TO_PARENT", "UNTRACKED_FILES"], branchName: "task/child"))
         #expect(!TaskDeletionConfirmationPolicy.canForceDelete(riskCodes: ["FUTURE_RISK"], branchName: "task/child"))
         #expect(!TaskDeletionConfirmationPolicy.canForceDelete(riskCodes: ["NOT_DELIVERED_TO_PARENT"], branchName: nil))
-        #expect(!TaskDeletionConfirmationPolicy.confirmsBranch("", expected: "task/child"))
-        #expect(!TaskDeletionConfirmationPolicy.confirmsBranch("task/child ", expected: "task/child"))
-        #expect(TaskDeletionConfirmationPolicy.confirmsBranch("task/child", expected: "task/child"))
         #expect(TaskDeletionConfirmationPolicy.isTaskLevelBlocker("SESSION_BUSY"))
         #expect(TaskDeletionConfirmationPolicy.isTaskLevelBlocker("ACTIVE_WORKTREE_INTEGRATION_JOB"))
         #expect(TaskDeletionConfirmationPolicy.isTaskLevelBlocker("UNKNOWN_BLOCKER"))

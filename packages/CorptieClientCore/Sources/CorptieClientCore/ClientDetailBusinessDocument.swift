@@ -36,6 +36,8 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
     public let resourceRevision: String
     public let summary: ClientDetailBusinessTaskSummary
     public var parentTaskId: String? = nil
+    public var coordinationEnabled: Bool? = nil
+    public var coordinationDispatches: [ClientTaskCoordinationDispatch]? = nil
     public var parentSessionId: String? = nil
     public var hierarchy: TaskHierarchySummary? = nil
 }
@@ -110,11 +112,16 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 (action.target?.id.count ?? 1000) <= 512,
                 action.kind == "navigation" && ["resource.open", "editor.open"].contains(action.operation)
                 || action.kind == "read" && ["detail.collection.page", "artifact.content"].contains(action.operation)
-                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel"].contains(action.operation)
+                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update"].contains(action.operation)
             else { throw ClientDetailFailure.invalidGraph }
         }
         switch payload {
         case .task(let task):
+            let dispatches = task.coordinationDispatches ?? []
+            guard dispatches.count <= 5, Set(dispatches.map(\.id)).count == dispatches.count,
+                actions.filter({ $0.operation == "task.coordination.update" }).allSatisfy({
+                    task.parentTaskId == nil && $0.target?.resourceType == "task" && $0.target?.id == task.taskId
+                }) else { throw ClientDetailFailure.invalidGraph }
             guard !task.taskId.isEmpty, [task.title, task.status, task.description, task.acceptanceCriteria,
                 task.verificationCriteria, task.resourceRevision].allSatisfy({ validText($0) }),
                 actions.filter({ $0.kind == "navigation" }).allSatisfy({ action in

@@ -6,6 +6,13 @@ import { requiredText, optionalStoredText, storeDomainError } from "../validatio
 
 // Uses the Store-owned connection and transaction coordinator; owns no connection lifecycle.
 export class TaskRepository {
+  listTaskCoordinationDispatches(parentTaskId, limit = 5) {
+    return this.selectAll(`SELECT d.dispatch_id AS dispatchId,d.target_task_id AS taskId,
+      COALESCE(substr(t.title,1,120),'准备子任务') AS title,
+      CASE WHEN d.status='running' AND s.status='blocked' THEN 'blocked' ELSE d.status END AS status,d.error_code AS errorCode
+      FROM task_coordination_dispatches d LEFT JOIN tasks t ON t.id=d.target_task_id LEFT JOIN sessions s ON s.id=t.current_session_id
+      WHERE d.parent_task_id=? ORDER BY d.created_at DESC,d.dispatch_id LIMIT ?`, [parentTaskId, Math.max(1, Math.min(20, limit))]);
+  }
   constructor({ hierarchy, getDatabase, selectOne, selectAll, runInTransaction, scheduleSave, getWork, getWorkspace, getGitRepositoryForWorkspace, listSessionsByTask, hasPendingScheduledWakeForTask, recordRejectedTaskCompletionBypass, getSession, getSessionEvent, assertAssignableAgent }) {
     this.hierarchy = hierarchy;
     this.getDatabase = getDatabase;
@@ -292,7 +299,7 @@ export class TaskRepository {
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
       `UPDATE tasks SET title=?, description=?, acceptance_criteria=?, verification_criteria=?,
-        priority=?, lifecycle_state=?, main_agent_id=?, auto_title_enabled=?,
+        priority=?, lifecycle_state=?, main_agent_id=?, auto_title_enabled=?, coordination_enabled=?,
         execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1,
         updated_at=? WHERE id=?`,
       [
@@ -304,6 +311,7 @@ export class TaskRepository {
         has("lifecycleState") ? normalized.lifecycleState : current.lifecycle_state,
         has("mainAgentId") ? normalized.mainAgentId : current.main_agent_id,
         has("autoTitleEnabled") ? (normalized.autoTitleEnabled ? 1 : 0) : current.auto_title_enabled,
+        has("coordinationEnabled") ? (normalized.coordinationEnabled ? 1 : 0) : current.coordination_enabled,
         Object.prototype.hasOwnProperty.call(internalPatch, "executionStatus")
           ? internalPatch.executionStatus
           : (current.execution_status ?? "idle"),

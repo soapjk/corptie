@@ -74,6 +74,7 @@ const COMPATIBILITY = Object.freeze({
 });
 
 const EXAMPLE_OVERRIDES = Object.freeze({
+  corptie_task_dispatch: Object.freeze({ items: [{ action: "create", text: "Implement the scoped change and report the result.", idempotency_key: "dispatch:example", creation: { title: "Child_task", agent_id: "agent:example" } }] }),
   corptie_collaboration_tasks_create: Object.freeze({
     title:"Child_task",agent_id:"agent:example",parent_task_id:"task:example",
     expected_parent_resource_version:1,idempotency_key:"child:example"

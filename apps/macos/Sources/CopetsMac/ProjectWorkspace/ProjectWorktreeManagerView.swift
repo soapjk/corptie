@@ -220,7 +220,7 @@ struct ProjectWorktreeManagerView: View {
             ),
             presenting: pendingDeletionWarning
         ) { deletion in
-            Button(L10n("Continue to branch-name confirmation"), role: .destructive) {
+            Button(L10n("Continue to permanent deletion confirmation"), role: .destructive) {
                 pendingDeletionWarning = nil
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(140))
@@ -239,7 +239,7 @@ struct ProjectWorktreeManagerView: View {
         .sheet(item: $pendingDeletionConfirmation) { deletion in
             ForceDeleteWorktreeConfirmationView(
                 deletion: deletion,
-                onConfirm: { branchName in
+                onConfirm: {
                     backendClient.operateProjectWorktree(
                         deletion.worktree,
                         mergeIntoMain: false,
@@ -247,8 +247,7 @@ struct ProjectWorktreeManagerView: View {
                         deleteWorktree: true,
                         deleteSessions: deletion.deleteSessions,
                         restartService: deletion.restartService,
-                        forceDeleteUnmerged: true,
-                        confirmedBranchName: branchName
+                        forceDeleteUnmerged: true
                     )
                     pendingDeletionConfirmation = nil
                 },
