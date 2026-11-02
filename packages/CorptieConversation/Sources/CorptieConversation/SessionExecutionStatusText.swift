@@ -18,11 +18,10 @@ public struct SessionExecutionStatusText: View {
         if let tint { return tint }
         switch state {
         case .running:
-            return colorScheme == .dark
-                ? Color(red: 0.62, green: 0.82, blue: 0.66)
-                : Color(red: 0.08, green: 0.70, blue: 0.34)
-        case .blocked, .complete: return .orange
-        case .failed, .cancelled: return .red
+            return .blue
+        case .blocked: return .orange
+        case .failed: return .red
+        case .complete, .cancelled: return .secondary
         }
     }
 

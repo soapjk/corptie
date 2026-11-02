@@ -190,7 +190,8 @@ struct MainTabContentLayoutTests {
             + String(contentsOf: source.appendingPathComponent("Application/MainWindowRuntime.swift"), encoding: .utf8)
 
         #expect(contents.contains("let hostingView = MainWindowSurfaceContainer("))
-        #expect(contents.contains("rootView: FirstRunSetupRoot { MainWindowContentView() }.environmentObject(resizeState)"))
+        #expect(contents.contains("rootView: FirstRunSetupRoot { MainWindowContentView() }"))
+        #expect(contents.contains(".environmentObject(resizeState)"))
         #expect(!contents.contains("window.addTitlebarAccessoryViewController("))
         #expect(contents.contains("window.titlebarAppearsTransparent = true"))
         #expect(!contents.contains("chromeSurfaces: MainWindowChromeSurfaces("))

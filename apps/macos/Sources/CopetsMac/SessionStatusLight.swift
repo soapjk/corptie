@@ -1,14 +1,7 @@
 import SwiftUI
 
-/// 极简会话状态指示灯，替代列表中原先的复合头像（StatusHalo + AgentAvatar + ConnectionIndicatorLight）。
-///
-/// 三态映射：
-/// - running               → 绿色，缓慢呼吸（渐隐渐现）
-/// - failed / cancelled    → 红色（中断或出错）
-/// - blocked / complete    → 鲜艳橙色（空闲）
-///
-/// 设计目标：纯 SwiftUI 圆点，无离屏 ImageRenderer、无 CALayer 旋转、无磁盘图片加载，
-/// 避免大量会话行各自持有昂贵的离屏渲染与持续动画导致主线程/合成层压力。
+/// Execution state is distinct from connection readiness. Blue is active,
+/// orange awaits input, red failed, and neutral states no longer imply a warning.
 struct SessionStatusLight: View {
     let status: TaskStatus
     let diameter: CGFloat
@@ -36,11 +29,13 @@ struct SessionStatusLight: View {
     private var color: Color {
         switch status {
         case .running:
-            CorptiePalette.connected
-        case .failed, .cancelled:
+            .blue
+        case .failed:
             .red
-        case .blocked, .complete:
+        case .blocked:
             .orange
+        case .complete, .cancelled:
+            .secondary
         }
     }
 

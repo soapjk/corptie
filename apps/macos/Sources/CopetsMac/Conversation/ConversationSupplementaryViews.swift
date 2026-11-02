@@ -113,7 +113,7 @@ struct ChatUsageBar: View {
                     ConversationComposerUsageSlot {
                         SessionUsageItem(
                             icon: "text.alignleft",
-                            value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(window))",
+                            value: "\(L10n("Context used")) \(SessionUsagePolicy.percent(usedPercent))%",
                             progress: usedPercent / 100,
                             color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
                             numericValue: used
@@ -132,7 +132,7 @@ struct ChatUsageBar: View {
                         ConversationComposerUsageSlot {
                             SessionUsageItem(
                                 icon: "bolt.fill",
-                                value: "\(SessionUsagePolicy.percent(remainingPercent))%",
+                                value: "\(L10n("Quota remaining")) \(SessionUsagePolicy.percent(remainingPercent))%",
                                 progress: remainingPercent / 100,
                                 color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
                             )

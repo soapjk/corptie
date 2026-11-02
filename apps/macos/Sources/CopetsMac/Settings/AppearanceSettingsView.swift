@@ -3,8 +3,11 @@ import CorptieConversation
 
 struct AppearanceSettingsView: View {
     @ObservedObject private var controller = ConversationSkinController.shared
+    @AppStorage("ui.navigation.showLabels", store: CorptieAppEnvironment.userDefaults) private var showsNavigationLabels = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
+            Toggle(L10n("显示导航文字"), isOn: $showsNavigationLabels)
+                .help(L10n("展开左侧导航名称，也可右键导航栏切换。"))
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
                     Picker("界面风格", selection: Binding(get: { controller.skin }, set: { controller.select($0) })) {

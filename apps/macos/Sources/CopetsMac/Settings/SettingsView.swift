@@ -75,6 +75,7 @@ struct SettingsView: View {
     @AppStorage(SessionSwitchingPreferences.preferenceKey, store: CorptieAppEnvironment.userDefaults)
     private var acceleratedSessionSwitching = SessionSwitchingPreferences.launchEnabled
     @State private var selectedTab = SettingsTab.general
+    @State private var lastSavedAt: Date?
     @State private var archivedSessionPendingDeletion: TaskSession?
     @State private var dataRoot = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
@@ -118,6 +119,10 @@ struct SettingsView: View {
                     Divider()
                     HStack {
                         if let settingsError { Text(settingsError).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                        else if let lastSavedAt {
+                            Text("\(L10n("最近保存")) \(lastSavedAt.formatted(date: .omitted, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Spacer()
                         Button(L10n("Save")) {
                             Task { await saveAllSettings() }
@@ -648,6 +653,8 @@ struct SettingsView: View {
     }
 
     private func recordSavedSettings() {
+        lastSavedAt = Date()
+        settingsError = nil
         sessionCreationDraft = nil
         savedChoiceParser = choiceParser
         savedCodexBackend = codexBackend

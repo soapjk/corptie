@@ -1121,7 +1121,7 @@ final class WorktreeManagementClient: ObservableObject {
             let code = envelope?.code
             let message = code.flatMap {
                 ClientWorktreeBusyContext.failureMessage(code: $0, context: envelope?.busyContext, localize: L10n)
-            } ?? envelope?.error ?? "HTTP \(http.statusCode)"
+            } ?? envelope?.error ?? L10nFormat("本地服务暂时无法完成请求（HTTP %lld）。请刷新状态后再检查。", Int64(http.statusCode))
             throw WorktreeManagementClientError(
                 message: message,
                 code: code,

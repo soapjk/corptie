@@ -334,6 +334,19 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     var processSegmentIndex = 0
 
     let baseTurnId = displayTurnId ?? items.first?.timelineTurnID ?? ""
+    // Only correlated execution diagnostics belong together. A lone error,
+    // interaction, unknown event or unbound legacy item stays independently visible.
+    let diagnosticIDs = Set(items.filter { item in
+        guard !item.timelineTurnID.isEmpty,
+              item.timelineTurnID == items.first?.timelineTurnID,
+              item.presentationRole == nil else { return false }
+        if item.type == "error" { return true }
+        return ["system", "taskComplete"].contains(item.type)
+            && ["failed", "error"].contains(item.timelineTurnStatus.lowercased())
+    }.map(\.id))
+    func isProcessItem(_ item: Item) -> Bool {
+        isDetailProcessItem(item) || (diagnosticIDs.count > 1 && diagnosticIDs.contains(item.id))
+    }
     let turnStartedAt = userMessages.compactMap(\.createdAt).first
         ?? items.compactMap(\.createdAt).first
     let isTerminalTurn = items.contains(where: {
@@ -342,7 +355,7 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
             && isTerminalTurnStatus($0.timelineTurnStatus)
     })
     let turnEndedAt = items.reversed().compactMap(\.createdAt).first
-    let lastProcessIndex = items.lastIndex(where: { isDetailProcessItem($0) })
+    let lastProcessIndex = items.lastIndex(where: { isProcessItem($0) })
 
     func flushProcessBuffer(isLastInTurn: Bool) {
         guard !processBuffer.isEmpty else { return }
@@ -373,7 +386,7 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     }
 
     for (index, item) in items.enumerated() {
-        if isDetailProcessItem(item) {
+        if isProcessItem(item) {
             processBuffer.append(item)
         } else if item.type == "agentMessage" {
             if item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !item.timelineHasImages,

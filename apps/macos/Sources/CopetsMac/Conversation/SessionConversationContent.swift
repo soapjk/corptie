@@ -494,7 +494,7 @@ struct SessionConversationSurface: View {
             .background {
                 conversationChromeFrame(.viewport)
             }
-            .overlay(alignment: .top) {
+            .safeAreaInset(edge: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
                     if showsHeader {
                         conversationHeader

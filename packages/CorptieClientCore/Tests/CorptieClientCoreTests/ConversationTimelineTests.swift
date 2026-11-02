@@ -3,6 +3,42 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationTimelineTests {
+    @Test func correlatedFailuresShareOneDisclosureWithoutLosingDiagnostics() throws {
+        let items = try [message("u", "userMessage", status: "failed"),
+                         message("tool", "commandExecution", status: "failed"),
+                         message("retry", "error", status: "failed"),
+                         message("provider", "error", status: "failed"),
+                         message("summary", "taskComplete", status: "failed"),
+                         message("product", "system", status: "failed")]
+        let entries = ConversationTimeline.makeEntries(from: items)
+        #expect(entries.map(\.id) == ["message:u", "process:turn"])
+        guard case let .process(_, diagnostics) = entries.last?.kind else {
+            Issue.record("Missing failure disclosure"); return
+        }
+        #expect(diagnostics.map(\.id) == Array(items.dropFirst()).map(\.id))
+        #expect(ConversationProcessPresentation.state(for: diagnostics) == .failed)
+        #expect(items.allSatisfy { $0.processStartedAt == nil }, "Source events are immutable")
+    }
+
+    @Test func errorsFromDifferentTurnsAndLegacyUnboundErrorsAreNotMerged() throws {
+        let items = try [message("first", "error", turn: "first", status: "failed"),
+                         message("second", "error", turn: "second", status: "failed"),
+                         message("unbound1", "error", turn: nil, status: "failed"),
+                         message("unbound2", "error", turn: nil, status: "failed")]
+        #expect(ConversationTimeline.makeEntries(from: items).map(\.id) == items.map { "message:\($0.id)" })
+    }
+
+    @Test func recoveredRetryDiagnosticsDoNotOverrideTheSuccessfulTurn() throws {
+        let items = try [message("retry1", "error", status: "completed"),
+                         message("retry2", "error", status: "completed"),
+                         message("answer", "agentMessage", role: "final_answer", status: "completed")]
+        let entries = ConversationTimeline.makeEntries(from: items)
+        #expect(entries.map(\.id) == ["process:turn", "message:answer"])
+        guard case let .process(_, diagnostics) = entries.first?.kind else {
+            Issue.record("Missing retry disclosure"); return
+        }
+        #expect(ConversationProcessPresentation.state(for: diagnostics) == .completed)
+    }
     @Test func materializedToolImageStaysInExecution() throws {
         let data = Data(#"{"id":"image","turnId":"turn","type":"imageView","text":"/tmp/original.png","images":[{"managedPath":"chat-resources/test/image.png"}]}"#.utf8)
         let item = try JSONDecoder().decode(ClientMessage.self, from: data)

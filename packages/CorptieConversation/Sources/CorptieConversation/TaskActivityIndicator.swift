@@ -16,8 +16,7 @@ public struct TaskActivityIndicator: View {
     private var color: Color {
         switch activity.indicatorTone(lifecycleState: lifecycleState) {
         case .connected:
-            colorScheme == .dark ? Color(red: 0.62, green: 0.82, blue: 0.66)
-                : Color(red: 0.08, green: 0.70, blue: 0.34)
+            .blue
         case .green: .green
         case .orange: .orange
         case .red: .red
@@ -26,7 +25,20 @@ public struct TaskActivityIndicator: View {
     }
 
     public var body: some View {
-        Circle().fill(color).frame(width: 7, height: 7)
+        Image(systemName: symbol).font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color).frame(width: 12, height: 12)
             .accessibilityLabel(label)
+            .help(label)
+    }
+
+    private var symbol: String {
+        switch activity {
+        case .processing: "arrow.triangle.2.circlepath"
+        case .waitingForInput, .paused: "pause.circle.fill"
+        case .failed: "exclamationmark.circle.fill"
+        case .interrupted: "stop.circle"
+        case .idle: "checkmark.circle"
+        case .noSession, .unknown: "circle.dashed"
+        }
     }
 }

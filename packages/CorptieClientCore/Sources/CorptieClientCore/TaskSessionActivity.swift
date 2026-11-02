@@ -38,8 +38,9 @@ public enum TaskSessionActivity: String, Equatable, Sendable, CaseIterable {
     public func indicatorTone(lifecycleState: String = "") -> IndicatorTone {
         switch self {
         case .processing: return .connected
-        case .waitingForInput, .paused, .idle: return .orange
-        case .interrupted, .failed: return .red
+        case .waitingForInput, .paused: return .orange
+        case .failed: return .red
+        case .idle, .interrupted: return .secondary
         case .noSession, .unknown:
             switch lifecycleState.lowercased() {
             case "completed", "complete": return .green

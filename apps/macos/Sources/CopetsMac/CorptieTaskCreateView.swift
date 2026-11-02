@@ -73,6 +73,8 @@ struct CorptieTaskCreateView: View {
     @State private var defaultReasoningLevel: String?
     @State private var creationId = "task:\(UUID().uuidString.lowercased())"
     @State private var submissionError: String?
+    @State private var isSubmitting = false
+    @State private var showsAdvanced = false
     @State private var taskDefaults = TaskCreationDefaults()
     @State private var defaultsLoaded = false
     @State private var parentTaskId: String?
@@ -88,99 +90,82 @@ struct CorptieTaskCreateView: View {
     }
 
     var body: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(L10n("新建 Task"))
-                .font(.title3.bold())
-
-            FormAssistPanel(
-                formType: .task,
-                promptHint: L10n("例如：重构三个创建页，共享一键生成协议和错误处理，并补充测试。"),
-                currentValues: {
-                    [
-                        "title": title,
-                        "description": detail,
-                        "acceptanceCriteria": acceptanceCriteria,
-                        "priority": priority
-                    ]
-                },
-                onApply: applyGeneratedFields
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("标题 *"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField(L10n("Task 标题"), text: $title)
-                EntityNameValidationMessage(value: title)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("描述 *"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $detail)
-                    .font(.body)
-                    .frame(height: 70)
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("验收标准"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $acceptanceCriteria)
-                    .font(.body)
-                    .frame(height: 70)
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            }
-
-            workSection
-            if !parentChoices.isEmpty {
-                Picker(L10n("父任务"),selection:$parentTaskId) {
-                    Text(L10n("独立 Task")).tag(String?.none)
-                    ForEach(parentChoices) { Text($0.title).tag(Optional($0.id)) }
-                }
-            }
-
-            agentSection
-
-            providerSection
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("优先级"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("", selection: $priority) {
-                    Text(L10n("低")).tag("low")
-                    Text(L10n("中")).tag("medium")
-                    Text(L10n("高")).tag("high")
-                }
-                .labelsHidden()
-                .frame(maxWidth: 160, alignment: .leading)
-            }
-
-            if let submissionError {
-                Label(submissionError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
-
+        VStack(spacing: 0) {
             HStack {
+                Text(L10n("新建 Task")).font(.title3.bold())
                 Spacer()
-                Button(L10n("取消")) { dismiss() }
-                Button(L10n("创建")) {
-                    submit()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit || selectedProviderId.isEmpty || modelLoading)
+            }.padding(20)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    FormAssistPanel(
+                        formType: .task,
+                        promptHint: L10n("例如：重构三个创建页，共享一键生成协议和错误处理，并补充测试。"),
+                        currentValues: {
+                            ["title": title, "description": detail,
+                             "acceptanceCriteria": acceptanceCriteria, "priority": priority]
+                        }, onApply: applyGeneratedFields)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n("标题 *")).font(.caption).foregroundStyle(.secondary)
+                        TextField(L10n("Task 标题"), text: $title)
+                        EntityNameValidationMessage(value: title)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n("描述 *")).font(.caption).foregroundStyle(.secondary)
+                        TextEditor(text: $detail).font(.body).frame(height: 90).padding(6)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    workSection
+                    agentSection
+                    if let parentTaskId, let parent = parentChoices.first(where: { $0.id == parentTaskId }) {
+                        Label(parent.title, systemImage: "arrow.turn.down.right").font(.callout)
+                    }
+                    DisclosureGroup(L10n("验收标准")) {
+                        TextEditor(text: $acceptanceCriteria).font(.body).frame(height: 70).padding(6)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    DisclosureGroup(L10n("执行配置与更多选项"), isExpanded: $showsAdvanced) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            providerSection
+                            if !parentChoices.isEmpty {
+                                Picker(L10n("父任务"), selection: $parentTaskId) {
+                                    Text(L10n("独立 Task")).tag(String?.none)
+                                    ForEach(parentChoices) { Text($0.title).tag(Optional($0.id)) }
+                                }
+                            }
+                            Picker(L10n("优先级"), selection: $priority) {
+                                Text(L10n("低")).tag("low")
+                                Text(L10n("中")).tag("medium")
+                                Text(L10n("高")).tag("high")
+                            }
+                        }.padding(.top, 10)
+                    }
+                    if !showsAdvanced {
+                        Text("\(L10n("执行配置"))：\(selectedProvider?.displayName ?? L10n(defaultsLoaded ? "无可用执行引擎，请检查设置" : "加载中…")) · \(selectedModelId.isEmpty ? L10n("默认模型") : selectedModelId)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(20).disabled(isSubmitting)
             }
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                if let submissionError {
+                    Label(submissionError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    if isSubmitting { ProgressView().controlSize(.small) }
+                    Spacer()
+                    Button(L10n("取消")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(isSubmitting)
+                    Button(L10n(isSubmitting ? "正在创建…" : "创建并启动")) { submit() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(isSubmitting || !defaultsLoaded || selectedProviderId.isEmpty || modelLoading)
+                }
+            }.padding(16)
         }
-        .padding(20)
-        }
-        .frame(width: 500)
-        .frame(maxHeight: 740)
+        .frame(width: 520)
+        .frame(minHeight: 420, idealHeight: 660, maxHeight: 740)
+        .interactiveDismissDisabled(isSubmitting)
         .task {
             async let roles: Void = client.refreshRoles()
             async let works: Void = client.refreshWorks()
@@ -258,7 +243,7 @@ struct CorptieTaskCreateView: View {
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if availableWorks.isEmpty {
+            if defaultsLoaded && availableWorks.isEmpty {
                 Text(L10n("当前没有可用的 Work。"))
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -281,12 +266,8 @@ struct CorptieTaskCreateView: View {
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if availableAgents.isEmpty {
-                Text(L10n("当前 Work 没有可用的 Independent Contributor 角色。"))
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            } else if selectedRoleId == nil {
-                Text(L10n("请选择负责该 CorptieTask 的角色。"))
+            if defaultsLoaded && selectedWorkId != nil && availableAgents.isEmpty {
+                Text(L10n("当前 Work 没有可用角色，请先在 Work 详情中添加角色。"))
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -424,6 +405,11 @@ struct CorptieTaskCreateView: View {
     }
 
     private func submit() {
+        guard !isSubmitting else { return }
+        guard canSubmit else {
+            submissionError = validationMessage ?? L10n("执行配置尚未就绪，请检查后重试。")
+            return
+        }
         guard validationMessage == nil,
               let selectedWorkId,
               let selectedRoleId else {
@@ -450,10 +436,14 @@ struct CorptieTaskCreateView: View {
         let providerId = selectedProviderId
         let model = modelProviderId == providerId ? selectedModelId : ""
         let reasoningLevel = modelProviderId == providerId ? selectedReasoningLevel : ""
-        let started = BackgroundTaskCenter.shared.start(
-            id: requestId,
-            title: L10nFormat("创建 CorptieTask：%@", requestTitle)
-        ) {
+        // Keep the existing app-wide operation ownership and stable request ID,
+        // while retaining this sheet until success so a failure keeps its draft.
+        BackgroundTaskCenter.shared.dismiss(id: requestId)
+        isSubmitting = true
+        let started = BackgroundTaskCenter.shared.start(id: requestId,
+            title: L10nFormat("创建 CorptieTask：%@", requestTitle)) {
+            isSubmitting = true
+            defer { isSubmitting = false }
             let created = await PerfStopwatch.measure("CorptieTask.create.request") {
                 await client.createCorptieTask(
                     id: requestId,
@@ -470,13 +460,15 @@ struct CorptieTaskCreateView: View {
                 )
             }
             guard let task = created else {
-                return .failure(client.errorMessage ?? L10n("CorptieTask 创建失败，可重试。"))
+                submissionError = client.errorMessage ?? L10n("CorptieTask 创建失败，可重试。")
+                return .failure(submissionError ?? L10n("CorptieTask 创建失败，可重试。"))
             }
 
             onCreated(task)
+            dismiss()
             return .success(L10nFormat("CorptieTask“%@”已创建。发送第一条消息后开始执行。", requestTitle))
         }
-        if started { dismiss() }
+        if !started { isSubmitting = false }
     }
 
     private var trimmedTitle: String {

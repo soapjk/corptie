@@ -8,7 +8,15 @@ final class SceneAPIClient: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
-    private let baseURL = CorptieAppEnvironment.backendBaseURL
+    private let baseURL: URL
+    private let session: URLSession
+    private var sceneLoadGeneration = 0
+    private var recordsOwnerSceneID: String?
+
+    init(baseURL: URL = CorptieAppEnvironment.backendBaseURL, session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.session = session
+    }
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -33,17 +41,22 @@ final class SceneAPIClient: ObservableObject {
     }
 
     func loadScene(_ scene: SceneInstance) async {
+        sceneLoadGeneration += 1
+        let generation = sceneLoadGeneration
+        if recordsOwnerSceneID != scene.id { records = [] }
         isLoading = true
-        defer { isLoading = false }
+        defer { if generation == sceneLoadGeneration { isLoading = false } }
         do {
             let viewID = scene.templateId == "daily-checklist" ? "checklist" : "measurements"
             let data = try await request(path: "scenes/\(encoded(scene.instanceId))/views/\(viewID)")
             let response = try decoder.decode(SceneViewResponse.self, from: data)
+            guard generation == sceneLoadGeneration else { return }
             records = response.records
+            recordsOwnerSceneID = scene.id
             updateScene(response.scene)
             errorMessage = nil
         } catch {
-            records = []
+            guard generation == sceneLoadGeneration else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -144,7 +157,7 @@ final class SceneAPIClient: ObservableObject {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
             let envelope = try? decoder.decode(SceneErrorEnvelope.self, from: data)
             throw SceneClientError(message: envelope?.error ?? "场景请求失败")

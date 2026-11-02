@@ -8,6 +8,7 @@ enum MainNavigationRailLayout {
 /// A lightweight navigation column. Page hosts remain resident beside it.
 struct MainWindowNavigationRail: View {
     @Binding var selection: AppTab
+    @AppStorage("ui.navigation.showLabels", store: CorptieAppEnvironment.userDefaults) private var showsLabels = false
 
     var body: some View {
         PlatformNavigationRail(
@@ -17,7 +18,7 @@ struct MainWindowNavigationRail: View {
                                        accessibilityID: "main-tab.\($0.rawValue)")
             },
             selectedID: selection.rawValue,
-            expanded: false,
+            expanded: showsLabels,
             settingsSelected: selection == .settings,
             settingsTitle: L10n("设置"),
             settingsAccessibilityID: "main-window.settings",
@@ -32,6 +33,9 @@ struct MainWindowNavigationRail: View {
         .frame(maxHeight: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("navigation-rail")
+        .contextMenu {
+            Toggle(L10n("显示导航文字"), isOn: $showsLabels)
+        }
     }
 
 }

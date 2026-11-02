@@ -43,7 +43,7 @@ struct UnifiedConsoleView: View {
     @State var pendingSelectionTask: Task<Void, Never>?
     @State private var navigationSelection = ConsoleNavigationSelectionState()
     @State private var pagePresentation = SessionPagePresentationState()
-    @State private var showsDetailColumn = true
+    @AppStorage("ui.conversation.showDetails", store: CorptieAppEnvironment.userDefaults) private var showsDetailColumn = false
     var selectedCategory: SessionCategory {
         get { navigationSelection.category }
         nonmutating set { if navigationSelection.category != newValue { navigationSelection.category = newValue } }
@@ -1195,7 +1195,7 @@ struct UnifiedConsoleView: View {
            SessionCategory(session: session) == selectedCategory,
            navigationMode == .taskCards || selectedCategory != .worker
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
-            HStack(spacing: 0) {
+            AdaptiveConversationColumns(isVisible: $showsDetailColumn) {
                 // All navigation modes share the full conversation surface.
                 // Keep details present without replacing the editor or timeline.
                 VStack(spacing: 6) {
@@ -1212,7 +1212,7 @@ struct UnifiedConsoleView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
                 .modifier(ConversationColumnSurface(.transcript))
-
+            } detail: {
                 Group {
                 if Self.usesResidentDetailHosts {
                     SessionDetailHostSwitcher(session: session,
@@ -1228,10 +1228,8 @@ struct UnifiedConsoleView: View {
                         .frame(maxHeight: .infinity)
                 }
                 }
-                .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
-            .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
             .environment(\.detailColumnVisibility, $showsDetailColumn)
         } else if let task = selectedTask {
             HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
