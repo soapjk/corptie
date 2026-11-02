@@ -148,6 +148,11 @@ private struct PlatformWorkOutlineToolbarControlModifier: ViewModifier {
 }
 
 public extension View {
+    /// Applies native window-chrome sizing to a custom toolbar composition.
+    func platformWorkOutlineToolbarDensity(_ density: PlatformWorkOutlineToolbarDensity) -> some View {
+        environment(\.workOutlineToolbarDensity, density)
+    }
+
     func platformWorkOutlineToolbarControl() -> some View {
         modifier(PlatformWorkOutlineToolbarControlModifier())
     }

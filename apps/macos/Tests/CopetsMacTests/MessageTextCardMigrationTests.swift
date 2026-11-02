@@ -23,7 +23,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         for width: CGFloat in [320, 800] {
             let measured = NativeTimelineLayoutCache.shared.layout(for: user, columnWidth: width)
             let agent = NativeTimelineLayoutCache.shared.layout(for: reply, columnWidth: width)
-            XCTAssertEqual(agent.cardWidth, width - 4)
+            XCTAssertEqual(ReplyLeadingLayout.cardLeading(for: reply, skin: .classic) + agent.cardWidth, width - 2)
             XCTAssertEqual(measured.cardWidth, min(width - 4, 640))
             XCTAssertEqual(measured.cardHeight, MessageCardMetrics.maximumUserCardHeight)
             XCTAssertEqual(measured.rowHeight, measured.cardHeight + 2)
@@ -157,7 +157,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             XCTAssertEqual(cell.frame, frame)
             XCTAssertEqual(cell.contentConfigurationCount, configured)
             XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
-            let expected = skin == .classic ? CGFloat(11) : 16
+            let expected = skin == .classic ? CGFloat(11) : 14
             XCTAssertEqual((text.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, expected)
             let measured = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480,
                 typography: skin.typography(for: .assistant))
@@ -227,7 +227,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         model.timeSeparatorText = "今天"
         let dated = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
         XCTAssertEqual(dated.cardHeight, scheduled.cardHeight)
-        XCTAssertEqual(dated.rowHeight, scheduled.rowHeight + 28)
+        XCTAssertEqual(dated.rowHeight, scheduled.rowHeight) // Timeline date separators are suppressed in both skins.
     }
 
     func testRenderedSharedTextHasSymmetricTopAndBottomInsets() throws {

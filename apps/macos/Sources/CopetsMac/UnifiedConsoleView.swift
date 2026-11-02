@@ -86,6 +86,7 @@ struct UnifiedConsoleView: View {
     @EnvironmentObject var sidebarState: TabSidebarState
     /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
     @State var showNewSessionCreation = false
+    @State private var showsCreationMenu = false
     @State var isCreatingWork = false
     struct TaskCreationTarget: Identifiable {
         let id = UUID()
@@ -141,6 +142,7 @@ struct UnifiedConsoleView: View {
     var body: some View {
         ConsoleWindowSplitView(mode: navigationMode, isActive: sidebarState.isSelected) {
             consoleNavigationContent
+                .background(WorkbenchStyle.sidebarColor)
                 .ignoresSafeArea(.container, edges: .top)
                 .environmentObject(router)
                 .environmentObject(sidebarState)
@@ -354,16 +356,24 @@ struct UnifiedConsoleView: View {
     }
 
 
-    @ViewBuilder
     var consoleNavigationContent: some View {
-        if isSearching, !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            VStack(spacing: 8) {
-                sessionSearchBar.padding(.horizontal, 8)
+        VStack(spacing: 0) {
+            // Keep one search field mounted as the query gains/loses results.
+            // Replacing the field here would lose focus and marked input.
+            if isSearching {
+                sessionSearchBar.padding(.horizontal, 16).padding(.bottom, 8)
+            }
+            if isSearching, !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 UnifiedSearchResultsView(query: searchText, currentWorkID: selectedWorkId,
                                          submitRevision: searchSubmitRevision, open: openSearchHit)
-            }.frame(maxHeight: .infinity)
-        } else {
-            normalConsoleNavigationContent
+                    .frame(maxHeight: .infinity)
+            } else {
+                normalConsoleNavigationContent
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { consoleSidebarHeader }
+        .sheet(isPresented: $showNewSessionCreation) {
+            NewSessionCreationSheet(fixedKind: .assistantChat)
         }
     }
 
@@ -382,16 +392,31 @@ struct UnifiedConsoleView: View {
         }
         .frame(maxHeight: .infinity)
         .modifier(ConsoleTopEdgeEffectModifier())
-        .safeAreaInset(edge: .top, spacing: 0) {
-            PlatformWorkOutlineToolbar(density: .titlebar) {
-                outlineSortMenu
-                navigationModeToggle.labelsHidden()
+    }
+
+    private var consoleSidebarHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Text("Corptie")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer(minLength: 8)
                 searchToggleButton
-                taskArchiveToggle
-            } trailing: {
-                outlineCreationMenu
+                Menu {
+                    outlineSortMenu
+                    navigationModeToggle
+                    taskArchiveToggle
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 28, height: 28)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .fixedSize().help(L10n("更多选项"))
             }
+            outlineCreationMenu
         }
+        .platformWorkOutlineToolbarDensity(.titlebar)
+        .padding(.horizontal, 16)
+        .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 10)
+        .padding(.bottom, 14)
     }
 
     var navigationMode: ConsoleNavigationMode {
@@ -463,7 +488,6 @@ struct UnifiedConsoleView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10).padding(.top, 10)
             }
-            if isSearching { sessionSearchBar.padding(.horizontal, 10) }
             ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
                 sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId,
                 selectedSessionID: selectionController.presentationSessionID, query: searchText,
@@ -816,7 +840,7 @@ struct UnifiedConsoleView: View {
     var sessionSearchBar: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 12, weight: .medium))
+                .font(WorkbenchTypography.font(for: .navigationHeading))
                 .foregroundStyle(.secondary)
             TextField(L10n("Search Work, Task and chat history"), text: $searchText)
                 .textFieldStyle(.plain)
@@ -831,7 +855,7 @@ struct UnifiedConsoleView: View {
                 isSearchFieldFocused = false
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(WorkbenchTypography.font(for: .navigationHeading))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -912,29 +936,54 @@ struct UnifiedConsoleView: View {
     }
 
     var outlineCreationMenu: some View {
-        Menu {
-            if selectedWork == nil {
-                Button(L10n("New Assistant Session"), systemImage: "bubble.left.and.bubble.right") {
+        Button { showsCreationMenu.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus").font(.system(size: 13))
+                Text(L10n("Create")).font(WorkbenchTypography.font(for: .navigation))
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(L10n("Create Task, Work, or chat"))
+        .accessibilityLabel(L10n("Create Task, Work, or chat"))
+        .accessibilityIdentifier("work-outline-create")
+        .popover(isPresented: $showsCreationMenu, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                creationMenuItem("New Task", symbol: "checklist") {
+                    presentTaskCreation(for: selectedWorkId)
+                }
+                creationMenuItem("New Work", symbol: "folder.badge.plus") {
+                    isCreatingWork = true
+                }
+                Divider().padding(.vertical, 3)
+                creationMenuItem("New Chat", symbol: "square.and.pencil") {
                     showNewSessionCreation = true
                 }
             }
-            Button(L10n("New Task"), systemImage: "checklist") {
-                presentTaskCreation(for: selectedWorkId)
-            }
-
-            Divider()
-
-            Button(L10n("New Work"), systemImage: "scope") {
-                isCreatingWork = true
-            }
-        } label: {
-            PlatformWorkOutlineToolbarGlyph(symbol: "plus")
+            .padding(6)
+            .frame(width: 220)
         }
-        .platformWorkOutlineToolbarControl()
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(L10n("Create"))
-        .accessibilityLabel("新增 Work 或 Task").accessibilityIdentifier("work-outline-create")
+    }
+
+    private func creationMenuItem(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button {
+            showsCreationMenu = false
+            DispatchQueue.main.async { action() }
+        } label: {
+            Label(L10n(title), systemImage: symbol)
+                .font(WorkbenchTypography.font(for: .navigation))
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .padding(.horizontal, 10)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     func presentTaskCreation(for workID: String?) {

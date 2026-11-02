@@ -5,12 +5,6 @@ import SwiftUI
 extension UnifiedConsoleView {
     var unifiedTaskSidebar: some View {
         VStack(spacing: 0) {
-            if isSearching {
-                sessionSearchBar
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
-            }
-
             if let work = selectedWork {
                 workTaskList(work)
             } else {
@@ -24,19 +18,10 @@ extension UnifiedConsoleView {
                 archivedWorkerPaginationBar
             }
         }
-        .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet(fixedKind: .assistantChat)
-        }
     }
 
     var unifiedWorkOutlineSidebar: some View {
         VStack(spacing: 0) {
-            if isSearching {
-                sessionSearchBar
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
-            }
-
             workOutlineList
 
             if isShowingWorkerArchive,
@@ -45,9 +30,6 @@ extension UnifiedConsoleView {
                 || backendClient.archivedSessionsLoadError != nil {
                 archivedWorkerPaginationBar
             }
-        }
-        .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet(fixedKind: .assistantChat)
         }
     }
 
@@ -84,6 +66,14 @@ extension UnifiedConsoleView {
                 }
                 .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
                 .consoleWorkOutlineGroupCard()
+
+                Text(L10n("Projects"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 20)
+                    .padding(.bottom, 4)
+                    .accessibilityAddTraits(.isHeader)
 
                 ForEach(orderedOutlineWorks, id: \.id) { (work: Work) in
                     let workRows = workRowsByWorkID[work.id] ?? .empty
@@ -169,19 +159,14 @@ extension UnifiedConsoleView {
     func outlineChatHeader(hasUnread: Bool) -> some View {
         ConsoleAssistantExpansionScope(preferences: outlineExpansionPreferences,
             forceExpanded: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { isExpanded in
-        HoverRevealHeaderAction(
-            accessibilityLabel: L10n("New Assistant Session"),
-            action: { showNewSessionCreation = true }
-        ) {
             Button {
                 let expanded = outlineAssistantExpandedBinding
                 expanded.wrappedValue = !expanded.wrappedValue
             } label: {
                 HStack(spacing: 7) {
-                    ChatGroupIcon()
                     Text(L10n("Chat"))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     if hasUnread {
@@ -197,7 +182,6 @@ extension UnifiedConsoleView {
             .buttonStyle(SessionSelectionPressStyle())
             .accessibilityLabel(L10n("Chat"))
             .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
-        }
         }
     }
 
@@ -226,7 +210,7 @@ extension UnifiedConsoleView {
 
     func outlineChildSelectionBackground(_ isSelected: Bool) -> some View {
         RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+            .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)
             .padding(.horizontal, 8)
     }
 
@@ -291,6 +275,15 @@ extension UnifiedConsoleView {
 
     @ViewBuilder
     func workContextMenuContent(for work: Work) -> some View {
+        Button(L10n("Open Work Chat"), systemImage: "bubble.left") {
+            guard let session = workChatSession(for: work.id) else { return }
+            openWorkChat(for: work, session: session)
+        }
+        .disabled(workChatSession(for: work.id) == nil)
+        Button(L10nFormat("Create Task in %@", work.name), systemImage: "plus") {
+            presentTaskCreation(for: work.id)
+        }
+        Divider()
         Button(L10n("编辑"), systemImage: "square.and.pencil") {
             workPendingEdit = work
         }

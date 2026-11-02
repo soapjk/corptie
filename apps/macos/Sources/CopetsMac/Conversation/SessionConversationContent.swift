@@ -529,11 +529,11 @@ struct SessionConversationSurface: View {
                         sessionReadinessNotice
                         sessionComposer
                     }
-                    .padding(.bottom, 4)
+                    .padding(.bottom, compactComposer ? 4 : 16)
                     .background { conversationChromeFrame(.composer) }
                 }
-                .frame(maxWidth: compactComposer ? .infinity : 720)
-                .padding(.horizontal, compactComposer ? 0 : 24)
+                .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
+                .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
                 .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)
                 .padding(.top, showsWelcome ? headerClearance : 0)
             }

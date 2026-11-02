@@ -75,7 +75,6 @@ struct MessageComposer: View {
 }
 
 struct SessionMessageComposerSurface: View {
-    private static let sendControlEdge = ComposerShellMetrics.actionVisualEdge
 
     private let modelCatalog: ProviderCatalogStore
     private let backendClient: BackendClient
@@ -116,6 +115,8 @@ struct SessionMessageComposerSurface: View {
     @State private var mentionSelectionIndex = 0
     @State private var selectedMentions: [ConversationMention] = []
     @State private var quickMessageRefresh = 0
+    @State private var showsQuickMessages = false
+    @State private var showsUsage = false
 
     init(
         sessionId: String,
@@ -160,7 +161,7 @@ struct SessionMessageComposerSurface: View {
 
     private var composerLayout: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !compact {
+            if !compact && showsQuickMessages {
                 MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
                     taskID: session?.taskId, online: online, refreshRevision: renderInputs?.quickMessageRevision ?? quickMessageRefresh,
                     enabled: canSend && !sendingMessage && session?.archived != true,
@@ -322,9 +323,20 @@ struct SessionMessageComposerSurface: View {
         ComposerEditorRowLayout(minimumEditorWidth: 100) {
             HStack(spacing: 6) {
                 moreMenu
-                statusRow
-                    .lineLimit(1)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                Button { showsUsage.toggle() } label: {
+                    Image(systemName: "chart.pie")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help(L10n("会话状态与用量"))
+                .accessibilityLabel(L10n("会话状态与用量"))
+                .popover(isPresented: $showsUsage) { statusRow.padding(16).fixedSize() }
+                if let status, status == .running || status == .failed {
+                    SessionExecutionStatusText(state: status.sharedExecutionState).lineLimit(1)
+                }
+                Spacer(minLength: 0)
             }
             HStack(spacing: 6) {
                 if allowsModelSwitch && canSwitchModel { modelMenu }
@@ -381,17 +393,17 @@ struct SessionMessageComposerSurface: View {
 
     private var sendButton: some View {
         Button { sendCurrentDraft() } label: {
-            ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
-                                isBusy: sendingMessage || isImportingImages, showsSurface: false)
-                .frame(width: Self.sendControlEdge, height: Self.sendControlEdge)
-                .clipped()
-                .overlay {
-                    Circle().strokeBorder(ComposerPalette.softBlue.opacity(0.4), lineWidth: 1)
-                        .allowsHitTesting(false)
+            Group {
+                if sendingMessage || isImportingImages {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .semibold))
                 }
-                .conversationGlassControl(tint: ComposerPalette.softBlue)
-                .frame(width: ComposerShellMetrics.actionHitEdge,
-                       height: ComposerShellMetrics.actionHitEdge)
+            }
+            .foregroundStyle(isSendDisabled ? Color.secondary : Color.white)
+            .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
+            .background(isSendDisabled ? Color.primary.opacity(0.06) : Color.accentColor, in: Circle())
                 .contentShape(Circle().inset(by: compact ? 0 : -8))
         }
         .buttonStyle(.plain)
@@ -403,6 +415,10 @@ struct SessionMessageComposerSurface: View {
 
     private var moreMenu: some View {
         Menu {
+            if !compact {
+                Toggle(L10n("显示快捷指令"), isOn: $showsQuickMessages)
+                Divider()
+            }
             Button {
                 guard allowsActions else { return }
                 isShowingPhotoPicker = true
@@ -424,7 +440,7 @@ struct SessionMessageComposerSurface: View {
             }
             .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
         } label: {
-            ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
+            ComposerActionGlyph(systemName: "plus", tint: ComposerPalette.secondaryText,
                                 weight: .semibold, showsSurface: false)
                 .contentShape(Circle().inset(by: compact ? 0 : -8))
         }

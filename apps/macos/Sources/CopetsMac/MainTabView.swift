@@ -100,6 +100,9 @@ enum AppTab: String, CaseIterable, Identifiable {
     case settings
 
     var id: String { rawValue }
+    var navigationAccessibilityIdentifier: String {
+        self == .settings ? "main-window.settings" : "main-tab.\(rawValue)"
+    }
 
     var extendsUnderTransparentTitlebar: Bool {
         self == .console || self == .worktrees
@@ -437,9 +440,11 @@ struct MainWindowContentView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .background {
-            LocalWallpaperCanvas(fallbackColor: selectionState.selectedTab == .console
-                ? WorkbenchCanvasSurface.defaultColor
-                : Color(nsColor: .windowBackgroundColor))
+            if selectionState.selectedTab == .console {
+                WorkbenchStyle.canvas
+            } else {
+                LocalWallpaperCanvas(fallbackColor: Color(nsColor: .windowBackgroundColor))
+            }
         }
         .overlay(alignment: .topTrailing) {
             MainWindowTaskSurfaceView()

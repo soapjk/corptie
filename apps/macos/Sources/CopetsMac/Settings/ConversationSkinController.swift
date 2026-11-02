@@ -10,7 +10,7 @@ final class ConversationSkinController: ObservableObject {
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
-        skin = defaults.string(forKey: Self.preferenceKey).flatMap(ConversationSkin.init(rawValue:)) ?? .classic
+        skin = defaults.string(forKey: Self.preferenceKey).flatMap(ConversationSkin.init(rawValue:)) ?? .codexFlat
     }
 
     func select(_ next: ConversationSkin) {
@@ -19,7 +19,7 @@ final class ConversationSkinController: ObservableObject {
         skin = next
     }
 
-    func restoreDefault() { select(.classic) }
+    func restoreDefault() { select(.codexFlat) }
 }
 
 /// Applied at independent hosting roots, not on each message or streaming update.
