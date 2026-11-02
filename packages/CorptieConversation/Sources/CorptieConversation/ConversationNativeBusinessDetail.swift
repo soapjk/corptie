@@ -267,6 +267,11 @@ private struct NativeBusinessCard: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             NativeBusinessSummary(summary: value.summary)
+            if value.parentTaskId == nil, let action = command("task.coordination.update", target: value.taskId) {
+                ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false, dispatches: value.coordinationDispatches ?? []) { enabled in
+                    perform(action, ["coordinationEnabled": .bool(enabled)])
+                }.disabled(!action.available)
+            }
             NativeBusinessTextSection(title: "描述", text: value.description)
             NativeBusinessTextSection(title: "验收标准", text: value.acceptanceCriteria)
             NativeBusinessTextSection(title: "验证标准", text: value.verificationCriteria)

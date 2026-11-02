@@ -3,7 +3,7 @@ export function scheduleBackendStartupMaintenance({
   knownActiveWorktrees, worktreeIntegrationJobService, reconcileEntityTasksAtStartup,
   reconcileWorkChatsAtStartup, scheduledSessionTaskService, runtimeActivity,
   tickAgentWorkQueue, emitEvent, artifactService, feishuGateway,
-  skillRegistryService, legacySessionHistoryRepairService, childTaskDeliveryService
+  skillRegistryService, legacySessionHistoryRepairService, childTaskDeliveryService, taskCoordinationService
 }) {
   // Store-backed APIs and state streams are the Backend readiness boundary.
   // Provider runtimes, recovery, and route verification are optional
@@ -15,6 +15,7 @@ export function scheduleBackendStartupMaintenance({
       console.warn(`[startup-interruption-reconcile] ${JSON.stringify(reconciled)}`);
     }
     const recoveredTaskDeletions = taskDeletionService.recoverInterruptedDeletions();
+    taskCoordinationService?.recover();
     if (recoveredTaskDeletions > 0) {
       console.warn(`[task-deletion-recovery] ${JSON.stringify({ recoveredTaskDeletions })}`);
     }

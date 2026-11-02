@@ -101,10 +101,6 @@ public enum TaskDeletionConfirmationPolicy {
             ["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN", "NOT_DELIVERED_TO_PARENT"].contains($0)
         }
     }
-
-    public static func confirmsBranch(_ entered: String, expected: String?) -> Bool {
-        expected?.isEmpty == false && entered == expected
-    }
 }
 
 public struct ClientWorkManagement: Decodable, Sendable {
@@ -146,6 +142,7 @@ public struct ClientTaskUpdate: Codable, Sendable, Equatable {
     public let requestId: String
     public var title: String?
     public var autoTitleEnabled: Bool?
+    public var coordinationEnabled: Bool?
     public var description: String?
     public var acceptanceCriteria: String?
     public var verificationCriteria: String?
@@ -157,6 +154,7 @@ public struct ClientTaskUpdate: Codable, Sendable, Equatable {
         case requestId
         case title
         case autoTitleEnabled
+        case coordinationEnabled
         case description
         case acceptanceCriteria
         case verificationCriteria
@@ -177,7 +175,6 @@ public struct ClientTaskDeletion: Codable, Sendable, Equatable {
     /// `delete`, `work` or `retain`.
     public var artifactDisposition = "delete"
     public var acknowledgeDataLoss: Bool?
-    public var confirmedBranchName: String?
     public init(requestId: String) { self.requestId = requestId }
 }
 public struct ClientWorkUpdate: Codable, Sendable, Equatable {

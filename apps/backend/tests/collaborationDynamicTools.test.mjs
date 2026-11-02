@@ -14,7 +14,7 @@ const directUserEvidence = {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 18);
+  assert.equal(names.length, 21);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
   assert.ok(names.includes("corptie_collaboration_channel_open"));
@@ -25,7 +25,10 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.ok(names.includes("corptie_collaboration_tasks_share_artifact"));
   assert.equal(names.includes("corptie_collaboration_tasks_start"), false);
   assert.equal(names.includes("corptie_collaboration_tasks_cancel"), false);
-  assert.equal(names.some((name) => name.includes("tasks_delete") || name.includes("tasks_update")), false);
+  assert.ok(names.includes("corptie_task_dispatch"));
+  assert.ok(names.includes("corptie_task_dispatch_retry"));
+  assert.ok(names.includes("corptie_collaboration_tasks_delete_child"));
+  assert.equal(names.filter(name => name !== "corptie_collaboration_tasks_delete_child").some((name) => name.includes("tasks_delete") || name.includes("tasks_update")), false);
   for (const entry of collaborationDynamicTools) {
     assert.equal(entry.type, "function");
     assert.equal(entry.deferLoading, false);

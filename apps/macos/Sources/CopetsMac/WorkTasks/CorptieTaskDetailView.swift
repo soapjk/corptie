@@ -22,6 +22,7 @@ struct CorptieTaskDetailView: View {
     @State private var executionError: EntityLaunchError?
     @State private var showEdit = false
     @State private var isUpdatingAutoTitle = false
+    @State private var isUpdatingCoordination = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
     @State private var sessionCreationAgent: Role?
@@ -144,10 +145,9 @@ struct CorptieTaskDetailView: View {
                             ? "Merge the Task Worktree into the target branch before deleting it."
                             : "可先将子分支合并到父分支，或重新选择强制删除。")
                     },
-                    onDelete: { force, branch, deleteWorktree, artifactDisposition in
+                    onDelete: { force, deleteWorktree, artifactDisposition in
                         deleteTask(
                             force: force,
-                            confirmedBranchName: branch,
                             deleteWorktree: deleteWorktree,
                             artifactDisposition: artifactDisposition
                         )
@@ -196,6 +196,16 @@ struct CorptieTaskDetailView: View {
                             onRequestReload()
                         }
                         isUpdatingAutoTitle = false
+                    }
+                }, coordinationEnabled: task.parentTaskId == nil ? (task.coordinationEnabled ?? false) : nil,
+                coordinationUpdating: isUpdatingCoordination,
+                coordinationDispatches: task.coordinationDispatches ?? [],
+                onCoordinationChange: { enabled in
+                    guard !isUpdatingCoordination else { return }
+                    isUpdatingCoordination = true
+                    Task {
+                        if await client.updateCorptieTask(taskId: task.id, coordinationEnabled: enabled) != nil { onRequestReload() }
+                        isUpdatingCoordination = false
                     }
                 }, deliveryTaskID:task.id,deliveryRefreshID:String(task.resourceVersion),deliveryAPI:{
                     ClientTaskHierarchyAPI(transport:try BackendTransport(endpoint:BackendEndpoint(CorptieAppEnvironment.backendBaseURL)),surface:.local)
@@ -481,7 +491,6 @@ struct CorptieTaskDetailView: View {
 
     private func deleteTask(
         force: Bool,
-        confirmedBranchName: String?,
         deleteWorktree: Bool,
         artifactDisposition: CorptieTaskArtifactDisposition
     ) {
@@ -495,7 +504,6 @@ struct CorptieTaskDetailView: View {
             let deleted = await client.deleteCorptieTask(
                 taskId: task.id,
                 force: force,
-                confirmedBranchName: confirmedBranchName,
                 deleteWorktree: deleteWorktree,
                 artifactDisposition: artifactDisposition
             )

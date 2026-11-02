@@ -379,7 +379,7 @@ test("Task deletion endpoints expose preflight and execute only through the safe
       method: "POST",
       pathname: "/tasks/task%3Aone/actions/delete",
       body: {
-        mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one",
+        mode: "force", acknowledgeDataLoss: true,
         deleteWorktree: true, artifactDisposition: "work"
       },
       deleteTaskSafely: async (taskId, input, actor) => {
@@ -404,7 +404,7 @@ test("Task deletion endpoints expose preflight and execute only through the safe
     assert.deepEqual(calls, [
       ["inspect", "task:one", { type: "user", id: "user:local-macos" }],
       ["delete", "task:one", {
-        mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one",
+        mode: "force", acknowledgeDataLoss: true,
         deleteWorktree: true, artifactDisposition: "work"
       }, { type: "user", id: "user:local-macos" }]
     ]);

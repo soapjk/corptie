@@ -2120,14 +2120,12 @@ export class GitWorkspaceManager {
       if (error) throw error;
     }
     if (requiresForceConfirmation) {
-      const confirmedBranchName = String(input.confirmedBranchName ?? "");
       const forceConfirmed = input.forceDeleteUnmerged === true
         && input.acknowledgeIrrecoverable === true
-        && currentSource.branchName
-        && confirmedBranchName === currentSource.branchName;
+        && currentSource.branchName;
       if (!forceConfirmed) {
         const error = new Error(
-          `The worktree has ${discardedCommitCount} commits that are not merged into main${dirty ? " and uncommitted changes" : ""}. Confirm the full branch name to delete it permanently.`
+          `The worktree has ${discardedCommitCount} commits that are not merged into main${dirty ? " and uncommitted changes" : ""}. Confirm permanent data loss to delete it.`
         );
         error.code = "UNMERGED_WORKTREE_CONFIRMATION_REQUIRED";
         error.unmergedCommitCount = discardedCommitCount;

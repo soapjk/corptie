@@ -136,7 +136,7 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
     };
   }
 
-  async function removeTaskDeletionWorktree({ taskId, inspection, force, confirmedBranchName, operationId, target }) {
+  async function removeTaskDeletionWorktree({ taskId, inspection, force, operationId, target }) {
     const worktree = inspection?.worktree ?? { worktreeId: target.worktreeId, sessions: [] };
     const repositoryId = inspection?.repositoryId ?? target.repositoryId;
     const project = await projectApplicationService.requireProject(repositoryId);
@@ -150,7 +150,6 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
       deleteBranch: true,
       forceDeleteUnmerged: force,
       acknowledgeIrrecoverable: force,
-      confirmedBranchName,
       ...(operationId ? { taskDeletionOperationId: operationId } : {})
     });
     for (const logicalSessionId of logicalSessionIds) {

@@ -18,7 +18,8 @@ const schemas = {
   sessionInfo: object({ sessionId: string(512), workName: string() }),
   chatSummary: object({ text: string() }),
   workOverview: object({ workId: string(512), name: string(), description: string() }),
-  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema) }),
+  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema), coordinationEnabled: boolean,
+    coordinationDispatches: array(object({ dispatchId: string(512), taskId: nullable(string(512)), title: string(512), status: string(64), errorCode: nullable(string(512)) }), 5) }),
   artifacts: list({ artifactId: string(512), title: string(512), summary: string(), version: integer, contentHash: string(64), readAvailable: boolean }),
   focusTasks: list({ taskId: string(512), title: string(512), sessionId: nullable(string(512)), summary: focusSummary }),
   contextReferences: list({ referenceId: string(512), title: string(512), targetType: string(64), status: string(64), enabled: boolean }),
@@ -56,7 +57,7 @@ export function validateNativeBusinessDocument(document) {
       if (!action(value) || actionIDs.has(value.id)) fail(); actionIDs.add(value.id);
       if (value.kind === "navigation" && !["resource.open", "editor.open"].includes(value.operation)
         || value.kind === "read" && !["detail.collection.page", "artifact.content"].includes(value.operation)
-        || value.kind === "command" && !["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel"].includes(value.operation)) fail();
+        || value.kind === "command" && !["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update"].includes(value.operation)) fail();
     }
   }
   if (document.order.length !== ids.size || new Set(document.order).size !== ids.size || document.order.some(id => !ids.has(id))

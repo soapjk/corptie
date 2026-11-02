@@ -77,6 +77,18 @@ export function handleCollaborationHttpRequest({
         ) });
       }
 
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/dispatch") {
+        if (!sessionCollaborationService?.taskCoordinationService) throw apiError("CAPABILITY_UNAVAILABLE", "Coordination is unavailable.", 503);
+        return sendJson(response, 202, sessionCollaborationService.taskCoordinationService.acceptDispatch(sessionMetadata, actorAgentId, await readJson(request)));
+      }
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/dispatch/retry") {
+        const input = await readJson(request);
+        if (!sessionCollaborationService?.taskCoordinationService) throw apiError("CAPABILITY_UNAVAILABLE", "Coordination unavailable.", 503);
+        return sendJson(response, 202, sessionCollaborationService.taskCoordinationService.retryDispatch(sessionMetadata, actorAgentId, input.dispatchId));
+      }
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/delete-child") {
+        return sendJson(response, 202, await sessionCollaborationService.deleteChildTask(sessionMetadata, actorAgentId, await readJson(request)));
+      }
       if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/batch") {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
         return sendJson(response, 200, await sessionCollaborationService.createChildTasksBatch(

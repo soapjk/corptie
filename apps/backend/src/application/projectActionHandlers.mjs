@@ -93,7 +93,6 @@ export function createProjectActionHandlers({
         deleteBranch: input.deleteBranch !== false,
         forceDeleteUnmerged: input.forceDeleteUnmerged === true,
         acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
-        confirmedBranchName: input.confirmedBranchName
       });
     }
     if (action === "push") {

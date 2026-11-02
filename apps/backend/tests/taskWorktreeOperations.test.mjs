@@ -81,12 +81,12 @@ test("deletion forwards explicit force confirmation and only retires matching ro
   const inspection = await f.operations.inspectTaskWorktree(f.task.id);
   f.logical.activeWorkspaceId = "tree:replacement";
   await f.operations.removeTaskDeletionWorktree({
-    inspection, force: true, confirmedBranchName: "task/one"
+    inspection, force: true
   });
   assert.deepEqual(f.calls, [["remove", {
     repositoryId: "repository:one", workingDirectory: "/project",
     sourceWorktreeId: "tree:one", ignoreLogicalSessionIds: ["logical:one"],
     deleteBranch: true, forceDeleteUnmerged: true,
-    acknowledgeIrrecoverable: true, confirmedBranchName: "task/one"
+    acknowledgeIrrecoverable: true
   }]]);
 });

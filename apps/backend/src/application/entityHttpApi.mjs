@@ -990,7 +990,7 @@ export function handleEntityHttpRequest({
         if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
         const input = await readJson(request);
         rejectUnknownFields(input, new Set([
-          "mode", "acknowledgeDataLoss", "confirmedBranchName", "deleteWorktree", "artifactDisposition",
+          "mode", "acknowledgeDataLoss", "deleteWorktree", "artifactDisposition",
           "idempotencyKey"
         ]));
         return sendJson(response, 202, await deleteTaskSafely(
@@ -1808,8 +1808,11 @@ function presentTaskWithOrigin(workService, task, hierarchy = null) {
 }
 
 function presentTaskWithScheduledWake(workService, task, hierarchy = null) {
+  const summary = (hierarchy ?? workService.store.hierarchySummaries?.([task.id]))?.get(task.id);
   return presentTaskAcceptance(task, {
-    hierarchy: (hierarchy ?? workService.store.hierarchySummaries?.([task.id]))?.get(task.id),
+    hierarchy: summary,
+    coordinationDispatches: !task.parent_task_id && (task.coordination_enabled === 1 || summary?.childCount > 0)
+      ? workService.store.listTaskCoordinationDispatches?.(task.id) ?? [] : [],
     hasPendingScheduledWake: workService.store.hasPendingScheduledWakeForTask(task.id)
   });
 }

@@ -1,4 +1,5 @@
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
+import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
 import { SessionChannelMailboxService } from "./collaboration/sessionChannelMailboxService.mjs";
 import http from "node:http";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
@@ -152,6 +153,7 @@ import { createTaskAndSession } from "./application/taskCreationApplicationServi
 import { TaskCompletionService } from "./application/taskCompletionService.mjs";
 import { ChildTaskDeliveryService } from "./application/childTaskDeliveryService.mjs";
 let childTaskDeliveryService = null;
+let taskCoordinationService = null;
 import { SessionRuntimeReleaseService } from "./application/sessionRuntimeReleaseService.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
@@ -517,6 +519,10 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   },
   changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
   validateExternal: (row, authorization) => {
+    if (authorization.coordinationDispatchId) {
+      if (!taskCoordinationService) throw Object.assign(new Error("Coordination unavailable."), { code: "CAPABILITY_UNAVAILABLE" });
+      return taskCoordinationService.validateMailbox(row, authorization);
+    }
     if (row.source_type === "automation") {
       const task = store.getScheduledSessionTask(row.source_id);
       const work = row.operation_id ? store.getAgentTask(row.operation_id) : null;
@@ -532,7 +538,10 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
       throw Object.assign(new Error("MAILBOX_EVENT_SCOPE_REQUIRED"), { code: "MAILBOX_EVENT_SCOPE_REQUIRED" });
     }
   },
-  workEvent: (type, work) => scheduledSessionTaskService.handleAgentWorkEvent(type, work)
+  workEvent: (type, work) => {
+    scheduledSessionTaskService.handleAgentWorkEvent(type, work);
+    taskCoordinationService?.onRuntimeEvent(type, { task: work });
+  }
 });
 channelMailbox.sessionMailbox = sessionMailbox;
 const {
@@ -1572,6 +1581,11 @@ const {
   ensureTaskWorkspace
 });
 taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
+taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService,
+  mailbox: sessionMailbox, deletion: taskDeletionService,
+  changed: taskId => { if (taskId) emitEvent("TaskChanged", { taskId, action: "coordination-state",
+    entity: { ...store.getTask(taskId), coordinationDispatches: store.listTaskCoordinationDispatches(taskId) } }); } });
+sessionCollaborationService.taskCoordinationService = taskCoordinationService;
 ({ workSessionStartupCoordinator, workSessionStartApplicationService } = createWorkSessionStartupComposition({
   store, workService, agentProviderRegistry, sessionApplicationService,
   forkContextForTask: (taskId) => sessionForkService.contextForTask(taskId),
@@ -1768,6 +1782,7 @@ function sessionTitleErrorPayload(error, extra = {}) {
 
 function emitEvent(type, payload, options = {}) {
   childTaskDeliveryService?.onRuntimeEvent(type,payload);
+  taskCoordinationService?.onRuntimeEvent(type,payload);
   productEventPublisher ??= createProductEventPublisher({
     store, eventLog, sseClients, now,
     getClientDeviceGateway: () => clientDeviceGateway,
@@ -2483,7 +2498,7 @@ function startBackendRuntime() {
     knownActiveWorktrees, worktreeIntegrationJobService, reconcileEntityTasksAtStartup,
     reconcileWorkChatsAtStartup, scheduledSessionTaskService, runtimeActivity,
     tickAgentWorkQueue, emitEvent, artifactService, feishuGateway,
-    skillRegistryService, legacySessionHistoryRepairService, childTaskDeliveryService
+    skillRegistryService, legacySessionHistoryRepairService, childTaskDeliveryService, taskCoordinationService
   });
 }
 
