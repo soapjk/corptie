@@ -295,9 +295,15 @@ struct SessionConversationHeaderSurface: View {
                         .help(projectServiceStatusHelp(status))
                 }
             }
-            if let action = primaryHeaderAction {
-                headerActionButton(action)
-                    .contextMenu { headerActionMenu }
+            HStack(spacing: 8) {
+                if let action = primaryHeaderAction {
+                    headerActionButton(action)
+                        .contextMenu { headerActionMenu }
+                }
+                if hasWorktreeTarget {
+                    headerActionButton(.manageWorktrees)
+                        .contextMenu { headerActionMenu }
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -339,9 +345,6 @@ struct SessionConversationHeaderSurface: View {
         if canReconnectSelectedSession {
             return .reconnect
         }
-        if shouldSuggestWorktreeManagement {
-            return .manageWorktrees
-        }
         return nil
     }
 
@@ -350,14 +353,8 @@ struct SessionConversationHeaderSurface: View {
             && session?.isConnected == false
     }
 
-    private var shouldSuggestWorktreeManagement: Bool {
-        guard let project = displayedProjectStatus?.project else { return false }
-        return project.pendingWorktreeCount > 0 || project.worktrees.contains { worktree in
-            worktree.availability != "available"
-                || worktree.dirty == true
-                || worktree.pendingIntegration
-                || (worktree.behindMain ?? 0) > 0
-        }
+    private var hasWorktreeTarget: Bool {
+        session?.external?.workspace?.repositoryId != nil || displayedProjectStatus != nil
     }
 
     @ViewBuilder
@@ -385,15 +382,20 @@ struct SessionConversationHeaderSurface: View {
             .buttonStyle(.plain)
             .help(L10n("Reconnect session"))
         case .manageWorktrees:
-            if let status = displayedProjectStatus {
-                Button {
-                    openWorktreeManagement()
-                } label: {
+            Button {
+                openWorktreeManagement()
+            } label: {
+                if let status = displayedProjectStatus {
                     ProjectWorktreeStatusChip(status: status, showsSurface: false)
+                } else {
+                    Label("Worktree", systemImage: "arrow.triangle.branch")
+                        .font(.system(size: 11, weight: .medium))
                 }
-                .buttonStyle(.plain)
-                .help(L10n("Manage project worktrees and service"))
             }
+            .buttonStyle(.plain)
+            .help(L10n("Manage project worktrees and service"))
+            .accessibilityLabel(L10n("Manage project worktrees and service"))
+            .accessibilityIdentifier("session.detail.worktree")
         }
     }
 
@@ -422,7 +424,7 @@ struct SessionConversationHeaderSurface: View {
         } label: {
             Label(L10n("Manage project worktrees and service"), systemImage: "arrow.triangle.branch")
         }
-        .disabled(displayedProjectStatus == nil)
+        .disabled(!hasWorktreeTarget)
 
         Divider()
 
