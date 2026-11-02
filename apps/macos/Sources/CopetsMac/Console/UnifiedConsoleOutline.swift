@@ -52,13 +52,10 @@ extension UnifiedConsoleView {
     }
 
     var workOutlineList: some View {
-        let unreadSummary = WorkRailUnreadSummary(
-            sessions: sessionIndexStore.rows.map(\.session)
-        )
-        let tasksByWorkID = outlineTasksByWorkID
-        let taskActivity = isShowingWorkerArchive ? outlineTaskActivity : [:]
-        let archivedRowsByWorkID = outlineArchivedRowsByWorkID
-        let processingWorkIDs = outlineProjection.processingWorkIDs
+        let unreadSummary = sessionIndexStore.workUnreadSummary
+        let workRowsByWorkID = outlineProjection.workRowsByWorkID
+        let archivedRowsByWorkID = outlineProjection.archivedRowsByWorkID
+        let processingWorkIDs = sessionIndexStore.processingWorkIDs
 
         return ScrollView {
             // Keep group extents exact even when a header is offscreen. The
@@ -88,28 +85,23 @@ extension UnifiedConsoleView {
                 .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
                 .consoleWorkOutlineGroupCard()
 
-                ForEach(orderedOutlineWorks) { work in
-                    let tasks = hierarchyTasks(tasksByWorkID[work.id] ?? [])
-                    let roots = tasks.filter { $0.parentTaskId == nil }
+                ForEach(orderedOutlineWorks, id: \.id) { (work: Work) in
+                    let workRows = workRowsByWorkID[work.id] ?? .empty
                     let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    let showsAll = outlineFullyExpandedWorkIDs.contains(work.id)
                     let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
-                        totalCount: roots.count,
-                        showsAll: outlineFullyExpandedWorkIDs.contains(work.id),
+                        totalCount: workRows.rootCount,
+                        showsAll: showsAll,
                         isSearching: queryIsActive,
                         isShowingArchive: isShowingWorkerArchive
                     )
-                    let hiddenTaskCount = roots.count - visibleTaskCount
-                    let visibleRootIDs = Set(roots.prefix(visibleTaskCount).map(\.id))
-                    let visibleTasks = tasks.filter { visibleRootIDs.contains($0.parentTaskId ?? $0.id) }
+                    let hiddenTaskCount = workRows.rootCount - visibleTaskCount
+                    let visibleTasks = workRows.rows(showsAll: showsAll || queryIsActive || isShowingWorkerArchive)
 
                     DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
                         if isShowingWorkerArchive {
-                            let archivedTasks = archivedTasks(for: work.id, activity: taskActivity)
-                            let taskIDs = Set(archivedTasks.map(\.id))
-                            let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
-                                !taskIDs.contains($0.session.taskId ?? "")
-                            }
-                            let orderedTasks = hierarchyTasks(archivedTasks)
+                            let orderedTasks: [CorptieTask] = outlineProjection.archivedTasksByWorkID[work.id] ?? []
+                            let rows: [SessionRowModel] = archivedRowsByWorkID[work.id] ?? []
                             ConsoleWorkOutlineRows(rowCount: max(1, orderedTasks.count + rows.count)) {
                                 ForEach(orderedTasks) { task in
                                     hierarchyTaskRow(task)
@@ -117,7 +109,7 @@ extension UnifiedConsoleView {
                                         .background(outlineChildSelectionBackground(selectedTaskId == task.id))
                                         .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 }
-                                if rows.isEmpty && archivedTasks.isEmpty {
+                                if rows.isEmpty && orderedTasks.isEmpty {
                                     outlineGroupEmptyRow(L10n("No Archived Sessions"))
                                         .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 } else {
@@ -175,8 +167,9 @@ extension UnifiedConsoleView {
     }
 
     func outlineChatHeader(hasUnread: Bool) -> some View {
-        let isExpanded = !outlineExpansionPreferences.isAssistantCollapsed || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return HoverRevealHeaderAction(
+        ConsoleAssistantExpansionScope(preferences: outlineExpansionPreferences,
+            forceExpanded: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { isExpanded in
+        HoverRevealHeaderAction(
             accessibilityLabel: L10n("New Assistant Session"),
             action: { showNewSessionCreation = true }
         ) {
@@ -204,6 +197,7 @@ extension UnifiedConsoleView {
             .buttonStyle(SessionSelectionPressStyle())
             .accessibilityLabel(L10n("Chat"))
             .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
+        }
         }
     }
 
@@ -306,34 +300,26 @@ extension UnifiedConsoleView {
         }
     }
 
-    var outlineProjection: ConsoleOutlineProjection {
-        let key = ConsoleOutlineProjectionKey(entityRevision: entityGroupingRevision,
-            sessionRevision: sessionIndexStore.contentRevision, search: searchText, sort: outlineSort)
-        return outlineProjectionStore.value(for: key) {
-            let tasks = entityClient.tasks
-            let works = entityClient.works
-            let sessions = backendClient.sessions
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let grouped = Dictionary(grouping: tasks.filter {
-                $0.lifecycleState != "done" && $0.archived != true
-            }, by: \.workId)
-            let activity = outlineTaskActivity
-            let tasksByWorkID = grouped.mapValues { tasks in
-                sortedOutlineTasks(tasks.filter {
-                    query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-                        || $0.description.localizedCaseInsensitiveContains(query)
-                }, activity: activity)
-            }
-            let workActivity = outlineSort == .updated
-                ? Dictionary(grouping: sessions, by: { $0.workId ?? "" })
-                    .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" } : [:]
-            let orderedWorks = outlineSort.ordered(works, id: { $0.id }, title: { $0.name },
-                updatedAt: { $0.updatedAt },
-                activityAt: { workActivity[$0.id].flatMap { $0.isEmpty ? nil : $0 } })
-            return ConsoleOutlineProjection(tasksByWorkID: tasksByWorkID, works: orderedWorks,
-                processingWorkIDs: ConsoleWorkActivityPolicy.processingWorkIDs(tasks: tasks, sessions: sessions))
-        }
+    var outlinePreparationKey: ConsoleOutlineProjectionKey {
+        ConsoleOutlineProjectionKey(entityRevision: entityGroupingRevision,
+            sessionRevision: outlineSort == .updated ? sessionIndexStore.outlineActivityRevision : 0,
+            search: searchText, sort: outlineSort, expandedTaskIDs: expandedParentTaskIDs,
+            archiveRevision: isShowingWorkerArchive ? archivedSessionIndexStore.groupingRevision : 0,
+            archiveFilterRevision: isShowingWorkerArchive && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? archivedSessionIndexStore.filterRevision : 0,
+            showsArchive: isShowingWorkerArchive)
     }
+
+    func prepareOutline() async {
+        let key = outlinePreparationKey
+        await outlineProjectionStore.prepare(key: key,
+            tasks: entityClient.tasks, works: entityClient.works,
+            sessions: outlineSort == .updated ? backendClient.sessions : [],
+            archivedRows: isShowingWorkerArchive ? archivedSessionIndexStore.rows : [],
+            isCurrent: { outlinePreparationKey == key })
+    }
+
+    var outlineProjection: ConsoleOutlineProjection { outlineProjectionStore.prepared }
 
     var outlineTasksByWorkID: [String: [CorptieTask]] { outlineProjection.tasksByWorkID }
     var orderedOutlineWorks: [Work] { outlineProjection.works }

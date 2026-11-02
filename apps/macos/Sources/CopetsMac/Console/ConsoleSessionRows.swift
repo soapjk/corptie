@@ -8,6 +8,11 @@ struct WorkRailUnreadSummary: Equatable {
     let hasUnreadAssistantSessions: Bool
     let workIDs: Set<String>
 
+    init(hasUnreadAssistantSessions: Bool, workIDs: Set<String>) {
+        self.hasUnreadAssistantSessions = hasUnreadAssistantSessions
+        self.workIDs = workIDs
+    }
+
     init(sessions: [TaskSession]) {
         var hasUnreadAssistantSessions = false
         var workIDs = Set<String>()
