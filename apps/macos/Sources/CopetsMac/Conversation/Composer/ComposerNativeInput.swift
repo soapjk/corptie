@@ -438,9 +438,9 @@ struct ComposerInputTextView: NSViewRepresentable {
                 .font: font ?? WorkbenchTypography.nativeFont(for: .composerInput),
                 .foregroundColor: NSColor.secondaryLabelColor
             ]
-            let textSize = placeholder.size(withAttributes: attributes)
-            let centeredY = max(0, (bounds.height - textSize.height) / 2)
-            let origin = NSPoint(x: textContainerInset.width, y: centeredY)
+            // Match the first input line, regardless of the editor's height.
+            let origin = NSPoint(x: textContainerOrigin.x + (textContainer?.lineFragmentPadding ?? 0),
+                                 y: textContainerOrigin.y)
             placeholder.draw(at: origin, withAttributes: attributes)
         }
     }
@@ -585,9 +585,9 @@ struct ChatInputTextView: NSViewRepresentable {
                 .font: font ?? WorkbenchTypography.nativeFont(for: .composerInput),
                 .foregroundColor: NSColor.secondaryLabelColor
             ]
-            let textSize = placeholder.size(withAttributes: attributes)
-            let centeredY = max(0, (bounds.height - textSize.height) / 2)
-            let origin = NSPoint(x: textContainerInset.width, y: centeredY)
+            // Match the first input line, regardless of the editor's height.
+            let origin = NSPoint(x: textContainerOrigin.x + (textContainer?.lineFragmentPadding ?? 0),
+                                 y: textContainerOrigin.y)
             placeholder.draw(at: origin, withAttributes: attributes)
         }
     }
