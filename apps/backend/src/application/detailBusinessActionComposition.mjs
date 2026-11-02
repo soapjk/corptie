@@ -4,6 +4,14 @@ import { detailV2CatalogOptions } from "./detailV2Catalog.mjs";
 import { detailV2Hash } from "./detailSyncV2.mjs";
 import { deviceError } from "./clientDeviceAuthority.mjs";
 import { DETAIL_NATIVE_BUSINESS_PROFILE } from "./detailNativeBusinessContract.mjs";
+import { ClientInspectorAPI } from "./clientInspectorAPI.mjs";
+
+/** Desktop and paired gateways must inject the same Task application operation. */
+export function createLocalDetailBusinessActionService({ commandAPI, documentService, workService, ...inspectorOptions }) {
+  if (typeof workService?.updateTask !== "function") throw new TypeError("Local Detail actions require WorkApplicationService.updateTask.");
+  return createDetailBusinessActionService({ commandAPI, documentService,
+    inspector: new ClientInspectorAPI({ ...inspectorOptions, updateTask: (id, fields) => workService.updateTask(id, fields) }) });
+}
 
 /** One host-owned action profile, never inferred from an ActionRequest. A
  * negotiation binding must select a new service instead of mutating this one. */

@@ -54,10 +54,12 @@ struct ClientDetailActionTests {
         var lookups: [String] = []
         var reads = 0
         var mode = "completed"
+        var receiptOperation = "schedule.cancel"
         var confirmed = 0
         var phases: [ClientDetailActionPhase] = []
         init(_ journal: Journal) { self.journal = journal }
         func setMode(_ value: String) { mode = value }
+        func setReceiptOperation(_ value: String) { receiptOperation = value }
         func confirm() -> Bool { confirmed += 1; return true }
         func phase(_ phase: ClientDetailActionPhase) { phases.append(phase) }
         func read(sessionID: String, request: ClientDetailActionRequest) async throws -> ClientInspectorValue {
@@ -76,14 +78,14 @@ struct ClientDetailActionTests {
             return try receiptValue(requestID, status: mode == "unknown" ? "unknown" : "completed")
         }
         private func receiptValue(_ id: String, status: String) throws -> ClientCommandReceipt {
-            let value: [String: String] = ["requestId": id, "sessionId": "logical:ours", "kind": "inspector:detail:schedule.cancel", "status": status, "updatedAt": "now"]
+            let value: [String: String] = ["requestId": id, "sessionId": "logical:ours", "kind": "inspector:detail:\(receiptOperation)", "status": status, "updatedAt": "now"]
             var fields = value.mapValues { ClientInspectorValue.string($0) }; fields["schemaVersion"] = .number(1)
             return try JSONDecoder().decode(ClientCommandReceipt.self, from: JSONEncoder().encode(ClientInspectorValue.object(fields)))
         }
     }
-    func action(_ operation: String = "schedule.cancel", kind: String = "command") throws -> ClientDetailAction {
+    func action(_ operation: String = "schedule.cancel", kind: String = "command", id: String = "cancel") throws -> ClientDetailAction {
         try JSONDecoder().decode(ClientDetailAction.self, from: Data("""
-        {"id":"cancel","kind":"\(kind)","operation":"\(operation)","label":{"fallback":"Cancel schedule A"},"available":true,"target":{"resourceType":"schedule","id":"schedule:ours"},"expectedResourceRevision":"7","confirmation":"none"}
+        {"id":"\(id)","kind":"\(kind)","operation":"\(operation)","label":{"fallback":"Cancel schedule A"},"available":true,"target":{"resourceType":"schedule","id":"schedule:ours"},"expectedResourceRevision":"7","confirmation":"none"}
         """.utf8))
     }
     @Test func nativeDispatchCapabilityRejectsUnregisteredCommandsBeforeShowingEnabledUI() throws {
@@ -125,6 +127,21 @@ struct ClientDetailActionTests {
         #expect(await probe.commands.count == 1)
         #expect(await probe.lookups.count == 3)
         #expect(await journal.records.count == 1)
+    }
+    @Test func repairedCoordinationActionDoesNotReplayOrDiscardLegacyUnknownCommand() async throws {
+        let journal = Journal(), probe = Probe(journal), coordinator = coordinator(journal, probe)
+        let legacy = ClientDetailPendingAction(scope: Self.scope, requestID: "legacy-unknown", documentID: "doc",
+            cardID: "card", actionID: "task-coordination", operation: "task.coordination.update")
+        try await journal.save(legacy)
+        await probe.setReceiptOperation("task.coordination.update")
+        _ = try await coordinator.perform(documentID: "doc", cardID: "card",
+            action: action("task.coordination.update", id: "task-coordination-setting"),
+            fields: ["coordinationEnabled": .bool(true)], confirm: { _ in true })
+        #expect(await probe.commands.count == 1)
+        #expect(await probe.commands.first?.actionId == "task-coordination-setting")
+        #expect(await probe.commands.first?.fields["coordinationEnabled"] == .bool(true))
+        #expect(await probe.lookups.isEmpty)
+        #expect(await journal.records == [legacy])
     }
     @Test func failedPersistenceAndDeclinedConfirmationNeverSend() async throws {
         let journal = Journal(), probe = Probe(journal), coordinator = coordinator(journal, probe)
