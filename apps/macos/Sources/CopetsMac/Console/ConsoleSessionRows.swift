@@ -181,9 +181,8 @@ struct ConsoleTaskRowContent: View {
                 )
                 HStack(spacing: 4) {
                     Text(task.title)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                         .lineLimit(1)
-                    if let session { SessionTitleBadges(session: session) }
                 }
                 if task.hasPendingScheduledWake == true {
                     ConsoleScheduledWakeIcon()
@@ -207,6 +206,7 @@ struct ConsoleTaskRowContent: View {
         }
         .buttonStyle(SessionSelectionPressStyle())
         .disabled(task.deletionStatus == "deleting")
+        .help([task.title, sessionActivity.label, session?.external?.provider].compactMap { $0 }.joined(separator: " · "))
         .listRowBackground(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)

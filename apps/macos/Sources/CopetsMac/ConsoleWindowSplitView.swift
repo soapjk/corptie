@@ -60,6 +60,44 @@ extension EnvironmentValues {
     }
 }
 
+enum ConversationColumnLayoutPolicy {
+    // Width of the conversation pane, after the project sidebar and navigation.
+    static func usesInlineInspector(availableWidth: CGFloat) -> Bool { availableWidth >= 1040 }
+}
+
+/// The same mounted transcript survives an inspector toggle and window resize.
+/// A compact inspector overlays the conversation without taking reading width.
+struct AdaptiveConversationColumns<Transcript: View, Detail: View>: View {
+    @Binding var isVisible: Bool
+    @ViewBuilder let transcript: () -> Transcript
+    @ViewBuilder let detail: () -> Detail
+
+    var body: some View {
+        GeometryReader { geometry in
+            let inline = ConversationColumnLayoutPolicy.usesInlineInspector(availableWidth: geometry.size.width)
+            HStack(spacing: 0) {
+                transcript().frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                detail()
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .background(ConversationColumnBackground(.inspector))
+                    .modifier(ConsoleDetailColumnVisibility(isVisible: isVisible))
+                    .frame(width: inline ? nil : 0, alignment: .leading)
+                    .offset(x: inline ? 0 : -ConversationDetailWidgetMetrics.railWidth)
+                    .zIndex(2)
+            }
+            .overlay {
+                if isVisible && !inline {
+                    Button { isVisible = false } label: { Color.black.opacity(0.12) }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(L10n("Close details"))
+                        .padding(.trailing, ConversationDetailWidgetMetrics.railWidth)
+                }
+            }
+            .clipped()
+        }
+    }
+}
+
 struct ConsoleDetailColumnVisibility: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool

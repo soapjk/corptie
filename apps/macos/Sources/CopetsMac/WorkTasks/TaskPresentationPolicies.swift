@@ -129,10 +129,10 @@ extension TaskSessionActivity {
 
     var color: Color {
         switch self {
-        case .processing: CorptiePalette.connected
+        case .processing: .blue
         case .waitingForInput, .paused: .orange
-        case .idle: .orange
-        case .interrupted, .failed: .red
+        case .idle, .interrupted: .secondary
+        case .failed: .red
         case .noSession, .unknown: .secondary
         }
     }

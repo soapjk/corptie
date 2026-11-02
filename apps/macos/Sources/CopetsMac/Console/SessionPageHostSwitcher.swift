@@ -46,7 +46,7 @@ struct ResidentSessionPageSwitcher<Fallback: View>: NSViewControllerRepresentabl
 }
 
 struct ResidentSessionPageRoot: View {
-    @State private var showsDetailColumn = true
+    @AppStorage("ui.conversation.showDetails", store: CorptieAppEnvironment.userDefaults) private var showsDetailColumn = false
     let inputs: SessionPageRenderInputs
     let backend: BackendClient
     let cache: SessionPresentationCache
@@ -63,7 +63,7 @@ struct ResidentSessionPageRoot: View {
         }
     }
     private var page: some View {
-        HStack(spacing: 0) {
+        AdaptiveConversationColumns(isVisible: $showsDetailColumn) {
             VStack(spacing: 6) {
                 SearchMessageNavigationSurface(sessionID: inputs.scope.sessionID,
                     target: inputs.searchTarget, matches: inputs.searchMatches) { delta in
@@ -77,16 +77,15 @@ struct ResidentSessionPageRoot: View {
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             }
             .modifier(ConversationColumnSurface(.transcript))
+        } detail: {
             SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
                 activity: inputs.activity, detailPresentation: detailPresentation)
                 .frame(maxHeight: .infinity)
-                .modifier(ConsoleDetailColumnVisibility(isVisible: showsDetailColumn))
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
         // Both columns share the full-height viewport. Compensating only the
         // transcript leaves Detail's clip edge below the floating controls.
         .padding(.top, -inputs.conversationTopInset)
-        .modifier(ConsoleDetailColumnBackground(isVisible: showsDetailColumn))
         .environment(\.detailColumnVisibility, $showsDetailColumn)
         .modifier(ConversationSkinHost())
         .environmentObject(layout)

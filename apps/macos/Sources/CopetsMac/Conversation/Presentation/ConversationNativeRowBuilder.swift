@@ -215,6 +215,8 @@ struct ConversationNativeRowBuilder {
                 } else {
                     processCurrentStepTitle = L10n(NativeExecutionTimelineProjection.title(for: last))
                 }
+            } else if processState == .failed {
+                processCurrentStepTitle = L10n("展开查看失败原因与诊断")
             }
             showsHeader = false
             contextTimestamp = ""

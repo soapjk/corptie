@@ -18,6 +18,7 @@ struct SessionDetailPanel: View {
     }
     private func allows(_ generation: UInt64) -> Bool { activity?.allows(generation: generation) ?? true }
     @State private var selectedDetailTab = "detail"
+    @Environment(\.detailColumnVisibility) private var detailColumnVisibility
     @State private var contextReferenceAddMode: ContextReferenceAddMode?
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
@@ -111,7 +112,7 @@ struct SessionDetailPanel: View {
 
     private var liveDetailBody: some View {
         sessionCard
-        .overlay(alignment: .top) {
+        .safeAreaInset(edge: .top, spacing: 8) {
             detailTabToolbar
         }
         .frame(width: railWidth)
@@ -215,14 +216,21 @@ struct SessionDetailPanel: View {
 
     private var detailTabToolbar: some View {
         HStack(spacing: 2) {
+            Spacer(minLength: 4)
             detailTabButton("详情", tab: "detail")
             detailTabButton("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")", tab: "mailbox")
+            Spacer(minLength: 4)
+            if let detailColumnVisibility {
+                Button { detailColumnVisibility.wrappedValue = false } label: {
+                    Image(systemName: "xmark").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain).help(L10n("Close details"))
+                .accessibilityLabel(L10n("Close details"))
+            }
         }
         .padding(2)
-        .fixedSize()
-        .platformGlassSurface(in: Capsule(), interactive: true)
         .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.top, 12)
+        .padding(.top, 8)
     }
 
     private func detailTabButton(_ title: String, tab: String) -> some View {
