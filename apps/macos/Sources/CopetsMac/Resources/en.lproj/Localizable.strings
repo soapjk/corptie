@@ -36,7 +36,7 @@
 "确认发送" = "Confirm Send";
 "确认发送协作任务" = "Confirm Collaboration Task";
 "任务详情" = "Task Details";
-"验收标准" = "Acceptance Criteria";
+"验收标准" = "Acceptance criteria";
 "理想状态" = "Ideal State";
 "也可以直接回复“确认”或“取消”" = "You can also reply “confirm” or “cancel”.";
 "已处理" = "Resolved";
@@ -447,7 +447,7 @@
 "工作项标题" = "CorptieTask title";
 "描述 *" = "Description *";
 "描述" = "Description";
-"验收标准" = "Acceptance Criteria";
+"验收标准" = "Acceptance criteria";
 "使用默认角色" = "Use Default Role";
 "登记 Skill" = "Register Skill";
 "本地目录" = "Local Directory";
@@ -911,11 +911,11 @@
 "This branch is already up to date with GitHub and has the correct upstream branch." = "This branch is already up to date with GitHub and has the correct upstream branch.";
 "Push committed branch changes to GitHub. Uncommitted files are not included." = "Push committed branch changes to GitHub. Uncommitted files are not included.";
 "Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "Push this local branch to the configured GitHub repository and set its upstream branch if needed.";
-"CorptieTask Memory" = "CorptieTask Memory";
+"CorptieTask Memory" = "Task Memory";
 "Work Memory" = "Work Memory";
-"Role Long-term Memory" = "Role Long-term Memory";
+"Role Long-term Memory" = "Role Memory";
 "Kept by me" = "Kept by me";
-"Suggested by Role" = "Suggested by Role";
+"Suggested by Role" = "Suggested memories";
 "Confirmed Role Memory" = "Confirmed Role Memory";
 "System checkpoints and consolidation" = "System checkpoints and consolidation";
 "Disabled, replaced or expired" = "Disabled, replaced or expired";
@@ -924,7 +924,7 @@
 "Trusted durable knowledge available within this scope." = "Trusted durable knowledge available within this scope.";
 "Recoverable pre-compaction checkpoints and audited consolidation results." = "Recoverable pre-compaction checkpoints and audited consolidation results.";
 "Preserved for audit but excluded from normal recall." = "Preserved for audit but excluded from normal recall.";
-"Layered Memory Inspector" = "Layered Memory Inspector";
+"Layered Memory Inspector" = "Memory";
 "Structured Memory" = "Structured Memory";
 "CorptieTask → Work → Role is the recall priority. Memories are grouped by both scope and origin." = "CorptieTask → Work → Role is the recall priority. Memories are grouped by both scope and origin.";
 "Only this Role's long-term layer is managed here. Work and CorptieTask memories remain in their own context pages." = "Only this Role's long-term layer is managed here. Work and CorptieTask memories remain in their own context pages.";
@@ -952,7 +952,7 @@
 "Edit Memory" = "Edit Memory";
 "Active extracted Memory" = "Active extracted Memory";
 "Candidates awaiting review; they do not participate in recall." = "Candidates awaiting review; they do not participate in recall.";
-"Task → Work → Global memories apply across their scopes. Role memories remain a separate legacy layer." = "Task → Work → Global memories apply across their scopes. Role memories remain a separate legacy layer.";
+"Task → Work → Global memories apply across their scopes. Role memories remain a separate legacy layer." = "Manage memories by task, Work, global or role scope. Pending suggestions are excluded from recall.";
 "Choose the scope where this memory should apply. Global memories follow you across Works and Tasks." = "Choose the scope where this memory should apply. Global memories follow you across Works and Tasks.";
 "Owner" = "Owner";
 "Keep Memory" = "Keep Memory";
@@ -1677,3 +1677,153 @@
 "部分协作来源或目标信息不可用。" = "Some collaboration source or destination information is unavailable.";
 "协调模式" = "Coordination mode";
 "自动派发给子任务，当前会话继续讨论；关闭后已派发任务仍会执行并回报。" = "Delegate execution to child tasks while this conversation stays available. Disabling this mode does not cancel accepted tasks or their reports.";
+
+"Scenes" = "Scenes";
+
+"No Scenes" = "No scenes yet";
+
+"Create Scene" = "Create Scene";
+
+"Select a Scene" = "Select a Scene";
+
+"Scene Error" = "Scene Error";
+
+"使用场景整理每日清单或记录数据。选择一个模板即可开始。" = "Organize daily checklists or track measurements. Choose a template to get started.";
+
+"Close details" = "Close details";
+
+"Context used" = "Context used";
+
+"Quota remaining" = "Quota remaining";
+
+"Provider" = "Provider";
+
+"Platform managed" = "Platform assistant";
+
+"Available for chat and tasks" = "Available for chat and tasks";
+
+"Search memories" = "Search memories";
+
+"All kinds" = "All kinds";
+
+"All statuses" = "All statuses";
+
+"显示已停用" = "Include disabled";
+
+"来源与技术详情" = "Sources and technical details";
+
+"当前任务" = "Current Automations";
+
+"搜索自动化名称、消息或会话" = "Search automations, messages or sessions";
+
+"视图" = "View";
+
+"列表" = "List";
+
+"卡片" = "Cards";
+
+"创建自动化" = "Create Automation";
+
+"查看执行历史" = "View History";
+
+"选择承载自动化的会话" = "Choose a Session";
+
+"在会话输入区的更多菜单中创建定时或条件触发任务。结果会保留在对应会话中。" = "Create scheduled or conditional tasks from the Session composer menu. Results stay in that Session.";
+
+"前往工作台选择会话" = "Choose a Session in Workbench";
+
+"下次执行" = "Next run";
+
+"最近执行" = "Last run";
+
+"显示导航文字" = "Show navigation labels";
+
+"展开左侧导航名称，也可右键导航栏切换。" = "Show navigation names. You can also change this from the rail context menu.";
+
+"创建并启动" = "Create and Start";
+
+"正在创建…" = "Creating…";
+
+"执行配置与更多选项" = "Execution and advanced options";
+
+"执行配置" = "Execution";
+
+"默认模型" = "Default model";
+
+"加载中…" = "Loading…";
+
+"当前 Work 没有可用角色，请先在 Work 详情中添加角色。" = "No roles are available in this Work. Add a role in Work details.";
+
+"执行配置尚未就绪，请检查后重试。" = "Execution settings are not ready. Check the settings and try again.";
+
+"展开查看失败原因与诊断" = "Expand for failure details";
+
+"刷新状态" = "Refresh Status";
+
+"技术详情" = "Technical details";
+
+"读取或操作未完成。刷新只检查当前状态，不会重复执行合并、推送或删除。" = "The request did not complete. Refresh checks the current state without repeating a merge, push or delete.";
+
+"本地服务暂时无法完成请求（HTTP %lld）。请刷新状态后再检查。" = "The local service could not complete the request (HTTP %lld). Refresh the current state before continuing.";
+
+"最近保存" = "Last saved";
+
+"Database, configuration, logs, Artifacts, Provider runtimes, Skills, cache, state, and backups are migrated and verified before a controlled Backend restart. The old Data Root is retained and is never deleted automatically." = "Data, settings and backups are verified before the local service restarts. The original directory is retained.";
+
+"技能" = "Skill";
+
+"操作方法" = "Procedure";
+
+"开发经验" = "Development experience";
+
+"事实" = "Fact";
+
+"经验教训" = "Lesson";
+
+"偏好" = "Preference";
+
+"反馈" = "Feedback";
+
+"经历" = "Experience";
+
+"已生效" = "Active";
+
+"待审核" = "Pending review";
+
+"已替换" = "Replaced";
+
+"已转为技能" = "Promoted to skill";
+
+"已归档" = "Archived";
+
+"已回退" = "Rolled back";
+
+"未生效" = "Inactive";
+
+"待审核 · 尚未生效" = "Pending review · inactive";
+
+"source" = "Source";
+
+"trust" = "Trust";
+
+"confidence" = "Confidence";
+
+"usage" = "Usage";
+
+"updated" = "Updated";
+
+"promoted" = "Skill";
+
+"impact" = "Scope";
+
+"New Task" = "New Task";
+
+"New Assistant Session" = "New Chat";
+
+"无可用执行引擎，请检查设置" = "No execution engine available. Check Settings.";
+
+"展开全文" = "Show full text";
+
+"收起全文" = "Collapse text";
+
+"场景暂时无法加载" = "Scenes could not be loaded";

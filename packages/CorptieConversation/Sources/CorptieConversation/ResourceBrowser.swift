@@ -183,7 +183,17 @@ public struct ResourceBrowser: View {
             ResourceDetail(focus: focus, active: active, api: api, openSession: openSession,
                            revealFile: revealFile,
                            changed: { refreshID &+= 1 }, removed: { self.focus = nil; refreshID &+= 1 }).id(focus)
-        } else { Text("选择资源查看内容").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
+        } else {
+            ContentUnavailableView {
+                Label(connected ? "选择资源查看内容" : "资源服务未连接", systemImage: "doc.text.magnifyingglass")
+            } description: {
+                Text(connected ? "从左侧选择文档，查看内容、版本和关联会话。" : "连接恢复后，资源列表将重新加载。")
+            } actions: {
+                if connected && store.canCreate {
+                    Button("创建资源") { showCreate = true }.buttonStyle(.borderedProminent)
+                }
+            }
+        }
     }
     private func load(more: Bool = false) async {
         do { await store.load(api: try await api(), query: query, work: work, status: status, sort: sort, more: more) }

@@ -41,8 +41,8 @@ struct CorptieTaskCardStatusTests {
         }
     }
 
-    @Test func idleTaskSessionUsesTheSharedOrangeIdleIndicator() {
-        #expect(CorptieTaskBoundSessionActivity.idle.color == .orange)
+    @Test func idleTaskSessionUsesANeutralIndicator() {
+        #expect(CorptieTaskBoundSessionActivity.idle.color == .secondary)
     }
 
     @Test func ignoresOtherSessionsWhenTheCurrentBindingIsPresent() {
@@ -110,20 +110,15 @@ struct CorptieTaskCardStatusTests {
         ).isEmpty)
     }
 
-    @Test func unifiedTaskListIndicatorConsumesLiveSessionActivity() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/Console")
-        let contents = try ["UnifiedConsoleWorkTaskList.swift", "ConsoleSessionRows.swift"]
-            .map { try String(contentsOf: source.appendingPathComponent($0), encoding: .utf8) }
-            .joined(separator: "\n")
-
-        #expect(contents.contains("CorptieTaskBoundSessionActivity.resolve("))
-        #expect(contents.contains("TaskActivityIndicator(\n                    activity: sessionActivity,\n                    lifecycleState: task.lifecycleState"))
-        #expect(!contents.contains(".fill(taskStatusColor(task.lifecycleState))"))
+    @Test func unifiedTaskListIndicatorConsumesLiveSessionActivity() {
+        let task = makeCorptieTask(currentSessionId: "session:current", executionStatus: "running")
+        var session = makeCorptieTaskSession(id: "session:current", status: .running)
+        session.executionStatus = "failed"
+        #expect(TaskSessionLookup(sessions: [session]).activity(for: task) == .failed)
+        session.executionStatus = "completed"
+        #expect(TaskSessionLookup(sessions: [session]).activity(for: task) == .idle)
     }
+
 }
 
 private func makeCorptieTask(currentSessionId: String?, executionStatus: String?) -> CorptieTask {

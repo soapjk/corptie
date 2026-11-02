@@ -11,19 +11,13 @@ struct ScenesView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
+        NavigationSplitView(columnVisibility: client.scenes.isEmpty ? .constant(.detailOnly) : $sidebarState.visibility) {
             VStack(spacing: 0) {
                 sidebarHeader
                 Divider()
                 List(client.scenes, selection: $selectedSceneID) { scene in
                     Label(scene.name, systemImage: scene.templateId == "daily-checklist" ? "checklist" : "figure.run")
                         .tag(scene.id)
-                }
-                .overlay {
-                    if client.scenes.isEmpty && !client.isLoading {
-                        ContentUnavailableView(L10n("No Scenes"), systemImage: "square.grid.2x2",
-                            description: Text(L10n("Create a scene from a template to get started.")))
-                    }
                 }
             }
         } detail: {
@@ -32,12 +26,31 @@ struct ScenesView: View {
                     .id(selectedScene.id)
             } else if client.isLoading {
                 ProgressView().controlSize(.small)
+            } else if let error = client.errorMessage, client.scenes.isEmpty {
+                ContentUnavailableView {
+                    Label(L10n("场景暂时无法加载"), systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button(L10n("Retry")) { Task { await client.loadInventory(); selectFirstSceneIfNeeded() } }
+                }
+            } else if client.scenes.isEmpty {
+                ContentUnavailableView {
+                    Label(L10n("No Scenes"), systemImage: "square.grid.2x2")
+                } description: {
+                    Text(L10n("使用场景整理每日清单或记录数据。选择一个模板即可开始。"))
+                } actions: {
+                    Button(L10n("Create Scene"), action: beginCreatingScene)
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
                 ContentUnavailableView(L10n("Select a Scene"), systemImage: "square.grid.2x2")
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
         .mainWindowPageCard()
+        .padding(MainWindowPageLayoutMetrics.outerPadding)
         .task { await client.loadInventory(); selectFirstSceneIfNeeded() }
         .onChange(of: selectedSceneID) { _, value in
             guard let value, let scene = client.scenes.first(where: { $0.id == value }) else { return }
@@ -51,11 +64,18 @@ struct ScenesView: View {
                 }
             }
         }
-        .alert(L10n("Scene Error"), isPresented: Binding(
-            get: { client.errorMessage != nil },
-            set: { if !$0 { client.clearError() } }
-        )) { Button(L10n("OK"), role: .cancel) { client.clearError() } } message: {
-            Text(client.errorMessage ?? "")
+        .safeAreaInset(edge: .bottom) {
+            if let error = client.errorMessage, !client.scenes.isEmpty {
+                HStack {
+                    Label(error, systemImage: "exclamationmark.triangle").font(.callout).textSelection(.enabled)
+                    Spacer()
+                    Button(L10n("Retry")) { Task {
+                        if let selectedScene { await client.loadScene(selectedScene) }
+                        else { await client.loadInventory(); selectFirstSceneIfNeeded() }
+                    } }.disabled(client.isLoading)
+                    Button(L10n("关闭")) { client.clearError() }
+                }.padding(12).background(.regularMaterial)
+            }
         }
     }
 
@@ -63,10 +83,7 @@ struct ScenesView: View {
         HStack(spacing: 8) {
             Text(L10n("Scenes")).font(.headline)
             Spacer()
-            Button {
-                let templateID = client.templates.first?.templateId ?? "daily-checklist"
-                createDraft = CreateSceneDraft(templateId: templateID, name: "")
-            } label: {
+            Button(action: beginCreatingScene) {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
@@ -76,6 +93,10 @@ struct ScenesView: View {
         }
         .padding(.horizontal, 12)
         .frame(height: 38)
+    }
+
+    private func beginCreatingScene() {
+        createDraft = CreateSceneDraft(templateId: client.templates.first?.templateId ?? "daily-checklist", name: "")
     }
 
     private func selectFirstSceneIfNeeded() {

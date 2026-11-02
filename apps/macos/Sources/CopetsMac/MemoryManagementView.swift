@@ -135,7 +135,7 @@ struct MemoryManagementView: View {
     @State private var kind = "all"
     @State private var selectedTopic = "all"
     @State private var status = "current"
-    @State private var includeRevoked = true
+    @State private var includeRevoked = false
     @State private var isLoading = false
     @State private var editingMemory: MemoryItem?
     @State private var revokingMemory: MemoryItem?
@@ -144,6 +144,7 @@ struct MemoryManagementView: View {
     @State private var isAddingMemory = false
     @State private var selectedForMerge = Set<String>()
     @State private var isMerging = false
+    @State private var expandedMemoryIDs: Set<String> = []
 
     init(scope: Scope, embedsListInParentScrollView: Bool = false) {
         self.scope = scope
@@ -239,60 +240,45 @@ struct MemoryManagementView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 7) {
-          HStack(spacing: 8) {
-            TextField(L10n("Search memories"), text: $query)
-                .textFieldStyle(.roundedBorder)
-            if scope == .global {
-                Picker(L10n("Memory layer"), selection: $selectedLayer) {
-                    Text(L10n("All scopes")).tag("all")
-                    ForEach(MemoryScopeLayer.allCases, id: \.self) { layer in
-                        Text(layer.title).tag(layer.rawValue)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                TextField(L10n("Search memories"), text: $query).textFieldStyle(.roundedBorder)
+                Button { isAddingMemory = true } label: { Label(L10n("Add Memory"), systemImage: "plus") }
+                    .buttonStyle(.borderedProminent)
+                Button { Task {
+                    await load()
+                    if scope == .global { extractionJobs = await client.memoryExtractionJobs() ?? extractionJobs }
+                } } label: { Image(systemName: "arrow.clockwise") }
+                    .help(L10n("Refresh"))
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 210), alignment: .leading)], alignment: .leading, spacing: 8) {
+                if scope == .global {
+                    Picker(L10n("Memory layer"), selection: $selectedLayer) {
+                        Text(L10n("All scopes")).tag("all")
+                        ForEach(MemoryScopeLayer.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                    }.labelsHidden()
+                }
+                Picker(L10n("Kind"), selection: $kind) {
+                    Text(L10n("All kinds")).tag("all")
+                    ForEach(["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"], id: \.self) {
+                        Text(MemoryPresentationLabels.kind($0)).tag($0)
                     }
-                }
-                .labelsHidden()
-                .frame(width: 150)
+                }.labelsHidden()
+                Picker(L10n("Status"), selection: $status) {
+                    Text(L10n("Current memories")).tag("current")
+                    Text(L10n("All statuses")).tag("all")
+                    ForEach(["active", "candidate", "superseded", "promoted_to_skill", "archived", "rolled_back"], id: \.self) {
+                        Text(MemoryPresentationLabels.status($0)).tag($0)
+                    }
+                }.labelsHidden()
+                Picker(L10n("主题"), selection: $selectedTopic) {
+                    Text(L10n("所有主题")).tag("all")
+                    ForEach(MemoryTopicChoices.values) { Text($0.title).tag($0.id) }
+                }.labelsHidden()
+                Toggle(L10n("显示已停用"), isOn: $includeRevoked).toggleStyle(.checkbox)
+                if canMerge { Button(L10n("Merge selected")) { isMerging = true } }
             }
-            Picker(L10n("Kind"), selection: $kind) {
-                Text(L10n("All kinds")).tag("all")
-                ForEach(["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"], id: \.self) {
-                    Text($0).tag($0)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 130)
-            Picker(L10n("Status"), selection: $status) {
-                Text(L10n("Current memories")).tag("current")
-                Text(L10n("All statuses")).tag("all")
-                ForEach(["active", "candidate", "superseded", "promoted_to_skill", "archived", "rolled_back"], id: \.self) {
-                    Text($0).tag($0)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 150)
-            Toggle(L10n("Revoked"), isOn: $includeRevoked).toggleStyle(.checkbox)
-            Button { isAddingMemory = true } label: {
-                Label(L10n("Add Memory"), systemImage: "plus")
-            }
-            .buttonStyle(.borderedProminent)
-            if canMerge {
-                Button(L10n("Merge selected")) { isMerging = true }
-                    .buttonStyle(.bordered)
-            }
-            Button { Task {
-                await load()
-                if scope == .global { extractionJobs = await client.memoryExtractionJobs() ?? extractionJobs }
-            } } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless)
-          }
-          Picker("主题", selection: $selectedTopic) {
-              Text("所有主题").tag("all")
-              ForEach(MemoryTopicChoices.values) { topic in
-                  Text(topic.title).tag(topic.id)
-              }
-          }
-          .frame(width: 170, alignment: .leading)
-        }
+        }.frame(maxWidth: 1040, alignment: .leading)
     }
 
     private var extractionStatus: some View {
@@ -383,7 +369,7 @@ struct MemoryManagementView: View {
                                 Text("\(rows.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                 Spacer()
                             }
-                            Text(origin.explanation).font(.caption2).foregroundStyle(.tertiary)
+                            Text(origin.explanation).font(.caption).foregroundStyle(.secondary)
                             ForEach(rows) { memory in memoryRow(memory) }
                         }
                     }
@@ -397,24 +383,24 @@ struct MemoryManagementView: View {
     private func memoryRow(_ memory: MemoryItem) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline) {
-                Text(memory.kind).font(.caption.bold())
+                Text(MemoryPresentationLabels.kind(memory.kind)).font(.caption.bold())
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Color.accentColor.opacity(0.12), in: Capsule())
-                Text(memory.ownerType.replacingOccurrences(of: "_", with: " "))
+                Text(MemoryScopeLayer(rawValue: memory.ownerType)?.title ?? memory.ownerType)
                     .font(.caption).foregroundStyle(.secondary)
-                Text(memory.ownerId).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1)
                 Spacer()
-                Text(memory.revokedAt == nil ? (memory.promotionStatus ?? "active") : L10n("recall disabled"))
+                Text(MemoryPresentationLabels.recallState(memory))
                     .font(.caption.bold())
                     .foregroundStyle(memory.revokedAt == nil ? Color.secondary : Color.red)
             }
-            Text(memory.content).font(.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            if let evidence = memory.structured?.extraction?.evidence {
-                Text(evidence).font(.caption).foregroundStyle(.secondary)
-                    .textSelection(.enabled).lineLimit(4)
-            }
-            if let rationale = memory.structured?.extraction?.rationale {
-                Text(rationale).font(.caption2).foregroundStyle(.tertiary).lineLimit(2)
+            let canCollapse = memory.content.count > 300 || memory.content.filter { $0 == "\n" }.count > 5
+            Text(memory.content).font(.body).textSelection(.enabled)
+                .lineLimit(canCollapse && !expandedMemoryIDs.contains(memory.id) ? 6 : nil)
+                .fixedSize(horizontal: false, vertical: true)
+            if canCollapse {
+                Button(L10n(expandedMemoryIDs.contains(memory.id) ? "收起全文" : "展开全文")) {
+                    if !expandedMemoryIDs.insert(memory.id).inserted { expandedMemoryIDs.remove(memory.id) }
+                }.buttonStyle(.link).font(.callout)
             }
             if (memory.keywords ?? []).isEmpty, let tags = memory.tags, !tags.isEmpty {
                 Text(tags.map { "#\($0)" }.joined(separator: "  "))
@@ -436,17 +422,31 @@ struct MemoryManagementView: View {
                 Text("主动适用：\((memory.appliesTo ?? []).joined(separator: "、"))")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            HStack(spacing: 12) {
-                metadata("source", memory.sourceType)
-                metadata("trust", memory.trustLevel ?? "untrusted")
-                metadata("confidence", String(format: "%.0f%%", (memory.confidence ?? 0) * 100))
-                metadata("usage", "\(memory.usageCount ?? 0)")
-                metadata("updated", memory.updatedAt ?? memory.createdAt)
-                if let promoted = memory.promotedSkillId { metadata("promoted", promoted) }
-                if let replacement = memory.replacesMemoryId { metadata("impact", "replaced by \(replacement)") }
-                else { metadata("impact", memory.ownerType == "agent" ? "all Role sessions" : "this \(memory.ownerType)") }
-                Spacer()
-            }
+            DisclosureGroup(L10n("来源与技术详情")) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(memory.ownerId).font(.caption.monospaced()).textSelection(.enabled)
+                    if let sourceSessionId = memory.sourceSessionId {
+                        Label(sourceSessionId, systemImage: "arrow.triangle.branch").font(.caption).textSelection(.enabled)
+                    }
+                    if let evidence = memory.structured?.extraction?.evidence {
+                        Text(evidence).font(.caption).foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if let rationale = memory.structured?.extraction?.rationale {
+                        Text(rationale).font(.caption).foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 5) {
+                        metadata("source", memory.sourceType)
+                        metadata("trust", memory.trustLevel ?? "untrusted")
+                        metadata("confidence", String(format: "%.0f%%", (memory.confidence ?? 0) * 100))
+                        metadata("usage", "\(memory.usageCount ?? 0)")
+                        metadata("updated", memory.updatedAt ?? memory.createdAt)
+                        if let promoted = memory.promotedSkillId { metadata("promoted", promoted) }
+                        if let replacement = memory.replacesMemoryId { metadata("impact", "replaced by \(replacement)") }
+                        else { metadata("impact", memory.ownerType == "agent" ? "all Role sessions" : "this \(memory.ownerType)") }
+                    }
+                }.padding(.top, 6)
+            }.font(.callout)
             HStack {
                 if memory.promotionStatus == "active" && memory.trustLevel == "trusted"
                     && memory.revokedAt == nil {
@@ -461,10 +461,6 @@ struct MemoryManagementView: View {
                     .labelsHidden()
                     .help(L10n("Select for merge"))
                 }
-                if let sourceSessionId = memory.sourceSessionId {
-                    Label(sourceSessionId, systemImage: "arrow.triangle.branch").font(.caption2).foregroundStyle(.tertiary)
-                }
-                Spacer()
                 Button(L10n("Edit Memory")) { editingMemory = memory }.buttonStyle(.link)
                     .disabled(memory.revokedAt != nil)
                 Button(L10n("History")) { historyMemory = memory }.buttonStyle(.link)
@@ -484,13 +480,15 @@ struct MemoryManagementView: View {
                 }
             }
         }
-        .padding(10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
+        .padding(14)
+        .frame(maxWidth: 1040, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.08)))
     }
 
     private func metadata(_ label: String, _ value: String) -> some View {
-        Text("\(label): \(value)").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+        Text("\(L10n(label)): \(value)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var filteredMemories: [MemoryItem] {
@@ -990,5 +988,23 @@ struct SessionMemoryDiagnosticsView: View {
         let loaded = await EntityAPIClient.shared.memoryHits(sessionId: session.id)
         hits = loaded ?? []
         loadFailed = loaded == nil
+    }
+}
+
+@MainActor
+enum MemoryPresentationLabels {
+    static func kind(_ value: String) -> String {
+        L10n(["skill": "技能", "procedure": "操作方法", "dev_experience": "开发经验", "fact": "事实",
+              "lesson": "经验教训", "preference": "偏好", "feedback": "反馈", "episodic": "经历"][value] ?? value)
+    }
+    static func status(_ value: String) -> String {
+        L10n(["active": "已生效", "candidate": "待审核", "superseded": "已替换",
+              "promoted_to_skill": "已转为技能", "archived": "已归档", "rolled_back": "已回退"][value] ?? value)
+    }
+    static func recallState(_ memory: MemoryItem) -> String {
+        let origin = MemoryOriginLayer.classify(memory)
+        if origin == .inactive { return L10n("未生效") }
+        if origin == .agentCandidate { return L10n("待审核 · 尚未生效") }
+        return status(memory.promotionStatus ?? "active")
     }
 }

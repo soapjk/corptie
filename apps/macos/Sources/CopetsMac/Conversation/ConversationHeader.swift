@@ -136,7 +136,7 @@ struct SessionConversationHeaderSurface: View {
                     .help(L10n("Back to task list"))
                 }
             }
-            .frame(width: detailColumnVisibility == nil ? 66 : 142, alignment: .leading)
+            .frame(width: isLiquidGlass ? 28 : 0, alignment: .leading)
 
             HStack {
                 Spacer(minLength: 0)
@@ -227,7 +227,6 @@ struct SessionConversationHeaderSurface: View {
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.75)
                             .truncationMode(.tail)
                             .multilineTextAlignment(.center)
                             .accessibilityAddTraits(.isHeader)
@@ -309,8 +308,7 @@ struct SessionConversationHeaderSurface: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .frame(maxWidth: 560)
-        .fixedSize(horizontal: true, vertical: false)
-        .platformGlassSurface(in: Capsule())
+        .help(selectedTitle ?? "")
     }
 
     private var selectedTitle: String? {

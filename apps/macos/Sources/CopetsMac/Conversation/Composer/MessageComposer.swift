@@ -458,7 +458,7 @@ struct SessionMessageComposerSurface: View {
             onMentionCommand: handleMentionCommand,
             onSubmit: send
         )
-        .frame(height: compact ? CompactComposerLayout.resolvedInputHeight(inputHeight) : max(72, inputHeight))
+        .frame(height: compact ? CompactComposerLayout.resolvedInputHeight(inputHeight) : max(44, inputHeight))
         .popover(isPresented: mentionMenuPresented,
                  attachmentAnchor: .point(mentionAnchorPoint), arrowEdge: .bottom) {
             ComposerMentionMenu(candidates: mentionCandidates,
