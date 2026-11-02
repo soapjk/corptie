@@ -12,7 +12,7 @@ export function surfaceForEventType(type) {
 export function agentMessageEventSQL(tableAlias) {
   if (process.env.CORPTIE_OPTIMIZED_MESSAGE_CURSOR_READS === "0") {
     return `(
-      ${tableAlias}.type IN ('CodexThreadCompleted', 'AgentTurnCompleted', 'turn.completed')
+      ${tableAlias}.type IN ('CodexThreadCompleted', 'AgentTurnCompleted', 'turn.completed', 'SessionCoordinationCompleted')
       AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1
     )`;
   }
@@ -30,7 +30,7 @@ export function formalMessageEventSQL(tableAlias = null) {
 }
 
 export function eventHasAgentMessage(event) {
-  return ["CodexThreadCompleted", "AgentTurnCompleted", "turn.completed"].includes(event.type)
+  return ["CodexThreadCompleted", "AgentTurnCompleted", "turn.completed", "SessionCoordinationCompleted"].includes(event.type)
     && (event.payload?.hasAgentMessage === true || event.payload?.hasAgentMessage === 1);
 }
 

@@ -795,7 +795,9 @@ export class DetailDocumentService {
     this.businessInvalidation.observe(session);
     const logicalSessionId = logical?.logicalSessionId ?? this.store.getLogicalSessionByLegacySessionId?.(session.id)?.logicalSessionId ?? session.id;
     const rawTask = session.taskId ? this.store.getTask(session.taskId) : null;
-    const task = rawTask ? { ...rawTask, coordinationDispatches: !rawTask.parent_task_id ? this.store.listTaskCoordinationDispatches?.(rawTask.id) ?? [] : [] } : null;
+    const task = rawTask ? { ...rawTask,
+      coordinationExecution: !rawTask.parent_task_id ? this.coordinationState?.(session.id) ?? null : null,
+      coordinationDispatches: !rawTask.parent_task_id ? this.store.listTaskCoordinationDispatches?.(rawTask.id) ?? [] : [] } : null;
     const workId = task?.work_id ?? session.workId;
     const taskHierarchy = task ? this.store.hierarchySummaries?.([task.id]).get(task.id) ?? null : null;
     const parent = task?.parent_task_id ? this.store.getTask(task.parent_task_id) : null;

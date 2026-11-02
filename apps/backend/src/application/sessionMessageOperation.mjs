@@ -302,7 +302,9 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     turnId: providerTurnId
   });
 
-  if (dispatchAccepted) emitEvent("SessionRunStarted", {
+  if (dispatchAccepted && !["completed", "failed", "cancelled"].includes(
+    dispatchBindingId ? store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)?.execution_status : null
+  )) emitEvent("SessionRunStarted", {
     sessionId: routedSessionId,
     logicalSessionId: reference.logicalSessionId,
     source

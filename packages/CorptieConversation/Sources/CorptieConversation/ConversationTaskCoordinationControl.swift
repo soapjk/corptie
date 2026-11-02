@@ -7,14 +7,25 @@ public struct ConversationTaskCoordinationControl: View {
     public let updating: Bool
     public let onChange: (Bool) -> Void
     public let dispatches: [ClientTaskCoordinationDispatch]
-    public init(enabled: Bool, updating: Bool = false, dispatches: [ClientTaskCoordinationDispatch] = [], onChange: @escaping (Bool) -> Void) {
+    public let execution: ClientCoordinationExecution?
+    private var explanation: String {
+        if let reason = execution?.reason, !reason.isEmpty { return reason }
+        return "开发由子任务执行，当前会话负责讨论与派发；关闭后已派发任务仍会继续。"
+    }
+    public init(enabled: Bool, updating: Bool = false, dispatches: [ClientTaskCoordinationDispatch] = [], execution: ClientCoordinationExecution? = nil, onChange: @escaping (Bool) -> Void) {
         self.enabled = enabled; self.updating = updating; self.onChange = onChange
+        self.execution = execution
         self.dispatches = Array(dispatches.prefix(5))
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange)).disabled(updating)
-            Text("自动派发给子任务，当前会话继续讨论；关闭后已派发任务仍会执行并回报。")
+            Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
+                .disabled(updating || (!enabled && execution?.status == "unsupported"))
+            if enabled {
+                Text(execution?.statusLabel ?? "执行限制尚未验证")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text(explanation)
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(dispatches) { item in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {

@@ -146,7 +146,7 @@ export function createProductEventPublisher({
     const items = automationTimelineItems([sessionEvent], {
       resolveRun: id => store.getScheduledSessionRun?.(id)
     });
-    if (type === "SessionCommandCompleted" && payload?.item) {
+    if (["SessionCommandCompleted", "SessionCoordinationCompleted"].includes(type) && payload?.item) {
       items.push(payload.item);
     }
     if (["AgentWorkQueued", "AgentWorkPreparing", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {

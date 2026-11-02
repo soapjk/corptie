@@ -70,6 +70,14 @@ test("product events commit timeline and outbox before SSE and downstream listen
   assert.equal(f.calls.length, count);
 });
 
+test("host coordination results use the durable product timeline and outbox", () => {
+  const f = fixture();
+  const item = { id: "coordination:one:result", type: "agentMessage", text: "已受理" };
+  createProductEventPublisher(f.options).emitEvent("SessionCoordinationCompleted", { item, hasAgentMessage: true }, { sessionId: "session:1" });
+  assert.equal(f.calls.find(([kind]) => kind === "timeline")[2].id, item.id);
+  assert.ok(f.calls.find(([kind]) => kind === "outbox"));
+});
+
 test("a failed persistence transaction never enters replay or client publication", () => {
   const f = fixture();
   f.store.enqueueEventOutbox = () => { throw new Error("storage unavailable"); };

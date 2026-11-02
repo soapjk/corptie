@@ -24,8 +24,34 @@ import { ClientInspectorAPI } from "../src/application/clientInspectorAPI.mjs";
 import { ClientDeviceAuthority } from "../src/application/clientDeviceAuthority.mjs";
 import { ClientDeviceGateway } from "../src/application/clientDeviceGateway.mjs";
 import { createServer } from "node:http";
+import { CoordinationTurnService } from "../src/application/coordinationTurnService.mjs";
+import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
+import { ToolHostService } from "../src/application/toolHostService.mjs";
+import { eventHasAgentMessage } from "../src/store/sessionEventSemantics.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
+async function restrictedFixture(t, providerId = "codex-app-server", supported = true) {
+  const f = await fixture(t, providerId);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+  const route = () => f.store.getLogicalSessionByLegacySessionId(f.source.sessionId);
+  const reference = () => ({ sessionId: f.source.sessionId, logicalSessionId: route().logicalSessionId,
+    bindingId: route().activeBinding.bindingId, routingVersion: route().routingVersion,
+    providerId, providerSessionId: f.source.sessionId, metadata: { session: f.store.getSession(f.source.sessionId) } });
+  let output = { kind: "discussion", reply: "讨论答复", items: [] }, run = null;
+  const requests = [], terminals = [], events = [];
+  const registry = { supports: () => supported, get: () => ({ descriptor: { metadata: { backgroundExecutionPolicies: supported ? ["no-tools"] : [] } } }),
+    invoke: () => { throw new Error("Unrestricted Provider execution must never be invoked"); } };
+  const turns = new CoordinationTurnService({ store: f.store, registry, resolveReference: reference, dispatch: f.coordinator,
+    planner: { run: async input => { requests.push(input); if (run) return run(input); return { text: JSON.stringify(output) }; } },
+    emitEvent: (type, payload) => events.push({ type, payload }), onTerminal: entry => terminals.push(entry) });
+  const application = new SessionApplicationService({ registry, resolveSessionReference: reference, coordinationTurns: turns,
+    toolHostService: { prepareSession: () => { throw new Error("Must not prepare ordinary tools"); } } });
+  f.workService.onCoordinationChanged = taskId => turns.policyChanged(taskId);
+  return { ...f, turns, application, reference, requests, terminals, events,
+    output(value) { output = value; }, run(value) { run = value; },
+    instruction: () => ({ kind: "dispatch", reply: "不能把这个当作已完成", items: [{ action: "create", taskId: null,
+      title: "实施修复", text: "执行开发并提供验证证据", agentId: f.role.agentId }] }) };
+}
 async function fixture(t, providerId = "codex-app-server") {
   const dir = await mkdtemp(join(tmpdir(), "coordination-"));
   const store = new CorptieStore({ dbPath: ":memory:", configPath: join(dir, "config.json"), manageProcessEnvironment: false });
@@ -418,4 +444,170 @@ test("paired mobile HTTP toggle uses the injected shared Detail service, persist
   assert.equal((await recovered.json()).status, "completed");
   assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 0);
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_command_receipts WHERE device_id=? AND status='completed'", [credentials.deviceId]).n, 2);
+});
+
+test("restricted coordination bypasses all native tools and sends on both no-tools Providers", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
+    const f = await restrictedFixture(t, provider);
+    f.output(f.instruction());
+    const receipt = await f.application.sendMessage(f.source.sessionId, "只有一行的小修复也请开发", { idempotencyKey: "instruction-one" });
+    assert.equal(receipt.executionMode, "coordination");
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.requests[0].executionPolicy, "no-tools");
+    assert.equal(f.requests[0].permissionProfile, "read-only");
+    assert.equal(f.requests[0].allowProviderFallback, false);
+    assert.equal(f.requests[0].priority, "interactive");
+    assert.equal(f.requests[0].preferredProviderId, provider);
+    assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
+    assert.equal(f.terminals[0].status, "completed");
+    assert.match(f.events.at(-1).payload.item.text, /已受理 1/);
+    assert.doesNotMatch(f.events.at(-1).payload.item.text, /不能把这个当作已完成/);
+    await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "instruction-one" });
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
+  });
+});
+
+test("discussion remains responsive without dispatching; unsafe command cannot escape", async t => {
+  const f = await restrictedFixture(t);
+  const receipt = await f.application.sendMessage(f.source.sessionId, "先讨论方案", { idempotencyKey: "discussion" });
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+  assert.equal(f.store.getSessionItem(f.source.sessionId, `${receipt.turnId}:result`).text, "讨论答复");
+  assert.equal(f.turns.state(f.reference()).status, "enforced");
+  await assert.rejects(f.application.executeCommand(f.source.sessionId, { name: "review", arguments: "" }), { code: "COORDINATION_COMMAND_DENIED" });
+});
+
+test("unsupported runtime and image inputs fail closed before any planner or native send", async t => {
+  const f = await restrictedFixture(t, "openclacky", false);
+  await assert.rejects(f.application.sendMessage(f.source.sessionId, "开发"), { code: "COORDINATION_ISOLATION_UNSUPPORTED" });
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.turns.state(f.reference()).status, "unsupported");
+  assert.throws(() => f.turns.assertCanEnable({ ...f.parent, current_session_id: f.source.sessionId }), { code: "COORDINATION_ISOLATION_UNSUPPORTED" });
+  const supported = await restrictedFixture(t);
+  await assert.rejects(supported.application.sendMessage(supported.source.sessionId, { text: "看图开发", images: [{}] }), { code: "COORDINATION_IMAGE_UNSUPPORTED" });
+  assert.equal(supported.requests.length, 0);
+});
+
+test("invalid plan, runtime isolation error and failed admission never fall back or blindly retry", async t => {
+  for (const kind of ["invalid", "runtime", "admission"]) await t.test(kind, async t => {
+    const f = await restrictedFixture(t);
+    if (kind === "invalid") f.output({ kind: "discussion", reply: "I did it", items: [f.instruction().items[0]] });
+    if (kind === "runtime") f.run(async () => { throw Object.assign(new Error("Runtime tool config unverified"), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" }); });
+    if (kind === "admission") f.output({ ...f.instruction(), items: [{ ...f.instruction().items[0], agentId: "foreign-role" }] });
+    const receipt = await f.application.sendMessage(f.source.sessionId, "开发", { idempotencyKey: "failure" });
+    assert.equal(f.terminals[0].status, "failed");
+    assert.equal(f.store.getSessionTurn(f.source.sessionId, f.source.providerBindingId, receipt.turnId).execution_status, "failed");
+    assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+    await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "failure" });
+    assert.equal(f.requests.length, 1);
+  });
+});
+
+test("mode toggle during planning fences stale decisions and never restores writable execution", async t => {
+  const f = await restrictedFixture(t);
+  f.run(async () => {
+    f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+    return { text: JSON.stringify(f.instruction()) };
+  });
+  await f.application.sendMessage(f.source.sessionId, "开发", { idempotencyKey: "toggle-race" });
+  assert.equal(f.terminals[0].status, "failed");
+  assert.match(f.events.at(-1).payload.item.text, /策略|开关/);
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+});
+
+test("stop aborts only the host planner; an unresolved original execution is not replayed", async t => {
+  const f = await restrictedFixture(t);
+  f.run(input => new Promise((resolve, reject) => input.signal.addEventListener("abort", () => reject(new Error("Stopped")), { once: true })));
+  const pending = f.application.sendMessage(f.source.sessionId, "开发", { idempotencyKey: "cancel" });
+  for (let i = 0; i < 30 && !f.requests.length; i++) await nextTick();
+  assert.equal((await f.application.interrupt(f.source.sessionId)).coordination, true);
+  await pending;
+  assert.equal(f.terminals[0].status, "cancelled");
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+  const ref = f.reference();
+  f.store.upsertSessionTurn({ sessionId: ref.sessionId, bindingId: ref.bindingId, routingVersion: ref.routingVersion,
+    turnId: "coordination:crash", executionStatus: "running" });
+  await assert.rejects(f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "crash" }), { code: "COORDINATION_OUTCOME_UNCERTAIN" });
+});
+
+test("native admission lease prevents an enable racing the ordinary send boundary", async t => {
+  const f = await restrictedFixture(t);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  const release = f.turns.beginNative(f.reference());
+  assert.throws(() => f.turns.assertCanEnable({ ...f.parent, current_session_id: f.source.sessionId }), { code: "COORDINATION_SWITCH_BUSY" });
+  assert.throws(() => f.turns.beginNative(f.reference()), { code: "SESSION_BUSY" });
+  release();
+  f.turns.assertCanEnable({ ...f.parent, current_session_id: f.source.sessionId });
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+  assert.throws(() => f.turns.beginNative(f.reference()), { code: "COORDINATION_POLICY_CHANGED" });
+});
+
+test("host tool policy denies before catalog, skill gateway or discovery can execute", async () => {
+  const host = new ToolHostService({ registry: {}, catalog: { entry: () => null, execute() { assert.fail("must not execute"); } },
+    skillMcpGateway: { execute() { assert.fail("must not execute MCP"); } } });
+  host.assertExecutionAllowed = () => { throw Object.assign(new Error("blocked"), { code: "COORDINATION_NATIVE_TOOL_DENIED" }); };
+  for (const tool of ["corptie_tool_catalog_search", "corptie_tool_call", "arbitrary-shell", "corptie_task_dispatch"]) {
+    await assert.rejects(host.execute({ tool }), { code: "COORDINATION_NATIVE_TOOL_DENIED" });
+  }
+});
+
+test("safe cleanup decision reuses parent Session deletion authority and never force discards", async t => {
+  const f = await restrictedFixture(t);
+  const child = f.child("已交付子任务");
+  let inspected = 0;
+  f.coordinator.deletion = { inspect: async (id, actor) => {
+    assert.equal(id, child.id); assert.equal(actor.type, "parent_session"); inspected++; return { artifacts: [] };
+  }, request: async (id, input, actor) => {
+    assert.equal(id, child.id); assert.equal(input.mode, "safe"); assert.equal(input.artifactDisposition, "retain");
+    assert.equal(actor.id, "logical:parent"); return { accepted: true, operation: { operationId: "cleanup-one" } };
+  } };
+  f.output({ kind: "cleanup", reply: "not an acceptance", items: [{ action: "delete", taskId: child.id, title: "", text: "", agentId: "" }] });
+  await f.application.sendMessage(f.source.sessionId, "清理已交付子任务", { idempotencyKey: "cleanup" });
+  assert.equal(inspected, 1);
+  assert.equal(f.terminals[0].status, "completed");
+});
+
+test("background reports cannot trigger new tasks; completed coordination replies advance unread semantics", async t => {
+  const f = await restrictedFixture(t);
+  f.output(f.instruction());
+  await f.application.sendMessage(f.source.sessionId, "子任务执行结果通知", { idempotencyKey: "report", source: { type: "mailbox_event" } });
+  assert.equal(f.terminals[0].status, "failed");
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+  assert.equal(eventHasAgentMessage({ type: "SessionCoordinationCompleted", payload: { hasAgentMessage: true } }), true);
+  assert.equal(f.requests[0].priority, "background");
+  assert.equal(eventHasAgentMessage({ type: "SessionCoordinationCompleted", payload: {} }), false);
+});
+
+test("host planning exposes running/stop state and hands discussion back when normal mode resumes", async t => {
+  const f = await restrictedFixture(t);
+  f.run(async () => {
+    const live = f.store.getSession(f.source.sessionId);
+    assert.equal(live.status, "running");
+    assert.equal(live.capabilities.canInterrupt, true);
+    assert.match(live.external.activeTurnId, /^coordination:/);
+    return { text: JSON.stringify({ kind: "discussion", reply: "讨论中新增的要求", items: [] }) };
+  });
+  await f.application.sendMessage(f.source.sessionId, "讨论", { idempotencyKey: "handoff" });
+  const settled = f.store.getSession(f.source.sessionId);
+  assert.equal(settled.status, "complete");
+  assert.equal(settled.capabilities.canInterrupt, false);
+  assert.match(f.turns.handoffContext(f.reference()).prompt, /讨论中新增的要求/);
+  assert.ok(Buffer.byteLength(f.turns.handoffContext(f.reference()).prompt) <= 4096);
+});
+
+test("cosmetic title updates do not cancel dispatch but off-on toggles invalidate the old plan", async t => {
+  for (const toggle of [false, true]) await t.test(String(toggle), async t => {
+    const f = await restrictedFixture(t);
+    f.run(async () => {
+      f.workService.updateTask(f.parent.id, { title: "新标题" });
+      if (toggle) {
+        f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+        f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+      }
+      return { text: JSON.stringify(f.instruction()) };
+    });
+    await f.application.sendMessage(f.source.sessionId, "开发", { idempotencyKey: "policy" });
+    assert.equal(f.terminals[0].status, toggle ? "failed" : "completed");
+    assert.equal(f.coordinator.listForParent(f.parent.id).length, toggle ? 0 : 1);
+  });
 });
