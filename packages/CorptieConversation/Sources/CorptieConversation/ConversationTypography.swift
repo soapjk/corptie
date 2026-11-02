@@ -6,8 +6,9 @@ public struct ConversationTypography: Equatable, Sendable {
     public let bodySize: CGFloat
     public let userBodySize: CGFloat
     public static let classic = Self(isReading: false, bodySize: 11, userBodySize: 11)
-    public static let codexReading = Self(isReading: true, bodySize: 16, userBodySize: 15)
+    public static let codexReading = Self(isReading: true, bodySize: 14, userBodySize: 14)
     public var codeSize: CGFloat { isReading ? 13 : 12 }
+    public var proseLineHeightMultiple: CGFloat { isReading ? 1.625 : 1 }
     public var lineSpacing: CGFloat { isReading ? 4 : 0 }
     public var paragraphSpacing: CGFloat { isReading ? 10 : 0 }
     public var rowInset: CGFloat { isReading ? 6 : MessageCardMetrics.rowInset }

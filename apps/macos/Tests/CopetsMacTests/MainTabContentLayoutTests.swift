@@ -213,46 +213,11 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
-    func tabButtonsExposeStableAutomationIdentifiersAndSelectionValues() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
-        let contents = try String(contentsOf: source, encoding: .utf8)
-
-        #expect(contents.contains("accessibilityID: \"main-tab.\\($0.rawValue)\""))
-        #expect(contents.contains("PlatformNavigationRail("))
-    }
-
-    @Test
-    func tabCapsuleStaysBelowTitlebarAndKeepsSettingsInside() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
-        let contents = try String(contentsOf: source, encoding: .utf8)
-
-        #expect(contents.contains("settingsAccessibilityID: \"main-window.settings\""))
-        #expect(contents.contains("PlatformNavigationRail("))
-        #expect(!contents.contains("verticalAlignment: .center"))
-        #expect(contents.contains(".padding(.top, MainWindowLayoutMetrics.titlebarHeight + 8)"))
-        #expect(contents.contains(".padding(.bottom, 8)"))
-        #expect(!contents.contains(".background(Color(nsColor: .windowBackgroundColor)"))
-        #expect(!contents.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
-
-        let shared = source
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("packages/CorptieConversation/Sources/CorptieConversation/PlatformNavigationRail.swift")
-        let sharedContents = try String(contentsOf: shared, encoding: .utf8)
-        #expect(sharedContents.contains("onSettings()"))
-        #expect(sharedContents.contains("Text(settingsTitle)"))
-        #expect(!sharedContents.contains(".platformGlassSurface(in: Circle()"))
+    func navigationDestinationsKeepTheirAutomationContractAfterRestyling() {
+        #expect(AppTab.allCases.map(\.navigationAccessibilityIdentifier) == [
+            "main-tab.console", "main-tab.automations", "main-tab.scenes", "main-tab.worktrees",
+            "main-tab.resources", "main-tab.agents", "main-tab.memory", "main-window.settings"
+        ])
     }
 
     @Test

@@ -90,24 +90,22 @@ struct ConsoleSessionRow: View {
             selectionRequested(session)
         } label: {
             HStack(spacing: 9) {
-                Circle()
-                    .fill(session.executionTaskStatus.color)
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel(session.executionTaskStatus.label)
                 HStack(spacing: 4) {
                     Text(row.listTitle)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(WorkbenchTypography.font(for: .navigation))
                         .lineLimit(1)
-                    SessionTitleBadges(session: session)
                 }
                 Spacer(minLength: 0)
                 if (session.mailboxPendingCount ?? 0) > 0 {
                     Image(systemName: "envelope.badge").font(.caption2).foregroundStyle(.secondary)
                         .accessibilityLabel("信箱有待处理消息")
                 }
+                if [.running, .blocked, .failed].contains(session.executionTaskStatus) {
+                    SessionStatusLight(status: session.executionTaskStatus, diameter: 5)
+                }
                 if isSessionUnread(session) {
                     Circle()
-                        .fill(Color.red)
+                        .fill(Color.accentColor)
                         .frame(width: 8, height: 8)
                         .accessibilityLabel(L10n("Unread Session"))
                         .help(L10n("Unread Session"))
@@ -137,20 +135,18 @@ struct ConsoleWorkChatRowContent: View {
         let session = row.session
         Button(action: onSelect) {
             HStack(spacing: 9) {
-                Circle()
-                    .fill(session.executionTaskStatus.color)
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel(session.executionTaskStatus.label)
                 HStack(spacing: 4) {
                     Text(row.listTitle)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(WorkbenchTypography.font(for: .navigation))
                         .lineLimit(1)
-                    SessionTitleBadges(session: session)
                 }
                 Spacer(minLength: 0)
+                if [.running, .blocked, .failed].contains(session.executionTaskStatus) {
+                    SessionStatusLight(status: session.executionTaskStatus, diameter: 5)
+                }
                 if isSessionUnread(session) {
                     Circle()
-                        .fill(Color.red)
+                        .fill(Color.accentColor)
                         .frame(width: 8, height: 8)
                         .accessibilityLabel(L10n("Unread Session"))
                         .help(L10n("Unread Session"))
@@ -162,7 +158,7 @@ struct ConsoleWorkChatRowContent: View {
         .buttonStyle(SessionSelectionPressStyle())
         .listRowBackground(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+                .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)
                 .padding(.horizontal, 8)
         )
     }
@@ -179,20 +175,19 @@ struct ConsoleTaskRowContent: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(spacing: 9) {
-                TaskActivityIndicator(
-                    activity: sessionActivity,
-                    lifecycleState: task.lifecycleState,
-                    label: L10nFormat("Session: %@", sessionActivity.label)
-                )
                 HStack(spacing: 4) {
                     Text(task.title)
-                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                        .font(WorkbenchTypography.font(for: .navigation))
                         .lineLimit(1)
                 }
                 if task.hasPendingScheduledWake == true {
                     ConsoleScheduledWakeIcon()
                 }
                 Spacer(minLength: 0)
+                if [.processing, .waitingForInput, .paused, .failed].contains(sessionActivity) {
+                    TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState,
+                        label: L10nFormat("Session: %@", sessionActivity.label))
+                }
                 if task.deletionStatus == "deleting" {
                     ProgressView()
                         .controlSize(.mini)
@@ -200,7 +195,7 @@ struct ConsoleTaskRowContent: View {
                 }
                 if isUnread {
                     Circle()
-                        .fill(Color.red)
+                        .fill(Color.accentColor)
                         .frame(width: 8, height: 8)
                         .accessibilityLabel(L10n("Unread Session"))
                         .help(L10n("Unread Session"))
@@ -214,7 +209,7 @@ struct ConsoleTaskRowContent: View {
         .help([task.title, sessionActivity.label, session?.external?.provider].compactMap { $0 }.joined(separator: " · "))
         .listRowBackground(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+                .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)
                 .padding(.horizontal, 8)
         )
     }

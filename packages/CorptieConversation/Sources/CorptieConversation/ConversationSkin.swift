@@ -11,8 +11,7 @@ public enum ConversationSkin: String, CaseIterable, Sendable {
         guard self == .codexFlat else { return .legacy }
         switch role {
         case .assistant, .project: return .plain
-        // User cards share the classic surface and its status halo in both skins.
-        case .user: return .legacy
+        case .user: return .bubble
         case .composer: return .neutral
         case .process, .plan, .structured, .inspector, .interaction: return .legacy
         }

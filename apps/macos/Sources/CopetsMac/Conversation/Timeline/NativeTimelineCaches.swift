@@ -668,13 +668,13 @@ final class NativeTimelineLayoutCache {
         guard row.isExpanded else { return 0 }
         let progressWidth = row.processPlanProgressLabel.map {
             ceil(($0 as NSString).size(withAttributes: [
-                .font: NSFont.systemFont(ofSize: 9, weight: .semibold)
+                .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
             ]).width)
         } ?? 0
         // ProcessCard keeps the icon, progress label and chevron on the same
         // HStack; only the summary wraps inside the remaining native row width.
         let summaryWidth = max(20, cardWidth - 76 - progressWidth)
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let summary = includesCurrentStep ? row.processSummary : row.processPrimarySummary
         let measuredHeight = ceil((summary as NSString).boundingRect(
             with: NSSize(width: summaryWidth, height: .greatestFiniteMagnitude),

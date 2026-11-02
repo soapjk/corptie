@@ -3,11 +3,16 @@ import { loadSessionUsageSnapshot } from "./sessionUsageSnapshot.mjs";
 // Stored context usage is authoritative; account quota refresh goes through the
 // shared Session application service, never a concrete Provider transport.
 export function createSessionUsageReader({
-  store, sessionApplicationService, publishTimeline, resetForecastForSession
+  store, sessionApplicationService, publishTimeline, resetForecastForSession, readOnly = false
 }) {
   /** Account quota + context usage of one Session; shared by the desktop route and the paired-device gateway. */
   function readSessionUsage(sessionId, session = store.getSession(sessionId), { requireFreshAccount = false } = {}) {
     if (!session) return Promise.reject(new Error("Session not found."));
+    if (readOnly && requireFreshAccount) {
+      return Promise.reject(Object.assign(new Error("Account usage refresh is disabled in read-only preview."), {
+        code: "DEVELOPMENT_PREVIEW_READ_ONLY", status: 403
+      }));
+    }
     const logical = store.getLogicalSessionByLegacySessionId?.(sessionId);
     const route = logical?.activeBinding ?? null;
     const providerId = route?.providerId ?? session.external?.provider ?? "unknown";
@@ -21,7 +26,9 @@ export function createSessionUsageReader({
       available: false, provider: providerId, model
     };
     return loadSessionUsageSnapshot({
-      loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
+      // A quota read can resume a Provider runtime. Preview must use only
+      // stored values, including when the UI polls this GET endpoint.
+      loadAccount: async () => readOnly ? null : sessionApplicationService.readAccountUsage(sessionId),
       loadContext: async () => contextMatchesRoute ? storedContext.context : null,
       fallbackAccount,
       requireFreshAccount,
