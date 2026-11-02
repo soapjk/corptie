@@ -69,10 +69,10 @@ struct ConversationTypographyTests {
         }
     }
     @Test func readingBodyHeadingsCodeAndUserHaveDistinctMetrics() {
-        for (style, size) in [(MessageMarkdown.Style.agent, CGFloat(16)), (.user, 15)] {
+        for (style, size) in [(MessageMarkdown.Style.agent, CGFloat(14)), (.user, 14)] {
             let value = MessageMarkdown.make(text: "正文 English 😀\n\nNext", style: style, typography: .codexReading)
             #expect((value.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == size)
-            #expect((value.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.lineSpacing == (style == .agent ? 2 : 4))
+            #expect((value.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.lineSpacing == 0)
         }
         let heading = MessageMarkdown.make(text: "# Heading", style: .agent, typography: .codexReading)
         #expect((heading.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 22)
@@ -88,7 +88,7 @@ struct ConversationTypographyTests {
         #expect(reading.string == classic.string)
         let emptyParagraph = (source as NSString).range(of: "\n\n").location + 1
         #expect((reading.attribute(.font, at: emptyParagraph, effectiveRange: nil) as? NSFont)?.pointSize == 1)
-        #expect((reading.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing == 6)
+        #expect((reading.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)?.paragraphSpacing == 10)
         #expect((classic.attribute(.font, at: emptyParagraph, effectiveRange: nil) as? NSFont)?.pointSize == 11)
     }
     @Test func tableCacheReplacesProfileWithoutReusingOldFonts() throws {
@@ -116,4 +116,38 @@ struct ConversationTypographyTests {
     }
 }
 
+#endif
+
+#if os(macOS)
+extension ConversationTypographyTests {
+    @Test func readingProseMatchesUserAndComposerWeight() throws {
+        func font(_ style: MessageMarkdown.Style) throws -> NSFont {
+            let value = MessageMarkdown.make(text: "普通正文 Plain text", style: style, typography: .codexReading)
+            return try #require(value.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        }
+        let reply = try font(.agent)
+        #expect(reply == (try font(.user)))
+        #expect(reply == WorkbenchTypography.nativeFont(for: .composerInput))
+    }
+}
+#endif
+
+#if os(macOS)
+extension ConversationTypographyTests {
+    @Test func readingLineBoxesAndHangingListsMatchWebLayout() throws {
+        for role in [MessageMarkdown.Style.agent, .user] {
+            let text = MessageMarkdown.make(text: "中文 English long paragraph", style: role, typography: .codexReading)
+            let paragraph = try #require(text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+            #expect(paragraph.minimumLineHeight == 22.75)
+            #expect(paragraph.maximumLineHeight == 0)
+            #expect(paragraph.lineSpacing == 0)
+        }
+        for source in ["- Long list item", "12. Long list item"] {
+            let text = MessageMarkdown.make(text: source + "\nNext paragraph", style: .agent, typography: .codexReading)
+            let paragraph = try #require(text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+            #expect(paragraph.headIndent > paragraph.firstLineHeadIndent)
+            #expect(paragraph.paragraphSpacing == 4)
+        }
+    }
+}
 #endif

@@ -132,20 +132,17 @@ struct SessionConversationHeaderSurface: View {
                             .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.plain)
-                    .platformGlassSurface(in: Circle(), interactive: true)
+
                     .help(L10n("Back to task list"))
                 }
             }
             .frame(width: isLiquidGlass ? 28 : 0, alignment: .leading)
 
-            HStack {
-                Spacer(minLength: 0)
-                headerIdentityCapsule
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity)
+            headerIdentityCapsule
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                if let action = primaryHeaderAction { headerActionButton(action) }
                 if session != nil {
                     if let visibility = detailColumnVisibility {
                         Button {
@@ -164,7 +161,6 @@ struct SessionConversationHeaderSurface: View {
                             Image(systemName: "sidebar.right")
                                 .font(.system(size: 12, weight: .semibold))
                                 .frame(width: 28, height: 28)
-                                .platformGlassSurface(in: Circle(), interactive: true)
                         }
                         .buttonStyle(.plain)
                         .help(L10n(visibility.wrappedValue ? "Hide Detail" : "Show Detail"))
@@ -178,7 +174,6 @@ struct SessionConversationHeaderSurface: View {
                         Image(systemName: "macwindow.on.rectangle")
                             .font(.system(size: 12, weight: .semibold))
                             .frame(width: 28, height: 28)
-                            .platformGlassSurface(in: Circle(), interactive: true)
                     }
                     .buttonStyle(.plain)
                     .help(L10n("Open chat in floating window"))
@@ -186,6 +181,8 @@ struct SessionConversationHeaderSurface: View {
                     .accessibilityIdentifier("session.detail.detach")
 
                     Menu {
+                        headerActionMenu
+                        Divider()
                         Button(action: openWorkspaceInVSCode) {
                             Label(
                                 L10n("Open in Visual Studio Code"),
@@ -206,32 +203,32 @@ struct SessionConversationHeaderSurface: View {
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .frame(width: 28, height: 28)
-                    .platformGlassSurface(in: Circle(), interactive: true)
+
                     .help(L10n("Open workspace"))
                     .accessibilityLabel(L10n("Open workspace"))
                     .accessibilityIdentifier("session.detail.actions")
                 }
             }
-            .frame(width: detailColumnVisibility == nil ? 66 : 142, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundStyle(.secondary)
         }
     }
 
     private var headerIdentityCapsule: some View {
-        VStack(alignment: .center, spacing: 3) {
+        VStack(alignment: .leading, spacing: 4) {
             if let selectedTitle {
                 Button {
                     copySessionTitle(selectedTitle)
                 } label: {
                     HStack(spacing: 4) {
                         Text(selectedTitle)
-                            .font(.title3.weight(.semibold))
+                            .font(WorkbenchTypography.font(for: .conversationTitle))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .multilineTextAlignment(.center)
+                            .multilineTextAlignment(.leading)
                             .accessibilityAddTraits(.isHeader)
                             .accessibilityIdentifier("conversation-task-title")
-                        if let session { SessionTitleBadges(session: session) }
                         if hasPendingScheduledWake {
                             ConsoleScheduledWakeIcon(isActive: scenePhase == .active && isPresentationActive)
                                 .accessibilityIdentifier("conversation-task-scheduled-wake")
@@ -266,10 +263,6 @@ struct SessionConversationHeaderSurface: View {
                 }
             }
             HStack(alignment: .center, spacing: 6) {
-                if let selectedSession = session {
-                    SessionHeaderProviderIdentity(session: selectedSession, providers: providers)
-                        .font(.system(size: 11, weight: .semibold))
-                }
                 if let cwd = workspacePath, !cwd.isEmpty {
                     Button(action: copyWorkspacePath) {
                         HStack(spacing: 4) {
@@ -282,8 +275,8 @@ struct SessionConversationHeaderSurface: View {
                                     .transition(.opacity.combined(with: .scale))
                             }
                         }
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .font(WorkbenchTypography.font(for: .conversationMetadata))
+                        .foregroundStyle(.secondary)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -294,20 +287,10 @@ struct SessionConversationHeaderSurface: View {
                         .help(projectServiceStatusHelp(status))
                 }
             }
-            HStack(spacing: 8) {
-                if let action = primaryHeaderAction {
-                    headerActionButton(action)
-                        .contextMenu { headerActionMenu }
-                }
-                if hasWorktreeTarget {
-                    headerActionButton(.manageWorktrees)
-                        .contextMenu { headerActionMenu }
-                }
-            }
+
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 8)
         .padding(.vertical, 8)
-        .frame(maxWidth: 560)
         .help(selectedTitle ?? "")
     }
 
@@ -387,7 +370,7 @@ struct SessionConversationHeaderSurface: View {
                     ProjectWorktreeStatusChip(status: status, showsSurface: false)
                 } else {
                     Label("Worktree", systemImage: "arrow.triangle.branch")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(WorkbenchTypography.font(for: .conversationMetadata))
                 }
             }
             .buttonStyle(.plain)

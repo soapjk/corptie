@@ -20,6 +20,8 @@ struct AppearanceSettingsView: View {
                 }.padding(8)
             }
             LocalWallpaperSettingsView()
+            Text("工作台使用纯色阅读背景；自定义背景仍用于其他页面。")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(16)
         .modifier(ConversationSkinHost())

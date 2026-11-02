@@ -1535,7 +1535,7 @@ const { controlPlaneSnapshot, readControlPlaneEntity, presentTaskForClient } = c
   store, environmentName, decorateSessionForClient
 });
 const { readSessionUsage, getGatewayUsage } = createSessionUsageReader({
-  store, sessionApplicationService,
+  store, sessionApplicationService, readOnly: developmentPreview,
   publishTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId),
   resetForecastForSession: (session) => session.external?.provider === "codex-app-server"
     ? codexResetForecastMonitor?.snapshot() ?? null : null

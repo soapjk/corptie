@@ -5,10 +5,17 @@ import CorptieClientCore
 /// Value-only identity; timeline rows never subscribe to the global Agent store.
 struct MacReplyIdentityHeader: View {
     let identity: ConversationReplyIdentity
+    var skin: ConversationSkin = .classic
     var body: some View {
         HStack(spacing: 8) {
             Group {
-                if let path = identity.avatarPath, !path.isEmpty {
+                if skin == .codexFlat {
+                    Text(DefaultAvatarInitials.make(from: identity.name))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.primary.opacity(0.05))
+                } else if let path = identity.avatarPath, !path.isEmpty {
                     AnimatedAvatarImage(path: path, animates: false)
                 } else {
                     DefaultInitialAvatarView(familySeed: identity.name, variationSeed: identity.roleID,
@@ -18,7 +25,8 @@ struct MacReplyIdentityHeader: View {
             .frame(width: ReplyIdentityLayout.avatarSize, height: ReplyIdentityLayout.avatarSize)
             .clipShape(Circle())
             .accessibilityHidden(true)
-            Text(identity.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            Text(identity.name).font(WorkbenchTypography.font(for: .conversationMetadata))
+                .foregroundStyle(skin == .codexFlat ? Color.secondary : Color.primary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, minHeight: ReplyIdentityLayout.headerHeight, maxHeight: ReplyIdentityLayout.headerHeight, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -206,7 +214,7 @@ struct MacSharedMessageTextCard: View {
                     .accessibilityIdentifier("chat.timeline.time-separator")
             }
             if let identity = row.replyIdentity {
-                MacReplyIdentityHeader(identity: identity)
+                MacReplyIdentityHeader(identity: identity, skin: skin)
                     .padding(.horizontal, ReplyLeadingLayout.contentLeading).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
@@ -663,7 +671,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             self.host = host
         }
         self.host?.menu = menu
-        if row.nativeStyle == .user, let status = row.messageStatus {
+        if skin == .classic, row.nativeStyle == .user, let status = row.messageStatus {
             if messageGlow == nil {
                 let glow = NativeMessageStatusGlow(frame: .zero)
                 addSubview(glow, positioned: .below, relativeTo: host)

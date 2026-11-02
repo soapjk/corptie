@@ -139,7 +139,7 @@ struct ConsoleScheduledWakeIcon: View {
 }
 
 enum ConsoleWorkOutlineRowMetrics {
-    static let height: CGFloat = 24
+    static let height: CGFloat = 30
     static let spacing: CGFloat = 2
 
     static func contentHeight(count: Int) -> CGFloat {
@@ -316,7 +316,13 @@ struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
     }
 }
 
-private typealias ConsoleWorkOutlineGroupCardModifier = WorkGroupCardSurface
+private struct ConsoleWorkOutlineGroupCardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 6).padding(.vertical, 1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(ConversationContentSurface(cornerRadius: 8, isPanel: true, role: .project))
+    }
+}
 
 extension View {
     func consoleWorkOutlineGroupCard() -> some View {
@@ -381,6 +387,7 @@ struct ConsoleWorkOutlineHeader: View {
 
     @State private var isHovering = false
     @FocusState private var isCreateTaskFocused: Bool
+    @FocusState private var isChatFocused: Bool
 
     var body: some View {
         let _ = SessionSwitchTrace.shared.recordWorkHeader(workID: work.id, inputs: .init(
@@ -391,16 +398,13 @@ struct ConsoleWorkOutlineHeader: View {
         WorkOutlineHeaderRow(toggleExpanded: toggleExpanded) {
             Button(action: toggleExpanded) {
                 HStack(spacing: 7) {
-                    ObjectiveAvatarView(
-                        objectiveID: work.id,
-                        name: work.name,
-                        avatarPath: work.avatarPath,
-                        size: 22
-                    )
-                    ConsoleWorkTitle(title: work.name, isWorking: isWorking,
-                        isActive: isActive && controlActiveState != .inactive)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.primary)
+                    Image(systemName: "folder")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    Text(work.name)
+                        .font(WorkbenchTypography.font(for: .navigation))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                 }
                 .padding(.vertical, 3)
@@ -411,14 +415,27 @@ struct ConsoleWorkOutlineHeader: View {
             .accessibilityValue(accessibilityValue)
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
         } discussion: {
-            WorkDiscussionButton(isSelected: isChatSelected, isRunning: isChatRunning,
-                hasUnread: hasUnreadChat, title: L10n("讨论"),
-                accessibilityTitle: L10n("Open Work Chat"),
-                accessibilityState: hasUnreadChat ? L10n("Unread Session") : "",
-                action: openChat)
-                .padding(.leading, 6)
+            Button(action: openChat) {
+                Image(systemName: "bubble.left")
+                    .font(.system(size: 12))
+                    .foregroundStyle(isChatSelected ? Color.primary : Color.secondary)
+                    .frame(width: 24, height: 24)
+                    .background(isChatSelected ? Color.primary.opacity(0.06) : .clear,
+                                in: RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
+            .focused($isChatFocused)
+            .opacity(isHovering || isChatFocused || isChatSelected || hasUnreadChat ? 1 : 0)
+            .help(L10n("Open Work Chat"))
+            .accessibilityLabel(L10nFormat("%@ · %@", work.name, L10n("Open Work Chat")))
+            .accessibilityValue(hasUnreadChat ? L10n("Unread Session") : "")
 
         } actions: {
+            if isWorking {
+                Circle().fill(Color.accentColor).frame(width: 5, height: 5)
+                    .help(L10n("Processing"))
+                    .accessibilityLabel(L10n("Processing"))
+            }
             if hasUnread && !isExpanded {
                 UnreadSessionDot(label: L10n("Unread Session"))
                     .padding(.trailing, 4)
@@ -432,7 +449,7 @@ struct ConsoleWorkOutlineHeader: View {
             }
             .buttonStyle(.plain)
             .focused($isCreateTaskFocused)
-            .opacity(isHovering || isCreateTaskFocused ? 1 : 0.45)
+            .opacity(isHovering || isCreateTaskFocused ? 1 : 0)
             .accessibilityLabel(L10nFormat("Create Task in %@", work.name))
             .help(L10nFormat("Create Task in %@", work.name))
         }

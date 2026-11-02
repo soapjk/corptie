@@ -411,6 +411,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     func updateSkin(_ next: ConversationSkin) {
         guard skin != next else { return }
         skin = next
+        synchronizeTableWidth()
         needsTypographyReflow = tableView != nil && !rows.isEmpty
         if needsTypographyReflow && presentationActive { reflowForTypography() }
     }
@@ -859,7 +860,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         if abs(tableView.frame.minY - topClearance) >= 0.5
             || abs(tableView.frame.height - rowsHeight) >= 0.5 {
             tableView.frame = NSRect(
-                x: 0,
+                x: tableView.frame.minX,
                 y: topClearance,
                 width: tableView.frame.width,
                 height: rowsHeight
@@ -1254,7 +1255,17 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         }
         // The host may extend only the scroller into existing page spacing.
         // Always measure the actual message viewport, never that extension.
-        let width = max(120, scrollView.contentView.bounds.width)
+        let viewportWidth = scrollView.contentView.bounds.width
+        let lane = skin == .codexFlat && reservesVerticalScrollerGutter
+            ? WorkbenchStyle.lane(viewportWidth: viewportWidth)
+            : CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
+        let width = max(120, lane.width)
+        // Recenter even when the clamped reading width stays constant on resize.
+        tableView.setFrameOrigin(NSPoint(x: lane.minX, y: tableView.frame.minY))
+        tableView.setFrameSize(NSSize(width: width, height: tableView.frame.height))
+        if let documentView = scrollView.documentView {
+            documentView.setFrameSize(NSSize(width: viewportWidth, height: documentView.frame.height))
+        }
         guard abs(column.width - width) >= 0.5 else { return }
         let anchor = visibleAnchor(in: tableView)
         column.width = width

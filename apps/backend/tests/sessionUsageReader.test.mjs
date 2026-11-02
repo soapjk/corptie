@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSessionUsageReader } from "../src/application/sessionUsageReader.mjs";
 
-function fixture() {
+function fixture({ readOnly = false } = {}) {
   const calls = [];
   const stored = { account: { available: true, provider: "test-provider", model: "model", remaining: 10 }, context: { tokens: 5 } };
   const service = { readAccountUsage: async () => stored.account };
   const reader = createSessionUsageReader({
+    readOnly,
     store: {
       getSession: (id) => id === "one" ? { external: { provider: "test-provider", currentModel: "model" } } : null,
       getLogicalSessionByLegacySessionId: (id) => id === "one" ? { activeBinding: {
@@ -57,5 +58,35 @@ test("gateway quota reads remain local and missing sessions retain their fallbac
   assert.deepEqual(await f.reader.getGatewayUsage("one"), f.stored.account);
   assert.deepEqual(await f.reader.getGatewayUsage("missing"), { available: false, provider: "unknown", model: null });
   await assert.rejects(f.reader.readSessionUsage("missing"), /Session not found/);
+  assert.deepEqual(f.calls, []);
+});
+
+
+test("read-only preview returns cached context and quota without calling a Provider or writing", async () => {
+  const f = fixture({ readOnly: true });
+  let providerReads = 0;
+  f.service.readAccountUsage = async () => { providerReads++; throw new Error("Provider must not start"); };
+  const usage = await f.reader.readSessionUsage("one");
+  assert.deepEqual(usage.context, f.stored.context);
+  assert.deepEqual(usage.account, f.stored.account);
+  assert.equal(usage.accountFresh, false);
+  assert.equal(providerReads, 0);
+  assert.deepEqual(f.calls, []);
+  await assert.rejects(f.reader.readSessionUsage("one", undefined, { requireFreshAccount: true }), {
+    code: "DEVELOPMENT_PREVIEW_READ_ONLY", status: 403
+  });
+  assert.equal(providerReads, 0);
+  assert.deepEqual(f.calls, []);
+});
+
+test("read-only preview without cached quota returns unavailable without contacting a Provider", async () => {
+  const f = fixture({ readOnly: true });
+  delete f.stored.account;
+  let providerReads = 0;
+  f.service.readAccountUsage = async () => { providerReads++; return { available: true }; };
+  const usage = await f.reader.readSessionUsage("one");
+  assert.deepEqual(usage.account, { available: false, provider: "test-provider", model: "model" });
+  assert.equal(usage.accountFresh, false);
+  assert.equal(providerReads, 0);
   assert.deepEqual(f.calls, []);
 });

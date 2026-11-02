@@ -12,16 +12,16 @@ final class ConversationSkinControllerTests: XCTestCase {
         let other = try XCTUnwrap(UserDefaults(suiteName: otherName))
         defer { defaults.removePersistentDomain(forName: name); other.removePersistentDomain(forName: otherName) }
         let controller = ConversationSkinController(defaults: defaults)
-        XCTAssertEqual(controller.skin, .classic)
+        XCTAssertEqual(controller.skin, .codexFlat)
         var updates = 0
         let token = controller.$skin.dropFirst().sink { _ in updates += 1 }
-        controller.select(.codexFlat)
-        controller.select(.codexFlat)
+        controller.select(.classic)
+        controller.select(.classic)
         XCTAssertEqual(updates, 1)
-        XCTAssertEqual(ConversationSkinController(defaults: defaults).skin, .codexFlat)
-        XCTAssertEqual(ConversationSkinController(defaults: other).skin, .classic)
-        controller.restoreDefault()
         XCTAssertEqual(ConversationSkinController(defaults: defaults).skin, .classic)
+        XCTAssertEqual(ConversationSkinController(defaults: other).skin, .codexFlat)
+        controller.restoreDefault()
+        XCTAssertEqual(ConversationSkinController(defaults: defaults).skin, .codexFlat)
         withExtendedLifetime(token) {}
     }
     func testUnknownPreferenceFallsBackWithoutRewritingIt() throws {
@@ -29,7 +29,7 @@ final class ConversationSkinControllerTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set("future-skin", forKey: ConversationSkinController.preferenceKey)
-        XCTAssertEqual(ConversationSkinController(defaults: defaults).skin, .classic)
+        XCTAssertEqual(ConversationSkinController(defaults: defaults).skin, .codexFlat)
         XCTAssertEqual(defaults.string(forKey: ConversationSkinController.preferenceKey), "future-skin")
     }
 }
