@@ -18,6 +18,7 @@ export class SessionNotFoundError extends Error {
 export class SessionApplicationService {
   constructor(options = {}) {
     this.registry = options.registry;
+    this.coordinationTurns = options.coordinationTurns ?? null;
     this.resolveCreationDefaults = options.resolveCreationDefaults ?? ((providerId, input) => ({ providerId, input }));
     this.resolveSessionReference = options.resolveSessionReference;
     this.resolveSessionBinding = options.resolveSessionBinding ?? null;
@@ -632,6 +633,9 @@ export class SessionApplicationService {
 
   async executeCommand(sessionId, command, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    if ((this.coordinationTurns?.enabled(reference) || this.coordinationTurns?.active.has(reference.sessionId)) && !["help", "model", "reasoning", "rename", "stop"].includes(command.name)) {
+      throw Object.assign(new Error("协调模式禁止通过原生命令执行开发，请派发给子任务。"), { code: "COORDINATION_COMMAND_DENIED" });
+    }
     assertTaskNotArchived(reference);
     validateSessionCommand(command);
     await this.assertMessageDispatchAllowed?.(reference, context);
@@ -692,6 +696,13 @@ export class SessionApplicationService {
     } catch (error) {
       throw withDispatchStateNotSent(error);
     }
+    // This check precedes native tool preparation and ordinary Provider send.
+    // The host owns the route: a failed restricted turn never falls back.
+    if (this.coordinationTurns?.enabled(reference)) {
+      return this.coordinationTurns.send(reference, message, context);
+    }
+    const releaseNativeAdmission = this.coordinationTurns?.beginNative(reference);
+    try {
     let ready;
     const preparationStartedAt = Date.now();
     logSessionMessageLatency(context.latencyTrace, "tools_preparation_started");
@@ -766,6 +777,12 @@ export class SessionApplicationService {
     }
     let result;
     try {
+      // A toggle that raced asynchronous context/tool preparation must not
+      // admit one last unrestricted execution.
+      if (this.coordinationTurns?.enabled(dispatchReference)) {
+        contextReceipt.reject();
+        return this.coordinationTurns.send(dispatchReference, message, context);
+      }
       result = await this.registry.invoke(
         dispatchReference.providerId,
         AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
@@ -791,6 +808,7 @@ export class SessionApplicationService {
       bindingId: dispatchReference.bindingId ?? null,
       routingVersion: dispatchReference.routingVersion ?? null
     };
+    } finally { releaseNativeAdmission?.(); }
   }
 
   #recordMemoryDispatch(sessionContext, status) {
@@ -835,6 +853,8 @@ export class SessionApplicationService {
 
   async interrupt(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const coordinated = await this.coordinationTurns?.interrupt(reference);
+    if (coordinated) return coordinated;
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,

@@ -54,6 +54,7 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
     const task = scope.task, data = { taskId: task.id, title: task.title ?? "", status: task.lifecycle_state ?? "", description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "", resourceRevision: String(task.revision), summary: summary(task) };
     data.parentTaskId = task.parent_task_id ?? null;
     data.coordinationEnabled = task.coordination_enabled === 1;
+    data.coordinationExecution = task.coordinationExecution ?? null;
     data.coordinationDispatches = task.coordinationDispatches ?? [];
     data.parentSessionId = scope.parentSessionId ?? null;
     if (scope.taskHierarchy) data.hierarchy = scope.taskHierarchy;

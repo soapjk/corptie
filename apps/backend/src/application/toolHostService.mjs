@@ -177,6 +177,7 @@ export class ToolHostService {
   }
 
   async #execute(input = {}) {
+    await this.assertExecutionAllowed?.(input);
     if (input.tool === TOOL_CATALOG_SEARCH) {
       const scope = exactScope(input);
       const searchInput = {

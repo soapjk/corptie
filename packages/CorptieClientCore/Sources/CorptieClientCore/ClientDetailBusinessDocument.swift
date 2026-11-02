@@ -37,9 +37,23 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
     public let summary: ClientDetailBusinessTaskSummary
     public var parentTaskId: String? = nil
     public var coordinationEnabled: Bool? = nil
+    public var coordinationExecution: ClientCoordinationExecution? = nil
     public var coordinationDispatches: [ClientTaskCoordinationDispatch]? = nil
     public var parentSessionId: String? = nil
     public var hierarchy: TaskHierarchySummary? = nil
+}
+public struct ClientCoordinationExecution: Decodable, Equatable, Sendable {
+    public let status: String
+    public let reason: String
+    public var statusLabel: String {
+        switch status {
+        case "off": "已关闭"
+        case "pending": "等待生效"
+        case "enforced": "强协调已启用"
+        case "unsupported": "当前运行环境不支持"
+        default: "执行限制尚未验证"
+        }
+    }
 }
 public struct ClientDetailBusinessArtifact: Decodable, Equatable, Identifiable, Sendable {
     public var id: String { artifactId }

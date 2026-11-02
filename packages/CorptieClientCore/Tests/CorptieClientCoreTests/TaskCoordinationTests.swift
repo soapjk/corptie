@@ -29,5 +29,13 @@ struct TaskCoordinationTests {
         let task = try JSONDecoder().decode(ClientDetailBusinessTask.self, from: Data(payload.utf8))
         #expect(task.coordinationEnabled == true)
         #expect(task.coordinationDispatches?.first?.status == "preparing")
+        #expect(task.coordinationExecution == nil)
+        var object = try #require(JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+        for (status, label) in [("pending", "等待生效"), ("enforced", "强协调已启用"), ("unsupported", "当前运行环境不支持")] {
+            object["coordinationExecution"] = ["status": status, "reason": "server authority"]
+            let updated = try JSONDecoder().decode(ClientDetailBusinessTask.self, from: JSONSerialization.data(withJSONObject: object))
+            #expect(updated.coordinationExecution?.statusLabel == label)
+            #expect(updated.coordinationExecution?.reason == "server authority")
+        }
     }
 }
