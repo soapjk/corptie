@@ -52,15 +52,74 @@ struct TaskSessionLookup {
     private var byID: [String: TaskSession] = [:]
     private var firstActiveByTaskID: [String: TaskSession] = [:]
     private var latestActiveByTaskID: [String: TaskSession] = [:]
+    private var firstByTaskID: [String: TaskSession] = [:]
+    private var workChats: [String: TaskSession] = [:]
+    private var taskMembers: [String: [String]] = [:]
+    private var workChatMembers: [String: [String]] = [:]
+    private var order: [String: Int] = [:]
 
     init(sessions: [TaskSession] = []) {
-        for session in sessions {
+        for (index, session) in sessions.enumerated() {
             byID[session.id] = session
-            guard session.archived != true, let taskID = session.taskId else { continue }
-            if firstActiveByTaskID[taskID] == nil { firstActiveByTaskID[taskID] = session }
-            if let previous = latestActiveByTaskID[taskID], previous.updatedAt >= session.updatedAt { continue }
-            latestActiveByTaskID[taskID] = session
+            order[session.id] = index
+            addMembership(session)
         }
+        for id in taskMembers.keys { refreshTask(id) }
+        for id in workChatMembers.keys { refreshWorkChat(id) }
+    }
+
+    mutating func apply(_ patch: SessionCollectionPatch, sessions: [TaskSession]) {
+        if patch.hasStructuralChanges { self = Self(sessions: sessions); return }
+        var tasks: Set<String> = [], works: Set<String> = []
+        for update in patch.updated {
+            if let old = byID[update.sessionID] {
+                if let id = old.taskId { tasks.insert(id) }
+                if let id = old.workId { works.insert(id) }
+                if old.taskId != update.session.taskId || chatWork(old) != chatWork(update.session) {
+                    removeMembership(old); addMembership(update.session)
+                }
+            } else { addMembership(update.session) }
+            byID[update.sessionID] = update.session
+            if let id = update.session.taskId { tasks.insert(id) }
+            if let id = update.session.workId { works.insert(id) }
+        }
+        for id in tasks { refreshTask(id) }
+        for id in works { refreshWorkChat(id) }
+    }
+
+    func workChat(for workID: String) -> TaskSession? { workChats[workID] }
+    func firstSession(for taskID: String) -> TaskSession? { firstByTaskID[taskID] }
+
+    private func chatWork(_ session: TaskSession) -> String? {
+        session.resolvedSessionKind == .workChat && session.archived != true ? session.workId : nil
+    }
+    private mutating func addMembership(_ session: TaskSession) {
+        if let id = session.taskId { taskMembers[id, default: []].append(session.id) }
+        if let id = chatWork(session) { workChatMembers[id, default: []].append(session.id) }
+    }
+    private mutating func removeMembership(_ session: TaskSession) {
+        if let id = session.taskId {
+            taskMembers[id]?.removeAll { $0 == session.id }
+            if taskMembers[id]?.isEmpty == true { taskMembers[id] = nil }
+        }
+        if let id = chatWork(session) {
+            workChatMembers[id]?.removeAll { $0 == session.id }
+            if workChatMembers[id]?.isEmpty == true { workChatMembers[id] = nil }
+        }
+    }
+    private mutating func refreshTask(_ id: String) {
+        let members = (taskMembers[id] ?? []).compactMap { byID[$0] }
+        let first = members.min { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
+        firstByTaskID[id] = first
+        let active = members.filter { $0.archived != true }
+        firstActiveByTaskID[id] = active.min { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
+        latestActiveByTaskID[id] = active.max {
+            $0.updatedAt == $1.updatedAt ? (order[$0.id] ?? .max) > (order[$1.id] ?? .max) : $0.updatedAt < $1.updatedAt
+        }
+    }
+    private mutating func refreshWorkChat(_ id: String) {
+        workChats[id] = (workChatMembers[id] ?? []).compactMap { byID[$0] }
+            .min { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
     }
 
     func session(for task: CorptieTask) -> TaskSession? {
@@ -119,6 +178,74 @@ final class SessionIndexStore: ObservableObject {
     private var isReordering = false
     private(set) var contentRevision: UInt64 = 0
     private(set) var taskSessionLookup = TaskSessionLookup()
+    @Published private(set) var outlineActivityRevision: UInt64 = 0
+    @Published private(set) var workUnreadSummary = WorkRailUnreadSummary(sessions: [])
+    @Published private(set) var processingWorkIDs: Set<String> = []
+    private var unreadAssistantCount = 0
+    private var unreadWorkCounts: [String: Int] = [:]
+    private var workTasks: [String: CorptieTask] = [:]
+    private var boundTasksBySession: [String: Set<String>] = [:]
+    private var processingTasks: Set<String> = []
+    private var processingCounts: [String: Int] = [:]
+
+    func updateWorkTasks(_ tasks: [CorptieTask]) {
+        workTasks = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        boundTasksBySession = [:]; processingTasks = []; processingCounts = [:]
+        for task in tasks {
+            if let id = task.currentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+                boundTasksBySession[id, default: []].insert(task.id)
+            }
+            if taskSessionLookup.activity(for: task) == .processing {
+                processingTasks.insert(task.id); processingCounts[task.workId, default: 0] += 1
+            }
+        }
+        publishProcessingWorks()
+    }
+
+    private func publishProcessingWorks() {
+        let ids = Set(processingCounts.compactMap { $0.value > 0 ? $0.key : nil })
+        if ids != processingWorkIDs { processingWorkIDs = ids }
+    }
+
+    private func updateOutlineSummaries(_ patch: SessionCollectionPatch) {
+        func unread(_ session: TaskSession?, delta: Int) {
+            guard let session, isSessionUnread(session), session.hasValidProductClassification,
+                  session.archived != true else { return }
+            if session.resolvedSessionKind == .assistantChat { unreadAssistantCount += delta }
+            else if let id = session.workId, !id.isEmpty {
+                unreadWorkCounts[id, default: 0] += delta
+                if unreadWorkCounts[id] == 0 { unreadWorkCounts[id] = nil }
+            }
+        }
+        var affectedTasks: Set<String> = []
+        var activityChanged = patch.hasStructuralChanges
+        let changes = patch.updated.map { (rowsByID[$0.sessionID]?.session, Optional($0.session)) }
+            + patch.inserted.map { (Optional<TaskSession>.none, Optional($0.session)) }
+            + patch.removedIDs.map { (rowsByID[$0]?.session, Optional<TaskSession>.none) }
+        for (old, new) in changes {
+            unread(old, delta: -1); unread(new, delta: 1)
+            if old?.lastMessageAt != new?.lastMessageAt || old?.workId != new?.workId
+                || old?.taskId != new?.taskId || old?.archived != new?.archived { activityChanged = true }
+            for session in [old, new].compactMap({ $0 }) {
+                if let id = session.taskId { affectedTasks.insert(id) }
+                affectedTasks.formUnion(boundTasksBySession[session.id] ?? [])
+            }
+        }
+        if patch.hasStructuralChanges { affectedTasks.formUnion(workTasks.keys) }
+        let summary = WorkRailUnreadSummary(hasUnreadAssistantSessions: unreadAssistantCount > 0,
+            workIDs: Set(unreadWorkCounts.keys))
+        if summary != workUnreadSummary { workUnreadSummary = summary }
+        if activityChanged { outlineActivityRevision &+= 1 }
+        for id in affectedTasks {
+            guard let task = workTasks[id] else { continue }
+            let next = taskSessionLookup.activity(for: task) == .processing
+            if next != processingTasks.contains(id) {
+                if next { processingTasks.insert(id) } else { processingTasks.remove(id) }
+                processingCounts[task.workId, default: 0] += next ? 1 : -1
+            }
+        }
+        publishProcessingWorks()
+    }
 
     var sessions: [TaskSession] {
         orderedIDs.compactMap { rowsByID[$0]?.session }
@@ -173,9 +300,10 @@ final class SessionIndexStore: ObservableObject {
 
     func apply(_ patch: SessionCollectionPatch, authoritativeSessions: [TaskSession]) {
         if patch.hasStructuralChanges || !patch.updated.isEmpty {
-            taskSessionLookup = TaskSessionLookup(sessions: authoritativeSessions)
+            taskSessionLookup.apply(patch, sessions: authoritativeSessions)
             contentRevision &+= 1
         }
+        updateOutlineSummaries(patch)
         if isReordering {
             applyContentOnly(authoritativeSessions)
             return

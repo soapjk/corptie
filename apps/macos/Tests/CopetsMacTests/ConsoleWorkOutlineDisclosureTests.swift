@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import CorptieConversation
 import SwiftUI
 import XCTest
 @testable import CorptieMac
@@ -179,6 +180,31 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         }
     }
 
+    func testDefaultPreviewUsesPreparedFiveRootsAcrossRepeatedWorkToggles() async throws {
+        let suite = "ConsoleWorkOutlineDisclosureTests.preview.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ConsoleOutlineExpansionPreferences(defaults: defaults)
+        let session = try motionSession(), store = ConsoleOutlineProjectionStore()
+        let key = ConsoleOutlineProjectionKey(entityRevision: 1, sessionRevision: 1, search: "", sort: .standard,
+            expandedTaskIDs: ["task:0"])
+        var tasks = motionTasks(count: 1_000, session: session)
+        var child = tasks.removeLast()
+        child.parentTaskId = tasks[0].id
+        tasks.insert(child, at: 1)
+        await store.prepare(key: key, tasks: tasks, works: [], sessions: [])
+        for _ in 0..<20 {
+            preferences.toggleWork(workID: "work:motion")
+            await store.prepare(key: key, tasks: tasks, works: [], sessions: [])
+            let rows = try XCTUnwrap(store.prepared.workRowsByWorkID["work:motion"])
+            XCTAssertEqual(rows.rootCount, 999)
+            XCTAssertEqual(rows.rows(showsAll: false).map(\.id), ["task:0", "task:999", "task:1", "task:2", "task:3", "task:4"])
+            XCTAssertEqual(rows.rows(showsAll: true).count, 1_000)
+        }
+        XCTAssertEqual(store.computationCount, 1)
+        XCTAssertFalse(store.lastComputationUsedMainThread)
+    }
+
     func testRealTaskRowsHavePromptLayoutProgressAcrossListLengths() throws {
         _ = NSApplication.shared
         let session = try motionSession()
@@ -214,6 +240,42 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
                 XCTAssertLessThan(gaps.max() ?? 0, 0.1)
             }
         }
+    }
+
+    func testBackgroundPreparationReusesOtherWorksAndDiscardsSupersededRequests() async throws {
+        let session = try motionSession(), store = ConsoleOutlineProjectionStore()
+        var tasks = motionTasks(count: 300, session: session)
+        var other = motionTasks(count: 1, session: session)[0]
+        other.workId = "work:other"
+        // Different IDs across the two Works are required by the inventory contract.
+        other = CorptieTask(id: "task:other", workId: other.workId, title: "Other", description: "",
+            acceptanceCriteria: "", priority: "medium", lifecycleState: "todo", mainRoleId: nil,
+            currentSessionId: nil, executionStatus: nil, createdAt: "", updatedAt: "")
+        tasks.append(other)
+        func key(_ revision: UInt64, sort: WorkOutlineSort = .standard) -> ConsoleOutlineProjectionKey {
+            .init(entityRevision: revision, sessionRevision: 0, search: "", sort: sort)
+        }
+        await store.prepare(key: key(1), tasks: tasks, works: [], sessions: [])
+        XCTAssertFalse(store.lastComputationUsedMainThread)
+        tasks[0].description = "An unrelated description patch"
+        await store.prepare(key: key(2), tasks: tasks, works: [], sessions: [])
+        XCTAssertTrue(store.rebuiltWorkIDs.isEmpty)
+        XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.allRows.first?.description, tasks[0].description)
+        await store.prepare(key: key(3, sort: .name), tasks: tasks, works: [], sessions: [])
+        tasks[0].title = "ZZZ"
+        await store.prepare(key: key(4, sort: .name), tasks: tasks, works: [], sessions: [])
+        XCTAssertEqual(store.rebuiltWorkIDs, ["work:motion"])
+        let large = motionTasks(count: 10_000, session: session)
+        let pending = Task { await store.prepare(key: key(5), tasks: large, works: [], sessions: []) }
+        for _ in 0..<1_000 {
+            if store.requestedKey == key(5) { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(store.requestedKey, key(5))
+        await store.prepare(key: key(4, sort: .name), tasks: tasks, works: [], sessions: [])
+        await pending.value
+        XCTAssertEqual(store.preparedKey, key(4, sort: .name), "Returning to an already prepared view must cancel a pending replacement")
+        XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.allRows.count, 300)
     }
 
     func testThousandRowWorkMountsViewportAndCanScrollToLastTask() throws {
@@ -548,6 +610,34 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
     @MainActor private final class BodyCounts {
         var root = 0
         var content = 0
+    }
+    private struct ChatPreferenceOwner: View {
+        let preferences: ConsoleOutlineExpansionPreferences
+        let counts: BodyCounts
+        var body: some View {
+            counts.root += 1
+            return ConsoleAssistantExpansionScope(preferences: preferences, forceExpanded: false) { expanded in
+                Color.clear.frame(width: 100, height: expanded ? 60 : 20)
+            }
+        }
+    }
+
+    func testChatDisclosureDoesNotRebuildConsoleOwner() throws {
+        _ = NSApplication.shared
+        let suite = "ConsoleWorkOutlineDisclosureTests.chatScope.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ConsoleOutlineExpansionPreferences(defaults: defaults), counts = BodyCounts()
+        let host = NSHostingView(rootView: ChatPreferenceOwner(preferences: preferences, counts: counts))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 200, height: 100),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.05)
+        let initial = counts.root, collapsedHeight = host.fittingSize.height
+        preferences.toggleAssistant(); settle(0.05)
+        XCTAssertEqual(counts.root, initial)
+        XCTAssertGreaterThan(host.fittingSize.height, collapsedHeight)
     }
     private struct PreferenceGroup: View {
         let preferences: ConsoleOutlineExpansionPreferences
