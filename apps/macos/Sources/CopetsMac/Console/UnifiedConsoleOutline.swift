@@ -61,11 +61,14 @@ extension UnifiedConsoleView {
         let processingWorkIDs = outlineProjection.processingWorkIDs
 
         return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 4) {
+            // Keep group extents exact even when a header is offscreen. The
+            // rows inside each group provide the viewport virtualization.
+            VStack(alignment: .leading, spacing: 4) {
                 DisclosureGroup(isExpanded: outlineAssistantExpandedBinding) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    ConsoleWorkOutlineRows(rowCount: max(1, assistantSessionRows.count)) {
                         if assistantSessionRows.isEmpty {
                             outlineGroupEmptyRow(L10n("No Assistant Sessions"))
+                                .frame(height: ConsoleWorkOutlineRowMetrics.height)
                         } else {
                             ForEach(assistantSessionRows) { row in
                                 sessionRow(row)
@@ -73,6 +76,7 @@ extension UnifiedConsoleView {
                                     .background(outlineChildSelectionBackground(
                                         selectionController.presentationSessionID == row.session.id
                                     ))
+                                    .frame(height: ConsoleWorkOutlineRowMetrics.height)
                             }
                         }
                     }
@@ -99,20 +103,23 @@ extension UnifiedConsoleView {
                     let visibleTasks = tasks.filter { visibleRootIDs.contains($0.parentTaskId ?? $0.id) }
 
                     DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            if isShowingWorkerArchive {
-                                let archivedTasks = archivedTasks(for: work.id, activity: taskActivity)
-                                let taskIDs = Set(archivedTasks.map(\.id))
-                                let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
-                                    !taskIDs.contains($0.session.taskId ?? "")
-                                }
-                                ForEach(hierarchyTasks(archivedTasks)) { task in
+                        if isShowingWorkerArchive {
+                            let archivedTasks = archivedTasks(for: work.id, activity: taskActivity)
+                            let taskIDs = Set(archivedTasks.map(\.id))
+                            let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
+                                !taskIDs.contains($0.session.taskId ?? "")
+                            }
+                            let orderedTasks = hierarchyTasks(archivedTasks)
+                            ConsoleWorkOutlineRows(rowCount: max(1, orderedTasks.count + rows.count)) {
+                                ForEach(orderedTasks) { task in
                                     hierarchyTaskRow(task)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                         .background(outlineChildSelectionBackground(selectedTaskId == task.id))
+                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 }
                                 if rows.isEmpty && archivedTasks.isEmpty {
                                     outlineGroupEmptyRow(L10n("No Archived Sessions"))
+                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 } else {
                                     ForEach(rows) { row in
                                         sessionRow(row)
@@ -120,21 +127,26 @@ extension UnifiedConsoleView {
                                             .background(outlineChildSelectionBackground(
                                                 selectionController.presentationSessionID == row.session.id
                                             ))
+                                            .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                     }
                                 }
-                            } else {
+                            }
+                        } else {
+                            ConsoleWorkOutlineRows(rowCount: visibleTasks.count + (hiddenTaskCount > 0 ? 1 : 0)) {
                                 ForEach(visibleTasks) { task in
                                     hierarchyTaskRow(task)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                         .background(outlineChildSelectionBackground(
                                             selectedTaskId == task.id
                                         ))
+                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 }
                                 if hiddenTaskCount > 0 {
                                     outlineShowAllTasksButton(
                                         workID: work.id,
                                         hiddenCount: hiddenTaskCount
                                     )
+                                    .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 }
                             }
                         }
