@@ -7,9 +7,8 @@ import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { detailServiceFor } from "./application/detailDocumentService.mjs";
 import { detailMigrationConfiguration } from "./application/detailMigrationConfiguration.mjs";
 import { parseDetailWebCards } from "./application/detailWebPresentation.mjs";
-import { createDetailBusinessActionService } from "./application/detailBusinessActionComposition.mjs";
+import { createLocalDetailBusinessActionService } from "./application/detailBusinessActionComposition.mjs";
 import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
-import { ClientInspectorAPI } from "./application/clientInspectorAPI.mjs";
 import { createDetailBusinessReadPorts } from "./application/detailBusinessReadPorts.mjs";
 import { createProductEventPublisher } from "./application/productEventPublisher.mjs";
 import { createStartupRecoveryOperations } from "./application/startupRecoveryOperations.mjs";
@@ -2432,10 +2431,10 @@ detailServiceFor(store, detailMigration).configureBusinessPorts(createDetailBusi
   providerRegistry: agentProviderRegistry,
   readWorktree: id => projectWorktreeStatusReader.worktreeDetail(id)
 }));
-detailActionService = createDetailBusinessActionService({ commandAPI: new ClientSessionAPI({ store }),
-  documentService: detailServiceFor(store, detailMigration), inspector: new ClientInspectorAPI({ store,
-    resolveSession: requireSessionReference, references: sessionContextReferenceService,
-    artifacts: artifactService, schedules: scheduledSessionTaskService, observability: turnObservability }) });
+detailActionService = createLocalDetailBusinessActionService({ commandAPI: new ClientSessionAPI({ store }), workService, store,
+  documentService: detailServiceFor(store, detailMigration),
+  resolveSession: requireSessionReference, references: sessionContextReferenceService,
+  artifacts: artifactService, schedules: scheduledSessionTaskService, observability: turnObservability });
 detailServiceFor(store, detailMigration).configureBusinessActionRegistry(detailActionService.registry);
 
 await initializeBackendStoreReadiness({

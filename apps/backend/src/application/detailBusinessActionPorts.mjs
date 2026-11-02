@@ -44,7 +44,7 @@ export function createDetailBusinessActionPorts({ inspector, schedules }) {
   });
   return {
     "task.coordination.update": {
-      capability: () => typeof inspector.perform === "function",
+      capability: () => typeof inspector.perform === "function" && typeof inspector.updateTask === "function",
       resource: (scope, target) => { const value = bound(scope); return value.task?.id === target.id ? value.task : null; },
       revision: row => String(row.resource_version),
       authorize: (scope, target, row) => !row.parent_task_id && !row.archived && !row.deletion_status && bound(scope).task?.id === target.id,
