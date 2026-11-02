@@ -127,6 +127,131 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         }
     }
 
+    @MainActor private final class RowConstructions {
+        var ids: Set<String> = []
+    }
+    private struct RichSurface: View {
+        @ObservedObject var state: State
+        let tasks: [CorptieTask]
+        let session: TaskSession
+        let probe: NSView
+        var constructions: RowConstructions? = nil
+        var body: some View {
+            ScrollView {
+                VStack(spacing: 4) {
+                    DisclosureGroup(isExpanded: $state.expanded) {
+                        ConsoleWorkOutlineRows(rowCount: min(tasks.count, state.rows)) {
+                            ForEach(tasks.prefix(state.rows)) { task in
+                                let _ = constructions?.ids.insert(task.id)
+                                ConsoleTaskRowContent(task: task, sessionActivity: .idle,
+                                    session: session, isSelected: false, isUnread: true, onOpen: {})
+                                .contextMenu { Button("Task action") {} }
+                                .frame(height: ConsoleWorkOutlineRowMetrics.height)
+                            }
+                        }
+                    } label: { Text("Work with live session badges") }
+                    .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
+                    .consoleWorkOutlineGroupCard()
+                    .background(Probe(view: probe))
+                    ForEach(0..<10) { index in
+                        Text("Other Work \(index)").frame(height: 28)
+                            .consoleWorkOutlineGroupCard()
+                    }
+                }
+            }
+        }
+    }
+
+    private func motionSession() throws -> TaskSession {
+        try JSONDecoder().decode(TaskSession.self, from: Data("""
+        {"id":"session:motion","title":"会话","agent":"codex","agentId":"role:motion",
+         "status":"running","progress":0,"summary":"","updatedAt":"2026-10-31T00:00:00Z","accent":"cyan",
+         "external":{"provider":"codex-app-server","currentModel":"model-v1"}}
+        """.utf8))
+    }
+
+    private func motionTasks(count: Int, session: TaskSession) -> [CorptieTask] {
+        (0..<count).map { index in
+            CorptieTask(id: "task:\(index)", workId: "work:motion", title: "Task \(index) with a long title",
+                description: "", acceptanceCriteria: "", priority: "medium", lifecycleState: "in_progress",
+                mainRoleId: "role:motion", currentSessionId: session.id, executionStatus: "idle",
+                acceptanceAssessment: nil, completionSuggestion: nil, createdAt: "", updatedAt: "")
+        }
+    }
+
+    func testRealTaskRowsHavePromptLayoutProgressAcrossListLengths() throws {
+        _ = NSApplication.shared
+        let session = try motionSession()
+        for rowCount in [5, 30, 300] {
+            let tasks = motionTasks(count: rowCount, session: session)
+            let state = State(), probe = GeometryProbe()
+            state.rows = rowCount
+            let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 900),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: RichSurface(state: state, tasks: tasks, session: session, probe: probe))
+            window.orderFrontRegardless()
+            defer { window.orderOut(nil); window.contentView = nil }
+            settle(0.1)
+            for expanded in [true, false, true, false] {
+                let initial = probe.frame.height
+                let began = Date()
+                state.expanded = expanded
+                var changes: [(Double, CGFloat)] = []
+                var previous = initial
+                while Date().timeIntervalSince(began) < 0.45 {
+                    settle(0.002)
+                    let height = probe.frame.height
+                    if abs(height - previous) > 0.1 {
+                        changes.append((Date().timeIntervalSince(began), height)); previous = height
+                    }
+                }
+                let first = try XCTUnwrap(changes.first)
+                let gaps = zip(changes, changes.dropFirst()).map { $1.0 - $0.0 }
+                print("Rich Work layout rows=\(rowCount) expanded=\(expanded) first_ms=\(first.0 * 1000) updates=\(changes.count) max_gap_ms=\((gaps.max() ?? 0) * 1000)")
+                XCTAssertGreaterThan(changes.count, 2)
+                XCTAssertLessThan(first.0, 0.2)
+                XCTAssertLessThan(gaps.max() ?? 0, 0.1)
+            }
+        }
+    }
+
+    func testThousandRowWorkMountsViewportAndCanScrollToLastTask() throws {
+        _ = NSApplication.shared
+        let session = try motionSession(), state = State(), probe = GeometryProbe(), constructions = RowConstructions()
+        let tasks = motionTasks(count: 1_000, session: session)
+        state.rows = tasks.count
+        let host = NSHostingView(rootView: RichSurface(state: state, tasks: tasks, session: session,
+            probe: probe, constructions: constructions))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 900),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFrontRegardless()
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.1)
+        state.expanded = true; settle(0.35)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 36, accuracy: 1)
+        print("1000-row Work initial row constructions:", constructions.ids.count)
+        XCTAssertLessThan(constructions.ids.count, 150, "Offscreen rows must remain unconstructed")
+        XCTAssertFalse(constructions.ids.contains("task:999"))
+        state.rows = 995; settle(0.1)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 995) + 36, accuracy: 1)
+        state.rows = 1_000; settle(0.1)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 36, accuracy: 1)
+        func findScroll(_ view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap(findScroll).first
+        }
+        let scroll = try XCTUnwrap(findScroll(host)), document = try XCTUnwrap(scroll.documentView)
+        scroll.contentView.scroll(to: .init(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height)))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        settle(0.2)
+        XCTAssertTrue(constructions.ids.contains("task:999"), "The last row must become available when scrolled into view")
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 36, accuracy: 1)
+        state.expanded = false; settle(0.35)
+        XCTAssertLessThan(probe.frame.height, 40)
+        XCTAssertEqual(scroll.contentView.bounds.minY, 0, accuracy: 1)
+    }
+
     private func settle(_ duration: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(duration))
     }
@@ -453,7 +578,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         let builds: GroupBuilds
         var body: some View {
             ScrollView {
-                LazyVStack(spacing: 4) {
+                VStack(spacing: 4) {
                     ForEach(0..<12) { index in
                         let _ = builds.record(index)
                         DisclosureGroup(isExpanded: Binding(
@@ -470,7 +595,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
             }
         }
     }
-    func testTogglingOneGroupDoesNotReconstructSiblingGroupsInLazyOutline() throws {
+    func testTogglingOneGroupDoesNotReconstructSiblingGroupsInGroupedOutline() throws {
         _ = NSApplication.shared
         let suite = "ConsoleWorkOutlineDisclosureTests.groups.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
