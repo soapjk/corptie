@@ -56,7 +56,7 @@ struct MainTabContentLayoutTests {
 
     @MainActor
     @Test
-    func transitionsUseStableTabOrderAndAttachOnlyTwoFixedSizePages() throws {
+    func fadeImmediatelyHidesOldPageAndPreservesFixedSizeHosts() throws {
         let container = makeContainer(animationDuration: 10)
         container.frame = NSRect(x: 0, y: 0, width: 1_200, height: 700)
         container.select(.automations, animated: false)
@@ -66,11 +66,10 @@ struct MainTabContentLayoutTests {
 
         #expect(container.transition == MainTabTransition(
             from: .automations,
-            to: .worktrees,
-            direction: .forward
+            to: .worktrees
         ))
         #expect(container.attachedTabs == [.automations, .worktrees])
-        #expect(container.visibleTabs == [.automations, .worktrees])
+        #expect(container.visibleTabs == [.worktrees])
         #expect(container.attachedPageCount == 2)
         #expect(container.cachedPage(for: .automations)?.frame == container.bounds)
         #expect(container.cachedPage(for: .worktrees)?.frame == container.bounds)
@@ -85,46 +84,37 @@ struct MainTabContentLayoutTests {
 
     @MainActor
     @Test
-    func backwardAndRapidTransitionsNeverExposeAThirdOrWrongPage() {
+    func rapidClicksImmediatelySelectTheLatestPageWithoutWaitingForTheFade() {
         let container = makeContainer(animationDuration: 10)
         container.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
         container.select(.roles, animated: false)
         container.select(.automations)
-
-        #expect(container.transition?.direction == .backward)
-        #expect(container.attachedTabs == [.automations, .roles])
-        #expect(container.visibleTabs == [.automations, .roles])
+        #expect(container.visibleTabs == [.automations])
+        container.select(.automations)
+        #expect(container.transition != nil, "A normal update of the same page must preserve its fade")
 
         container.select(.worktrees)
-        #expect(container.selectedTab == .automations)
-        #expect(container.transition == MainTabTransition(
-            from: .roles,
-            to: .automations,
-            direction: .backward
-        ))
-        #expect(container.pendingTab == .worktrees)
-        #expect(container.attachedTabs == [.automations, .roles])
-        #expect(container.visibleTabs == [.automations, .roles])
-        #expect(container.attachedPageCount == 2)
+        #expect(container.selectedTab == .worktrees)
+        #expect(container.transition == MainTabTransition(from: .automations, to: .worktrees))
+        #expect(container.visibleTabs == [.worktrees])
+        #expect(container.cachedPage(for: .automations)?.layer?.animation(forKey: "main-tab-opacity") == nil)
 
         container.select(.console)
-        #expect(container.pendingTab == .console)
-        #expect(container.attachedTabs == [.automations, .roles])
-        #expect(container.visibleTabs == [.automations, .roles])
-        #expect(container.cachedPage(for: .worktrees) == nil)
+        #expect(container.selectedTab == .console)
+        #expect(container.transition == MainTabTransition(from: .worktrees, to: .console))
+        #expect(container.visibleTabs == [.console])
+        #expect(container.cachedPage(for: .worktrees)?.layer?.animation(forKey: "main-tab-opacity") == nil)
+        #expect(container.cachedPageCount == 4)
 
         container.finishActiveTransition()
-        #expect(container.selectedTab == .console)
-        #expect(container.transition == MainTabTransition(
-            from: .automations,
-            to: .console,
-            direction: .backward
-        ))
-        #expect(container.pendingTab == nil)
-        #expect(container.attachedTabs == [.console, .automations, .roles])
-        #expect(container.visibleTabs == [.console, .automations])
-        #expect(container.attachedPageCount == 3)
+        #expect(container.transition == nil)
+        #expect(container.visibleTabs == [.console])
         #expect(container.cachedPage(for: .roles)?.isHidden == true)
+        container.select(.roles)
+        container.select(.roles, animated: false)
+        #expect(container.transition == nil, "Reduced motion or live resize must finish the fade immediately")
+        #expect(container.visibleTabs == [.roles])
+        #expect(container.cachedPage(for: .roles)?.layer?.animation(forKey: "main-tab-opacity") == nil)
     }
 
     @MainActor
@@ -143,21 +133,16 @@ struct MainTabContentLayoutTests {
         #expect(console.frame == fixedFrame)
         #expect(roles.frame == fixedFrame)
         #expect(container.activePageLayoutCount == layoutCount + 1)
-        #expect(console.layer?.animation(forKey: "main-tab-translation") != nil)
-        #expect(roles.layer?.animation(forKey: "main-tab-translation") != nil)
-        #expect(console.layer?.animation(forKey: "main-tab-opacity") != nil)
-        #expect(roles.layer?.animation(forKey: "main-tab-opacity") != nil)
-
-        let outgoingTranslation = try #require(
-            console.layer?.animation(forKey: "main-tab-translation") as? CABasicAnimation
-        )
-        let incomingTranslation = try #require(
-            roles.layer?.animation(forKey: "main-tab-translation") as? CABasicAnimation
-        )
-        #expect((outgoingTranslation.fromValue as? CGFloat) == 0)
-        #expect((outgoingTranslation.toValue as? CGFloat) == -fixedFrame.width)
-        #expect((incomingTranslation.fromValue as? CGFloat) == fixedFrame.width)
-        #expect((incomingTranslation.toValue as? CGFloat) == 0)
+        #expect(console.isHidden)
+        #expect(!roles.isHidden)
+        #expect(console.layer?.animation(forKey: "main-tab-translation") == nil)
+        #expect(roles.layer?.animation(forKey: "main-tab-translation") == nil)
+        #expect(console.layer?.animation(forKey: "main-tab-opacity") == nil)
+        let incomingOpacity = try #require(roles.layer?.animation(forKey: "main-tab-opacity") as? CABasicAnimation)
+        #expect((incomingOpacity.fromValue as? Float) == 0)
+        #expect((incomingOpacity.toValue as? Float) == 1)
+        #expect(roles.layer.map { CATransform3DIsIdentity($0.transform) } == true)
+        #expect(MainTabPageContainer.defaultAnimationDuration == 0.12)
     }
 
     @MainActor
