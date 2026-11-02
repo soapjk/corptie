@@ -124,6 +124,30 @@ struct ConsoleScheduledWakeIcon: View {
     }
 }
 
+enum ConsoleWorkOutlineRowMetrics {
+    static let height: CGFloat = 24
+    static let spacing: CGFloat = 2
+
+    static func contentHeight(count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        return CGFloat(count) * height + CGFloat(count - 1) * spacing
+    }
+}
+
+/// The outline rows are single-line controls. Supply their exact extent without
+/// measuring every row, while the lazy stack mounts only the viewport's rows.
+struct ConsoleWorkOutlineRows<Content: View>: View {
+    let rowCount: Int
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: ConsoleWorkOutlineRowMetrics.spacing) {
+            content
+        }
+        .frame(height: ConsoleWorkOutlineRowMetrics.contentHeight(count: rowCount), alignment: .top)
+    }
+}
+
 /// Measure the full child stack once for a width, then reveal its height.
 /// Children remain in normal layout until the reveal animation completes.
 private struct ConsoleDisclosureRevealLayout: Layout {
