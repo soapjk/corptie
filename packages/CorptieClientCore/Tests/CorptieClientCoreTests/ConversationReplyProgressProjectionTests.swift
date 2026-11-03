@@ -17,6 +17,49 @@ struct ConversationReplyProgressProjectionTests {
         ConversationReplyProgressProjection.project(ConversationTimeline.makeEntries(from: items))
     }
 
+    @Test func authoritativeProcessingShowsTheExistingProcessCardBeforeAnyOutput() throws {
+        func user(_ status: String) throws -> ClientMessage {
+            let value: [String: Any] = ["id": "user", "type": "userMessage", "text": "request",
+                "turnId": "turn", "turnStatus": status, "userMessageStatus": status]
+            return try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        for state in ["queued", "preparing", "consumed", "failed", "cancelled"] {
+            #expect(project([try user(state)]).entries.map(\.id) == ["message:user"])
+        }
+        let running = try user("processing")
+        let waiting = project([running])
+        #expect(waiting.entries.map(\.id) == ["message:user", "process:turn"])
+        #expect(waiting.entries.last?.processReplyState == .running)
+        if case .process(_, let items) = waiting.entries.last?.kind { #expect(items.isEmpty) }
+        else { Issue.record("Missing pending process card") }
+        let commentary = try message("commentary")
+        #expect(project([running, commentary]).entries.map(\.id) == ["message:user", "process:turn", "message:commentary"])
+        let step = try message("step", type: "mcpToolCall", role: nil)
+        let started = project([running, step, commentary])
+        #expect(started.entries.filter { $0.id == "process:turn" }.count == 1)
+        #expect(started.entries.last?.id == "message:commentary")
+        let final = try message("final", role: "final_answer", status: "completed")
+        #expect(project([running, final]).entries.map(\.id) == ["message:user", "message:final"])
+        #expect(ConversationReplyProgressProjection.entries(waiting.entries).map(\.id) == waiting.entries.map(\.id))
+        let collaborationData: [String: Any] = ["id": "collaboration", "type": "userMessage", "text": "request",
+            "turnId": "turn", "presentationRole": "collaboration", "userMessageStatus": "processing"]
+        let collaboration = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: collaborationData))
+        #expect(project([collaboration]).entries.allSatisfy { !$0.isProcessGroup })
+        var inboundData = collaborationData
+        inboundData["collaborationDirection"] = "inbound"
+        let inbound = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: inboundData))
+        #expect(project([inbound]).entries.map(\.id) == ["message:collaboration", "process:turn"])
+        inboundData["collaborationDirection"] = "outbound"
+        let outbound = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: inboundData))
+        #expect(project([outbound]).entries.allSatisfy { !$0.isProcessGroup })
+        for role in ["system_event", "automation"] {
+            var notificationData = collaborationData
+            notificationData["presentationRole"] = role
+            let notice = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: notificationData))
+            #expect(project([notice]).entries.map(\.id) == ["message:collaboration", "process:turn"])
+        }
+    }
+
     @Test func runningKeepsOnlyLatestExplanationAndPreservesFullPayload() throws {
         let old = try message("old"), latest = try message("latest")
         let tool = try message("tool", type: "mcpToolCall", role: nil)

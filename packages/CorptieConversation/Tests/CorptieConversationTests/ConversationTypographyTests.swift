@@ -134,6 +134,36 @@ extension ConversationTypographyTests {
 
 #if os(macOS)
 extension ConversationTypographyTests {
+    @Test func userLineBoxSplitsExtraLeadingWithoutChangingLineHeight() throws {
+        for source in ["好", "先用2吧", "Hello", "中文 English"] {
+            let text = MessageMarkdown.make(text: source, style: .user, typography: .codexReading)
+            let natural = NSMutableAttributedString(attributedString: text)
+            natural.removeAttribute(.baselineOffset, range: NSRange(location: 0, length: natural.length))
+            let paragraph = try #require(text.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+            let naturalParagraph = paragraph.mutableCopy() as! NSMutableParagraphStyle
+            naturalParagraph.minimumLineHeight = 0
+            natural.addAttribute(.paragraphStyle, value: naturalParagraph, range: NSRange(location: 0, length: natural.length))
+            func geometry(_ value: NSAttributedString) -> (height: CGFloat, baseline: CGFloat) {
+                let storage = NSTextStorage(attributedString: value)
+                let manager = NSLayoutManager()
+                let container = NSTextContainer(size: NSSize(width: 300, height: 1000))
+                container.lineFragmentPadding = 0
+                manager.addTextContainer(container)
+                storage.addLayoutManager(manager)
+                manager.ensureLayout(for: container)
+                return (manager.usedRect(for: container).height, manager.location(forGlyphAt: 0).y)
+            }
+            let full = geometry(text), normal = geometry(natural)
+            let halfLeading = (full.height - normal.height) / 2
+            #expect(full.height == 22.75)
+            #expect(abs(full.baseline - normal.baseline - halfLeading) < 0.5)
+            let classic = MessageMarkdown.make(text: source, style: .user)
+            #expect(classic.attribute(.baselineOffset, at: 0, effectiveRange: nil) == nil)
+            let reply = MessageMarkdown.make(text: source, style: .agent, typography: .codexReading)
+            #expect(reply.attribute(.baselineOffset, at: 0, effectiveRange: nil) == nil)
+        }
+    }
+
     @Test func readingLineBoxesAndHangingListsMatchWebLayout() throws {
         for role in [MessageMarkdown.Style.agent, .user] {
             let text = MessageMarkdown.make(text: "中文 English long paragraph", style: role, typography: .codexReading)

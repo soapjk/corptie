@@ -2230,6 +2230,7 @@ private struct PadSpecialEventCard: View {
     private var words: ConversationEventText { .init(languageCode: locale.identifier) }
 
     private var isSystemEvent: Bool { message.presentationKind == .systemEvent }
+    private var isChildTaskResult: Bool { isSystemEvent && message.systemEventKind == "child_task_result" }
     private var title: String {
         if message.presentationKind == .automationEvent { return message.automationName ?? words.automationTitle }
         if isSystemEvent { return words.systemKind(message.systemEventKind) }
@@ -2243,8 +2244,8 @@ private struct PadSpecialEventCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
-                Image(systemName: isSystemEvent ? "exclamationmark.triangle" : "clock.arrow.circlepath")
-                    .foregroundStyle(isSystemEvent ? .orange : .secondary)
+                Image(systemName: isChildTaskResult ? "tray.and.arrow.down" : isSystemEvent ? "exclamationmark.triangle" : "clock.arrow.circlepath")
+                    .foregroundStyle(isSystemEvent && !isChildTaskResult ? .orange : .secondary)
                     .accessibilityHidden(true)
                 Text(title).font(.headline)
             }
@@ -2270,7 +2271,7 @@ private struct PadSpecialEventCard: View {
                     LabeledContent(words.text("过期时间", "Expires at"), value: expires).font(.caption)
                 }
             }
-            if !isSystemEvent && message.automationRunId == nil && !bodyText.isEmpty {
+            if !isSystemEvent && (message.automationRunId == nil || message.messageOrigin == "scheduled_task") && !bodyText.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(words.text("触发消息", "Trigger message")).font(.caption.weight(.semibold))
                     Text(bodyText).font(.caption).textSelection(.enabled)
@@ -2279,13 +2280,15 @@ private struct PadSpecialEventCard: View {
             if let reason = message.systemEventReason {
                 LabeledContent(words.reasonLabel, value: words.reason(reason)).font(.caption).textSelection(.enabled)
             }
-            if isSystemEvent {
+            if isChildTaskResult {
+                Text(bodyText).font(.callout).textSelection(.enabled)
+            } else if isSystemEvent {
                 Text(words.systemNotice).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(14)
         .frame(maxWidth: 560, alignment: .leading)
-        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .secondary, tintOpacity: 0.045, isMessage: true))
+        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .secondary, tintOpacity: 0.045, isMessage: true, role: .interaction))
         .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.secondary.opacity(0.14)) }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)

@@ -76,6 +76,21 @@ private func tables(_ text: String) -> [ConversationMarkdownTable] {
 }
 #endif
 
+@Test @MainActor func simpleTablesFillTheProseLaneWithoutLosingNarrowViewportOverflow() throws {
+    let table = try #require(tables("| 时间 | 安排 | 备注 |\n| --- | --- | --- |\n| 07:30 | 早餐 | 休息 |\n").first)
+    for width: CGFloat in [320, 720, 1200] {
+        let layout = ConversationMarkdownTableLayout.measured(table, width: width, typography: .codexReading)
+        #expect(abs(layout.contentWidth - width) < 0.5)
+        #expect(layout.columnWidths.allSatisfy { $0 >= 72 })
+        for row in layout.textHeights.indices {
+            #expect(layout.rowHeights[row] >= (layout.textHeights[row].max() ?? 0) + ConversationMarkdownTableLayout.verticalInset * 2)
+        }
+        #expect(layout === ConversationMarkdownTableLayout.measured(table, width: width, typography: .codexReading))
+    }
+    #expect(ConversationMarkdownTableLayout.measured(table, width: 180).contentWidth > 180)
+    #expect(table.tabSeparatedText == "时间\t安排\t备注\n07:30\t早餐\t休息")
+}
+
 @Test func gfmTablesRetainAlignmentAndInlineFormatting() throws {
     let source = "前文中文😀\n\n| 名称 | 数量 |\n| :--- | ---: |\n| **BTC** | `42` |\n\n后文"
     let blocks = ConversationMarkdownTables.parse(source, messageID: "one")

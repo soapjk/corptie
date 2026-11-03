@@ -627,7 +627,7 @@ struct PadWorkOutline: View {
             }
         } label: {
             HStack(spacing: WorkOutlineMetrics.rowSpacing) {
-                TaskActivityIndicator(activity: activity, lifecycleState: task.lifecycleState)
+                TaskActivityIndicator(activity: activity, lifecycleState: task.lifecycleState, isActive: isActive)
                 Text(task.title)
                     .font(rowFont)
                     .lineLimit(1)

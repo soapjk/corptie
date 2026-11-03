@@ -1,3 +1,6 @@
+// Stable product-owned report envelope, shared by its producer and read-only presenter.
+export const CHILD_TASK_RESULT_NOTICE_PREFIX = "子任务执行结果通知。";
+
 const AUTOMATION_EVENT_PREFIXES = ["ScheduledSession", "Automation"];
 export const AUTOMATION_TIMELINE_EVENT_TYPES = new Set([
   "ScheduledSessionTaskCreated",

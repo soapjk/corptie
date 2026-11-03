@@ -174,7 +174,7 @@ public enum MessageMarkdown {
                     color: color,
                     paragraphSpacingBefore: typography.isReading ? 14 : (heading.level == 1 ? 8 : 5),
                     paragraphSpacing: 4,
-                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
+                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent, centersReadingLineBox: style == .user
                 ))
             } else if let listItem = unorderedListItem(in: displayLine) {
                 let marker = "•  "
@@ -187,7 +187,7 @@ public enum MessageMarkdown {
                     headIndent: indent + hanging,
                     firstLineHeadIndent: indent,
                     rendersMath: rendersMath, typography: typography,
-                    bodyParagraphSpacing: typography.isReading ? 4 : nil, toleratesModelStrong: style == .agent
+                    bodyParagraphSpacing: typography.isReading ? 4 : nil, toleratesModelStrong: style == .agent, centersReadingLineBox: style == .user
                 ))
             } else if let listItem = orderedListItem(in: displayLine) {
                 let marker = "\(listItem.ordinal).  "
@@ -200,7 +200,7 @@ public enum MessageMarkdown {
                     headIndent: indent + hanging,
                     firstLineHeadIndent: indent,
                     rendersMath: rendersMath, typography: typography,
-                    bodyParagraphSpacing: typography.isReading ? 4 : nil, toleratesModelStrong: style == .agent
+                    bodyParagraphSpacing: typography.isReading ? 4 : nil, toleratesModelStrong: style == .agent, centersReadingLineBox: style == .user
                 ))
             } else if let quote = blockQuote(in: displayLine) {
                 attributed.append(blockLine(
@@ -209,13 +209,13 @@ public enum MessageMarkdown {
                     color: quoteColor,
                     headIndent: 8,
                     firstLineHeadIndent: 0,
-                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent
+                    rendersMath: rendersMath, typography: typography, toleratesModelStrong: style == .agent, centersReadingLineBox: style == .user
                 ))
             } else if isThematicBreak(sourceLine) {
                 attributed.append(blockLine("────────", baseFont: baseFont, color: separatorColor, typography: typography))
             } else {
                 attributed.append(blockLine(displayLine, baseFont: baseFont, color: color, rendersMath: rendersMath, typography: typography,
-                    toleratesModelStrong: style == .agent))
+                    toleratesModelStrong: style == .agent, centersReadingLineBox: style == .user))
             }
         }
         return attributed
@@ -296,7 +296,8 @@ public enum MessageMarkdown {
         typography: ConversationTypography = .classic,
         lineSpacing: CGFloat? = nil,
         bodyParagraphSpacing: CGFloat? = nil,
-        toleratesModelStrong: Bool = false
+        toleratesModelStrong: Bool = false,
+        centersReadingLineBox: Bool = false
     ) -> NSAttributedString {
         let effectiveFont = font ?? baseFont ?? .systemFont(ofSize: 13)
         let attributed: NSMutableAttributedString
@@ -361,6 +362,13 @@ public enum MessageMarkdown {
             paragraphStyle.minimumLineHeight = effectiveFont.pointSize *
                 (effectiveFont.pointSize > typography.bodySize ? 1.25 : typography.proseLineHeightMultiple)
             paragraphStyle.lineSpacing = 0
+            if centersReadingLineBox {
+                // AppKit puts a minimum line box's extra leading above the
+                // glyphs. Split that leading evenly inside user-message cards.
+                let naturalHeight = ceil(effectiveFont.ascender - effectiveFont.descender + effectiveFont.leading)
+                let offset = max(0, paragraphStyle.minimumLineHeight - naturalHeight) / 2
+                attributed.addAttribute(.baselineOffset, value: offset, range: fullRange)
+            }
         }
         // Chat messages regularly contain URLs, hashes, file paths, and model
         // identifiers with no whitespace. Word wrapping lets those runs escape
