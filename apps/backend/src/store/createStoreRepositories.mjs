@@ -113,6 +113,7 @@ export function createStoreRepositories({ getDatabase, getSshWorkspaces, environ
       recordSkillRuntimeEvent: (...args) => ports.recordSkillRuntimeEvent(...args),
     });
     const taskHierarchyRepository = new TaskHierarchyRepository({
+      listGitWorktrees: (...args) => ports.listGitWorktrees(...args),
       getDatabase, selectOne: (...args) => ports.selectOne(...args), selectAll: (...args) => ports.selectAll(...args),
       getTask: (...args) => ports.getTask(...args), getWork: (...args) => ports.getWork(...args),
       getTaskWorkspaceContext: (...args) => taskRepository.getTaskWorkspaceContext(...args), scheduleSave: (...args) => ports.scheduleSave(...args)

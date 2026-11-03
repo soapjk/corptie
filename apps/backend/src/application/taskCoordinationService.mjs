@@ -88,7 +88,9 @@ export class TaskCoordinationService {
   runDispatch(id) {
     if (this.running.has(id)) return this.running.get(id);
     const promise = this.execute(id).catch(error => {
-      this.update(id, { status: "failed", error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
+      const row=this.get(id);
+      const waiting=error.code === "TASK_HIERARCHY_BUSY" && !row?.target_task_id && !error.creationRecovery?.taskId;
+      this.update(id, { status: waiting ? "waiting_workspace" : "failed", error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
       this.scheduleReports();
     }).finally(() => this.running.delete(id));
     this.running.set(id, promise);
@@ -120,7 +122,7 @@ export class TaskCoordinationService {
   }
   async execute(id) {
     let row = this.get(id);
-    if (!row || !["accepted", "preparing"].includes(row.status)) return;
+    if (!row || !["accepted", "preparing", "waiting_workspace"].includes(row.status)) return;
     const { metadata, scope } = this.sourceContext(row), request = JSON.parse(row.request_json);
     this.update(id, { status: "preparing", error_code: null, error_message: null });
     if (!row.target_task_id) {
@@ -178,6 +180,11 @@ export class TaskCoordinationService {
     return this.receipt(this.get(id));
   }
   onRuntimeEvent(type, payload) {
+    if (["WorktreeIntegrationJobChanged", "GitWorktreeChanged", "WorkspaceChanged"].includes(type)) {
+      for (const row of this.store.selectAll("SELECT dispatch_id FROM task_coordination_dispatches WHERE status='waiting_workspace'")) {
+        setImmediate(()=>this.runDispatch(row.dispatch_id));
+      }
+    }
     const deletion = payload?.operation;
     if (type === "TaskChanged" && deletion?.input?.actor?.type === "parent_session" && ["succeeded", "failed"].includes(deletion.state)) {
       const recipientSessionId = deletion.input.actor.id;
@@ -243,7 +250,7 @@ export class TaskCoordinationService {
   }
   recover() {
     for (const row of this.store.selectAll("SELECT * FROM task_coordination_dispatches WHERE status NOT IN ('completed','failed','cancelled','unknown')")) {
-      if (["accepted", "preparing"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
+      if (["accepted", "preparing", "waiting_workspace"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
       const work = this.store.getAgentTask(row.operation_id);
       const adopted = row.mailbox_message_id && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=? AND disposition='adopted'", [row.mailbox_message_id]);
       if (adopted) {

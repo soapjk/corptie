@@ -431,6 +431,19 @@ function integrationJobs(f, { beforeMerge = null } = {}) {
     mergeSource: async input => { if (beforeMerge) await beforeMerge(input); return manager.mergeIntegrationSource(input); },
     abortMerge: input => manager.abortIntegrationMerge(input),
     rebaseSource: input => manager.rebaseIntegrationSource(input),
+    // This fixture registers explicit test inventory IDs. Verify the real Git
+    // evidence through those IDs instead of rediscovering production hash IDs.
+    inspectMainIntegrationCompletion: async input => {
+      assert.equal(input.repositoryId,"repository:integration");
+      assert.equal(input.targetWorktreeId,"worktree:main");
+      assert.equal(input.targetPath,f.mainPath);
+      assert.equal(await git(f.mainPath,["symbolic-ref","--short","HEAD"]),input.branchName);
+      assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),input.expectedTargetHead);
+      assert.equal(await git(f.mainPath,["status","--porcelain=v1"]),"");
+      assert.equal(await manager.integrationOperationState(f.mainPath),null);
+      for(const head of input.requiredHeads) await git(f.mainPath,["merge-base","--is-ancestor",head,"HEAD"]);
+      return {mainWorktreeId:"worktree:main",mainHead:input.expectedTargetHead,verifiedHeads:input.requiredHeads};
+    },
     inspectSyncWorktree: async ({ item }) => (await inspect()).worktrees.find(tree => tree.worktreeId === item.worktreeId),
     prepareConflictResolution: unused, inspectConflictResolution: unused, launchConflictResolution: unused });
   jobs.hierarchy = f.hierarchy;
@@ -611,13 +624,13 @@ test("integration graph detects hierarchy changes and does not silently add a ne
   const jobs = integrationJobs(f);
   const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
   await waitForTerminal(jobs, job.id);
-  assert.throws(() => f.store.createTask({ workId: f.parent.work_id, title: "New_child", parentTaskId: f.parent.id }, {}, { expectedParentResourceVersion: f.store.getTask(f.parent.id).resource_version }), { code: "TASK_HIERARCHY_BUSY" });
-  // Simulate an external revision change independently of the guarded API.
-  f.store.bumpHierarchyRevision(f.parent.id);
+  // Acceptance-only pauses must not prevent decomposition. The old reviewed
+  // integration graph must still detect the newly created child on resume.
+  f.store.createTask({ workId: f.parent.work_id, title: "New_child", parentTaskId: f.parent.id }, {}, { expectedParentResourceVersion: f.store.getTask(f.parent.id).resource_version });
   jobs.retry(job.id);
   const blocked = await waitForTerminal(jobs, job.id);
   assert.equal(blocked.status, "paused");
-  assert.equal(blocked.audit.at(-1).code, "TASK_HIERARCHY_CHANGED");
+  assert.ok(blocked.audit.some(entry=>entry.code === "TASK_HIERARCHY_CHANGED"));
   assert.ok(blocked.availableActions.includes("repreflight"));
   assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
 });
@@ -657,18 +670,23 @@ test("graph recovery pauses without replaying completed dependencies and explici
   assert.equal((await waitForTerminal(restarted, job.id)).status, "completed");
 });
 
-test("canceling a graph conflict preserves the exact conflicted parent instead of aborting it", async t => {
+test("canceling a task-owned graph conflict restores the exact parent and preserves both committed branches", async t => {
   const f = await fixture(t);
   await f.commit(f.parent, "cancel-conflict.txt", "parent\n");
   await f.commit(f.children[0], "cancel-conflict.txt", "child\n");
   const jobs = integrationJobs(f);
   const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
+  const parentHead = job.plan.items.find(item=>item.worktreeId===f.parentTree.worktreeId).sourceHeadBefore;
   const paused = await waitForTerminal(jobs, job.id);
   assert.equal(paused.phase, "conflict", paused.error);
   const mergeHead = await git(f.parentTree.path, ["rev-parse", "MERGE_HEAD"]);
   const canceled = await jobs.cancel(job.id);
-  assert.equal(canceled.phase, "canceled_conflict_preserved");
-  assert.equal(await git(f.parentTree.path, ["rev-parse", "MERGE_HEAD"]), mergeHead);
+  await waitForTerminal(jobs,job.id);
+  assert.equal(canceled.phase, "canceled");
+  assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]),parentHead);
+  assert.equal(await git(f.parentTree.path,["status","--porcelain=v1"]),"");
+  await assert.rejects(git(f.parentTree.path,["rev-parse","--verify","MERGE_HEAD"]));
+  assert.equal(await git(f.trees.get(f.children[0].id).path,["rev-parse","HEAD"]),mergeHead);
   assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
 });
 
@@ -676,7 +694,8 @@ async function waitForTerminal(jobs, id) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     const job = jobs.get(id);
-    if (["completed", "paused", "canceled"].includes(job.status)) return job;
+    if (["completed", "paused", "canceled"].includes(job.status)
+      && !jobs.activeJobs.has(id) && !jobs.dispatchSafetyChecks.has(id)) return job;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.fail(`Integration job ${id} did not settle`);
@@ -868,4 +887,37 @@ test("mid-batch child change pauses the Job and preserves the successfully integ
   const unreviewedHead = await git(f.trees.get(f.children[1].id).path, ["rev-parse", "HEAD"]);
   await assert.rejects(() => git(f.parentTree.path, ["merge-base", "--is-ancestor", unreviewedHead, "HEAD"]), { code: 1 });
   assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
+});
+
+test("snapshot baseline travels through reviewed jobs, exact delivery receipts and parent acceptance",{timeout:30000},async t=>{
+  const {ProjectWorkspaceSnapshotService}=await import('../src/application/projectWorkspaceSnapshotService.mjs');
+  const f=await fixture(t),child=f.children[0],childTree=f.trees.get(child.id);
+  await writeFile(join(f.parentTree.path,'inherited.txt'),'inherited content\n');
+  const base=await new ProjectWorkspaceSnapshotService().captureParentWorkspace({path:f.parentTree.path,operationId:'snapshot:reviewed-job'});
+  await git(childTree.path,['reset','--hard',base.baseCommitOid]);
+  const binding=f.store.getTaskDeliveryBinding(child.id),now=new Date().toISOString(),role=f.store.createAgent({name:'Snapshot_worker',role:'independentContributor'});
+  f.store.db.run(`INSERT INTO work_session_startup_operations
+    (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,source_session_id,
+      idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at,worktree_base_context_json)
+    VALUES (?,?,?,?,1,'provider:test','repository:integration','session:source',?,?,'allocated',?,?,?,?)`,
+    [binding.startup_operation_id,child.work_id,child.id,role.agentId,'snapshot:reviewed-job','snapshot:reviewed-job','snapshot:reviewed-job',now,now,JSON.stringify(base)]);
+  f.store.db.run('UPDATE task_delivery_worktrees SET base_commit_oid=?,base_tree_oid=?,base_worktree_id=? WHERE task_id=?',
+    [base.baseCommitOid,base.baseTreeOid,f.parentTree.worktreeId,child.id]);
+  assert.equal((await f.hierarchy.inspectChildDeliveryChanges(child.id)).changeState,'no_changes');
+  await git(f.parentTree.path,['add','inherited.txt']);await git(f.parentTree.path,['commit','-m','Parent inherited']);
+  const childHead=await f.commit(child,'delta.txt','child delta\n');
+  assert.equal((await f.hierarchy.inspectChildDeliveryChanges(child.id)).changeState,'code_changes');
+  const jobs=integrationJobs(f), options={operationType:'merge',sourceWorktreeIds:[childTree.worktreeId],targetWorktreeId:f.parentTree.worktreeId,taskScope:f.scope('merge_children')};
+  const candidate=await jobs.createCandidate('repository:integration',options);
+  assert.equal(candidate.plan.items.find(item=>item.worktreeId===childTree.worktreeId).snapshotBase.baseCommitOid,base.baseCommitOid);
+  const job=await jobs.startCandidate('repository:integration',{...options,candidateId:candidate.id,candidateFingerprint:candidate.planFingerprint,idempotencyKey:'snapshot:merge'});
+  const finished=await waitForTerminal(jobs,job.id);assert.equal(finished.status,'completed',finished.error);
+  const receipt=finished.plan.items.find(item=>item.worktreeId===childTree.worktreeId).snapshotReceipt;
+  assert.equal(receipt.childHead,childHead);assert.equal(receipt.baseCommitOid,base.baseCommitOid);
+  assert.equal(await git(f.parentTree.path,['show','HEAD:delta.txt']),'child delta');
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:new GitWorkspaceManager({store:f.store}),jobs});
+  assert.equal(await service.ensureCodeDelivered({snapshot:{git:{worktreeId:childTree.worktreeId,parentWorktreeId:f.parentTree.worktreeId,headOid:childHead}},progress:{gitJobId:job.id}}),true);
+  const bad={...finished,plan:{...finished.plan,items:finished.plan.items.map(item=>({...item,snapshotReceipt:null}))}};
+  service.jobs={get:()=>bad};
+  await assert.rejects(service.ensureCodeDelivered({snapshot:{git:{worktreeId:childTree.worktreeId,parentWorktreeId:f.parentTree.worktreeId,headOid:childHead}},progress:{gitJobId:job.id}}),{code:'CHILD_DELIVERY_GIT_UNPROVEN'});
 });
