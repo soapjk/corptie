@@ -491,6 +491,11 @@ func nativeSystemEventCardPresentation(for item: CodexThreadItem) -> NativeSpeci
     guard ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole) == .systemEvent else { return nil }
     let reason = item.systemEventReason
     let words = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
+    if item.systemEventKind == "child_task_result" {
+        let body = item.presentationText ?? words.text("子任务已返回执行结果。", "Child task results are available.")
+        return NativeSpecialEventCardPresentation(title: words.systemKind(item.systemEventKind),
+            metadata: nativeEventTimestamp(item.createdAt), bodyMarkdown: body, messageText: body)
+    }
     let source = words.source(item.systemEventSource)
     let taskID = nonEmptyPresentationValue(item.collaborationTaskId)
     var lines = [

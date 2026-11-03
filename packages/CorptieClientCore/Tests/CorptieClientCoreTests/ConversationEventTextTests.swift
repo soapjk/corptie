@@ -25,6 +25,9 @@ struct ConversationEventTextTests {
         #expect(zh.reason("missing_sender_session_id") == "缺少发送会话信息。")
         #expect(!en.reason("private_internal_code").contains("private_internal_code"))
         #expect(zh.systemKind(nil) == "系统事件")
+        #expect(zh.systemKind("child_task_result") == "子任务结果通知")
+        #expect(en.systemKind("child_task_result") == "Child task results")
+        #expect(zh.source("task_coordination") == "子任务协作")
     }
 
     @Test func plansAreSharedAndInvalidIntervalsAreSafe() {

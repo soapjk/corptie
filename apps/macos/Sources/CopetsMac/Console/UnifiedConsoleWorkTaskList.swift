@@ -174,7 +174,8 @@ extension UnifiedConsoleView {
             sessionActivity: sessionActivity,
             session: session,
             isSelected: selectedTaskId == task.id,
-            isUnread: session.map(isSessionUnread) ?? false
+            isUnread: session.map(isSessionUnread) ?? false,
+            isActive: sidebarState.isSelected
         ) {
             openTask(task, session: session)
         }

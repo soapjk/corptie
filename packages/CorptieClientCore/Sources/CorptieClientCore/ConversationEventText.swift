@@ -74,6 +74,7 @@ public struct ConversationEventText: Sendable {
     }
     public func systemKind(_ kind: String?) -> String {
         switch kind {
+        case "child_task_result": text("子任务结果通知", "Child task results")
         case "invalid_collaboration_envelope": text("协作消息无法验证", "Unverified collaboration message")
         case "invalid_session_channel_envelope": text("会话通道消息无法验证", "Unverified session channel message")
         default: systemTitle
@@ -95,6 +96,7 @@ public struct ConversationEventText: Sendable {
     }
     public func source(_ code: String?) -> String {
         switch code {
+        case "task_coordination": text("子任务协作", "Child task coordination")
         case "session_channel": text("会话通道", "Session channel")
         case "collaboration": text("协作", "Collaboration")
         case "user": text("用户", "User")
