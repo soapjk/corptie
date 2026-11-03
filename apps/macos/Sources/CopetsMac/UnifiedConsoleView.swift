@@ -1066,9 +1066,10 @@ struct UnifiedConsoleView: View {
         .modifier(SessionSidebarFunctionBarGlassModifier())
     }
 
-    func sessionRow(_ row: SessionRowModel) -> some View {
+    func sessionRow(_ row: SessionRowModel, showsHoverFeedback: Bool = true) -> some View {
         let isSelected = selectionController.presentationSessionID == row.session.id
         return ConsoleSessionRow(
+            showsHoverFeedback: showsHoverFeedback,
             row: row,
             selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) }
         )
