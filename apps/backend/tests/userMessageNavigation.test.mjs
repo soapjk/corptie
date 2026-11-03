@@ -129,3 +129,22 @@ for (const count of [1000, 10000, 100000]) {
       medianMs: samples[10], p95Ms: samples[18], maximumBytes, scanLimit: 1024, itemLimit: 128 }));
   }));
 }
+
+test("reply excerpts belong to the same turn and Session, exclude reasoning, and stay bounded", async () => fixture(async (store, pool) => {
+  const add = (id, turn, type, text, time, role = null, session = "one") => store.db.run(
+    "INSERT INTO session_items (session_id,id,turn_id,turn_status,type,title,text,created_at,presentation_role) VALUES (?,?,?,'completed',?,'',?,?,?)",
+    [session,id,turn,type,text,time,role]);
+  add("question-a", "a", "userMessage", "Question A", "2026-01-01T01:00:00Z");
+  add("answer-a", "a", "agentMessage", "Answer A", "2026-01-01T01:01:00Z");
+  add("question-b", "b", "userMessage", "Question B", "2026-01-01T02:00:00Z");
+  add("answer-b", "b", "agentMessage", "Reply ".repeat(200), "2026-01-01T02:01:00Z");
+  add("reasoning-b", "b", "agentMessage", "Private reasoning", "2026-01-01T02:02:00Z", "reasoning");
+  add("foreign-a", "a", "agentMessage", "Foreign Session", "2026-01-01T03:00:00Z", null, "two");
+  const page = await pool.readUserMessageNavigation({ sessionId: "one" });
+  assert.equal(page.items.find(i => i.id === "question-a").replyPreview, "Answer A");
+  assert.equal(page.items.find(i => i.id === "question-b").replyPreview.length, 179);
+  assert.ok(!JSON.stringify(page).includes("Private reasoning") && !JSON.stringify(page).includes("Foreign Session"));
+  const cursor = Buffer.from(JSON.stringify({ s:"one",t:"2020-01-01",i:"first" })).toString("base64url");
+  const reverse = await pool.readUserMessageNavigation({ sessionId: "one", cursor, direction: "newer" });
+  assert.deepEqual(reverse.items, page.items);
+}));
