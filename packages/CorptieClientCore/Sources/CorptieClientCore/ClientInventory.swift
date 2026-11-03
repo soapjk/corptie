@@ -35,6 +35,7 @@ public struct ClientTaskCoordinationDispatch: Codable, Sendable, Identifiable, E
     public let errorCode: String?
     public var statusLabel: String {
         switch status {
+        case "waiting_workspace": "等待父工作区操作完成"
         case "accepted", "preparing": "准备中"
         case "queued": "排队中"
         case "running": "执行中"

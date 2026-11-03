@@ -95,6 +95,7 @@ export class CorptieStore {
         getSession: (...args) => this.getSession(...args),
         scheduleSave: (...args) => this.scheduleSave(...args),
         getTask: (...args) => this.getTask(...args),
+        listGitWorktrees: (...args) => this.listGitWorktrees(...args),
         getWork: (...args) => this.getWork(...args),
         getAgent: (...args) => this.getAgent(...args),
         getProjectIntegrationRun: (...args) => this.getProjectIntegrationRun(...args),

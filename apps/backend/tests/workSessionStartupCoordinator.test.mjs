@@ -20,7 +20,7 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 const COMMIT = "a".repeat(40);
 const TREE = "b".repeat(40);
 
-test("ready delivery binding and frozen parent base survive parent commits, sibling creation and recovery", async () => {
+for (const dirty of [false,true]) test(`ready delivery binding and ${dirty ? "workspace snapshot" : "frozen HEAD"} survive parent commits, sibling creation and recovery`, async () => {
   const f = await fixture();
   const exec = promisify(execFileCallback);
   const git = async (path,...args)=>(await exec("git",["-C",path,...args],{encoding:"utf8"})).stdout.trim();
@@ -59,24 +59,26 @@ test("ready delivery binding and frozen parent base survive parent commits, sibl
         VALUES ('worktree:child','repository:one',?,?,'available','inventory:child',?,'task/child')`, [childPath, childPath, now]);
       return { worktreeId: "worktree:child", path: childPath, branchName: "task/child", localState: {} };
     } });
+    if (dirty) await writeFile(join(parentPath,"inherited.txt"),"inherited working content");
     const childStart = { startupOperationId: "startup:child", taskId: child.id, repositoryId: "repository:one" };
     const allocation = await preparer.prepare(childStart);
-    assert.equal(allocation.sourceCommitOid, await git(parentPath, "rev-parse", "HEAD"));
+    assert.equal(allocation.sourceCommitOid, dirty ? allocation.baseContext.baseCommitOid : await git(parentPath, "rev-parse", "HEAD"));
+    if(dirty) assert.equal(await git(childPath,"show","HEAD:inherited.txt"),"inherited working content");
     assert.equal(allocation.canonicalWorktreePath, await realpath(childPath));
     assert.equal((await preparer.prepare(childStart)).reused, true);
     assert.equal(allocations, 1);
     const hierarchy=preparer.hierarchy;
     const base=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
-    assert.equal(base.baseCommitOid,await git(parentPath,"rev-parse","HEAD"));
+    assert.equal(dirty ? base.parentHeadOid : base.baseCommitOid,await git(parentPath,"rev-parse","HEAD"));
     await writeFile(join(parentPath,"parent.txt"),"next");
-    await assert.rejects(hierarchy.validateCreate({workId:parent.work_id,parentTaskId:parent.id},{expectedParentResourceVersion:parent.resource_version}),{code:"PARENT_WORKTREE_DIRTY"});
+    await assert.doesNotReject(hierarchy.validateCreate({workId:parent.work_id,parentTaskId:parent.id},{expectedParentResourceVersion:parent.resource_version}));
     await git(parentPath,"add","parent.txt"); await git(parentPath,"commit","-m","parent advanced");
     const sibling=createChild("task:sibling"); allocate("startup:sibling",sibling);
     const restored=await new TaskWorktreeHierarchyService({store:f.store}).freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
     assert.deepEqual(restored,base);
     const siblingBase=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:sibling",taskId:sibling.id,repositoryId:"repository:one"});
     assert.notEqual(siblingBase.baseCommitOid,base.baseCommitOid);
-    assert.equal(await git(repo,"rev-parse","HEAD"),base.baseCommitOid);
+    assert.equal(await git(repo,"rev-parse","HEAD"),dirty ? base.parentHeadOid : base.baseCommitOid);
     f.store.db.run("UPDATE task_delivery_worktrees SET binding_revision=binding_revision+1 WHERE task_id=?",[parent.id]);
     await assert.rejects(hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"}),{code:"TASK_DELIVERY_BINDING_CHANGED"});
   } finally { await cleanup(f); }

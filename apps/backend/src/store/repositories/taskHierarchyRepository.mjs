@@ -1,3 +1,4 @@
+import { integrationBlocksWorkspaceCapture } from "../../domain/worktreeCreationScope.mjs";
 import { createHash } from "node:crypto";
 
 const active = "COALESCE(deletion_status,'') <> 'deleted' AND creation_state='ready'";
@@ -50,9 +51,13 @@ export class TaskHierarchyRepository {
       throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
     }
     const context = this.getTaskWorkspaceContext(parent);
-    if (context?.repository && this.selectOne(`SELECT 1 FROM worktree_integration_jobs
-      WHERE repository_id=? AND status IN ('queued','running','paused','cancellation_requested','replanning') LIMIT 1`,
-    [context.repository.id])) throw taskHierarchyError("TASK_HIERARCHY_BUSY");
+    if (context?.repository) {
+      const binding = this.getTaskDeliveryBinding(parent.id);
+      const jobs = this.selectAll(`SELECT id,phase,status,details_json FROM worktree_integration_jobs
+        WHERE repository_id=? AND status IN ('queued','running','paused','cancellation_requested','replanning')`, [context.repository.id]);
+      if (binding && jobs.some(job=>integrationBlocksWorkspaceCapture(job,binding.worktree_id,
+        this.listGitWorktrees?.(context.repository.id) ?? []))) throw taskHierarchyError('TASK_HIERARCHY_BUSY');
+    }
     return parent;
   }
 

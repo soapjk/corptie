@@ -1,3 +1,4 @@
+import { snapshotBaseForWorktree } from "../runtime/workspaceSnapshotIntegration.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureProjectLocalState, inspectProjectLocalState, rollbackProjectLocalState, verifyProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
@@ -406,6 +407,7 @@ export class WorktreeIntegrationJobService {
       items.push({
         ordinal,
         worktreeId: worktree.worktreeId,
+        snapshotBase: snapshotBaseForWorktree(this.store, worktree.worktreeId),
         path: worktree.path,
         branchName: worktree.branchName,
         isMain: worktree.isMain,
@@ -470,7 +472,7 @@ export class WorktreeIntegrationJobService {
       const protection = shouldCommit ? withProtectedPathsDigest(await this.inspectCommitProtection(tree.path)) : null;
       if (protection?.localSymlinkPaths?.length) risks.push({ code: "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE", message: "Local Agent configuration links cannot be committed." });
       blockingRisks.push(...risks.map(risk => ({ worktreeId: tree.worktreeId, ...risk })));
-      items.push({ ordinal: items.length, worktreeId: tree.worktreeId, path: tree.path, branchName: tree.branchName,
+      items.push({ ordinal: items.length, snapshotNoChanges: tree.hierarchy?.changeState === "no_changes", snapshotBase: snapshotBaseForWorktree(this.store, tree.worktreeId), worktreeId: tree.worktreeId, path: tree.path, branchName: tree.branchName,
         isMain: tree.isMain, actualIsMain: tree.isMain, availability: tree.availability, sourceHeadBefore: tree.headOid,
         statusSummary: tree.statusSummary ?? "", changedFiles: tree.changedFiles ?? [], dirty: tree.dirty === true,
         aheadOfMain: tree.aheadOfMain, behindMain: tree.behindMain, mergedIntoMain: tree.mergedIntoMain,
@@ -531,6 +533,7 @@ export class WorktreeIntegrationJobService {
       items.push({
         ordinal: isTarget ? 0 : index,
         worktreeId: worktree.worktreeId,
+        snapshotBase: snapshotBaseForWorktree(this.store, worktree.worktreeId),
         path: worktree.path,
         branchName: worktree.branchName,
         isMain: isTarget,
@@ -1547,7 +1550,8 @@ export class WorktreeIntegrationJobService {
               jobId: job.id,
               sourceHead,
               expectedMainHead,
-              conflictFiles: item.conflictFiles
+              conflictFiles: item.conflictFiles,
+              snapshotBase: item.snapshotBase ?? null
             });
             break;
           } catch (error) {
@@ -2006,6 +2010,7 @@ export class WorktreeIntegrationJobService {
                 mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
                 sourceHead,
                 sourcePath:item.path,
+                snapshotBase: item.resolutionHead ? null : item.snapshotBase ?? null,
                 mergeStrategy:job.details.plan.mergeStrategy,
                 expectedMainHead,
                 strictExpectedMain: Boolean(job.details.plan.orchestration),
@@ -2049,6 +2054,10 @@ export class WorktreeIntegrationJobService {
           job = this.#item(job, item.worktreeId, {
             mergeStatus: result.alreadyMerged ? "already_integrated" : (result.recovered ? "recovered" : "completed"),
             mergeMainHead: result.mainHead,
+            snapshotReceipt: result.snapshotReceipt ?? (item.snapshotBase && item.resolutionHead ? {
+              version:1,baseCommitOid:item.snapshotBase.baseCommitOid,childHead:originalSourceHead,
+              parentBefore:expectedResolutionMainHead,parentAfter:result.mainHead,resolvedHead:item.resolutionHead
+            } : null),
             conflictFiles: [],
             error: null
           }, "merging", "merge_completed");
@@ -2351,7 +2360,7 @@ export class WorktreeIntegrationJobService {
       if (steps.some(step => step.status !== "completed")) {
         throw new WorktreeIntegrationJobError("INTEGRATION_STEPS_PENDING", "Intermediate integration steps remain; the code is not yet confirmed in main.", 409);
       }
-      const requiredHeads = [...reviewed.filter(item => item.worktreeId !== goalId)
+      const requiredHeads = [...reviewed.filter(item => item.worktreeId !== goalId && !item.snapshotNoChanges)
         .map(item => item.commitHead ?? item.sourceHeadBefore),
         ...steps.flatMap(step => (step.items ?? []).map(item => item.resolutionHead)),
         ...plan.items.map(item => item.resolutionHead)].filter(Boolean);
@@ -2436,6 +2445,7 @@ export class WorktreeIntegrationJobService {
             expectedSourceHead: recorded.commitHead ?? recorded.sourceHeadBefore,
             allowResolvedRebase: allowResume && recorded.rebaseStarted === true,
             syncStrategy:initial.details.plan.syncStrategy,
+            snapshotBase: recorded.snapshotBase ?? null,
             jobId
           });
           this.#item(this.#requireJob(jobId), recorded.worktreeId, {
