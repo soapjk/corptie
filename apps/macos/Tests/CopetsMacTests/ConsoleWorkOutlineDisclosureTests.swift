@@ -14,6 +14,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
     private final class State: ObservableObject {
         @Published var expanded = false
         @Published var showsAll = false
+        @Published var allowsCollapse = true
         var mounted: Set<String> = []
     }
 
@@ -23,20 +24,16 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         let session: TaskSession
 
         var body: some View {
-            List {
-                DisclosureGroup(isExpanded: $state.expanded.animation()) {
-                    ForEach(state.showsAll ? tasks : Array(tasks.prefix(5))) { task in
-                        ConsoleTaskRowContent(showsHoverFeedback: false, task: task, sessionActivity: .idle,
-                            session: session, isSelected: false, isUnread: true, onOpen: {})
-                            .consoleOutlineRowSurface(isSelected: false)
-                            .onAppear { state.mounted.insert(task.id) }
-                    }
-                } label: {
-                    Text("Work")
-                }
-                Text("Next Work")
+            ConsoleNativeOutline(groups: {
+                [ConsoleNativeOutlineGroup(id: "work", header: AnyView(Text("Work")),
+                    rows: state.showsAll ? tasks : Array(tasks.prefix(5)),
+                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse, expansionChanged: { state.expanded = $0 }),
+                 ConsoleNativeOutlineGroup(id: "next", header: AnyView(Text("Next Work")), isSection: true)]
+            }) { task in
+                ConsoleTaskRowContent(task: task, sessionActivity: .idle,
+                    session: session, isSelected: false, isUnread: true, onOpen: {})
+                    .onAppear { state.mounted.insert(task.id) }
             }
-            .listStyle(.sidebar)
         }
     }
 
@@ -54,10 +51,20 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         settle(0.15)
         let table = try XCTUnwrap(findTable(in: host))
         XCTAssertEqual(table.numberOfRows, 2)
+        let nextRow = try XCTUnwrap(table.rowView(atRow: 1, makeIfNecessary: true))
+        let collapsedY = nextRow.frame.minY
         state.expanded = true
-        settle(0.35)
+        let expanding = motionPositions(nextRow)
+        XCTAssertGreaterThan(expanding.count, 2, "Expansion must visibly interpolate, not jump in one update")
+        XCTAssertGreaterThan(nextRow.frame.minY, collapsedY + 100)
         XCTAssertEqual(table.numberOfRows, 7, "Only the five preview tasks enter the native list")
         XCTAssertLessThanOrEqual(state.mounted.count, 5)
+        state.expanded = false
+        let collapsing = motionPositions(nextRow)
+        XCTAssertGreaterThan(collapsing.count, 2, "Collapse must move following rows continuously")
+        XCTAssertEqual(nextRow.frame.minY, collapsedY, accuracy: 1)
+        state.expanded = true
+        settle(0.35)
         state.showsAll = true
         settle(0.2)
         XCTAssertEqual(table.numberOfRows, 1_002)
@@ -65,6 +72,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         table.scrollRowToVisible(1_000)
         settle(0.15)
         XCTAssertNotNil(table.rowView(atRow: 1_000, makeIfNecessary: false))
+        XCTAssertTrue(state.mounted.contains("task:999"), "A reused native cell must display the new task identity")
         for _ in 0..<7 {
             state.expanded.toggle()
             settle(0.025)
@@ -74,6 +82,24 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         XCTAssertEqual(table.numberOfRows, 2)
         XCTAssertLessThanOrEqual(table.enclosingScrollView?.contentView.bounds.minY ?? 0, 1,
             "Collapsing a long scrolled group must clamp the scroll position")
+        state.allowsCollapse = false
+        state.expanded = true
+        settle(0.35)
+        let outline = try XCTUnwrap(table as? NSOutlineView)
+        let item = try XCTUnwrap(outline.item(atRow: 0))
+        outline.collapseItem(item)
+        XCTAssertTrue(outline.isItemExpanded(item), "Search-forced expansion must also apply to native disclosure controls")
+    }
+
+    private func motionPositions(_ view: NSView) -> [CGFloat] {
+        var positions: [CGFloat] = []
+        let end = Date().addingTimeInterval(0.4)
+        while Date() < end {
+            settle(0.005)
+            let y = view.layer?.presentation()?.frame.minY ?? view.frame.minY
+            if positions.last.map({ abs($0 - y) > 0.1 }) ?? true { positions.append(y) }
+        }
+        return positions
     }
 
     private func findTable(in view: NSView) -> NSTableView? {
