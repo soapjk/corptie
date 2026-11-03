@@ -18,6 +18,7 @@ import { sessionRuntimeSchemaSql, workDomainSchemaSql } from "./index.mjs";
 import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "../taskSchemaMigration.mjs";
 import { migrateSshWorkspaces } from "../sshWorkspaceRepository.mjs";
 import { migrateAutomationTimelineV2 } from "./automationTimelineV2.mjs";
+import { migrateMailboxTimeline } from "./mailboxTimelineMigrations.mjs";
 
 // Ordered schema/data upgrade composition. Store retains connection and transaction ownership.
 // Steps are explicit migration capabilities, not the Store object.
@@ -251,6 +252,7 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     steps.ensureStateSyncTables();
     steps.ensureProviderEventPipelineTables();
     migrateAutomationTimelineV2({ db, selectAll, selectOne, runDataMigrationOnce });
+    migrateMailboxTimeline({ db, selectAll, selectOne, runDataMigrationOnce });
     runDataMigrationOnce("unreceived-message-delete-capability-v1", () => {
       db.run(`UPDATE session_items SET raw_metadata_json=json_set(
         CASE WHEN json_valid(raw_metadata_json) THEN raw_metadata_json ELSE '{}' END,

@@ -1,4 +1,5 @@
 import { executionPlanItem, finishExecutionPlan, patchExecutionPlan, replaceExecutionPlan, sameExecutionPlanContent, uncertainExecutionPlan } from "./executionPlanProjection.mjs";
+import { isMailboxOperation } from "./mailboxTimelinePolicy.mjs";
 
 const TERMINAL_EVENT_STATUS = new Map([
   ["turn.completed", "completed"],
@@ -269,6 +270,7 @@ export class ProviderEventProjector {
 
   persistItem(sessionId, item, bindingId, delivery = null, task = null) {
     if (!item?.id) return false;
+    if (item.type === "userMessage" && isMailboxOperation(task)) return false;
     let canonicalItem = item;
     if (item.type === "userInput") {
       const existing = this.store.getSessionItem?.(sessionId, item.id);
