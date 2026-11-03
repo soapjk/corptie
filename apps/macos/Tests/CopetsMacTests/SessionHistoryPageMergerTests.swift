@@ -59,6 +59,16 @@ final class SessionHistoryPageMergerTests: XCTestCase {
         XCTAssertEqual(merged.map(\.id), ["older", "current-1", "current-2"])
     }
 
+    func testRepeatedNavigationBoundsRetainedBodiesAndPreservesLatestTail() {
+        var current = (0..<240).map { item("tail-\($0)") }
+        for jump in 0..<100 {
+            let window = (0..<81).map { item("window-\(jump)-\($0)") }
+            current = SessionHistoryPageMerger.mergeAnchorWindow(window, with: current, retainedTailLimit: 240)
+            XCTAssertEqual(current.count, 321)
+            XCTAssertEqual(current.suffix(240).map(\.id), (0..<240).map { "tail-\($0)" })
+        }
+    }
+
     func testAnchorWindowMergesBeforeCachedTailAndRemovesOverlap() {
         let merged = SessionHistoryPageMerger.mergeAnchorWindow(
             [item("anchor"), item("overlap")],

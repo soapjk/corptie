@@ -58,7 +58,8 @@ final class SessionTimelineHistoryController: ObservableObject {
     func loadTimelineWindow(
         for session: TaskSession,
         anchorRowID: String,
-        expectedSelectionGeneration: UInt64?
+        expectedSelectionGeneration: UInt64?,
+        retainedTailLimit: Int? = nil, acceptsResult: () -> Bool = { true }
     ) async -> TimelineAnchorWindowLoadResult {
         let anchorKind: String
         let anchorID: String
@@ -113,10 +114,11 @@ final class SessionTimelineHistoryController: ObservableObject {
                   latest.id == threadID else {
                 return .stale
             }
+            guard acceptsResult() else { return .stale }
             guard window.anchor.status == "found" else { return .missing }
             let mergedItems = SessionHistoryPageMerger.mergeAnchorWindow(
                 window.items,
-                with: latest.items
+                with: latest.items, retainedTailLimit: retainedTailLimit
             )
             let merged = CodexThreadDetail(
                 id: latest.id,

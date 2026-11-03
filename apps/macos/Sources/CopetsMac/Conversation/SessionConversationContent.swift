@@ -105,6 +105,13 @@ struct SessionConversationSurface: View {
     @State private var loadingSearchToken: UUID?
     @State private var searchRowID: String?
     @State private var searchRowRevision = 0
+    @State private var navigationRowID: String?
+    @State private var navigationRevision = 0
+    @State private var navigationEpoch = 0
+    @State private var pendingNavigationMessageID: String?
+    @State private var navigationTask: Task<Void, Never>?
+    @State private var navigationError: String?
+
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
     @State private var pendingFork: SessionForkSelection?
@@ -346,6 +353,10 @@ struct SessionConversationSurface: View {
         }
         .onChange(of: sessionId) { _, _ in
             hasSubmittedMessage = false
+            navigationEpoch &+= 1
+            navigationTask?.cancel(); navigationTask = nil
+            pendingNavigationMessageID = nil; navigationRowID = nil
+            navigationRevision &+= 1
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
             displayProjectionGeneration &+= 1
@@ -380,6 +391,9 @@ struct SessionConversationSurface: View {
             displayProjectionGeneration &+= 1
         }
         .onDisappear {
+            navigationEpoch &+= 1
+            navigationTask?.cancel(); navigationTask = nil
+            pendingNavigationMessageID = nil
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
             historyAnchorRestoreTask?.cancel()
@@ -507,6 +521,20 @@ struct SessionConversationSurface: View {
                 }
                 .background { conversationChromeFrame(.header) }
             }
+            .overlay(alignment: .leading) {
+                if !compactComposer, !showsWelcome, displayedDetail != nil {
+                    UserMessageNavigationRail(baseURL: backendClient.baseURL, sessionID: sessionId,
+                        active: acceptsPresentationUpdates, navigate: navigateToUserMessage)
+                        .id(sessionId + ":" + (displayedDetail?.id ?? ""))
+                        .padding(.leading, 2)
+                        .padding(.top, max(headerClearance, topChromeClearance))
+                        .padding(.bottom, composerClearance)
+                        .alert("无法定位消息", isPresented: Binding(get: { navigationError != nil },
+                            set: { if !$0 { navigationError = nil } })) {
+                            Button("好", role: .cancel) { navigationError = nil }
+                        } message: { Text(navigationError ?? "") }
+                }
+            }
             .overlay(alignment: .bottom) {
                 jumpToLatestButton
                     .padding(.bottom, composerClearance + 8)
@@ -613,6 +641,8 @@ struct SessionConversationSurface: View {
                 },
                 searchRowID: searchRowID,
                 searchRowRevision: searchRowRevision,
+                navigationRowID: navigationRowID,
+                navigationRevision: navigationRevision,
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
@@ -961,6 +991,39 @@ struct SessionConversationSurface: View {
                         updateCachedDisplayEntries(for: current)
                     }
                 }
+            }
+        }
+    }
+
+    private func navigateToUserMessage(_ messageID: String) {
+        pendingNavigationMessageID = messageID
+        guard navigationTask == nil else { return }
+        navigationEpoch &+= 1
+        let epoch = navigationEpoch
+        navigationTask = Task { @MainActor in
+            defer { if navigationEpoch == epoch { navigationTask = nil } }
+            while let requested = pendingNavigationMessageID {
+                pendingNavigationMessageID = nil
+                guard !Task.isCancelled, navigationEpoch == epoch, acceptsPresentationUpdates,
+                      let session = selectedSession, session.id == sessionId,
+                      let generation = backendClient.selectionGenerationToken(for: sessionId) else { return }
+                let rowID = "message:" + requested
+                let result = await backendClient.loadTimelineWindow(for: session, anchorRowID: rowID,
+                    expectedSelectionGeneration: generation, retainedTailLimit: 240,
+                    acceptsResult: { navigationEpoch == epoch && pendingNavigationMessageID == nil && acceptsPresentationUpdates && !Task.isCancelled })
+                guard !Task.isCancelled, acceptsPresentationUpdates,
+                      backendClient.selectedSession?.id == sessionId else { return }
+                // Coalesce rapid clicks: an older load must not move the viewport.
+                if pendingNavigationMessageID != nil { continue }
+                guard result == .found, let detail = displayedDetail else {
+                    navigationError = result == .missing ? "这条消息已不存在。" : "暂时无法定位这条消息，请重试。"
+                    continue
+                }
+                timelineRestorationIntent.reset(initialPosition: .init(rowID: rowID, offset: 0,
+                    absoluteScrollY: 0, followsLatest: false))
+                updateCachedDisplayEntries(for: detail)
+                navigationRowID = rowID
+                navigationRevision &+= 1
             }
         }
     }
