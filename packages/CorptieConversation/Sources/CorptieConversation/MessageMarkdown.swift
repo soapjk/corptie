@@ -370,10 +370,10 @@ public enum MessageMarkdown {
                 attributed.addAttribute(.baselineOffset, value: offset, range: fullRange)
             }
         }
-        // Chat messages regularly contain URLs, hashes, file paths, and model
-        // identifiers with no whitespace. Word wrapping lets those runs escape
-        // the fixed card width; character wrapping preserves the card boundary.
-        paragraphStyle.lineBreakMode = .byCharWrapping
+        // Prose uses linguistic boundaries, including Chinese punctuation rules.
+        // TextKit still breaks overlong tokens to fit; fenced code keeps literal
+        // character wrapping rather than applying prose punctuation rules.
+        paragraphStyle.lineBreakMode = font == nil ? .byWordWrapping : .byCharWrapping
         attributed.addAttribute(.paragraphStyle, value: paragraphStyle, range: fullRange)
         let inlineIntentKey = NSAttributedString.Key("NSInlinePresentationIntent")
         attributed.enumerateAttribute(inlineIntentKey, in: fullRange) { value, range, _ in

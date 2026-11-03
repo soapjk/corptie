@@ -7,6 +7,7 @@ enum WorkbenchStyle {
     static let readingInset: CGFloat = 32
     static let canvas = Color(nsColor: .textBackgroundColor)
     static let sidebarColor = adaptive(light: 0.985, dark: 0.115)
+    static let workColumnColor = adaptive(light: 0.995, dark: 0.18)
     static let navigationColor = adaptive(light: 0.965, dark: 0.095)
 
     static func lane(viewportWidth: CGFloat) -> CGRect {

@@ -44,7 +44,15 @@ final class SharedMarkdownParityTests: XCTestCase {
                         normalized.addAttribute(.paragraphStyle, value: paragraph, range: range)
                     }
                 }
-                XCTAssertTrue(actual.isEqual(to: normalized), "Changed attributed runs: \(text)")
+                // Prose line breaking intentionally differs from the frozen
+                // character-wrap renderer; all other attributed semantics match.
+                let comparable = NSMutableAttributedString(attributedString: actual)
+                actual.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: actual.length)) { value, range, _ in
+                    guard let paragraph = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle else { return }
+                    paragraph.lineBreakMode = .byCharWrapping
+                    comparable.addAttribute(.paragraphStyle, value: paragraph, range: range)
+                }
+                XCTAssertTrue(comparable.isEqual(to: normalized), "Changed attributed runs: \(text)")
             }
         }
     }
