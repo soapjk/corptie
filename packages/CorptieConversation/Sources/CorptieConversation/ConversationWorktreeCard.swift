@@ -1,5 +1,74 @@
 import SwiftUI
 import CorptieClientCore
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+/// Complete diagnostics are prepared off the UI thread when the error arrives.
+/// Only visible chunks are rendered; opening details never parses the full log.
+public struct WorktreeErrorDetailsView: View {
+    private let diagnosticText: String
+    private let summary: String
+    private let localize: (String) -> String
+    @State private var pages: [String] = []
+    @State private var expanded = false
+
+    public init(_ diagnosticText: String, summary: String? = nil, localize: @escaping (String) -> String = { $0 }) {
+        self.diagnosticText = diagnosticText
+        self.summary = summary ?? String(diagnosticText.prefix(240))
+        self.localize = localize
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(verbatim: summary).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            HStack {
+                Button(localize("复制完整诊断")) {
+                    #if os(macOS)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(diagnosticText, forType: .string)
+                    #else
+                    UIPasteboard.general.string = diagnosticText
+                    #endif
+                }.buttonStyle(.borderless)
+                Button { expanded.toggle() } label: {
+                    Label(localize("完整错误详情"), systemImage: expanded ? "chevron.down" : "chevron.right")
+                }.buttonStyle(.borderless)
+                    .accessibilityValue(localize(expanded ? "已展开" : "已折叠"))
+                    .accessibilityIdentifier("worktree.error.disclosure")
+            }
+            if expanded {
+                if pages.isEmpty { ProgressView() }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(pages.indices, id: \.self) { index in
+                            Text(verbatim: pages[index]).font(.caption.monospaced())
+                                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }.frame(maxHeight: 260)
+            }
+        }
+        .task(id: diagnosticText) {
+            let text = diagnosticText
+            pages = []
+            let worker = Task.detached(priority: .utility) {
+                var result: [String] = []
+                var start = text.startIndex
+                while start < text.endIndex, !Task.isCancelled {
+                    let end = text.index(start, offsetBy: 2_048, limitedBy: text.endIndex) ?? text.endIndex
+                    result.append(String(text[start..<end]))
+                    start = end
+                }
+                return result
+            }
+            let prepared = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            if !Task.isCancelled { pages = prepared }
+        }
+    }
+}
 
 /// The same component and operation flow on macOS, iPad and iPhone. It owns
 /// only visible-card state; Git, authorization and job recovery stay server-side.

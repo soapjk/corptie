@@ -181,10 +181,18 @@ struct PadWorktreeManagementView: View {
             }
             Button("取消", role: .cancel) { pendingSync = nil }
         } message: { Text("将更新本地分支，不会推送到远程。") }
-        .alert("Worktree 操作提示", isPresented: Binding(
-            get: { manager.errorMessage != nil },
-            set: { if !$0 { manager.errorMessage = nil } }
-        )) { Button("好", role: .cancel) {} } message: { Text(manager.errorMessage ?? "") }
+        .safeAreaInset(edge: .bottom) {
+            if let error = manager.errorMessage {
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("Worktree 操作失败").font(.headline)
+                        Spacer()
+                        Button("关闭") { manager.errorMessage = nil }
+                    }
+                    WorktreeErrorDetailsView(error)
+                }.padding().background(.background)
+            }
+        }
         .alert("操作完成", isPresented: Binding(
             get: { manager.notice != nil }, set: { if !$0 { manager.notice = nil } }
         )) { Button("好", role: .cancel) {} } message: { Text(manager.notice ?? "") }
@@ -464,6 +472,10 @@ struct PadWorktreeManagementView: View {
                 Text("\(job.progress.completed) / \(job.progress.total)").foregroundStyle(.secondary)
             }
             ProgressView(value: job.progress.fraction)
+            if job.status == "completed", let evidence = job.completionEvidence {
+                Text("\(evidence.branchName ?? "main") @ \(evidence.mainHead)\n\(evidence.verifiedAt)")
+                    .font(.caption.monospaced()).textSelection(.enabled)
+            }
             if job.phase != "awaiting_integration_acceptance" {
                 Text("阶段：\(job.phase)").font(.footnote).foregroundStyle(.secondary)
             }
@@ -494,16 +506,27 @@ struct PadWorktreeManagementView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.orange)
             }
-            if let error = job.error,job.phase != "awaiting_integration_acceptance" { Text(error).font(.footnote).foregroundStyle(.red) }
+            if let diagnostic = job.diagnosticText ?? job.error {
+                WorktreeErrorDetailsView(diagnostic, summary: job.errorSummary)
+            }
             HStack {
                 if job.status == "awaiting_confirmation" {
                     Button("查看并确认计划", systemImage: "checkmark.seal") { showingJobReview = true }
                 }
-                if job.status == "paused",job.phase != "awaiting_integration_acceptance" {
+                if job.supports("repreflight") {
+                    Button("重新校验并生成后续计划", systemImage: "arrow.triangle.merge") {
+                        Task {
+                            if await manager.jobAction("repreflight", connection: connection),
+                               manager.job?.status == "awaiting_confirmation" { showingJobReview = true }
+                        }
+                    }
+                } else if job.status == "paused",job.phase != "awaiting_integration_acceptance" {
+                    if job.supports("retry") {
                     Button("重新验证并继续", systemImage: "arrow.clockwise") {
                         Task { await manager.jobAction("retry", connection: connection) }
                     }
-                    if job.hasMergeConflict {
+                    }
+                    if job.supports("resolve_conflict_with_agent") {
                         Button("交给角色解决冲突", systemImage: "person.crop.circle.badge.gearshape") {
                             Task { await manager.jobAction("resolve-conflict", connection: connection) }
                         }
@@ -518,6 +541,7 @@ struct PadWorktreeManagementView: View {
             if let session = job.conflictResolution?.sessionId ?? job.conflictAutomation?.sessionId {
                 Button("查看冲突处理会话", systemImage: "bubble.left.and.bubble.right") { openSession(session) }
             }
+            if let recovery = job.recovery { Text(recovery.message).font(.footnote).textSelection(.enabled) }
         }
     }
 

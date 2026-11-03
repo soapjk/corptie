@@ -3,6 +3,27 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func recoveryActionsAndCompleteDiagnosticsSurviveDecoding() throws {
+        var value = try JSONSerialization.jsonObject(with: Data(#"{"id":"job:1","repositoryId":"repo:one","status":"paused","phase":"failed","planFingerprint":"fingerprint","createdAt":"now","updatedAt":"now","availableActions":["repreflight","cancel"],"recovery":{"kind":"repreflight","message":"Review a fresh plan"},"plan":{"repositoryId":"repo:one","mainWorktreeId":"main","mainPath":"/repo","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":1,"total":3,"fraction":0.333}}"#.utf8)) as! [String: Any]
+        let full = String(repeating: "诊断 👨‍👩‍👧‍👦\n", count: 3_000) + "LAST_DIAGNOSTIC"
+        value["diagnosticText"] = full
+        let job = try JSONDecoder().decode(ClientWorktreeJob.self, from: JSONSerialization.data(withJSONObject: value))
+        #expect(job.supports("repreflight"))
+        #expect(!job.supports("retry"))
+        #expect(job.canCancel)
+        #expect(!job.shouldPoll)
+        #expect(job.diagnosticText == full)
+        #expect(job.recovery?.kind == "repreflight")
+        value["status"] = "completed"
+        value["availableActions"] = [] as [String]
+        value["completionEvidence"] = ["schemaVersion": 1, "repositoryId": "repo:one", "mainWorktreeId": "main",
+            "branchName": "main", "mainHead": "verified-main", "verifiedHeads": ["source"], "verifiedAt": "now"] as [String: Any]
+        let completed = try JSONDecoder().decode(ClientWorktreeJob.self, from: JSONSerialization.data(withJSONObject: value))
+        #expect(completed.completionEvidence?.mainHead == "verified-main")
+        #expect(completed.completionEvidence?.verifiedHeads == ["source"])
+        #expect(!completed.canCancel)
+    }
+
     @Test func busyErrorsPreserveOptionalContextAndLegacyCompatibility() async throws {
         for rich in [false, true] {
             let context = rich ? #","busyContext":{"worktreeId":"tree","sessionId":"session","sessionTitle":"Busy Session","reason":"UNSETTLED_DELIVERY","count":3}"# : ""

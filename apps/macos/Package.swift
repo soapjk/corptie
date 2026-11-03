@@ -54,9 +54,14 @@ let package = Package(
                 .linkedLibrary("sqlite3")
             ]
         ),
+        .executableTarget(
+            name: "WorktreeDiagnosticInteractionHarness",
+            dependencies: [.product(name: "CorptieConversation", package: "CorptieConversation")],
+            path: "Tests/WorktreeDiagnosticInteractionHarness"
+        ),
         .testTarget(
             name: "CorptieMacTests",
-            dependencies: ["CorptieMac"],
+            dependencies: ["CorptieMac", "WorktreeDiagnosticInteractionHarness"],
             path: "Tests/CopetsMacTests"
         )
     ],
