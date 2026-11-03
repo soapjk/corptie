@@ -705,6 +705,12 @@ test("automation index retains execution ownership and adoption does not steal t
     f.store.upsertSessionTurn({ sessionId: "provider:b", bindingId: binding, routingVersion: 1,
       turnId: "active:turn", executionStatus: "completed" });
     assert.equal(f.unified.get("session:b", `mailbox:${input.taskId}`).executionStatus, "completed");
+    f.store.upsertTimelineItemProjection("provider:b", { id: "processed:tool", turnId: "active:turn",
+      bindingId: binding, type: "commandExecution", text: "read verification log", status: "completed" });
+    const detail = f.unified.get("session:b", `mailbox:${input.taskId}`);
+    assert.equal(detail.processingSessionId, "provider:b");
+    assert.equal(detail.processingItemId, "processed:tool");
+    assert.equal(f.unified.rows("session:b", { filter: "all", sourceType: "automation" }).messages[0].processingItemId, undefined);
   } finally { await f.close(); }
 });
 
