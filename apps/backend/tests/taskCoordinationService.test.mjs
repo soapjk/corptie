@@ -28,6 +28,8 @@ import { CoordinationTurnService } from "../src/application/coordinationTurnServ
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { eventHasAgentMessage } from "../src/store/sessionEventSemantics.mjs";
+import { createProductEventPublisher } from "../src/application/productEventPublisher.mjs";
+import { createCollaborationTimelinePresentation } from "../src/collaboration/collaborationTimelinePresentation.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 async function restrictedFixture(t, providerId = "codex-app-server", supported = true) {
@@ -546,6 +548,56 @@ test("restricted coordination bypasses all native tools and sends on both no-too
     await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "instruction-one" });
     assert.equal(f.requests.length, 1);
     assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
+  });
+});
+
+test("queued coordination publishes processing before the planner finishes on every supported Provider", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
+    const f = await restrictedFixture(t, provider);
+    const presentation = createCollaborationTimelinePresentation({ store: f.store, collaborationCore: f.core });
+    const noop = () => {};
+    const publisher = createProductEventPublisher({
+      store: f.store, eventLog: { append: event => ({ id: 1, ...event }) }, sseClients: new Set(),
+      now: () => new Date().toISOString(), getClientDeviceGateway: () => null,
+      scheduleStateSyncPublish: noop, requestTaskSummary: noop, notifySessionEventListeners: noop,
+      publishDshSessionEvent: noop, handleScheduledWorkEvent: noop,
+      reconcileCompletedCollaborationWork: noop, reconcileConflictResolutionSession: noop,
+      ...presentation
+    });
+    const record = f.turns.emitEvent;
+    f.turns.emitEvent = (type, payload, options) => {
+      record(type, payload);
+      return publisher.emitEvent(type, payload, options);
+    };
+    const taskId = "message:coordination-progress", messageId = "user:coordination-progress";
+    f.store.enqueueAgentTask({ taskId, agentId: f.role.agentId, sessionId: f.source.sessionId,
+      kind: "user", priority: 10, text: "先讨论方案", source: { type: "desktop", messageId } });
+    const task = f.store.claimAgentTask(taskId);
+    publisher.emitEvent("AgentWorkPreparing", { task }, { sessionId: f.source.sessionId });
+    const messageState = () => JSON.parse(f.store.getSessionItem(f.source.sessionId, messageId).rawMetadataJSON).userMessageStatus;
+    assert.equal(messageState(), "preparing");
+    let release, entered;
+    const held = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    f.run(async () => { entered(); await held; return { text: JSON.stringify({ kind: "discussion", reply: "答复", items: [] }) }; });
+    const pending = f.application.sendMessage(f.source.sessionId, "先讨论方案", {
+      idempotencyKey: "progress", options: { agentTask: task }, source: task.source
+    });
+    await started;
+    try {
+      assert.equal(messageState(), "processing");
+      const event = f.events.find(event => event.type === "AgentWorkStarted");
+      assert.equal(event.payload.task.targetTurnId, "coordination:progress");
+      assert.equal(event.payload.task.source.messageId, messageId);
+      assert.equal(f.store.getSessionTurn(f.source.sessionId, f.source.providerBindingId, "coordination:progress").execution_status, "running");
+      assert.equal(f.events.some(event => event.type === "SessionCoordinationCompleted"), false);
+    } finally {
+      release();
+      await pending;
+    }
+    assert.equal(f.terminals[0].status, "completed");
+    await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "progress" });
+    assert.equal(f.events.filter(event => event.type === "AgentWorkStarted").length, 1);
   });
 });
 

@@ -143,7 +143,14 @@ export class CoordinationTurnService {
           activityStatus: status === "running" ? "协调规划" : null } });
     };
     saveTurn("running");
-    if (context.options?.agentTask?.taskId) this.store.updateAgentTask(context.options.agentTask.taskId, { targetTurnId: turnId });
+    if (context.options?.agentTask?.taskId) {
+      const taskId = context.options.agentTask.taskId;
+      this.store.updateAgentTask(taskId, { targetTurnId: turnId });
+      // This host-owned Turn is already running. Publish the ordinary message
+      // projection now, rather than leaving it preparing until planning ends.
+      this.emitEvent("AgentWorkStarted", { sessionId: reference.sessionId, task: this.store.getAgentTask(taskId) },
+        { sessionId: reference.sessionId, source: context.source });
+    }
     this.emitEvent("SessionCoordinationStarted", { turnId }, { sessionId: reference.sessionId });
     try {
       const session = this.store.getSession(reference.sessionId);

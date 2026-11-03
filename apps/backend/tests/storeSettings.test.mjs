@@ -2,6 +2,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
+test("first collaboration confirmation defaults on and only valid saved booleans change policy", async () => {
+  const store = new CorptieStore({ dbPath: ":memory:", configPath: "/unused-settings-config", manageProcessEnvironment: false });
+  let writes = 0;
+  store.writeConfig = async () => { writes++; };
+  assert.deepEqual(store.settings().collaboration, { requireFirstMessageConfirmation: true });
+  await store.updateSettings({ collaboration: { requireFirstMessageConfirmation: false } });
+  assert.equal(store.collaborationSettings().requireFirstMessageConfirmation, false);
+  await store.updateSettings({ collaboration: {} });
+  assert.equal(store.collaborationSettings().requireFirstMessageConfirmation, false);
+  for (const value of [null, [], false, { requireFirstMessageConfirmation: "false" }, { unknown: false }]) {
+    await assert.rejects(store.updateSettings({ collaboration: value }), { code: "INVALID_COLLABORATION_SETTINGS" });
+  }
+  assert.equal(writes, 2);
+  await store.updateSettings({ collaboration: { requireFirstMessageConfirmation: true } });
+  store.writeConfig = async () => { throw new Error("disk unavailable"); };
+  await assert.rejects(store.updateSettings({ collaboration: { requireFirstMessageConfirmation: false } }), /disk unavailable/);
+  assert.equal(store.collaborationSettings().requireFirstMessageConfirmation, true);
+});
+
 test("settings follow replaced configuration and retain normalization and persistence failure semantics", async () => {
   const store = new CorptieStore({ dbPath: ":memory:", configPath: "/unused-settings-config", manageProcessEnvironment: false });
   let writes = 0;

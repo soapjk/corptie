@@ -2,7 +2,7 @@ import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { resolveDataRootLayout } from "../runtime/dataRootLayout.mjs";
 
 const SETTINGS_FIELDS = new Set([
-  "dataRoot", "choiceParser", "codexBackend", "codeDiff", "agentProxy", "newSessionDefaults", "gateway"
+  "dataRoot", "choiceParser", "codexBackend", "codeDiff", "agentProxy", "newSessionDefaults", "gateway", "collaboration"
 ]);
 export const DEPRECATED_PATH_FIELDS = new Set([
   "dataDir", "logDir", "dbPath", "configPath", "artifactDir", "runtimeDir", "backupDir"
@@ -30,7 +30,8 @@ export class StoreSettings {
       codeDiff: this.codeDiffSettings(),
       agentProxy: this.agentProxySettings(),
       newSessionDefaults: this.newSessionDefaults(),
-      gateway: this.gatewaySettings()
+      gateway: this.gatewaySettings(),
+      collaboration: this.collaborationSettings()
     };
   }
 
@@ -60,8 +61,20 @@ export class StoreSettings {
     return normalizeGatewaySettings(this.config.gateway ?? {});
   }
 
+  collaborationSettings() {
+    return { requireFirstMessageConfirmation: this.config.collaboration?.requireFirstMessageConfirmation !== false };
+  }
+
   async updateSettings(input = {}) {
     assertSettingsFields(input);
+    if (Object.hasOwn(input, "collaboration") && (!input.collaboration || Array.isArray(input.collaboration)
+      || typeof input.collaboration !== "object"
+      || Object.keys(input.collaboration).some(key => key !== "requireFirstMessageConfirmation")
+      || (Object.hasOwn(input.collaboration, "requireFirstMessageConfirmation")
+        && typeof input.collaboration.requireFirstMessageConfirmation !== "boolean"))) {
+      throw Object.assign(new TypeError("Collaboration settings require a boolean requireFirstMessageConfirmation."),
+        { code: "INVALID_COLLABORATION_SETTINGS" });
+    }
     if (Object.hasOwn(input, "dataRoot")) {
       const requested = resolveDataRootLayout(input.dataRoot, this.environmentName).dataRoot;
       if (requested !== this.dataRoot) {
@@ -97,6 +110,16 @@ export class StoreSettings {
     if (input.gateway && typeof input.gateway === "object") {
       this.config.gateway = normalizeGatewaySettings(input.gateway);
       await this.writeConfig();
+    }
+    if (input.collaboration) {
+      const previous = this.config.collaboration;
+      this.config.collaboration = { ...this.collaborationSettings(), ...input.collaboration };
+      try { await this.writeConfig(); }
+      catch (error) {
+        if (previous === undefined) delete this.config.collaboration;
+        else this.config.collaboration = previous;
+        throw error;
+      }
     }
     return this.settings();
   }

@@ -13,6 +13,7 @@ final class SettingsDraftState {
         var codeDiff: CodeDiffSettings
         var agentProxy: AgentProxySettings
         var gateway: GatewaySettings
+        var collaboration: CollaborationSettings
         var taskCreation: TaskCreationDefaults
 
         init(_ settings: BackendSettings) {
@@ -22,6 +23,7 @@ final class SettingsDraftState {
             codeDiff = settings.codeDiff ?? .defaults
             agentProxy = settings.agentProxy ?? .defaults
             gateway = settings.gateway ?? .defaults
+            collaboration = settings.collaboration ?? .defaults
             taskCreation = settings.newSessionDefaults?.taskCreation ?? TaskCreationDefaults()
         }
     }
@@ -32,6 +34,7 @@ final class SettingsDraftState {
     var codeDiff = CodeDiffSettings.defaults { didSet { updateSummary(.general) } }
     var agentProxy = AgentProxySettings.defaults { didSet { updateSummary(.proxy) } }
     var gateway = GatewaySettings.defaults { didSet { updateSummary(.gateway) } }
+    var collaboration = CollaborationSettings.defaults { didSet { updateSummary(.general) } }
     var taskCreation = TaskCreationDefaults() { didSet { updateSummary(.provider) } }
     private(set) var baseline: Snapshot?
     private(set) var dirtyTabs: Set<SettingsTab> = []
@@ -58,6 +61,7 @@ final class SettingsDraftState {
         value.codeDiff = codeDiff
         value.agentProxy = agentProxy
         value.gateway = gateway
+        value.collaboration = collaboration
         value.taskCreation = taskCreation
         return value
     }
@@ -86,6 +90,7 @@ final class SettingsDraftState {
         merge(\.codeDiff, tab: .general)
         merge(\.agentProxy, tab: .proxy)
         merge(\.gateway, tab: .gateway)
+        merge(\.collaboration, tab: .general)
         merge(\.taskCreation, tab: .provider)
         baseline = remote
         apply(merged)
@@ -134,6 +139,7 @@ final class SettingsDraftState {
         codeDiff = value.codeDiff
         agentProxy = value.agentProxy
         gateway = value.gateway
+        collaboration = value.collaboration
         taskCreation = value.taskCreation
         applyingSnapshot = false
         updateSummary()
@@ -146,7 +152,8 @@ final class SettingsDraftState {
             if dirty { changed.insert(category) } else { changed.remove(category) }
         }
         if tab == nil || tab == .general {
-            set(.general, dataRoot.trimmingCharacters(in: .whitespacesAndNewlines) != baseline.dataRoot || codeDiff != baseline.codeDiff)
+            set(.general, dataRoot.trimmingCharacters(in: .whitespacesAndNewlines) != baseline.dataRoot
+                || codeDiff != baseline.codeDiff || collaboration != baseline.collaboration)
             dataRootError = dataRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? L10n("Data root is required.") : nil
         }
