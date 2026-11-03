@@ -14,8 +14,6 @@ struct NotificationSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(L10n("Notifications"))
-                        .font(.system(size: 18, weight: .semibold, design: .rounded))
                     Text(L10n("Choose which operations and task-state changes should notify you."))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)

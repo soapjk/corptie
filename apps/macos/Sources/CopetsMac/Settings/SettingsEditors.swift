@@ -1,4 +1,5 @@
 import AppKit
+import CorptieConversation
 import Combine
 import os
 import QuartzCore
@@ -15,14 +16,14 @@ struct ProxyProfileEditor: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.system(size: 13, weight: .bold))
+                        .font(WorkbenchTypography.font(for: .cardTitle))
                         .foregroundStyle(CorptiePalette.primaryText)
                     Text(subtitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(WorkbenchTypography.font(for: .help))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
-                Toggle(L10n(""), isOn: $profile.enabled)
+                Toggle(title, isOn: $profile.enabled)
                     .labelsHidden()
             }
 
@@ -38,22 +39,22 @@ struct ProxyProfileEditor: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.white.opacity(0.07))
+                .fill(Color.primary.opacity(0.025))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
         )
     }
 
     private func proxyField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(WorkbenchTypography.font(for: .technical))
                 .foregroundStyle(CorptiePalette.secondaryText)
             TextField(placeholder, text: text)
                 .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(WorkbenchTypography.font(for: .technical))
         }
     }
 }
