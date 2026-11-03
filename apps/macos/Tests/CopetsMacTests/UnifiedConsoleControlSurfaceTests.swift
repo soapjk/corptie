@@ -266,7 +266,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func navigationControlsReserveAnIndependentMobileStyleToolbar() throws {
+    func navigationControlsUseTopRowWithoutTrafficLightClearance() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let controlsStart = try #require(source.range(of: ".safeAreaInset(edge: .top, spacing: 0) {"))
         let controlsEnd = try #require(source.range(of: "var navigationMode:", range: controlsStart.upperBound..<source.endIndex))
@@ -278,13 +278,15 @@ struct UnifiedConsoleControlSurfaceTests {
         let archivePosition = try #require(controls.range(of: "taskArchiveToggle"))
         let createPosition = try #require(controls.range(of: "outlineCreationMenu"))
         #expect(sortPosition.lowerBound < togglePosition.lowerBound)
-        #expect(togglePosition.lowerBound < searchPosition.lowerBound)
-        #expect(searchPosition.lowerBound < archivePosition.lowerBound)
+        #expect(searchPosition.lowerBound < sortPosition.lowerBound)
+        #expect(togglePosition.lowerBound < archivePosition.lowerBound)
         #expect(archivePosition.lowerBound < createPosition.lowerBound)
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
-        #expect(controls.contains("PlatformWorkOutlineToolbar(density: .titlebar) {"))
+        #expect(controls.contains(".platformWorkOutlineToolbarDensity(.titlebar)"))
+        #expect(controls.contains(".padding(.top, 2)"))
+        #expect(!controls.contains("MainWindowLayoutMetrics.titlebarHeight + 10"))
         #expect(!controls.contains(".padding(.top, 3)"))
         #expect(PlatformWorkOutlineLayout.controlSize == 44)
         #expect(PlatformWorkOutlineLayout.controlSurfaceDiameter == 36)

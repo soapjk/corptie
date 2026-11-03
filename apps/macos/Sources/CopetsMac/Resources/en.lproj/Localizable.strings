@@ -1983,3 +1983,20 @@
 "已展开" = "Expanded";
 
 "已折叠" = "Collapsed";
+
+"关闭窗口" = "Close Window";
+"最小化窗口" = "Minimize Window";
+"全屏与窗口布局" = "Full Screen and Window Layout";
+"移动与调整大小" = "Move and Resize";
+"左半屏" = "Left Half";
+"右半屏" = "Right Half";
+"上半屏" = "Top Half";
+"下半屏" = "Bottom Half";
+"左上角" = "Top Left";
+"右上角" = "Top Right";
+"左下角" = "Bottom Left";
+"右下角" = "Bottom Right";
+"填满窗口" = "Fill";
+"还原大小" = "Restore Size";
+"全屏幕" = "Full Screen";
+"移到其他屏幕" = "Move to Another Display";

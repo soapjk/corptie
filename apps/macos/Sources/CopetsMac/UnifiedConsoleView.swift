@@ -418,7 +418,7 @@ struct UnifiedConsoleView: View {
         }
         .platformWorkOutlineToolbarDensity(.titlebar)
         .padding(.horizontal, 16)
-        .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 10)
+        .padding(.top, 2)
         .padding(.bottom, 14)
     }
 
