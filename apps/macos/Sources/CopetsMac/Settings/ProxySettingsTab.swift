@@ -1,19 +1,18 @@
 import AppKit
 import SwiftUI
+import CorptieConversation
 
 struct ProxySettingsTab: View {
-    @ObservedObject var backendClient: BackendClient
-    @ObservedObject private var settingsState = BackendClient.shared.settingsController
+    let backendClient: BackendClient
     @Binding var agentProxy: AgentProxySettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n("Agent Proxy"))
-                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    SettingsSectionHeading(title: L10n("Agent Proxy"), mode: L10n("Requires Save Settings"))
                     Text(L10n("Proxy settings are applied per agent when Corptie launches agent processes."))
-                        .font(.system(size: 12, weight: .medium))
+                        .font(WorkbenchTypography.font(for: .help))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
@@ -46,12 +45,6 @@ struct ProxySettingsTab: View {
                 .padding(.vertical, 2)
             }
 
-            if let error = backendClient.lastError {
-                Text(error)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-            }
 
         }
     }
