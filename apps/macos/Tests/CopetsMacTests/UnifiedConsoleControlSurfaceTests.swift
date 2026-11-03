@@ -419,7 +419,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func automationAndWorktreePagesShareCompactCardGeometry() throws {
+    func automationRetainsCardsAndWorktreesUsesOpaqueWorkbenchPanels() throws {
         let mainTab = try source(named: "MainTabView.swift")
         let automation = try source(named: "AutomationsView.swift")
         let worktree = try source(named: "WorktreeManagementView.swift")
@@ -436,10 +436,12 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(automation.contains("MainWindowPageLayoutMetrics.halfColumnSpacing"))
 
         #expect(worktree.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
-        #expect(worktree.components(separatedBy: ".mainWindowPageCard(.lightweight)").count - 1 == 3)
-        #expect(worktree.components(
-            separatedBy: "MainWindowPageLayoutMetrics.halfColumnSpacing"
-        ).count - 1 == 3)
+        #expect(!worktree.contains(".mainWindowPageCard(.lightweight)"))
+        #expect(worktree.contains("WorktreePanel(sidebar: true)"))
+        #expect(worktree.contains(".background(WorkbenchStyle.canvas)"))
+        let panel = try source(named: "WorktreePresentation.swift")
+        #expect(panel.contains("MainWindowPageLayoutMetrics.cardCornerRadius"))
+        #expect(panel.contains("WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas"))
     }
 
     @Test

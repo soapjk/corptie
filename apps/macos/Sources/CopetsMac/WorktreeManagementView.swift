@@ -284,12 +284,12 @@ struct WorktreeManagementView: View {
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
     @ObservedObject private var backendClient = BackendClient.shared
-    @StateObject private var client = WorktreeManagementClient.shared
+    @StateObject private var client: WorktreeManagementClient
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
     @State private var pendingOperation: ManagedWorktree?
     @State private var localStateWorktree: WorktreeLocalStateTarget?
-    @State private var pendingDeletion: ManagedWorktree?
+    @State private var pendingDeletion: WorktreeDeletionReview?
     @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
     @State private var pendingCleanup: WorktreeCleanupRequest?
     @State private var worktreeScrollRequest: WorktreeListScrollRequest?
@@ -303,25 +303,70 @@ struct WorktreeManagementView: View {
     @State private var showingIntegrationSelection = false
     @State private var integrationSources: [String]?
 
+    @State private var layoutMode: WorktreeLayoutMode = .threeColumns
+    @State private var compactShowsList = false
+    @State private var showingRepositoryPicker = false
+    @State private var detailTab: WorktreeDetailTab = .overview
+    @State private var repositoryQuery = ""
+    @State private var worktreeQuery = ""
+    @State private var statusFilter: WorktreeStatusFilter = .all
+    @State private var projection = WorktreeListProjection()
+    @State private var visibleTrees: [ManagedWorktree] = []
+    @State private var selectionNotice: String?
+    @AppStorage("worktrees.repositoryHidden", store: CorptieAppEnvironment.userDefaults) private var repositoryHidden = false
+    @AppStorage("worktrees.listHidden", store: CorptieAppEnvironment.userDefaults) private var listHidden = false
+
+    init(client: WorktreeManagementClient = .shared) {
+        _client = StateObject(wrappedValue: client)
+    }
+
     var body: some View {
-        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
-            repositoryColumn
-                .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
-                .mainWindowPageCard(.lightweight)
-                .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
-        } content: {
-            worktreeColumn
-                .navigationSplitViewColumnWidth(min: 320, ideal: 390, max: 520)
-                .mainWindowPageCard(.lightweight)
-                .padding(.horizontal, MainWindowPageLayoutMetrics.halfColumnSpacing)
-        } detail: {
-            detailColumn
-                .mainWindowPageCard(.lightweight)
-                .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
+        GeometryReader { geometry in
+            pageColumns
+                .onChange(of: geometry.size.width, initial: true) { _, width in
+                    let next = layoutMode.resized(to: width - 24)
+                    if next != layoutMode { layoutMode = next }
+                }
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .background(WorkbenchStyle.canvas)
         .toolbar(removing: .sidebarToggle)
+        .sheet(isPresented: $showingRepositoryPicker) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(L10n("Repository Workspaces")).font(.headline)
+                    Spacer()
+                    Button(L10n("Done")) { showingRepositoryPicker = false }.keyboardShortcut(.cancelAction)
+                }.padding(12)
+                repositoryColumn
+            }.frame(width: 360, height: 500).background(WorkbenchStyle.sidebarColor)
+        }
+        .onChange(of: client.detail?.project.worktrees, initial: true) { _, trees in
+            rebuildProjection(trees: trees ?? [])
+            let previous = selectedWorktreeIds.count
+            selectedWorktreeIds = WorktreeBatchSelectionPolicy.reconcile(selectedWorktreeIds, trees: trees ?? [])
+            if previous > selectedWorktreeIds.count {
+                selectionNotice = L10nFormat("%d unavailable selections were removed. Review the selection before continuing.", previous - selectedWorktreeIds.count)
+            }
+        }
+        .task(id: "\(worktreeQuery):\(statusFilter.rawValue)") {
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            rebuildProjection(trees: client.detail?.project.worktrees ?? [])
+        }
+        .onChange(of: expandedHierarchyWorktrees) { _, _ in updateVisibleTrees() }
+        .onChange(of: client.selection.worktreeId) { _, id in
+            if id != nil { compactShowsList = false }
+        }
+        .onChange(of: router.pendingWorktreeNavigation?.id) { _, id in
+            if id != nil { compactShowsList = false; listHidden = false }
+        }
         .onChange(of: client.selection.repositoryId, initial: true) { _, id in
+            endBatchSelection()
+            batchOperationDraft = nil
+            selectionNotice = nil
+            worktreeQuery = ""
+            statusFilter = .all
+            showingRepositoryPicker = false
             OperationNotificationManager.shared.visibleRepositoryID = id
         }
         .onChange(of: client.job?.id, initial: true) { _, id in
@@ -461,33 +506,17 @@ struct WorktreeManagementView: View {
         } message: {
             Text(L10n("Corptie will stop at a safe boundary and preserve completed commits and unresolved repository state. You can refresh and start a new merge plan afterward."))
         }
-        .confirmationDialog(
-            L10n("Delete this Worktree?"),
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingDeletion
-        ) { worktree in
-            Button(L10n("Delete Worktree and Local Branch"), role: .destructive) {
-                pendingDeletion = nil
-                Task { _ = await client.deleteWorktree(worktree) }
+        .sheet(item: $pendingDeletion) { review in
+            WorktreeDeletionConfirmation(review: review) {
+                Task { _ = await client.deleteWorktree(review.tree, expectedRepositoryID: review.repositoryID) }
             }
-            Button(L10n("Cancel"), role: .cancel) { pendingDeletion = nil }
-        } message: { worktree in
-            Text(L10nFormat(
-                "Corptie will permanently remove exactly this Worktree and its local branch:\n%@\n%@",
-                worktree.branchName ?? L10n("Detached HEAD"),
-                worktree.path
-            ))
         }
         .sheet(item: $pendingCleanup) { request in
             WorktreeCleanupConfirmationView(
                 worktrees: request.worktrees,
                 onConfirm: {
                     pendingCleanup = nil
-                    Task { await client.cleanupMergedWorktrees(request.worktrees) }
+                    Task { await client.cleanupMergedWorktrees(request.worktrees, expectedRepositoryID: request.repositoryID) }
                 },
                 onCancel: { pendingCleanup = nil }
             )
@@ -516,9 +545,75 @@ struct WorktreeManagementView: View {
                         Text(error).font(.caption).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                }.padding(14).background(.regularMaterial)
+                }.padding(14).background(WorkbenchStyle.canvas)
             }
         }
+    }
+
+    @ViewBuilder
+    private var pageColumns: some View {
+        VStack(spacing: 0) {
+            if !backendClient.isOnline {
+                Label(L10n("Backend offline. Previously loaded data may be out of date."), systemImage: "wifi.slash")
+                    .font(.callout).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if layoutMode == .compact {
+                if compactShowsList || client.selectedWorktree == nil {
+                    worktreeColumn.modifier(WorktreePanel())
+                } else {
+                    detailColumn.modifier(WorktreePanel())
+                }
+            } else {
+                NavigationSplitView(columnVisibility: Binding(
+                    get: { listHidden ? .detailOnly : (layoutMode == .threeColumns && !repositoryHidden ? .all : .doubleColumn) },
+                    set: { value in
+                        // Native split controls may request visibility; only explicit changes persist.
+                        if value == .all { repositoryHidden = false; listHidden = false }
+                    }
+                )) {
+                    repositoryColumn
+                        .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
+                        .modifier(WorktreePanel(sidebar: true))
+                } content: {
+                    worktreeColumn
+                        .navigationSplitViewColumnWidth(min: 320, ideal: 390, max: 520)
+                        .modifier(WorktreePanel())
+                } detail: {
+                    detailColumn
+                        .navigationSplitViewColumnWidth(min: 420, ideal: 600)
+                        .modifier(WorktreePanel())
+                }
+            }
+        }
+    }
+
+    private func openRepositories() {
+        if layoutMode == .threeColumns { repositoryHidden = false; listHidden = false }
+        else { showingRepositoryPicker = true }
+    }
+
+    private func rebuildProjection(trees: [ManagedWorktree]) {
+        projection = WorktreeListProjection(trees: trees, query: worktreeQuery, filter: statusFilter)
+        updateVisibleTrees()
+    }
+
+    private func updateVisibleTrees() {
+        visibleTrees = projection.visible(expanded: expandedHierarchyWorktrees, repositoryID: client.selection.repositoryId ?? "")
+    }
+
+    private var navigationControls: some View {
+        HStack(spacing: 8) {
+            Button(action: openRepositories) { Label(L10n("Repositories"), systemImage: "sidebar.left") }
+                .accessibilityIdentifier("worktree.show-repositories")
+            if (layoutMode == .compact && !compactShowsList) || listHidden {
+                Button {
+                    compactShowsList = true
+                    listHidden = false
+                } label: { Label(L10n("Back to Worktrees"), systemImage: "chevron.left") }
+                .accessibilityIdentifier("worktree.show-list")
+            }
+            Spacer(minLength: 0)
+        }.controlSize(.small).padding(.horizontal, 12).frame(height: 42)
     }
 
     private var worktreeReloadTrigger: String {
@@ -538,20 +633,40 @@ struct WorktreeManagementView: View {
             columnHeader(L10n("Repository Workspaces"), systemImage: "externaldrive.connected.to.line.below") {
                 Task { await client.loadRepositories(forceSelectedReload: true) }
             }
-            if client.repositories.isEmpty && !client.isLoading {
+            TextField(L10n("Search repositories"), text: $repositoryQuery)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, 12).padding(.vertical, 6)
+                .accessibilityIdentifier("worktree.repository.search")
+            if client.repositories.isEmpty && client.isLoading {
+                ProgressView(L10n("Loading repositories…")).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if client.repositories.isEmpty && client.errorMessage != nil {
+                ContentUnavailableView {
+                    Label(L10n("Could Not Load Repositories"), systemImage: "exclamationmark.triangle")
+                } actions: {
+                    Button(L10n("Retry")) { Task { await client.loadRepositories() } }
+                }
+            } else if client.repositories.isEmpty && !client.isLoading {
                 ContentUnavailableView(L10n("No Repository Workspaces"), systemImage: "folder.badge.questionmark")
             } else {
                 List(selection: Binding(
                     get: { client.selection.repositoryId },
                     set: { value in Task { await client.selectRepository(value) } }
                 )) {
-                    ForEach(client.repositories) { repository in
+                    ForEach(client.repositories.filter { WorktreePresentationPolicy.matches(repositoryQuery, values: [$0.name, $0.mainPath ?? $0.path]) }) { repository in
                         repositoryRow(repository)
                         .tag(repository.id)
                         .accessibilityIdentifier("worktree.repository.\(repository.id)")
                     }
                 }
-                .listStyle(.sidebar)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .overlay {
+                    if !client.repositories.contains(where: { WorktreePresentationPolicy.matches(repositoryQuery, values: [$0.name, $0.mainPath ?? $0.path]) }) {
+                        ContentUnavailableView(L10n("No Matching Repositories"), systemImage: "magnifyingglass")
+                    }
+                }
+                if !repositoryQuery.isEmpty {
+                    Button(L10n("Clear Search")) { repositoryQuery = "" }.controlSize(.small).padding(6)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -559,24 +674,42 @@ struct WorktreeManagementView: View {
     }
 
     @State private var expandedHierarchyWorktrees: Set<String> = []
-    private func hierarchyWorktrees(_ project: ManagedGitProject) -> [ManagedWorktree] {
-        let byID=Dictionary(uniqueKeysWithValues:project.worktrees.map{($0.worktreeId,$0)})
-        return TaskHierarchyIndex.visibleOrder(nodes:project.worktrees.map{.init(id:$0.worktreeId,workId:project.repositoryId,parentTaskId:$0.hierarchy?.parentWorktreeId)},expanded:expandedHierarchyWorktrees).compactMap{byID[$0]}
-    }
     private var worktreeColumn: some View {
         VStack(spacing: 0) {
+            if layoutMode != .threeColumns || repositoryHidden { navigationControls }
             columnHeader(L10n("Git Worktrees"), systemImage: "arrow.triangle.branch", showsSelection: true) {
                 Task { await client.refreshSelected() }
             }
+            HStack {
+                TextField(L10n("Search Worktrees"), text: $worktreeQuery).textFieldStyle(.roundedBorder)
+                Picker(L10n("Status"), selection: $statusFilter) {
+                    ForEach(WorktreeStatusFilter.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.labelsHidden().frame(maxWidth: 140)
+            }.padding(.horizontal, 12).padding(.vertical, 6)
+            if isBatchSelecting {
+                let hiddenCount = selectedWorktreeIds.filter { !projection.matches.contains($0) }.count
+                if hiddenCount > 0 {
+                    Text(L10nFormat("%d selected Worktrees are outside these results.", hiddenCount))
+                        .font(.callout).foregroundStyle(.secondary).padding(.horizontal, 12)
+                }
+            }
+            if let selectionNotice {
+                Text(selectionNotice).font(.callout).foregroundStyle(.secondary).padding(12)
+            }
             if let project = client.detail?.project {
-                if !isBatchSelecting { worktreeActions(project) }
-                if let job = client.job, job.status != "awaiting_confirmation", job.status != "canceled" {
-                    if job.status == "completed" {
-                        CompletedWorktreeJobView(job: job)
-                            .id("\(job.repositoryId):\(job.id)")
-                    } else {
-                        jobProgress(job)
-                    }
+                if !isBatchSelecting { worktreeActions(project).disabled(!backendClient.isOnline) }
+                if let job = client.job {
+                    Button {
+                        detailTab = .execution
+                        compactShowsList = false
+                    } label: {
+                        HStack {
+                            Label(localizedIntegrationStatus(job.status), systemImage: "clock.arrow.circlepath")
+                            Spacer()
+                            Text("\(job.progress.completed)/\(job.progress.total)").monospacedDigit()
+                            Image(systemName: "chevron.right")
+                        }
+                    }.buttonStyle(.plain).font(.callout).padding(12)
                 }
                 if project.worktrees.isEmpty {
                     ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
@@ -584,9 +717,9 @@ struct WorktreeManagementView: View {
                     ScrollViewReader { proxy in
                         List(selection: Binding(
                             get: { client.selection.worktreeId },
-                            set: { client.selectWorktree($0) }
+                            set: { client.selectWorktree($0); compactShowsList = false }
                         )) {
-                            ForEach(hierarchyWorktrees(project)) { worktree in
+                            ForEach(visibleTrees) { worktree in
                                 HStack(spacing: 8) {
                                     if isBatchSelecting {
                                         Button {
@@ -598,7 +731,7 @@ struct WorktreeManagementView: View {
                                                     ? Color.accentColor : Color.secondary)
                                         }
                                         .buttonStyle(.plain)
-                                        .disabled(!isBatchEligible(worktree))
+                                        .disabled(!isBatchEligible(worktree) || !projection.matches.contains(worktree.worktreeId))
                                         .help(batchEligibilityExplanation(worktree))
                                         .accessibilityLabel(L10nFormat(
                                             "%@ %@",
@@ -622,6 +755,16 @@ struct WorktreeManagementView: View {
                             }
                         }
                         .listStyle(.inset)
+                        .scrollContentBackground(.hidden)
+                        .overlay {
+                            if visibleTrees.isEmpty {
+                                ContentUnavailableView {
+                                    Label(L10n("No Matching Worktrees"), systemImage: "magnifyingglass")
+                                } actions: {
+                                    Button(L10n("Clear Filters")) { worktreeQuery = ""; statusFilter = .all }
+                                }
+                            }
+                        }
                         .task(id: worktreeScrollRequest) {
                             guard let request = worktreeScrollRequest,
                                   project.worktrees.contains(where: {
@@ -636,7 +779,7 @@ struct WorktreeManagementView: View {
                             proxy.scrollTo(request.worktreeId, anchor: .center)
                         }
                     }
-                    if isBatchSelecting { batchActionBar(project) }
+                    if isBatchSelecting { batchActionBar(project).disabled(!backendClient.isOnline) }
                 }
             } else if client.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -661,10 +804,12 @@ struct WorktreeManagementView: View {
             if isBatchSelecting {
                 Text(L10nFormat("%d selected", selectedWorktreeIds.count))
                     .font(.caption.weight(.semibold))
-                Button(L10n("Select All Available")) {
-                    selectedWorktreeIds = project.worktrees.filter(isBatchEligible).map(\.worktreeId)
-                }
-                .controlSize(.small)
+                Menu(L10n("Selection")) {
+                    Button(L10n(projection.isFiltering ? "Select Available Results" : "Select All Available")) {
+                        selectedWorktreeIds = WorktreeBatchSelectionPolicy.adding(projection.eligibleMatches, to: selectedWorktreeIds)
+                    }
+                    Button(L10n("Clear Selection")) { selectedWorktreeIds = [] }
+                }.controlSize(.small)
                 Spacer()
                 Button(L10n("Done")) { endBatchSelection() }
                     .controlSize(.small)
@@ -674,10 +819,12 @@ struct WorktreeManagementView: View {
                     isBatchSelecting = true
                     selectedWorktreeIds = []
                 } label: {
-                    Label(L10n("Select Worktrees"), systemImage: "checkmark.square")
+                    Image(systemName: "checkmark.square")
                 }
+                .help(L10n("Select Worktrees"))
+                .accessibilityLabel(L10n("Select Worktrees"))
                 .controlSize(.small)
-                .disabled(client.isMutating || client.job?.isActive == true)
+                .disabled(!backendClient.isOnline || client.isMutating || client.job?.isActive == true || client.job?.status == "paused")
                 .accessibilityIdentifier("worktree.batch.select")
             }
         }
@@ -704,14 +851,14 @@ struct WorktreeManagementView: View {
         }
         .controlSize(.small)
         .padding(10)
-        .background(.bar)
+        .background(WorkbenchStyle.canvas)
         .accessibilityIdentifier("worktree.batch.actions")
     }
 
     private func presentBatchOperation(_ kind: WorktreeBatchOperationKind, project: ManagedGitProject) {
         let selectedSet = Set(selectedWorktreeIds)
         let selected = project.worktrees
-            .filter { selectedSet.contains($0.worktreeId) }
+            .filter { selectedSet.contains($0.worktreeId) && isBatchEligible($0) }
             .sorted { left, right in
                 if left.isMain != right.isMain { return !left.isMain }
                 let leftDistance = (left.behindMain ?? 0) + (left.aheadOfMain ?? 0)
@@ -741,221 +888,221 @@ struct WorktreeManagementView: View {
     }
 
     private func isBatchEligible(_ worktree: ManagedWorktree) -> Bool {
-        worktree.hierarchy == nil && worktree.availability == "available"
-            && worktree.branchName != nil
-            && !worktree.isDetached
-            && worktree.operationState == nil
-            && worktree.conflictFiles.isEmpty
+        WorktreePresentationPolicy.batchBlocker(worktree) == nil
     }
 
     private func batchEligibilityExplanation(_ worktree: ManagedWorktree) -> String {
-        isBatchEligible(worktree)
-            ? L10n("Include this Worktree in a batch operation.")
-            : L10n("This Worktree is unavailable, detached, or already has a Git operation in progress.")
+        WorktreePresentationPolicy.batchBlocker(worktree) ?? L10n("Include this Worktree in a batch operation.")
+    }
+
+    private var detailColumn: some View {
+        VStack(spacing: 0) {
+            navigationControls
+            if let worktree = client.selectedWorktree {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .top) {
+                        Label(worktree.branchName ?? L10n("Detached HEAD"), systemImage: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
+                            .font(WorkbenchTypography.font(for: .pageTitle)).lineLimit(2)
+                        Spacer(minLength: 8)
+                        worktreeStateControl(worktree)
+                    }
+                    Text(client.detail?.repository.name ?? "").font(.subheadline).foregroundStyle(.secondary)
+                    Text(worktree.path).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    if projection.isFiltering && !projection.matches.contains(worktree.worktreeId) {
+                        Button(L10n("Current Worktree is outside the results. Clear filters")) { worktreeQuery = ""; statusFilter = .all }
+                            .controlSize(.small)
+                    }
+                    Picker(L10n("Worktree details"), selection: $detailTab) {
+                        ForEach(WorktreeDetailTab.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.pickerStyle(.segmented).labelsHidden()
+                }.padding(16)
+                Divider()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        if let message = client.operationNotice {
+                            WorktreeOperationFeedbackView(title: L10n(client.operationNoticeTitle), message: message, onClose: client.dismissOperationNotice)
+                        }
+                        if let result = client.cleanupResult {
+                            WorktreeCleanupResultView(result: result, onClose: client.dismissCleanupResult)
+                        }
+                        switch detailTab {
+                        case .overview:
+                            overviewSections(worktree)
+                        case .changes:
+                            WorktreeChangesView(tree: worktree)
+                        case .execution:
+                            if let job = client.job {
+                                jobProgress(job)
+                                WorktreeAuditView(job: job, worktreeID: worktree.worktreeId)
+                            } else {
+                                ContentUnavailableView(L10n("No Recent Integration Record"), systemImage: "clock")
+                            }
+                        }
+                    }.padding(16).frame(maxWidth: 760, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            } else {
+                ContentUnavailableView(L10n("Select a Worktree"), systemImage: "arrow.triangle.branch")
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityIdentifier("worktree.detail.column")
     }
 
     @ViewBuilder
-    private var detailColumn: some View {
-        Group {
-            if let worktree = client.selectedWorktree {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                    if let message = client.operationNotice {
-                        WorktreeOperationFeedbackView(
-                            title: L10n(client.operationNoticeTitle),
-                            message: message,
-                            onClose: client.dismissOperationNotice
-                        )
-                    }
-                    if let result = client.cleanupResult {
-                        WorktreeCleanupResultView(
-                            result: result,
-                            onClose: client.dismissCleanupResult
-                        )
-                    }
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Label(worktree.branchName ?? L10n("Detached HEAD"), systemImage: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
-                                .font(.title2.weight(.semibold))
-                            Text(worktree.path).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                        Spacer()
-                        worktreeStateControl(worktree)
-                    }
-                    detailSection(L10n("Git Status")) {
-                        Button(L10n("检查本地目录")) {
-                            if let repositoryID = client.detail?.repository.id {
-                                localStateWorktree = WorktreeLocalStateTarget(repositoryID: repositoryID, worktree: worktree)
-                            }
-                        }
-                            .disabled(worktree.availability != "available")
-                            .accessibilityIdentifier("worktree.local-state.inspect")
-                        detailPair("HEAD", worktree.headOid ?? "—", monospaced: true)
-                        detailPair(L10n("Availability"), localizedIntegrationStatus(worktree.availability))
-                        detailPair(worktree.hierarchy?.role == "child" ? L10n("与父分支") : L10n("Branch relation"),
-                                   "↑ \(worktree.hierarchy?.comparison.ahead ?? worktree.aheadOfMain ?? 0)  ↓ \(worktree.hierarchy?.comparison.behind ?? worktree.behindMain ?? 0)")
-                        detailPair(L10n("Operation"), worktree.operationState.map(localizedGitOperation) ?? L10n("None"))
-                        if let summary = worktree.statusSummary, !summary.isEmpty {
-                            Text(summary).font(.caption.monospaced()).textSelection(.enabled)
-                        }
-                    }
-                    detailSection(L10n("Actions")) {
-                        HStack(alignment: .center) {
-                            Button {
-                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: worktree.path)])
-                            } label: {
-                                Label(L10n("Show in Finder"), systemImage: "folder")
-                            }
-                            Button {
-                                Task { await client.pushWorktreeToGitHub(worktree) }
-                            } label: {
-                                if client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId) {
-                                    ProgressView().controlSize(.small)
-                                    Text(L10n("Checking GitHub…"))
-                                } else if client.pushingWorktreeIds.contains(worktree.worktreeId) {
-                                    ProgressView().controlSize(.small)
-                                    Text(L10n("Pushing to GitHub…"))
-                                } else {
-                                    Label(L10n("Push to GitHub"), systemImage: "arrow.up.circle")
-                                }
-                            }
-                            .disabled(
-                                client.isMutating
-                                    || client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId)
-                                    || client.pushingWorktreeIds.contains(worktree.worktreeId)
-                                    || !ManagedWorktreeGitHubPushPolicy.canPush(worktree)
-                            )
-                            .help(worktreePushExplanation(worktree))
-                            .accessibilityIdentifier("worktree.push-github.\(worktree.worktreeId)")
-                            if worktree.hierarchy == nil, worktree.operationState != nil {
-                                Button {
-                                    pendingGitOperationAction = PendingGitOperationAction(
-                                        worktree: worktree,
-                                        action: "continue"
-                                    )
-                                } label: {
-                                    Label(L10n("Continue Git Operation"), systemImage: "play.fill")
-                                }
-                                .disabled(client.isMutating || !worktree.conflictFiles.isEmpty)
-                                .help(worktree.conflictFiles.isEmpty
-                                    ? L10n("Continue the current Git operation after validating its live state.")
-                                    : L10n("Resolve and stage all conflicts before continuing."))
-                                .accessibilityIdentifier("worktree.git-operation.continue.\(worktree.worktreeId)")
-                                Button(role: .destructive) {
-                                    pendingGitOperationAction = PendingGitOperationAction(
-                                        worktree: worktree,
-                                        action: "abort"
-                                    )
-                                } label: {
-                                    Label(L10n("Abort Git Operation"), systemImage: "xmark.circle")
-                                }
-                                .disabled(client.isMutating)
-                                .accessibilityIdentifier("worktree.git-operation.abort.\(worktree.worktreeId)")
-                            }
-                            if worktree.hierarchy == nil, !worktree.isMain, (worktree.behindMain ?? 0) > 0 {
-                                Button {
-                                    showingSynchronizationConfirmation = true
-                                } label: {
-                                    Label(L10n("Synchronize with main"), systemImage: "arrow.down.to.line")
-                                }
-                                .disabled(client.isMutating || worktree.availability != "available")
-                            }
-                            if worktree.isMain, worktree.dirty == true {
-                                Button {
-                                    pendingOperation = worktree
-                                } label: {
-                                    Label(L10n("Commit Changes"), systemImage: "checkmark.circle")
-                                }
-                                .disabled(
-                                    client.isMutating
-                                        || worktree.availability != "available"
-                                        || worktree.operationState != nil
-                                )
-                                .accessibilityIdentifier("worktree.commit-main.\(worktree.worktreeId)")
-                            } else if worktree.hierarchy == nil, !worktree.isMain {
-                                Button {
-                                    pendingOperation = worktree
-                                } label: {
-                                    Label(L10n("Worktree Operations"), systemImage: "slider.horizontal.3")
-                                }
-                                .disabled(
-                                    client.isMutating
-                                        || worktree.availability != "available"
-                                        || worktree.operationState != nil
-                                )
-                                Button(role: .destructive) {
-                                    requestDeletion(of: worktree)
-                                } label: {
-                                    Label(L10n("Delete Worktree"), systemImage: "trash")
-                                }
-                                .disabled(client.isMutating)
-                            }
-                        }
-                        .controlSize(.small)
-                        Text(worktreePushExplanation(worktree))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    detailSection(L10n("Uncommitted Files")) {
-                        if worktree.changedFiles.isEmpty {
-                            Text(L10n("No uncommitted files")).foregroundStyle(.secondary)
-                        } else {
-                            ForEach(worktree.changedFiles, id: \.self) { file in
-                                Label(file, systemImage: "doc").font(.callout).textSelection(.enabled)
-                            }
-                        }
-                    }
-                    detailSection(L10n("CorptieTask and Session")) {
-                        if worktree.associations.isEmpty {
-                            Text(L10n("No associated CorptieTask or Session")).foregroundStyle(.secondary)
-                        } else {
-                            ForEach(worktree.associations, id: \.logicalSessionId) { association in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    if let task = association.taskTitle ?? association.taskId {
-                                        Text(task).fontWeight(.medium)
-                                    }
-                                    if let sessionId = association.sessionId {
-                                        Button(association.title ?? sessionId) {
-                                            router.openSession(sessionId, source: .userSelection)
-                                        }
-                                        .buttonStyle(.link)
-                                        .controlSize(.small)
-                                    } else {
-                                        Text(association.title ?? association.logicalSessionId)
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    detailSection(L10n("Latest Integration Result")) {
-                        if let item = client.job?.plan.items.first(where: { $0.worktreeId == worktree.worktreeId }) {
-                            detailPair(L10n("Commit"), localizedIntegrationStatus(item.commitStatus))
-                            detailPair(L10n("Merge"), localizedIntegrationStatus(item.mergeStatus))
-                            if !item.conflictFiles.isEmpty {
-                                ForEach(item.conflictFiles, id: \.self) { Label($0, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
-                            }
-                            if let error = item.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                        } else {
-                            Text(L10n("No integration result")).foregroundStyle(.secondary)
-                        }
-                    }
-                    if let projectStatus = client.projectStatus {
-                        developmentServiceSection(projectStatus)
-                    }
-                    }
-                    .padding(24)
-                    .frame(maxWidth: 760, alignment: .leading)
+    private func overviewSections(_ worktree: ManagedWorktree) -> some View {
+        detailSection(L10n("Git Status")) {
+            Button(L10n("检查本地目录")) {
+                if let repositoryID = client.detail?.repository.id {
+                    localStateWorktree = WorktreeLocalStateTarget(repositoryID: repositoryID, worktree: worktree)
                 }
-            } else if client.detail != nil {
-                ContentUnavailableView(L10n("Select a Worktree"), systemImage: "arrow.triangle.branch")
-            } else {
-                ContentUnavailableView(L10n("Worktree details unavailable"), systemImage: "exclamationmark.triangle")
+            }
+                .disabled(worktree.availability != "available")
+                .accessibilityIdentifier("worktree.local-state.inspect")
+            detailPair("HEAD", worktree.headOid ?? "—", monospaced: true)
+            detailPair(L10n("Availability"), localizedIntegrationStatus(worktree.availability))
+            detailPair(worktree.hierarchy?.role == "child" ? L10n("与父分支") : L10n("Branch relation"),
+                       "↑ \((worktree.hierarchy?.comparison.ahead ?? worktree.aheadOfMain).map(String.init) ?? "—")  ↓ \((worktree.hierarchy?.comparison.behind ?? worktree.behindMain).map(String.init) ?? "—")")
+            detailPair(L10n("Operation"), worktree.operationState.map(localizedGitOperation) ?? L10n("None"))
+            if let summary = worktree.statusSummary, !summary.isEmpty {
+                Text(summary).font(.caption.monospaced()).textSelection(.enabled)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .accessibilityIdentifier("worktree.detail.column")
+        detailSection(L10n("Actions")) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), alignment: .leading)], alignment: .leading, spacing: 10) {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: worktree.path)])
+                } label: {
+                    Label(L10n("Show in Finder"), systemImage: "folder")
+                }
+                Button {
+                    Task { await client.pushWorktreeToGitHub(worktree) }
+                } label: {
+                    if client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId) {
+                        ProgressView().controlSize(.small)
+                        Text(L10n("Checking GitHub…"))
+                    } else if client.pushingWorktreeIds.contains(worktree.worktreeId) {
+                        ProgressView().controlSize(.small)
+                        Text(L10n("Pushing to GitHub…"))
+                    } else {
+                        Label(L10n("Push to GitHub"), systemImage: "arrow.up.circle")
+                    }
+                }
+                .disabled(
+                    client.isMutating
+                        || client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId)
+                        || client.pushingWorktreeIds.contains(worktree.worktreeId)
+                        || !ManagedWorktreeGitHubPushPolicy.canPush(worktree)
+                )
+                .help(worktreePushExplanation(worktree))
+                .accessibilityIdentifier("worktree.push-github.\(worktree.worktreeId)")
+                if worktree.hierarchy == nil, worktree.operationState != nil {
+                    Button {
+                        pendingGitOperationAction = PendingGitOperationAction(
+                            worktree: worktree,
+                            action: "continue"
+                        )
+                    } label: {
+                        Label(L10n("Continue Git Operation"), systemImage: "play.fill")
+                    }
+                    .disabled(client.isMutating || !worktree.conflictFiles.isEmpty)
+                    .help(worktree.conflictFiles.isEmpty
+                        ? L10n("Continue the current Git operation after validating its live state.")
+                        : L10n("Resolve and stage all conflicts before continuing."))
+                    .accessibilityIdentifier("worktree.git-operation.continue.\(worktree.worktreeId)")
+                    Button(role: .destructive) {
+                        pendingGitOperationAction = PendingGitOperationAction(
+                            worktree: worktree,
+                            action: "abort"
+                        )
+                    } label: {
+                        Label(L10n("Abort Git Operation"), systemImage: "xmark.circle")
+                    }
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.git-operation.abort.\(worktree.worktreeId)")
+                }
+                if worktree.hierarchy == nil, !worktree.isMain, (worktree.behindMain ?? 0) > 0 {
+                    Button {
+                        showingSynchronizationConfirmation = true
+                    } label: {
+                        Label(L10n("Synchronize with main"), systemImage: "arrow.down.to.line")
+                    }
+                    .disabled(client.isMutating || worktree.availability != "available")
+                }
+                if worktree.isMain, worktree.dirty == true {
+                    Button {
+                        pendingOperation = worktree
+                    } label: {
+                        Label(L10n("Commit Changes"), systemImage: "checkmark.circle")
+                    }
+                    .disabled(
+                        client.isMutating
+                            || worktree.availability != "available"
+                            || worktree.operationState != nil
+                    )
+                    .accessibilityIdentifier("worktree.commit-main.\(worktree.worktreeId)")
+                } else if worktree.hierarchy == nil, !worktree.isMain {
+                    Button {
+                        pendingOperation = worktree
+                    } label: {
+                        Label(L10n("Worktree Operations"), systemImage: "slider.horizontal.3")
+                    }
+                    .disabled(
+                        client.isMutating
+                            || worktree.availability != "available"
+                            || worktree.operationState != nil
+                    )
+                    Button(role: .destructive) {
+                        requestDeletion(of: worktree)
+                    } label: {
+                        Label(L10n("Delete Worktree"), systemImage: "trash")
+                    }
+                    .disabled(client.isMutating)
+                }
+            }
+            .controlSize(.small)
+            .disabled(!backendClient.isOnline)
+            Text(worktreePushExplanation(worktree))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        detailSection(L10n("CorptieTask and Session")) {
+            if worktree.associations.isEmpty {
+                Text(L10n("No associated CorptieTask or Session")).foregroundStyle(.secondary)
+            } else {
+                ForEach(worktree.associations, id: \.logicalSessionId) { association in
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let task = association.taskTitle ?? association.taskId {
+                            Text(task).fontWeight(.medium)
+                        }
+                        if let sessionId = association.sessionId {
+                            Button(association.title ?? sessionId) {
+                                router.openSession(sessionId, source: .userSelection)
+                            }
+                            .buttonStyle(.link)
+                            .controlSize(.small)
+                        } else {
+                            Text(association.title ?? association.logicalSessionId)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        detailSection(L10n("Latest Integration Result")) {
+            if let item = client.job?.plan.items.first(where: { $0.worktreeId == worktree.worktreeId }) {
+                detailPair(L10n("Commit"), localizedIntegrationStatus(item.commitStatus))
+                detailPair(L10n("Merge"), localizedIntegrationStatus(item.mergeStatus))
+                if !item.conflictFiles.isEmpty {
+                    ForEach(item.conflictFiles, id: \.self) { Label($0, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                }
+                if let error = item.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            } else {
+                Text(L10n("No integration result")).foregroundStyle(.secondary)
+            }
+        }
+        if let projectStatus = client.projectStatus { developmentServiceSection(projectStatus) }
     }
+
 
     private func worktreeActions(_ project: ManagedGitProject) -> some View {
         let eligible = ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: project.worktrees)
@@ -980,13 +1127,18 @@ struct WorktreeManagementView: View {
                 .disabled(client.isMutating || client.isPreparingPlan || client.job?.isActive == true || client.job?.status == "paused")
                 .accessibilityIdentifier("worktree.integrate.preflight")
 
-                Button {
-                    pendingCleanup = WorktreeCleanupRequest(worktrees: eligible)
+                Menu {
+                    Button(role: .destructive) {
+                        pendingCleanup = WorktreeCleanupRequest(repositoryID: project.repositoryId, worktrees: eligible)
+                    } label: {
+                        Label(L10n("Clean Up Orphaned Worktrees"), systemImage: "trash")
+                    }
+                    .disabled(eligible.isEmpty || client.isMutating)
                 } label: {
-                    Label(L10n("Clean Up Orphaned Worktrees"), systemImage: "trash")
-                        .frame(maxWidth: .infinity)
+                    Image(systemName: "ellipsis")
                 }
-                .disabled(eligible.isEmpty || client.isMutating)
+                .help(L10n("Clean Up Orphaned Worktrees"))
+                .accessibilityLabel(L10n("Clean Up Orphaned Worktrees"))
                 .accessibilityIdentifier("worktree.cleanup")
             }
             if client.job?.isActive == true || client.job?.status == "paused" {
@@ -1026,10 +1178,13 @@ struct WorktreeManagementView: View {
     }
 
     private func requestDeletion(of worktree: ManagedWorktree) {
+        guard backendClient.isOnline, !client.isMutating else { return }
         if let blocker = ManagedWorktreeDeletionPolicy.blocker(for: worktree) {
             deletionBlocker = WorktreeDeletionBlockerPresentation(worktree: worktree, blocker: blocker)
         } else {
-            pendingDeletion = worktree
+            if let repository = client.detail?.repository {
+                pendingDeletion = WorktreeDeletionReview(repositoryID: repository.id, repositoryName: repository.name, tree: worktree)
+            }
         }
     }
 
@@ -1407,17 +1562,21 @@ struct WorktreeManagementView: View {
                     .buttonStyle(.plain).accessibilityLabel(L10n("展开子分支"))
                 }
                 Image(systemName: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
-                Text(worktree.branchName ?? L10n("Detached HEAD")).fontWeight(.medium).lineLimit(1)
+                Text(worktree.branchName ?? L10n("Detached HEAD")).font(WorkbenchTypography.font(for: .conversationTitle)).lineLimit(1)
                 Spacer()
-                Circle().fill(worktree.dirty == true ? Color.orange : Color.green).frame(width: 7, height: 7)
+                let state = WorktreePresentationPolicy.localState(worktree)
+                Image(systemName: state.symbol).foregroundStyle(state.color).accessibilityLabel(state.title).help(state.title)
             }
-            Text(worktree.path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(worktree.path).font(WorkbenchTypography.font(for: .conversationMetadata)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(worktree.path)
             HStack(spacing: 7) {
-                Text(String((worktree.headOid ?? "—").prefix(8))).font(.caption2.monospaced())
+                Text(String((worktree.headOid ?? "—").prefix(8))).font(WorkbenchTypography.font(for: .technical))
                 if worktree.isMain { statusBadge("main", color: .blue) }
                 worktreeStateControl(worktree)
+                if !worktree.associations.isEmpty { Label("\(worktree.associations.count)", systemImage: "link").font(WorkbenchTypography.font(for: .conversationMetadata)) }
+            }
+            HStack(spacing: 7) {
                 if let h=worktree.hierarchy {
-                    Text("↑\(h.comparison.ahead.map(String.init) ?? "—") ↓\(h.comparison.behind.map(String.init) ?? "—") · \(h.comparison.branchName ?? "—")").font(.caption2)
+                    Text("↑\(h.comparison.ahead.map(String.init) ?? "—") ↓\(h.comparison.behind.map(String.init) ?? "—") · \(h.comparison.branchName ?? "—")").font(WorkbenchTypography.font(for: .conversationMetadata))
                 } else if !worktree.isMain {
                     let synchronized = worktree.synchronizedWithMain == true
                     if synchronized {
@@ -1433,7 +1592,6 @@ struct WorktreeManagementView: View {
                 if let item = client.job?.plan.items.first(where: { $0.worktreeId == worktree.worktreeId }) {
                     statusBadge(localizedIntegrationStatus(item.mergeStatus), color: item.mergeStatus == "conflict" || item.mergeStatus == "failed" ? .orange : .secondary)
                 }
-                if !worktree.associations.isEmpty { Label("\(worktree.associations.count)", systemImage: "link").font(.caption2) }
             }
         }
         .padding(.vertical, 5)
@@ -1472,9 +1630,17 @@ struct WorktreeManagementView: View {
             } else {
                 Spacer()
             }
+            if showsSelection {
+                Button { listHidden = true; compactShowsList = false } label: { Image(systemName: "sidebar.right") }
+                    .buttonStyle(.plain).help(L10n("Hide Worktrees")).accessibilityLabel(L10n("Hide Worktrees"))
+                    .disabled(layoutMode == .compact && client.selectedWorktree == nil)
+            } else if layoutMode == .threeColumns {
+                Button { repositoryHidden = true } label: { Image(systemName: "sidebar.left") }
+                    .buttonStyle(.plain).help(L10n("Hide Repositories")).accessibilityLabel(L10n("Hide Repositories"))
+            }
             if client.isLoading { ProgressView().controlSize(.small) }
             Button(action: refresh) { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.plain).help(L10n("Refresh"))
+                .buttonStyle(.plain).help(L10n("Refresh")).accessibilityLabel(L10n("Refresh"))
         }
         .padding(.horizontal, 12).frame(height: 42)
     }
@@ -1484,9 +1650,8 @@ struct WorktreeManagementView: View {
             Text(title).font(.headline)
             content()
         }
-        .padding(14)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func detailPair(_ label: String, _ value: String, monospaced: Bool = false) -> some View {
@@ -1498,7 +1663,7 @@ struct WorktreeManagementView: View {
     }
 
     private func statusBadge(_ text: String, color: Color) -> some View {
-        Text(text).font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
+        Text(text).font(WorkbenchTypography.font(for: .conversationMetadata)).padding(.horizontal, 6).padding(.vertical, 2)
             .background(color.opacity(0.12), in: Capsule()).foregroundStyle(color)
     }
 
@@ -1524,7 +1689,10 @@ struct WorktreeManagementView: View {
 
     private func worktreeState(_ worktree: ManagedWorktree) -> (label: String, color: Color) {
         if worktree.availability != "available" { return (L10n("Unavailable"), .red) }
+        if !worktree.conflictFiles.isEmpty { return (L10n("Conflicts"), .orange) }
         if worktree.operationState != nil { return (L10n("Operation in progress"), .orange) }
+        if worktree.isLocked { return (L10n("Locked"), .orange) }
+        if worktree.dirty == nil { return (L10n("Unknown"), .secondary) }
         if worktree.dirty == true { return (L10n("Working"), .orange) }
         if worktree.isMain { return (L10n("Clean"), .green) }
         if client.job?.status == "completed",
@@ -1541,7 +1709,7 @@ struct WorktreeManagementView: View {
 
     @ViewBuilder
     private func developmentServiceSection(_ status: ProjectDevelopmentServiceStatus) -> some View {
-        detailSection(L10n("Development Service")) {
+        detailSection(L10n("Repository Development Service")) {
             HStack {
                 Label(serviceLabel(status.service), systemImage: "server.rack")
                     .foregroundStyle(serviceColor(status.service))
@@ -1947,6 +2115,7 @@ private struct WorktreeDeletionBlockerPresentation: Identifiable {
 
 private struct WorktreeCleanupRequest: Identifiable {
     let id = UUID()
+    let repositoryID: String
     let worktrees: [ManagedWorktree]
 }
 
@@ -1994,7 +2163,6 @@ struct WorktreeCleanupConfirmationView: View {
                 Button(L10n("Cancel"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Button(L10n("Clean Up Worktrees"), role: .destructive, action: onConfirm)
-                    .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("worktree.cleanup.confirmation.confirm")
             }
         }

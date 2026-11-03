@@ -440,7 +440,7 @@ struct MainWindowContentView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .background {
-            if selectionState.selectedTab == .console {
+            if selectionState.selectedTab == .console || selectionState.selectedTab == .worktrees {
                 WorkbenchStyle.canvas
             } else {
                 LocalWallpaperCanvas(fallbackColor: Color(nsColor: .windowBackgroundColor))
