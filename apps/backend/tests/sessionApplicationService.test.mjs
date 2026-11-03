@@ -506,7 +506,7 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
   });
 });
 
-test("existing Worker Session applies required domains at the next message Turn boundary", async () => {
+test("existing Worker Session checks required domains after message admission", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({
     id: "turn-boundary-provider",
@@ -549,21 +549,18 @@ test("existing Worker Session applies required domains at the next message Turn 
       }
     },
     resolveMessageContext: async () => {
-      assert.equal(applied, true);
-      return { prompt: "project-code contract is applied" };
+      assert.equal(applied, false);
+      return { prompt: "tool availability is checked when needed" };
     }
   });
 
   await service.sendMessage("logical:worker", "locate symbol");
 
-  assert.deepEqual(calls, [
-    ["ensure", "logical:worker", ["artifacts", "project-code"], {
-      turnExecutionId: null,
-      purpose: "conversation-turn-boundary",
-      activeTurn: false
-    }],
-    ["send", "project-code contract is applied"]
-  ]);
+  assert.deepEqual(calls, [["send", "tool availability is checked when needed"]]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls[1], ["ensure", "logical:worker", ["artifacts", "project-code"], {
+    turnExecutionId: null, purpose: "conversation-tool-advisory", activeTurn: true
+  }]);
 });
 
 test("empty-domain bindings still prove the baseline Tool Host materialization", async () => {
@@ -668,7 +665,8 @@ test("permanent materialization errors do not trigger a second Provider applicat
   assert.equal(prepares, 0);
 });
 
-test("frozen readiness errors retain their code and are marked safely unsent", async () => {
+test("frozen tool readiness errors produce a notice after the message is accepted", async () => {
+  const warnings = [];
   let sends = 0;
   const frozen = Object.freeze(Object.assign(new Error("Gate unavailable"), {
     code: "TOOL_GATE_UNAVAILABLE"
@@ -679,9 +677,10 @@ test("frozen readiness errors retain their code and are marked safely unsent", a
     transport: "fake",
     capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
   }, {
-    send: async () => { sends += 1; }
+    send: async () => { sends += 1; return { turnId: "turn:frozen", delivery: "accepted" }; }
   });
   const service = new SessionApplicationService({
+    observeLifecycle: event => warnings.push(event),
     registry: new AgentProviderRegistry([provider]),
     resolveSessionReference: async () => ({
       sessionId: "session:frozen",
@@ -697,15 +696,17 @@ test("frozen readiness errors retain their code and are marked safely unsent", a
     }
   });
 
-  await assert.rejects(service.sendMessage("logical:frozen", "stay unsent"), (error) => (
-    error.code === "TOOL_GATE_UNAVAILABLE"
-      && error.dispatchState === "not_sent"
-      && error.cause === frozen
-  ));
-  assert.equal(sends, 0);
+  const result = await service.sendMessage("logical:frozen", "continue the conversation");
+  assert.equal(result.delivery, "accepted");
+  assert.equal(sends, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].type, "SessionToolPreparationWarning");
+  assert.equal(warnings[0].errorCode, "TOOL_GATE_UNAVAILABLE");
 });
 
-test("business messages fail closed until Tool materialization is strictly applied", async () => {
+test("an unconfirmed tool receipt does not block ordinary message admission", async () => {
+  const warnings = [];
   let sends = 0;
   const provider = new CallbackAgentProvider({
     id: "strict-readiness-provider",
@@ -713,9 +714,10 @@ test("business messages fail closed until Tool materialization is strictly appli
     transport: "fake",
     capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
   }, {
-    send: async () => { sends += 1; return { accepted: true }; }
+    send: async () => { sends += 1; return { turnId: "turn:strict", delivery: "accepted" }; }
   });
   const service = new SessionApplicationService({
+    observeLifecycle: event => warnings.push(event),
     registry: new AgentProviderRegistry([provider]),
     resolveSessionReference: async () => ({
       sessionId: "session:strict",
@@ -737,11 +739,55 @@ test("business messages fail closed until Tool materialization is strictly appli
     }
   });
 
-  await assert.rejects(
-    service.sendMessage("logical:strict", "must not dispatch"),
-    (error) => error.code === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
-      && error.dispatchState === "not_sent"
-  );
+  assert.equal((await service.sendMessage("logical:strict", "continue")).delivery, "accepted");
+  assert.equal(sends, 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(warnings[0].errorCode, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
+});
+
+for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) test(`a stalled tool check never delays admitted conversation on ${providerId}`, { timeout: 3000 }, async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  let binding = "binding:one";
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([new CallbackAgentProvider({ id: providerId, displayName: providerId,
+      transport: "fake", capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND] }, {
+      send: async () => { calls.push("send"); return { turnId: "turn:one", delivery: "accepted" }; }
+    })]),
+    resolveSessionReference: () => ({ sessionId: "session:one", logicalSessionId: "logical:one", bindingId: binding,
+      providerId, providerSessionId: "native:one", routingVersion: 1,
+      metadata: { session: { agentId: "agent:one", sessionKind: "assistantChat" } } }),
+    toolMaterializationPort: { ensureCurrentApplied: async (_id, boundary) => {
+      assert.equal(boundary.activeTurn, true);
+      calls.push("check"); await pending;
+      throw Object.assign(new Error("Unconfirmed receipt"), { code: "PROVIDER_TOOL_RECEIPT_INVALID" });
+    } },
+    toolHostService: { prepareSession: () => assert.fail("Advisory check must never resume or rebind the Provider") },
+    observeLifecycle: event => calls.push(event.type)
+  });
+  try {
+    assert.equal((await service.sendMessage("logical:one", "hello")).delivery, "accepted");
+    assert.deepEqual(calls, ["send"]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, ["send", "check"]);
+    // The result belongs to the old binding and must not notify its replacement.
+    binding = "binding:replacement";
+  } finally { release(); }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ["send", "check"]);
+});
+
+test("an authorization rejection is never downgraded to a tool notice", async () => {
+  let sends = 0;
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([new CallbackAgentProvider({ id: "auth", displayName: "Auth", transport: "fake",
+      capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND] }, { send: async () => { sends++; } })]),
+    resolveSessionReference: () => ({ sessionId: "one", providerId: "auth", providerSessionId: "native" }),
+    assertMessageDispatchAllowed: () => { throw Object.assign(new Error("Denied"), { code: "SESSION_ACCESS_DENIED" }); },
+    toolMaterializationPort: { ensureCurrentApplied: () => assert.fail("Denied messages must not prepare tools") }
+  });
+  await assert.rejects(service.sendMessage("one", "hello"), { code: "SESSION_ACCESS_DENIED", dispatchState: "not_sent" });
   assert.equal(sends, 0);
 });
 

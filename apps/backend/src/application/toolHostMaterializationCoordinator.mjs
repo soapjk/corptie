@@ -70,7 +70,7 @@ export class ToolHostMaterializationCoordinator {
       desiredDomains: domainRecords,
       exposureContractHash: plan.exposureContractHash
     });
-    if (compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion)) {
+    if (compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion, snapshot.catalogVersion)) {
       const installedDefinitionsHash = record.providerReceipt.providerDefinitionsHash;
       const compatiblePlan = {
         ...plan,
@@ -775,10 +775,12 @@ function matchesDesired(record, version, catalogVersion, domains, plan) {
       || record.exposurePlan?.refreshMode === plan.refreshMode);
 }
 
-function compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion) {
+function compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion, catalogVersion) {
   if (!record || !["applied", "error"].includes(record.status)) return false;
   if (record.status === "applied"
     && record.appliedVersion === desiredVersion
+    && record.desiredCatalogVersion === catalogVersion
+    && record.appliedCatalogVersion === catalogVersion
     && record.exposurePlan?.providerContractHash === plan.providerContractHash
     && record.exposurePlan?.providerDefinitionsHash === plan.providerDefinitionsHash) return false;
   const receipt = record.providerReceipt;
