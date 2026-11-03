@@ -361,8 +361,7 @@ private struct MainTabPageHost: NSViewRepresentable {
             case .roles:
                 root = AnyView(RoleManagementView())
             case .memory:
-                root = AnyView(MemoryCenterPage(navigation: router.memoryNavigation)
-                    .padding(16).mainWindowPageCard())
+                root = AnyView(MemoryCenterPage(navigation: router.memoryNavigation))
             case .settings:
                 root = AnyView(SettingsView())
             }
@@ -393,7 +392,7 @@ private struct MainTabPageHost: NSViewRepresentable {
     }
 }
 
-struct MemoryFocus: Equatable {
+struct MemoryFocus: Equatable, Hashable {
     let ownerType: String
     let ownerId: String
 }
@@ -407,11 +406,7 @@ private struct MemoryCenterPage: View {
     @ObservedObject var navigation: MemoryNavigationState
 
     var body: some View {
-        if let focus = navigation.focus {
-            MemoryManagementView(scope: .owner(type: focus.ownerType, id: focus.ownerId))
-        } else {
-            MemoryManagementView(scope: .global)
-        }
+        MemoryCenterView(focus: navigation.focus)
     }
 }
 
@@ -440,7 +435,7 @@ struct MainWindowContentView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .background {
-            if selectionState.selectedTab == .console || selectionState.selectedTab == .worktrees {
+            if selectionState.selectedTab == .console || selectionState.selectedTab == .worktrees || selectionState.selectedTab == .memory {
                 WorkbenchStyle.canvas
             } else {
                 LocalWallpaperCanvas(fallbackColor: Color(nsColor: .windowBackgroundColor))
