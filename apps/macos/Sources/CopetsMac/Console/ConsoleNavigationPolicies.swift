@@ -35,6 +35,29 @@ extension View {
     }
 }
 
+/// Establish the complete row bounds before painting either interaction state.
+/// Padding belongs inside that surface so text and indicators cannot overhang it.
+struct ConsoleOutlineRowSurface: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content
+            // Native List disclosure supplies hierarchy indentation. Reserve only
+            // the painted surface inset here to keep the button inside it.
+            .padding(.leading, 8)
+            .padding(.trailing, 16)
+            .frame(maxWidth: .infinity, minHeight: 30,
+                   maxHeight: 30, alignment: .leading)
+            .consoleHoverFeedback(isSelected: isSelected, horizontalInset: 8)
+    }
+}
+
+extension View {
+    func consoleOutlineRowSurface(isSelected: Bool) -> some View {
+        modifier(ConsoleOutlineRowSurface(isSelected: isSelected))
+    }
+}
+
 enum ConsoleNavigationCardWidthPolicy {
     static let minimumTaskColumnWidth = 220.0
     static let defaultTaskColumnWidth = 300.0
