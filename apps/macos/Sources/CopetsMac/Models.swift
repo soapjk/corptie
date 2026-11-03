@@ -1828,6 +1828,7 @@ struct CreatePtySessionResponse: Decodable {
 }
 
 struct BackendSettings: Decodable, Equatable {
+    let developmentPreview: Bool
     let environment: String?
     let dataRoot: String
     let choiceParser: ChoiceParserSettings?
@@ -1839,7 +1840,7 @@ struct BackendSettings: Decodable, Equatable {
     let dataRootMigration: DataRootMigrationOperation?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case environment, dataRoot, choiceParser, codexBackend, codeDiff, agentProxy
+        case developmentPreview, environment, dataRoot, choiceParser, codexBackend, codeDiff, agentProxy
         case newSessionDefaults, gateway, dataRootMigration
     }
 
@@ -1854,6 +1855,7 @@ struct BackendSettings: Decodable, Equatable {
             ))
         }
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        developmentPreview = try container.decodeIfPresent(Bool.self, forKey: .developmentPreview) ?? false
         environment = try container.decodeIfPresent(String.self, forKey: .environment)
         dataRoot = try container.decode(String.self, forKey: .dataRoot)
         choiceParser = try container.decodeIfPresent(ChoiceParserSettings.self, forKey: .choiceParser)
