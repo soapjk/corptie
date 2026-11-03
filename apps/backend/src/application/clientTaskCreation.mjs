@@ -64,18 +64,18 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
       throw deviceError("INVALID_TASK_CREATION", 400);
     }
   }
-  if (input.parentTaskId && (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1)) {
-    throw deviceError("TASK_PARENT_VERSION_CONFLICT", 409);
-  }
   if (input.expectedParentResourceVersion !== undefined && (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1)) {
     throw deviceError("INVALID_TASK_CREATION", 400);
   }
+  if (input.expectedParentResourceVersion !== undefined && !input.parentTaskId) throw deviceError("INVALID_TASK_PARENT", 400);
   for (const key of ["mainAgentId", "providerId"]) {
     if (!input[key]?.trim()) throw deviceError("INVALID_TASK_CREATION", 400);
   }
   const taskInput = validateTaskInput(Object.fromEntries(taskFields.filter(key => input[key] !== undefined)
     .map(key => [key, input[key]])));
   validateEntityName(taskInput.title, "title", "Task");
+  // Preserve legacy receipt hashes byte-for-byte. Retrying an already accepted
+  // request uses its original payload, including any deprecated field it had.
   const fingerprint = createHash("sha256").update(JSON.stringify([sourceID, "create_task",
     ...(input.parentTaskId ? fields : legacyFields).map(key => input[key] ?? null)])).digest("hex");
   const findReplay = () => {
@@ -96,9 +96,8 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   }
   if (!api.store.getAgent(taskInput.mainAgentId)) throw deviceError("AGENT_NOT_FOUND", 404);
   const provider = Object.fromEntries(providerFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
-  const constraints = { expectedParentResourceVersion: input.expectedParentResourceVersion };
-  api.store.assertParentForCreate?.({ ...taskInput, ...constraints });
-  await api.taskCreation.validate(sessionId, { taskInput, ...provider, ...constraints });
+  api.store.assertParentForCreate?.({ ...taskInput });
+  await api.taskCreation.validate(sessionId, { taskInput, ...provider });
   if (revalidateIdentity) {
     const current = revalidateIdentity();
     if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
@@ -126,7 +125,7 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   api.inFlight.add(key);
   try {
     const operationID = `device-task:${createHash("sha256").update(key).digest("hex")}`;
-    const result = await api.taskCreation.create(sessionId, { taskInput, ...provider, ...constraints, operationID });
+    const result = await api.taskCreation.create(sessionId, { taskInput, ...provider, operationID });
     if (typeof result?.task?.id !== "string" || typeof result?.session?.id !== "string") {
       throw new Error("Creation result is not a complete Task/Session binding");
     }

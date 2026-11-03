@@ -926,3 +926,31 @@ test("mailbox summaries keep Emoji valid and show uncertain external dispatch wi
     assert.equal(f.unified.rows("session:b", { filter: "abnormal" }).messages.length, 1);
   } finally { await f.close(); }
 });
+
+test('cancelling a prior run does not disable new mailbox instructions; pause and archive still apply',async()=>{
+ const f=await unifiedMailboxFixture();
+ try{
+  const work=f.enqueue();f.store.db.run("UPDATE sessions SET status='cancelled' WHERE id='provider:b'");
+  assert.equal(f.unified.dispatchDecision(work).allowed,true);
+  f.unified.setPaused('session:b',true);
+  assert.equal(f.unified.dispatchDecision(work).code,'MAILBOX_PAUSED');
+  f.unified.mutate('session:b',f.mailboxId,'process');assert.equal(f.unified.dispatchDecision(work).allowed,true);
+  f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:b'");
+  assert.equal(f.unified.dispatchDecision(work).code,'RECIPIENT_SESSION_ARCHIVED');
+  const missing={...work,source:{...work.source,mailboxMessageId:'mailbox:missing'}};
+  assert.equal(f.unified.dispatchDecision(missing).code,'MAILBOX_MESSAGE_NOT_FOUND');
+ }finally{await f.close();}
+});
+
+test('restart registers paused mailbox work so it can report reasons, and pages past 500 blocked rows',async()=>{
+ const f=await unifiedMailboxFixture();
+ try{
+  f.unified.setPaused('session:b',true);
+  for(let i=0;i<505;i++) f.unified.receiveEvent({recipientSessionId:'session:b',sourceType:'background',sourceId:`source:${i}`,
+   body:'Instruction',intent:'action_required',idempotencyKey:`key:${i}`,authorization:{ownerLogicalSessionId:'session:b',sourceId:`source:${i}`}});
+  const ids=new Set(),register=(_session,id)=>ids.add(id);
+  f.unified.syncQueuedOperations(register);assert.equal(ids.size,500);
+  f.unified.syncQueuedOperations(register);assert.equal(ids.size,505);
+  const first=f.store.getAgentTask([...ids][0]);assert.equal(f.unified.dispatchDecision(first).code,'MAILBOX_PAUSED');
+ }finally{await f.close();}
+});

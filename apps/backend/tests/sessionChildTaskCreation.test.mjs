@@ -116,11 +116,11 @@ test("autonomous single and batch creation need no user message or turn evidence
 test("child schemas omit evidence requirements while independent creation keeps them",()=>{
   const ajv=new Ajv({strict:false});
   const single=ajv.compile(collaborationDynamicTools.find(tool=>tool.name==="corptie_collaboration_tasks_create").inputSchema);
-  const input={title:"Child",agent_id:"agent:a",parent_task_id:"task:p",expected_parent_resource_version:1,idempotency_key:"stable"};
+  const input={title:"Child",agent_id:"agent:a",parent_task_id:"task:p",idempotency_key:"stable"};
   assert.equal(single(input),true);
   assert.equal(single({...input,parent_task_id:null}),false);
   const batch=ajv.compile(collaborationDynamicTools.find(tool=>tool.name==="corptie_collaboration_tasks_create_batch").inputSchema);
-  assert.equal(batch({parent_task_id:"task:p",expected_parent_resource_version:1,items:[{title:"Child",agent_id:"agent:a",idempotency_key:"stable"}]}),true);
+  assert.equal(batch({parent_task_id:"task:p",items:[{title:"Child",agent_id:"agent:a",idempotency_key:"stable"}]}),true);
 });
 
 test("child creation does not treat expired, planning or Automation message context as an authorization grant",async t=>{
@@ -183,12 +183,10 @@ test("Work Chat may choose a same-Work root; parent Session replacement preserve
   assert.throws(() => f.service.getTask(childSession, f.agent.agentId, outsider.id), { code: "TASK_OUTSIDE_SCOPE" });
 });
 
-test("parent scope, depth and CAS fail before persistence, not missing user creation intent", async t => {
+test("parent scope and depth fail before persistence, not missing user creation intent", async t => {
   const f = await fixture(t), initial = f.store.listTasks().length;
   const other = f.store.createTask({ workId: f.work.id, title: "Other_root" });
   await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ parentTaskId: other.id })), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
-  await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ expectedParentResourceVersion: 999 })), { code: "TASK_PARENT_VERSION_CONFLICT" });
-  await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ expectedParentResourceVersion: undefined })), { code: "TASK_PARENT_VERSION_CONFLICT" });
   assert.equal(f.store.listTasks().length, initial + 1);
   const child = f.store.createTask({ workId: f.work.id, title: "Existing_child", parentTaskId: f.root.id }, {}, { expectedParentResourceVersion: f.store.getTask(f.root.id).resource_version });
   const childSource = f.open("child-source", child.id);
@@ -216,14 +214,14 @@ test("failed startup retains the original Task, recovery details and frozen defa
   await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, input), { code: "START_REFERENCE_INVALID" });
 });
 
-test("child tool schema and HTTP adapter preserve parent, CAS and exact authenticated Session", async t => {
+test("child tool schema and HTTP adapter preserve parent and exact authenticated Session without CAS", async t => {
   const f = await fixture(t), input = f.input(), tool = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create");
   const validate = new Ajv({ strict: false }).compile(tool.inputSchema);
   const wire = { title: input.title, agent_id: input.agentId, parent_task_id: input.parentTaskId,
     expected_parent_resource_version: input.expectedParentResourceVersion,
     idempotency_key: input.idempotencyKey, verification_criteria: "Run tests" };
   assert.equal(validate(wire), true);
-  const bad = { ...wire }; delete bad.expected_parent_resource_version; assert.equal(validate(bad), false);
+  const bad = { ...wire }; delete bad.expected_parent_resource_version; assert.equal(validate(bad), true);
   const client = { post: (path, body) => new Promise(resolve => {
     const request = Readable.from([Buffer.from(JSON.stringify(body))]);
     Object.assign(request, { method: "POST", headers: { "x-corptie-agent-id": f.agent.agentId, "x-corptie-session-id": f.source.sessionId } });
@@ -406,4 +404,48 @@ test("batch partial startup failure retries the same child without restarting su
     items: [{ ...input.items[0], description: "Changed_definition" }] });
   assert.equal(changed.results[0].error.code, "IDEMPOTENCY_CONFLICT");
   assert.equal(f.starts.length, 3);
+});
+
+for (const provider of ['codex-app-server','claude-sdk','openclacky']) test(`children need no parent revision and accept stale legacy callers (${provider})`,async t=>{
+ const f=await fixture(t,provider);
+ const intent={title:'No_parent_version',agentId:f.agent.agentId,parentTaskId:f.root.id,idempotencyKey:'no-version'};
+ const original=f.store.assertParentForCreate.bind(f.store);let checked=0;
+ f.store.assertParentForCreate=input=>{
+  const result=original(input);
+  if(++checked===1) queueMicrotask(()=>{
+   f.workService.updateTask(f.root.id,{title:'Renamed_parent',description:'New parent description',acceptanceCriteria:'Updated criteria',priority:'low'});
+   f.store.db.run('UPDATE tasks SET user_summary_json=?,resource_version=resource_version+1 WHERE id=?',['{"state":"stale"}',f.root.id]);
+   f.store.createTask({workId:f.work.id,title:'Concurrent_sibling',parentTaskId:f.root.id});
+  });
+  return result;
+ };
+ const created=await f.service.createTaskAndSession(f.source,f.agent.agentId,intent);
+ assert.equal(created.task.parentTaskId,f.root.id);assert.equal(f.starts.length,1);
+ const replay=await f.service.createTaskAndSession(f.source,f.agent.agentId,{...intent,expectedParentResourceVersion:999999});
+ assert.equal(replay.task.id,created.task.id);assert.equal(f.starts.length,1);
+ const legacy=await f.service.createTaskAndSession(f.source,f.agent.agentId,{...intent,title:'Legacy_child',idempotencyKey:'legacy-version',expectedParentResourceVersion:1});
+ assert.equal(legacy.task.parentTaskId,f.root.id);assert.equal(f.starts.length,2);
+ const batch=await f.service.createChildTasksBatch(f.source,f.agent.agentId,{parentTaskId:f.root.id,
+   items:[{title:'Batch_child_one',agentId:f.agent.agentId,idempotencyKey:'batch-one'},
+     {title:'Batch_child_two',agentId:f.agent.agentId,idempotencyKey:'batch-two'}]});
+ assert.equal(batch.succeeded,2);assert.equal(f.starts.length,4);
+});
+
+for(const state of ['archived','done','deleting','failed']) test(`parent becoming ${state} during preflight rejects before persistence`,async t=>{
+ const f=await fixture(t),original=f.store.assertParentForCreate.bind(f.store);let changed=false;
+ const getTask=f.store.getTask.bind(f.store);let completed=false;
+ // Model an authorized completed parent. A raw SQL 'done' without a completion
+ // receipt is deliberately repaired by the Store and is not a real completion.
+ f.store.getTask=id=>{const task=getTask(id);return completed && id===f.root.id ? {...task,lifecycle_state:'done'} : task;};
+ f.store.assertParentForCreate=input=>{
+  const result=original(input);
+  if(!changed){changed=true;queueMicrotask(()=>{
+   if(state==='done'){completed=true;return;}
+   const [field,value]=state==='archived'?['archived',1]:state==='deleting'?['deletion_status','deleting']:['creation_state','failed'];
+   f.store.db.run(`UPDATE tasks SET ${field}=? WHERE id=?`,[value,f.root.id]);
+  });}
+  return result;
+ };
+ await assert.rejects(f.service.createTaskAndSession(f.source,f.agent.agentId,{title:'Child',agentId:f.agent.agentId,parentTaskId:f.root.id,idempotencyKey:'state-race'}),error=>['TASK_PARENT_UNAVAILABLE','STALE_SESSION_ROUTE'].includes(error.code));
+ assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?',[f.root.id]).n,0);assert.equal(f.starts.length,0);
 });

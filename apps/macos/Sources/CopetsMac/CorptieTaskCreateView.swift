@@ -456,7 +456,7 @@ struct CorptieTaskCreateView: View {
                     providerId: providerId,
                     model: model.isEmpty ? nil : model,
                     reasoningLevel: reasoningLevel.isEmpty ? nil : reasoningLevel,
-                    parentTaskId:parent?.id,expectedParentResourceVersion:parent?.resourceVersion
+                    parentTaskId:parent?.id
                 )
             }
             guard let task = created else {

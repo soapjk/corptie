@@ -236,7 +236,6 @@ export class SessionCollaborationService {
       taskInput,
       sourceSessionId: scope.logicalSessionId,
       runtimeConfiguration: runtime,
-      expectedParentResourceVersion: input.expectedParentResourceVersion,
       idempotencyKey: required(input.idempotencyKey, "idempotency_key"),
       revalidate,
       verifyExistingSession: (task, session) => this.#verifyCreationBinding(task, session),
@@ -336,7 +335,6 @@ export class SessionCollaborationService {
         lifecycleState: "todo",
         mainAgentId: targetAgentId
       }, {
-        expectedParentResourceVersion: input.expectedParentResourceVersion,
         creationOrigin: {
           originType: "session",
           creatorSessionId: scope.logicalSessionId,
@@ -374,7 +372,8 @@ export class SessionCollaborationService {
       return;
     }
     const id = required(input.parentTaskId, "parentTaskId");
-    if (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1) throw coded("TASK_PARENT_VERSION_CONFLICT", "Read the parent's current resourceVersion before creating a child.", 409);
+    // Deprecated transport input: accepted for old clients, never a creation fence.
+    if (input.expectedParentResourceVersion != null && (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1)) throw coded("INVALID_TASK_PARENT", "Legacy parent version must be a positive integer.", 400);
     if (!scope.session.workId || !["workChat", "worker"].includes(scope.session.sessionKind)) throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Session is required.", 403);
     if (scope.session.sessionKind === "worker" && id !== scope.session.taskId) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Worker can create children only under its own bound root Task.", 403);
     const parent = this.store.getTask(id);

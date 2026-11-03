@@ -38,14 +38,10 @@ export class TaskHierarchyRepository {
   constructor(ports) { Object.assign(this, ports); }
   get db() { return this.getDatabase(); }
 
-  assertParentForCreate({ workId, parentTaskId, expectedParentResourceVersion }) {
+  assertParentForCreate({ workId, parentTaskId }) {
     if (!parentTaskId) return null;
     const parent = this.getTask(parentTaskId);
     if (!parent || parent.work_id !== workId) throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
-    if (!Number.isSafeInteger(expectedParentResourceVersion) || expectedParentResourceVersion < 1
-      || parent.resource_version !== expectedParentResourceVersion) {
-      throw taskHierarchyError("TASK_PARENT_VERSION_CONFLICT");
-    }
     if (parent.parent_task_id) throw taskHierarchyError("TASK_MAX_DEPTH_EXCEEDED");
     if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status || parent.creation_state !== "ready") {
       throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");

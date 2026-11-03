@@ -109,13 +109,13 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_delete_child", "Autonomously request safe deletion of this Session's direct child Task without user confirmation. Asynchronous receipt; never poll. Running work, undelivered Git changes, or unpreserved Artifacts block safe deletion. This tool cannot force-discard data. Available regardless of coordination mode. Exact parent/child and authenticated Session checks remain mandatory.", {
     child_task_id: taskIdSchema, idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
   }, ["child_task_id", "idempotency_key"]),
-  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Child creation is autonomous: the authenticated parent Session decides when and how many children to create, without explicit user creation requests, message evidence, confirmation or a total creation quota. Specify parent_task_id and expected_parent_resource_version; Worker may target only its bound root Task, Work Chat a root in its Work. Read the parent first; prefer create_batch for 1-10 children per call. Independent Tasks (parent omitted/null) still require an explicit current direct-user request and authoritative turn evidence. Never use platform administration as a fallback.", {
+  tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Child creation is autonomous: the authenticated parent Session decides when and how many children to create, without explicit user creation requests, message evidence, confirmation or a total creation quota. Specify parent_task_id; no parent version is needed; Worker may target only its bound root Task, Work Chat a root in its Work. Prefer create_batch for 1-10 children per call. Independent Tasks (parent omitted/null) still require an explicit current direct-user request and authoritative turn evidence. Never use platform administration as a fallback.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
     verification_criteria: taskFieldsSchema.verification_criteria,
     parent_task_id: { type: ["string", "null"], minLength: 1, description: "Explicit same-Work root Task; omit/null for independent creation." },
-    expected_parent_resource_version: { type: "integer", minimum: 1, description: "Required for a non-null parent_task_id; use the parent's current resourceVersion." },
+    expected_parent_resource_version: { type: "integer", minimum: 1, description: "Deprecated optional compatibility field; ignored for creation." },
     priority: taskFieldsSchema.priority,
     agent_id: agentIdSchema,
     provider_id: { type: "string", minLength: 1, description: "Optional explicit Provider override. Omit to use the user's Task creation defaults, including configured model and reasoning. Do not infer this from the calling Session's Provider." },
@@ -128,10 +128,10 @@ export const collaborationDynamicTools = Object.freeze([
     idempotency_key: { type: "string", minLength: 1 }
   }, ["title", "agent_id", "idempotency_key"], {
       allOf: [{ if: { required: ["parent_task_id"], properties: { parent_task_id: { type: "string" } } },
-        then: { required: ["expected_parent_resource_version"] },
+        then: {},
         else: {required:["logical_session_id","user_message_event_id","user_message_sequence","turn_id"]} }]
     }),
-  tool("corptie_collaboration_tasks_create_batch", "Autonomously create 1-10 child Tasks and companion Worker Sessions in ONE call. The parent Session decides when and how many; no explicit user creation request, message/turn evidence, confirmation or total child quota is required. Worker may target only its bound root Task; Work Chat a root in its Work. Read the parent first. Each item needs a stable idempotency_key; retry failed items with the SAME keys. Returns per-item success/failure and recovery; partial success is not rolled back. Never fall back to platform administration.", {
+  tool("corptie_collaboration_tasks_create_batch", "Autonomously create 1-10 child Tasks and companion Worker Sessions in ONE call. The parent Session decides when and how many; no explicit user creation request, message/turn evidence, confirmation or total child quota is required. Worker may target only its bound root Task; Work Chat a root in its Work. No parent version is needed. Each item needs a stable idempotency_key; retry failed items with the SAME keys. Returns per-item success/failure and recovery; partial success is not rolled back. Never fall back to platform administration.", {
     parent_task_id: taskIdSchema,
     expected_parent_resource_version: { type: "integer", minimum: 1 },
     logical_session_id: { type: "string", minLength: 1 },
@@ -149,7 +149,7 @@ export const collaborationDynamicTools = Object.freeze([
         idempotency_key: { type: "string", minLength: 1, description: "Stable per-child key, preserved on retries and independent of batch position." }
       }, required: ["title", "agent_id", "idempotency_key"]
     } }
-  }, ["parent_task_id", "expected_parent_resource_version", "items"]),
+  }, ["parent_task_id", "items"]),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,

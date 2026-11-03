@@ -142,3 +142,17 @@ test("partial creation or lost response remains uncertain and is never automatic
     assert.equal(calls, 1);
   } finally { await f.close(); }
 });
+
+test('device child requests omit parent version and remain compatible with stale legacy requests',async()=>{
+ const f=await fixture();
+ try{
+  const parent=f.store.createTask({workId:input.workId,title:'Parent',mainAgentId:input.mainAgentId});
+  f.store.updateTask(parent.id,{description:'Changed description'});
+  const request={...input,parentTaskId:parent.id,requestId:'child_no_version'};
+  const created=await f.make().createTask(identity,'session:test',request);assert.equal(created.status,'completed');
+  const legacy={...request,requestId:'child_legacy_version',expectedParentResourceVersion:1};
+  assert.equal((await f.make().createTask(identity,'session:test',legacy)).status,'completed');
+  assert.equal((await f.make().createTask(identity,'session:test',legacy)).status,'completed');assert.equal(f.calls(),2);
+  await assert.rejects(f.make().createTask(identity,'session:test',{...input,requestId:'orphan_version',expectedParentResourceVersion:1}),{code:'INVALID_TASK_PARENT'});
+ }finally{await f.close();}
+});
