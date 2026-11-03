@@ -1,3 +1,4 @@
+import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
 import { CoordinationTurnService } from "./application/coordinationTurnService.mjs";
@@ -519,6 +520,11 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   },
   changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
   validateExternal: (row, authorization) => {
+    if (authorization.checklistTaskId) {
+      const operation = store.getAgentTask(row.operation_id);
+      if (!operation || authorization.ownerLogicalSessionId !== row.recipient_session_id) throw Object.assign(new Error("CHECKLIST_SCOPE_REQUIRED"), { code: "CHECKLIST_SCOPE_REQUIRED" });
+      return executionChecklistService.validateOperation(operation);
+    }
     if (authorization.coordinationDispatchId) {
       if (!taskCoordinationService) throw Object.assign(new Error("Coordination unavailable."), { code: "CAPABILITY_UNAVAILABLE" });
       return taskCoordinationService.validateMailbox(row, authorization);
@@ -544,6 +550,15 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   }
 });
 channelMailbox.sessionMailbox = sessionMailbox;
+const executionChecklistService = new ExecutionChecklistService({ store, mailbox: sessionMailbox,
+  wake: (sessionId, operationId) => scheduleAgentWorkDrain(sessionId, null, operationId),
+  canExecute: logical => {
+    const descriptor = agentProviderRegistry.get(logical.activeBinding.providerId).descriptor;
+    return ["conversation.send", "conversation.interrupt", "tools.attach"].every(cap => descriptor.capabilities.includes(cap));
+  },
+  changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision },
+    { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId })
+});
 const {
   dispatchSessionChannelDelivery, inspectCollaborationSession,
   resumeCollaborationSession, startCollaborationTurn
@@ -589,6 +604,7 @@ const taskSessionProjection = createTaskSessionProjection({
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
 const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
+  onChecklistTerminal: input => executionChecklistService.onTerminal(input),
   store, emitEvent, sessionMailbox,
   recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
   settleEntityTaskFromSession, collaborationCore,
@@ -757,6 +773,7 @@ let platformOperationService = null;
 let toolMaterializationPort = null;
 const platformConfirmationService = new PlatformConfirmationService({ store });
 const hostToolCatalog = createHostToolCatalog({
+  executionChecklistService,
   mcpRegistryService, onIntegrationChanged: (type, payload) => emitEvent(type, payload),
   memoryOperationService, artifactService, callWorkspaceDynamicTool,
   validateProjectCodeHostRoute,
@@ -1315,6 +1332,7 @@ const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService(
   ])
 });
 const sessionApplicationService = createSessionApplicationComposition({
+  validateChecklistDispatch: context => { if (context?.options?.agentTask) executionChecklistService.validateOperation(context.options.agentTask); },
   store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
   requiredToolDomainsForSession,
   assertForkDispatchAllowed: (sessionId) => sessionForkService.assertCanDispatch(sessionId),
@@ -1331,7 +1349,7 @@ observeSessionContextEvent = (context) => sessionApplicationService.observeSessi
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
-  onInterruptRequested: (entry) => turnExecutionProbe?.request(entry)
+  onInterruptRequested: (entry) => { executionChecklistService.pauseSession(entry.sessionId); if (entry.turnId) turnExecutionProbe?.request(entry); }
 });
 const { handleProviderResponseDelayed, handleProviderResponseTimeout } = createProviderResponseHandlers({
   store, providerEventIngestion, sessionApplicationService,
@@ -1714,6 +1732,7 @@ const {
   registerRuntimeQueuedWork, forgetRuntimeQueuedWork, moveRuntimeQueuedWork,
   runtimeQueuePosition, drainAgentWork, tickAgentWorkQueue
 } = createRuntimeAgentWorkQueue({
+  checklist: executionChecklistService,
   store, collaborationCore, sessionChannelService, collaborationDispatcher, channelMailbox, sessionMailbox,
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
@@ -2245,6 +2264,7 @@ const backendHttpPorts = Object.freeze({
   get handleSessionToolHttpRequest() { return handleSessionToolHttpRequest; },
   get collaborationCore() { return collaborationCore; },
   get toolHostService() { return toolHostService; },
+  get executionChecklistService() { return executionChecklistService; },
   get sessionMailbox() { return sessionMailbox; },
   get sessionToolMetadata() { return sessionToolMetadata; },
   get handleCollaborationRoutes() { return handleCollaborationRoutes; },
@@ -2488,6 +2508,7 @@ function startBackendRuntime() {
   }
   channelMailbox.recoverInterruptedBatches();
   sessionMailbox.importQueuedAutomations();
+  executionChecklistService.recover(registerRuntimeQueuedWork);
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();

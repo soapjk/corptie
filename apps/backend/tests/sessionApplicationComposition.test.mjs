@@ -305,7 +305,7 @@ for (const providerId of ['codex-app-server', 'claude-code', 'openclacky']) {
           assert.equal(message, 'Use the selected document');
           assert.match(context.sessionContext.prompt, /Required selected document/);
           if (sessionKind === 'worker') assert.match(context.sessionContext.prompt, /Required task/);
-          return { turnId: 'turn:accepted' };
+          return { turnId: 'turn:accepted', delivery: 'accepted' };
         }
       })]);
       const service = createSessionApplicationComposition({ store, agentProviderRegistry: registry,

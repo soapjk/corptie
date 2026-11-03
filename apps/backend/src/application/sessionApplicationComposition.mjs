@@ -14,7 +14,7 @@ import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
 // Product policy wired into the common Session service. Later-created services
 // enter through narrow deferred operations to preserve startup dependency order.
 export function createSessionApplicationComposition({
-  store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
+  validateChecklistDispatch = () => {}, store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
   requiredToolDomainsForSession, assertForkDispatchAllowed, assertSessionRecoveryMessageBoundary,
   recoverSession, requireSessionReference, workChatContextService, resolveContextReferences,
   artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
@@ -38,7 +38,8 @@ export function createSessionApplicationComposition({
     resolveRequiredToolDomains: requiredToolDomainsForSession,
     resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
     resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-    assertMessageDispatchAllowed: (reference) => {
+    assertMessageDispatchAllowed: (reference, context) => {
+      validateChecklistDispatch(context);
       assertForkDispatchAllowed(reference.sessionId);
       assertNoAutomaticWorktreeMutation(store, reference);
       return assertSessionRecoveryMessageBoundary(reference);

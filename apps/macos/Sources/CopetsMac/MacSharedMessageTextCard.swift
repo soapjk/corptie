@@ -295,7 +295,11 @@ struct MacSharedMessageTextCard: View {
     }
 
     private func executionPlanCard(_ plan: ConversationExecutionPlan) -> some View {
-        ExecutionPlanChecklist(plan: plan)
+        Group {
+            if let taskID = plan.taskId {
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: layout.cardWidth - 28)
+            } else { ExecutionPlanChecklist(plan: plan) }
+        }
             .accessibilityActions {
                 Button(L10n("Copy Message"), action: copy)
             }

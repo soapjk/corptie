@@ -211,6 +211,11 @@ struct SessionDetailPanel: View {
     private var sessionCard: some View {
         ConversationDetailDashboard {
             sessionDetailContent
+            if selectedDetailTab == "detail", let taskID = session.taskId {
+                TaskExecutionChecklistDetailCard(taskID: taskID, width: railWidth - 28,
+                    active: isPresentationActive)
+                    .modifier(ConversationDetailModuleSurface())
+            }
         }
     }
 
