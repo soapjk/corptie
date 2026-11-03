@@ -5,6 +5,19 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadWorktreeTests {
+    @Test func serverFailurePreservesFullTextAndUnavailableRetryIsExplained() async throws {
+        let full = String(repeating: "Git error line\n", count: 2_000) + "LAST_GIT_DETAIL"
+        let message = PadWorktreeFailure.describe(ClientServiceFailure(statusCode: 500,
+            code: "MERGE_FAILED", message: full), stage: "继续合并", mutation: true)
+        #expect(message.contains(full))
+        let (store, connection) = try fixture()
+        let json = Self.job.replacingOccurrences(of: "\"status\":\"awaiting_confirmation\"",
+            with: "\"status\":\"paused\",\"availableActions\":[\"repreflight\",\"cancel\"],\"recovery\":{\"kind\":\"repreflight\",\"message\":\"必须重新生成计划\"}")
+        store.job = try JSONDecoder().decode(ClientWorktreeJob.self, from: Data(json.utf8))
+        #expect(!(await store.jobAction("retry", connection: connection)))
+        #expect(store.errorMessage == "必须重新生成计划")
+        #expect(WorktreeStateProtocol.calls.isEmpty)
+    }
     private func fixture() throws -> (PadWorktreeStore, PadConnection) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WorktreeStateProtocol.self]
@@ -132,7 +145,7 @@ struct PadWorktreeTests {
         UserDefaults.standard.removeObject(forKey: "corptie.worktree.job:\(connection.serverID):\(connection.address):repo:test")
     }
 
-    nonisolated static let job = #"{"id":"job:test","repositoryId":"repo:test","status":"awaiting_confirmation","phase":"plan","planFingerprint":"fingerprint:one","createdAt":"now","updatedAt":"now","plan":{"repositoryId":"repo:test","mainWorktreeId":"main","mainPath":"/repo","mainHeadBefore":"abc","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":0,"total":1,"fraction":0}}"#
+    nonisolated static let job = #"{"id":"job:test","repositoryId":"repo:test","status":"awaiting_confirmation","availableActions":["confirm","cancel"],"phase":"plan","planFingerprint":"fingerprint:one","createdAt":"now","updatedAt":"now","plan":{"repositoryId":"repo:test","mainWorktreeId":"main","mainPath":"/repo","mainHeadBefore":"abc","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":0,"total":1,"fraction":0}}"#
     private static let repository = #"{"repository":{"id":"repo:test","path":"/repo","name":"Repo","discoveredAt":"now","lastValidatedAt":"now","mainPath":"/repo","availability":"available","worktreeCount":0},"project":{"repositoryId":"repo:test","inventoryVersion":"1","mainWorktreeId":"main","mainPath":"/repo","mainBranch":"main","mainHeadOid":"abc","pendingWorktreeCount":0,"worktrees":[]},"latestJob":null}"#
 }
 

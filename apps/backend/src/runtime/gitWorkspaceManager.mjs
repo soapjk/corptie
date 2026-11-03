@@ -11,6 +11,7 @@ import {
   linkSharedAgentConfiguration
 } from "./sharedAgentConfiguration.mjs";
 import { stageValidatedIntegrationTree } from "./integrationStagedTreeValidator.mjs";
+import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
 import { ensureProjectLocalState } from "./projectLocalStateDirectory.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 
@@ -1002,7 +1003,8 @@ export class GitWorkspaceManager {
         const recordedMerge = input.allowRecordedMergeRecovery && (input.mergeStrategy === "ff-only"
           ? head === input.sourceHead && await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.expectedMainHead, head])
           : parents.length === 2 && parents[0] === input.expectedMainHead && parents[1] === input.sourceHead);
-        if (!recordedMerge) throw integrationGitError("MAIN_HEAD_CHANGED", "The integration target changed outside the recorded step. Review a new plan; completed changes were preserved.");
+        if (!recordedMerge) throw integrationGitError("MAIN_HEAD_CHANGED", `The integration target changed outside the recorded step. Review a new plan; completed changes were preserved.\nTarget: ${input.mainPath}\nExpected HEAD: ${input.expectedMainHead}\nActual HEAD: ${head}`,
+          { expectedHead: input.expectedMainHead, actualHead: head });
       }
     }
     if (await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
@@ -1038,7 +1040,8 @@ export class GitWorkspaceManager {
     }
     const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
     if (mainHead !== input.expectedMainHead) {
-      throw integrationGitError("MAIN_HEAD_CHANGED", "main HEAD changed while the integration task was running.");
+      throw integrationGitError("MAIN_HEAD_CHANGED", `main HEAD changed while the integration task was running.\nTarget: ${input.mainPath}\nExpected HEAD: ${input.expectedMainHead}\nActual HEAD: ${mainHead}`,
+        { expectedHead: input.expectedMainHead, actualHead: mainHead });
     }
     const mainStatus = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
     if (mainStatus) throw integrationGitError("MAIN_DIRTY", "main gained uncommitted changes while integrating.");
@@ -1050,11 +1053,11 @@ export class GitWorkspaceManager {
       const conflicts = (await this.gitOutput(input.mainPath, ["diff", "--name-only", "--diff-filter=U"]))
         .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
       if (conflicts.length > 0) {
-        const conflict = integrationGitError("MERGE_CONFLICT", safeGitError(error, "Merge conflict"));
+        const conflict = integrationGitError("MERGE_CONFLICT", safeGitError(error, "Merge conflict"), { cause: error });
         conflict.conflictFiles = conflicts;
         throw conflict;
       }
-      throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"));
+      throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"), { cause: error });
     }
     const updatedHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
     if(input.mergeStrategy==="ff-only" && updatedHead!==input.sourceHead) throw integrationGitError("INTEGRATION_ACCEPTANCE_STALE","Final main HEAD differs from the accepted parent.");
@@ -1285,6 +1288,11 @@ export class GitWorkspaceManager {
         "main HEAD changed after the integration conflict was recorded."
       );
     }
+    if (!await this.gitSucceeds(input.mainPath, ["rev-parse", "--verify", "AUTO_MERGE"])
+      || !await this.gitSucceeds(input.mainPath, ["diff", "--quiet", "AUTO_MERGE", "--"])) {
+      throw integrationGitError("INTEGRATION_CONFLICT_EDITS_PRESENT",
+        "The conflict Worktree contains resolution edits, or its original conflict state cannot be verified. Those edits were preserved. Complete or preserve them before stopping this merge.");
+    }
     await this.runGit(input.mainPath, ["merge", "--abort"]);
     const remainingOperation = await this.integrationOperationState(input.mainPath);
     const status = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
@@ -1364,18 +1372,57 @@ export class GitWorkspaceManager {
     return { removed: true };
   }
 
+  async inspectMainIntegrationCompletion(input) {
+    const snapshot = await createGitWorkspaceSnapshot(absolutePath(input.targetPath));
+    const main = await this.#resolveIntegrationTarget(input, snapshot);
+    if (!main.isMain || (input.branchName && main.branchName !== input.branchName)) {
+      throw integrationGitError("INTEGRATION_FINAL_TARGET_INVALID", "The final integration target is no longer the reviewed main Worktree and branch.");
+    }
+    if (await this.integrationOperationState(main.path)) {
+      throw integrationGitError("GIT_OPERATION_IN_PROGRESS", `Final target ${main.branchName} still has an unfinished Git operation.`);
+    }
+    await this.#assertIntegrationPostconditionClean(main.path);
+    for (const head of new Set(input.requiredHeads)) {
+      if (!await this.gitSucceeds(main.path, ["merge-base", "--is-ancestor", head, main.headOid])) {
+        throw integrationGitError("INTEGRATION_RESULT_MISSING", `The integration is not complete.\nTarget: ${main.branchName}\nMain HEAD: ${main.headOid}\nMissing source or resolution commit: ${head}`);
+      }
+    }
+    return { mainWorktreeId: main.worktreeId, mainHead: main.headOid, verifiedHeads: [...new Set(input.requiredHeads)] };
+  }
+
+  async #resolveIntegrationTarget(input, snapshot) {
+    if (snapshot.repository.id !== input.repositoryId) {
+      throw integrationGitError("REPOSITORY_IDENTITY_CHANGED", "The integration repository identity changed.");
+    }
+    const targetPath = input.targetPath ?? input.mainPath;
+    const canonical = targetPath ? await realpath(absolutePath(targetPath)) : null;
+    const target = snapshot.worktrees.find(tree => tree.availability === "available"
+      && (input.targetWorktreeId ? tree.worktreeId === input.targetWorktreeId
+        : canonical ? resolve(tree.canonicalPath ?? tree.path) === canonical : tree.isMain));
+    if (!target || (canonical && await realpath(target.path) !== canonical)) {
+      throw integrationGitError("INTEGRATION_TARGET_CHANGED", "The recorded integration target Worktree is unavailable or its identity changed.");
+    }
+    const expected = input.expectedTargetHead ?? input.expectedMainHead;
+    const actual = (await this.gitOutput(target.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (expected && actual !== expected) {
+      throw integrationGitError("MAIN_HEAD_CHANGED", `Integration target ${target.branchName ?? target.worktreeId} changed.\nExpected HEAD: ${expected}\nActual HEAD: ${actual}`,
+        { expectedHead: expected, actualHead: actual });
+    }
+    return { ...target, headOid: actual };
+  }
+
   async createIntegrationWorktreeForProject(input) {
     let snapshot = await createGitWorkspaceSnapshot(absolutePath(input.workingDirectory));
     if (snapshot.repository.id !== input.repositoryId) {
       throw new Error("The integration project no longer belongs to the registered repository.");
     }
-    let main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    let main = await this.#resolveIntegrationTarget(input, snapshot);
     if (!main) throw new Error("The repository's main worktree is unavailable.");
     const mainStatus = await this.gitOutput(main.path, ["status", "--porcelain=v1"]);
     if (mainStatus.trim()) {
       const error = integrationGitError(
         "MAIN_DIRTY",
-        "The main worktree has uncommitted changes. Corptie preserved them and did not create or remove a Worktree."
+        "The integration target Worktree has uncommitted changes. Corptie preserved them and did not create or remove a Worktree."
       );
       error.failureStage = "workspace_preflight";
       error.recoverySuggestion = "Commit or preserve the main changes, then retry conflict resolution.";
@@ -1392,7 +1439,7 @@ export class GitWorkspaceManager {
       if (attempt > 0) {
         snapshot = await createGitWorkspaceSnapshot(main.path);
         this.store.upsertGitWorkspaceSnapshot(snapshot);
-        main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+        main = await this.#resolveIntegrationTarget(input, snapshot);
         if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree became unavailable.");
       }
       const suffix = attempt === 0 ? baseSuffix : `${baseSuffix}-${attempt + 1}`;
@@ -1417,7 +1464,7 @@ export class GitWorkspaceManager {
           if (!canFastForward) {
             const error = integrationGitError(
               "INTEGRATION_WORKSPACE_DIVERGED",
-              `The plan-owned Integration branch no longer follows main: ${branchName}.`
+              `The plan-owned Integration branch no longer follows the integration target: ${branchName}.`
             );
             error.recoverable = false;
             throw error;
@@ -1425,7 +1472,7 @@ export class GitWorkspaceManager {
           await this.runGit(byPath.path, ["merge", "--ff-only", main.headOid]);
           snapshot = await createGitWorkspaceSnapshot(byPath.path);
           this.store.upsertGitWorkspaceSnapshot(snapshot);
-          main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+          main = await this.#resolveIntegrationTarget(input, snapshot);
           const advanced = snapshot.worktrees.find((worktree) => resolve(worktree.path) === targetPath);
           if (!main || !advanced) {
             throw integrationGitError(
@@ -1670,7 +1717,8 @@ export class GitWorkspaceManager {
     if (snapshot.repository.id !== input.repositoryId) {
       throw integrationGitError("REPOSITORY_IDENTITY_CHANGED", "The integration project identity changed.");
     }
-    const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    const main = await this.#resolveIntegrationTarget({ ...input, expectedMainHead: undefined,
+      expectedTargetHead: undefined, targetPath: input.targetPath ?? input.mainPath ?? input.workingDirectory }, snapshot);
     if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree is unavailable.");
     const operationState = await this.integrationOperationState(main.path);
     if (operationState && operationState !== "merge") {
@@ -1689,11 +1737,18 @@ export class GitWorkspaceManager {
         );
       }
       if (await this.gitSucceeds(main.path, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
-        return { alreadyResolved: true, mainHead };
+        const parents = (await this.gitOutput(main.path, ["rev-list", "--parents", "-n", "1", "HEAD"])).trim().split(/\s+/).slice(1);
+        if (mainHead === input.expectedMainHead || (parents.length === 2
+          && parents[0] === input.expectedMainHead && parents[1] === input.sourceHead)) {
+          return { alreadyResolved: true, mainHead };
+        }
       }
+      if (mainHead !== input.expectedMainHead) throw integrationGitError("MAIN_HEAD_CHANGED",
+        `Integration target ${main.branchName} changed.\nExpected HEAD: ${input.expectedMainHead}\nActual HEAD: ${mainHead}`);
       return this.createIntegrationWorktreeForProject({
         repositoryId: input.repositoryId,
         workingDirectory: main.path,
+        targetWorktreeId: main.worktreeId, targetPath: main.path, expectedTargetHead: input.expectedMainHead,
         runId: input.jobId
       });
     }
@@ -1712,7 +1767,7 @@ export class GitWorkspaceManager {
     if (conflicts.length === 0) {
       return { readyForRetry: true, mainHead };
     }
-    await this.runGit(main.path, ["merge", "--abort"]);
+    await this.abortIntegrationMerge({ ...input, mainPath: main.path });
     const status = (await this.gitOutput(main.path, ["status", "--porcelain=v1"])).trim();
     if (status) {
       throw integrationGitError(
@@ -1723,6 +1778,7 @@ export class GitWorkspaceManager {
     return this.createIntegrationWorktreeForProject({
       repositoryId: input.repositoryId,
       workingDirectory: main.path,
+      targetWorktreeId: main.worktreeId, targetPath: main.path, expectedTargetHead: input.expectedMainHead,
       runId: input.jobId
     });
   }
@@ -1741,13 +1797,13 @@ export class GitWorkspaceManager {
     if (snapshot.repository.id !== input.repositoryId) {
       throw integrationGitError("RESOLUTION_REPOSITORY_CHANGED", "The conflict-resolution Worktree belongs to a different repository.");
     }
-    const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    const main = await this.#resolveIntegrationTarget(input, snapshot);
     const workspace = snapshot.worktrees.find((worktree) => (
       worktree.availability === "available"
         && (worktree.worktreeId === input.workspace?.worktreeId || resolve(worktree.path) === workspacePath)
     ));
     if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree is unavailable.");
-    if (!workspace || workspace.isMain) {
+    if (!workspace || workspace.isMain || workspace.worktreeId === main.worktreeId) {
       throw integrationGitError("RESOLUTION_WORKTREE_UNAVAILABLE", "The dedicated conflict-resolution Worktree is unavailable.");
     }
     if (input.workspace?.branchName && workspace.branchName !== input.workspace.branchName) {
@@ -1760,7 +1816,7 @@ export class GitWorkspaceManager {
     if (mainOperation || mainStatus || mainHead !== input.expectedMainHead) {
       throw integrationGitError(
         mainStatus ? "MAIN_DIRTY" : (mainHead !== input.expectedMainHead ? "MAIN_HEAD_CHANGED" : "GIT_OPERATION_IN_PROGRESS"),
-        "main changed while the conflict Agent was working. Corptie did not promote the Agent result; preserve main manually, then re-preflight."
+        "The recorded integration target changed while the conflict Session was working. The result was preserved; review a fresh plan before continuing."
       );
     }
 
@@ -1779,7 +1835,7 @@ export class GitWorkspaceManager {
 
     const resolvedHead = (await this.gitOutput(workspace.path, ["rev-parse", "--verify", "HEAD"])).trim();
     if (!await this.gitSucceeds(workspace.path, ["merge-base", "--is-ancestor", input.expectedMainHead, resolvedHead])) {
-      throw integrationGitError("RESOLUTION_BASE_MISSING", "The Agent result is not based on the recorded main revision.");
+      throw integrationGitError("RESOLUTION_BASE_MISSING", "The Agent result is not based on the recorded integration target revision.");
     }
     if (!await this.gitSucceeds(workspace.path, ["merge-base", "--is-ancestor", input.sourceHead, resolvedHead])) {
       throw integrationGitError("RESOLUTION_SOURCE_MISSING", "The Agent result does not contain the conflicted source changes.");
@@ -2408,7 +2464,7 @@ export class GitWorkspaceManager {
       const result = await this.runGit(cwd, arguments_);
       return String(result?.stdout ?? "");
     } catch (error) {
-      throw new Error(safeGitError(error, `git ${arguments_[0]} failed`));
+      throw new Error(safeGitError(error, `git ${arguments_[0]} failed`), { cause: error });
     }
   }
 
@@ -2577,10 +2633,10 @@ function roundedMilliseconds(value) {
   return Math.round(value * 10) / 10;
 }
 
-function integrationGitError(code, message) {
+function integrationGitError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
-  return error;
+  return Object.assign(error, details);
 }
 
 function requiredBranch(value) {
@@ -2603,5 +2659,7 @@ function safeGitError(error, fallback) {
     .filter((value, index, values) => value && values.indexOf(value) === index)
     .join("\n");
   const detail = diagnostics || String(error?.message ?? "Git command failed").trim();
-  return `${fallback}:\n${detail.slice(0, 2_000)}`;
+  const capture = error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+    ? `\nOutput capture limit reached: ${error.message}. The command output below is incomplete.\n` : "\n";
+  return redactInlineSecrets(`${fallback}:${capture}${detail}`);
 }

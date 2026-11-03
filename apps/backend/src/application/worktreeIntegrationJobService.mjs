@@ -4,6 +4,7 @@ import { ensureProjectLocalState, inspectProjectLocalState, rollbackProjectLocal
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 import { WorktreeIntegrationGraph } from "./worktreeIntegrationGraph.mjs";
 import { MARKDOWN_COMMIT_ACTIONS, validateDecisions } from "./markdownCommitPolicyService.mjs";
+import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
 
 const ACTIVE_JOB_STATUSES = Object.freeze([
   "queued", "running", "paused", "cancellation_requested", "replanning"
@@ -55,6 +56,7 @@ export class WorktreeIntegrationJobService {
     this.cleanupConvergence = options.cleanupConvergence ?? null;
     this.prepareConflictResolution = options.prepareConflictResolution;
     this.inspectConflictResolution = options.inspectConflictResolution;
+    this.inspectMainIntegrationCompletion = options.inspectMainIntegrationCompletion ?? null;
     this.launchConflictResolution = options.launchConflictResolution;
     this.removeWorktree = options.removeWorktree;
     this.isSessionActive = options.isSessionActive ?? (() => false);
@@ -997,14 +999,19 @@ export class WorktreeIntegrationJobService {
     const conflictItem = job.details.plan.items.find((candidate) =>
       candidate.worktreeId === job.details.currentWorktreeId);
     const isSync = job.details.plan.operationType === "sync";
-    const isGraph = Boolean(job.details.plan.orchestration);
-    if (isSync || isGraph) conflictPreserved = job.details.plan.items.some(item => item.mergeStatus === "conflict");
-    const shouldRestoreTaskOwnedConflict = !isSync && !isGraph && conflictItem?.mergeStatus === "conflict";
-    if (!isSync && !isGraph && (replan || shouldRestoreTaskOwnedConflict)) {
+    if (isSync) conflictPreserved = job.details.plan.items.some(item => item.mergeStatus === "conflict");
+    const shouldRestoreTaskOwnedConflict = !isSync && (conflictItem?.mergeStatus === "conflict"
+      || job.details.plan.items.some(item => item.mergeStatus === "conflict"));
+    if (!isSync && (replan || shouldRestoreTaskOwnedConflict)) {
       try {
         const cleanup = await this.#abortConflictMergeForReplan(job);
         if (cleanup) {
           job = this.#update(job, {
+            details: { ...job.details, cleanupResult: { schemaVersion: 1, status: "completed",
+              at: new Date().toISOString(), targetWorktreeId: job.details.plan.mainWorktreeId,
+              targetPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
+              aborted: cleanup.aborted === true, restoredHead: cleanup.mainHead,
+              sourceHead: cleanup.sourceHead, expectedHead: cleanup.expectedHead } },
             auditEvent: cleanup.aborted ? "conflict_merge_aborted" : "conflict_merge_cleanup_verified",
             auditData: { worktreeId: job.details.currentWorktreeId }
           });
@@ -1015,6 +1022,11 @@ export class WorktreeIntegrationJobService {
           status: "paused",
           phase: replan ? "replanning_cleanup_failed" : "cancellation_cleanup_failed",
           error: error.message,
+          details: { ...job.details, cleanupResult: { schemaVersion: 1, status: "blocked",
+            at: new Date().toISOString(), targetWorktreeId: job.details.plan.mainWorktreeId,
+            targetPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
+            failureCode: error.code ?? "MERGE_CLEANUP_FAILED" },
+            failureDiagnostic: integrationFailureDiagnostic(job, error) },
           auditEvent: "conflict_merge_cleanup_failed",
           auditData: { code: error.code ?? "MERGE_CLEANUP_FAILED" }
         });
@@ -1058,23 +1070,48 @@ export class WorktreeIntegrationJobService {
   }
 
   async #abortConflictMergeForReplan(job) {
-    const item = job.details.plan.items.find((candidate) =>
-      candidate.worktreeId === job.details.currentWorktreeId);
+    const conflicts = job.details.plan.items.filter(candidate => candidate.mergeStatus === "conflict");
+    const item = job.details.plan.items.find(candidate => candidate.worktreeId === job.details.currentWorktreeId)
+      ?? (conflicts.length === 1 ? conflicts[0] : null);
     if (item?.mergeStatus !== "conflict") return null;
-    const sourceHead = item.commitHead ?? item.sourceHeadBefore;
-    return this.abortMerge({
+    const sourceHead = item.resolutionHead ?? item.commitHead ?? item.sourceHeadBefore;
+    const expectedHead = expectedMainHeadBefore(job.details.plan, item.worktreeId);
+    const cleanup = await this.abortMerge({
       repositoryId: job.repositoryId,
       mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
       sourceHead,
-      expectedMainHead: expectedMainHeadBefore(job.details.plan, item.worktreeId),
+      expectedMainHead: expectedHead,
       jobId: job.id
     });
+    return { ...cleanup, sourceHead, expectedHead };
   }
 
   async #replacementPlan(canceled, replan) {
     if (!replan) return canceled;
     if (canceled.details.replacementJobId) {
       return this.store.getWorktreeIntegrationJob(canceled.details.replacementJobId) ?? canceled;
+    }
+    if (canceled.details.plan.operationType !== "sync") {
+      try {
+        const cleanup = await this.#abortConflictMergeForReplan(canceled);
+        if (cleanup) canceled = this.#update(canceled, {
+          details: { ...canceled.details, cleanupResult: { schemaVersion: 1, status: "completed",
+            at: new Date().toISOString(), targetWorktreeId: canceled.details.plan.mainWorktreeId,
+            targetPath: canceled.details.plan.executionPath ?? canceled.details.plan.mainPath,
+            aborted: cleanup.aborted === true, restoredHead: cleanup.mainHead,
+            sourceHead: cleanup.sourceHead, expectedHead: cleanup.expectedHead } },
+          auditEvent: "replan_cleanup_verified"
+        });
+      } catch (error) {
+        this.#update(canceled, { error: error.message,
+          details: { ...canceled.details, cleanupResult: { schemaVersion: 1, status: "blocked",
+            at: new Date().toISOString(), targetWorktreeId: canceled.details.plan.mainWorktreeId,
+            targetPath: canceled.details.plan.executionPath ?? canceled.details.plan.mainPath,
+            failureCode: error.code ?? "MERGE_CLEANUP_FAILED" },
+            failureDiagnostic: integrationFailureDiagnostic(canceled, error) },
+          auditEvent: "replan_cleanup_failed", auditData: { code: error.code ?? "MERGE_CLEANUP_FAILED" } });
+        throw error;
+      }
     }
     let replacement;
     try {
@@ -1132,6 +1169,10 @@ export class WorktreeIntegrationJobService {
         "Choose how to handle every blocked Markdown file before continuing.",
         409
       );
+    }
+    if (!integrationJobAvailableActions(presentJob(job)).includes("retry")) {
+      throw new WorktreeIntegrationJobError("JOB_ACTION_UNAVAILABLE",
+        "This task requires a fresh plan before it can continue. Completed commits were preserved.", 409);
     }
     const updated = this.#update(job, {
       status: "queued", phase: "retry_queued", error: null,
@@ -1501,6 +1542,7 @@ export class WorktreeIntegrationJobService {
           try {
             preparation = await this.prepareConflictResolution({
               repositoryId: job.repositoryId,
+              targetWorktreeId: job.details.plan.mainWorktreeId,
               mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
               jobId: job.id,
               sourceHead,
@@ -1919,6 +1961,7 @@ export class WorktreeIntegrationJobService {
           try {
             verified = await this.inspectConflictResolution({
               repositoryId: job.repositoryId,
+              targetWorktreeId: job.details.plan.mainWorktreeId,
               mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
               workspace: resolution.workspace,
               sourceHead: originalSourceHead,
@@ -2088,7 +2131,7 @@ export class WorktreeIntegrationJobService {
         this.#schedule(jobId);
         return;
       }
-      this.#update(job, {
+      await this.#completeJob(job, {
         status: "completed",
         phase: "completed",
         completedAt: new Date().toISOString(),
@@ -2285,9 +2328,54 @@ export class WorktreeIntegrationJobService {
           conflictResolution: null, conflictAutomation: null, commitPolicyBlocker: null },
         auditEvent: "integration_graph_step_started", auditData: { stepId: step.id, kind: step.kind } });
     }
-    this.#update(job, { status: "completed", phase: "completed", completedAt: new Date().toISOString(), error: null, currentWorktreeId: null,
+    await this.#completeJob(job, { status: "completed", phase: "completed", completedAt: new Date().toISOString(), error: null, currentWorktreeId: null,
       auditEvent: "execution_completed" });
     return null;
+  }
+
+  async #completeJob(job, patch) {
+    let completionEvidence;
+    const plan = job.details.plan;
+    const graph = job.details.graphExecution;
+    const goalId = plan.orchestration?.mainWorktreeId ?? plan.mainWorktreeId;
+    const reviewed = graph?.reviewedItems ?? plan.items;
+    const target = reviewed.find(item => item.worktreeId === goalId);
+    const isMainGoal = Boolean(plan.orchestration) || ((!plan.operationType || plan.operationType === "merge")
+      && target && (target.actualIsMain ?? target.isMain) && !plan.taskScope);
+    if (isMainGoal) {
+      if (!target) throw new WorktreeIntegrationJobError("INTEGRATION_FINAL_TARGET_INVALID", "The original main target is missing from the reviewed integration plan.", 409);
+      if (!this.inspectMainIntegrationCompletion) {
+        throw new WorktreeIntegrationJobError("INTEGRATION_COMPLETION_UNAVAILABLE", "Main integration verification is unavailable; this task cannot be marked complete.", 503);
+      }
+      const steps = graph?.steps ?? [];
+      if (steps.some(step => step.status !== "completed")) {
+        throw new WorktreeIntegrationJobError("INTEGRATION_STEPS_PENDING", "Intermediate integration steps remain; the code is not yet confirmed in main.", 409);
+      }
+      const requiredHeads = [...reviewed.filter(item => item.worktreeId !== goalId)
+        .map(item => item.commitHead ?? item.sourceHeadBefore),
+        ...steps.flatMap(step => (step.items ?? []).map(item => item.resolutionHead)),
+        ...plan.items.map(item => item.resolutionHead)].filter(Boolean);
+      const expectedTargetHead = graph?.expectedHeads?.[goalId]
+        ?? [...plan.items].reverse().find(item => item.mergeMainHead)?.mergeMainHead
+        ?? target?.commitHead ?? plan.mainHeadBefore;
+      const verified = await this.inspectMainIntegrationCompletion({ repositoryId: job.repositoryId,
+        targetWorktreeId: goalId, targetPath: target.path, branchName: target.branchName,
+        expectedTargetHead, requiredHeads });
+      if (verified?.mainWorktreeId !== goalId || verified?.mainHead !== expectedTargetHead
+        || !Array.isArray(verified?.verifiedHeads) || requiredHeads.some(head => !verified.verifiedHeads.includes(head))) {
+        throw new WorktreeIntegrationJobError("INTEGRATION_COMPLETION_INVALID", "The main verification result does not match this integration's target and source commits.", 409);
+      }
+      completionEvidence = { schemaVersion: 1, verifiedAt: new Date().toISOString(),
+        repositoryId: job.repositoryId, mainWorktreeId: goalId, mainHead: verified.mainHead,
+        branchName: target.branchName, verifiedHeads: verified.verifiedHeads };
+    }
+    const latest = this.#requireJob(job.id);
+    if (latest.status === "cancellation_requested") return this.#finishCancellation(latest);
+    if (!["running", "queued"].includes(latest.status)) {
+      throw new WorktreeIntegrationJobError("JOB_STATE_CHANGED", "The task state changed during completion verification. Refresh before continuing.", 409);
+    }
+    return this.#update(latest, { ...patch, details: { ...(patch.details ?? latest.details),
+      ...(completionEvidence ? { completionEvidence } : {}) } });
   }
 
   async #runSync(jobId) {
@@ -2481,6 +2569,7 @@ export class WorktreeIntegrationJobService {
   }
 
   #pause(job, error) {
+    error = { ...error, cause: error?.cause, message: redactInlineSecrets(String(error?.message ?? "Integration failed.")) };
     const graphState = job.details.graphExecution;
     if (graphState?.steps[graphState.index]?.kind === "promote_parent"
       && ["INTEGRATION_ACCEPTANCE_REQUIRED", "INTEGRATION_ACCEPTANCE_STALE", "CHILDREN_NOT_INTEGRATED"].includes(error.code)) {
@@ -2502,6 +2591,7 @@ export class WorktreeIntegrationJobService {
       error: error.message,
       details: {
         ...job.details,
+        failureDiagnostic: integrationFailureDiagnostic(job, error),
         waitingForSession: ["TASK_HIERARCHY_BUSY", "ACTIVE_SESSION_IN_PROGRESS"].includes(error.code)
           ? { code: error.code, ...error.busyContext } : null,
         ...(error.code === "INTEGRATION_STAGED_TREE_REJECTED" ? {
@@ -2611,6 +2701,13 @@ export class WorktreeIntegrationJobService {
     const at = new Date().toISOString();
     const stored = this.store.getWorktreeIntegrationJob(job.id) ?? job;
     let details = patch.details ?? stored.details;
+    if (typeof patch.error === "string") {
+      patch = { ...patch, error: redactInlineSecrets(patch.error) };
+      if (patch.status === "paused" && details.failureDiagnostic?.message !== patch.error) {
+        details = { ...details, failureDiagnostic: integrationFailureDiagnostic(stored,
+          { message: patch.error, code: patch.auditData?.code }) };
+      }
+    }
     if (patch.status) details = { ...details, dispatchRevision: (stored.details.dispatchRevision ?? 0) + 1 };
     if (Object.prototype.hasOwnProperty.call(patch, "currentWorktreeId")) {
       details = { ...details, currentWorktreeId: patch.currentWorktreeId };
@@ -2622,6 +2719,12 @@ export class WorktreeIntegrationJobService {
           at, event: patch.auditEvent, ...(patch.auditData ?? {})
         })]
       };
+    }
+    if (["backend_recovered", "replacement_preflight_created", "replacement_preflight_failed", "replacement_preflight_ready", "replan_cleanup_failed", "replan_cleanup_verified"].includes(patch.auditEvent)) {
+      details = { ...details, recoveryResult: { schemaVersion: 1, at, action: patch.auditEvent,
+        status: patch.status ?? stored.status, phase: patch.phase ?? stored.phase,
+        replacementJobId: details.replacementJobId ?? null,
+        code: patch.auditData?.code ?? null, message: patch.error ?? null } };
     }
     const updated = this.store.updateWorktreeIntegrationJob(job.id, { ...patch, details });
     this.onEvent("WorktreeIntegrationJobChanged", { job: presentJob(updated) });
@@ -2644,6 +2747,7 @@ export class WorktreeIntegrationJobService {
       error: error?.message ?? "The conflict Agent result could not be verified.",
       details: {
         ...job.details,
+        failureDiagnostic: integrationFailureDiagnostic(job, error),
         conflictResolution: {
           ...resolution,
           status: "failed",
@@ -2666,6 +2770,7 @@ export class WorktreeIntegrationJobService {
   }
 
   #reconcileConflictResolution(job) {
+    if (["completed", "canceled"].includes(job.status)) return job;
     const resolution = job.details.conflictResolution;
     const item = job.details.plan.items.find((candidate) => candidate.worktreeId === job.details.currentWorktreeId);
     const sourceHead = item ? (item.commitHead ?? item.sourceHeadBefore) : null;
@@ -3488,12 +3593,69 @@ function normalizeJobDetailsForPresentation(details) {
   return { ...details, audit: details.audit.map(normalizeAuditEvent) };
 }
 
+function integrationFailureDiagnostic(job, error) {
+  const plan = job.details.plan;
+  const item = plan.items.find(candidate => candidate.worktreeId === job.details.currentWorktreeId);
+  const text = value => value == null ? null : redactInlineSecrets(String(value).replaceAll("\0", ""));
+  const causes = [];
+  let expectedHead = error?.expectedHead, actualHead = error?.actualHead;
+  const visited = new Set([error]);
+  let cause = error?.cause;
+  while (cause && !visited.has(cause)) {
+    visited.add(cause);
+    expectedHead ??= cause.expectedHead;
+    actualHead ??= cause.actualHead;
+    causes.push({ code: normalizedErrorCode(cause.code, "CAUSE"), message: text(cause.message ?? cause),
+      stdout: text(cause.stdout), stderr: text(cause.stderr) });
+    cause = cause.cause;
+  }
+  return { schemaVersion: 1, at: new Date().toISOString(),
+    code: normalizedErrorCode(error?.code, "INTEGRATION_FAILED"),
+    rootCauseCode: normalizedErrorCode(error?.rootCauseCode ?? error?.cause?.code ?? error?.code, "INTEGRATION_FAILED"),
+    message: text(error?.message ?? "Integration failed."), stdout: text(error?.stdout), stderr: text(error?.stderr), causes,
+    stage: error?.failureStage ?? error?.stage ?? job.phase,
+    targetWorktreeId: plan.mainWorktreeId, targetPath: plan.executionPath ?? plan.mainPath,
+    targetBranchName: plan.targetBranchName ?? plan.items.find(candidate => candidate.isMain)?.branchName ?? null,
+    sourceWorktreeId: item?.worktreeId ?? null, sourceBranchName: item?.branchName ?? null,
+    expectedHead: expectedHead ?? expectedMainHeadBefore(plan, item?.worktreeId),
+    actualHead: actualHead ?? null };
+}
+
 export function presentJob(job) {
   if (!job) return null;
   const details = normalizeJobDetailsForPresentation(job.details);
-  const presented = { ...job, ...details, details: undefined };
+  const safeMessage = value => typeof value === "string" ? redactInlineSecrets(value) : value;
+  const presented = { ...job, ...details, details: undefined, error: safeMessage(job.error),
+    plan: details.plan ? { ...details.plan, items: (details.plan.items ?? []).map(item => ({ ...item, error: safeMessage(item.error) })) } : details.plan,
+    ...(details.conflictResolution ? { conflictResolution: { ...details.conflictResolution,
+      failureReason: safeMessage(details.conflictResolution.failureReason) } } : {}),
+    ...(details.conflictAutomation ? { conflictAutomation: { ...details.conflictAutomation,
+      failureReason: safeMessage(details.conflictAutomation.failureReason) } } : {}) };
   const commitPolicyResidue = legacyCommitPolicyResidue(job);
   const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
+  const recovery = integrationJobRecovery(presented, availableActions);
+  const current = presented.plan?.items?.find(item => item.worktreeId === presented.currentWorktreeId);
+  const code = [...(presented.audit ?? [])].reverse().find(entry => entry.code)?.code;
+  const failure = presented.failureDiagnostic;
+  const retained = failure ? [failure.message, failure.stdout, failure.stderr,
+    ...(failure.causes ?? []).flatMap(cause => [`Cause code: ${cause.code}`, cause.message, cause.stdout, cause.stderr])]
+    .filter(text => text && !String(presented.error ?? "").includes(text)) : [];
+  const diagnosticText = presented.error ? redactInlineSecrets([
+    `Job: ${job.id}`, `Status: ${job.status}`, `Phase: ${job.phase}`,
+    `Final target: ${presented.plan?.orchestration ? "main" : presented.plan?.targetBranchName ?? "main"}`,
+    `Current target: ${presented.plan?.targetBranchName ?? presented.plan?.mainPath ?? "unknown"}`,
+    `Source: ${current?.branchName ?? current?.worktreeId ?? "unknown"}`,
+    ...(code ? [`Error code: ${code}`] : []),
+    ...(failure ? [`Retained failure: ${failure.code} at ${failure.at}`,
+      `Underlying code: ${failure.rootCauseCode ?? failure.code}`,
+      `Recorded target: ${failure.targetBranchName ?? failure.targetPath}`,
+      `Recorded source: ${failure.sourceBranchName ?? failure.sourceWorktreeId ?? "unknown"}`,
+      `Expected HEAD: ${failure.expectedHead ?? "unknown"}`, `Actual HEAD: ${failure.actualHead ?? "not reported"}`] : []),
+    `\n${presented.error}`, ...(recovery?.message ? [`\nRecovery: ${recovery.message}`] : []),
+    ...retained,
+    `Available actions: ${availableActions.join(", ") || "none"}`,
+    `Main integration: ${job.status === "completed" ? "completed" : "not confirmed complete"}`
+  ].join("\n")) : null;
   return {
     ...presented,
     ...(presented.commitPolicyBlocker ? {commitPolicyBlocker:{...presented.commitPolicyBlocker,
@@ -3516,7 +3678,9 @@ export function presentJob(job) {
     commitPolicyResidue,
     availableActions,
     notification: projectOperationNotification(presented),
-    recovery: integrationJobRecovery(presented, availableActions)
+    recovery,
+    diagnosticText,
+    errorSummary: presented.error?.split("\n", 1)[0]?.slice(0, 320) ?? null
   };
 }
 
@@ -3528,20 +3692,25 @@ function integrationJobAvailableActions(job) {
     return ["cancel"];
   }
   if (job.status !== "paused") return [];
+  const latestCode = [...(job.audit ?? [])].reverse().find(event => event.code)?.code;
+  const failureCode = job.failureDiagnostic && job.failureDiagnostic.code === latestCode
+    ? job.failureDiagnostic.rootCauseCode ?? latestCode : latestCode;
   if (job.resumeRequiresReplan) return ["repreflight", "cancel"];
   if (job.phase === "awaiting_integration_acceptance") return ["retry", "cancel"];
   if (job.plan?.orchestration && ["INTEGRATION_GRAPH_STATE_CHANGED", "TASK_HIERARCHY_CHANGED", "TASK_DELIVERY_BINDING_CHANGED",
-    "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_STATE_CHANGED", "WORKTREE_RECHECK_DIRTY"].includes([...(job.audit ?? [])].reverse().find(event => event.code)?.code)) return ["repreflight", "cancel"];
+    "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_STATE_CHANGED", "WORKTREE_RECHECK_DIRTY",
+    "INTEGRATION_TARGET_CHANGED", "INTEGRATION_RESULT_MISSING", "INTEGRATION_FINAL_TARGET_INVALID"].includes(failureCode)) return ["repreflight", "cancel"];
   if (job.conflictResolution?.status === "running") return ["open_agent_session"];
   if (job.commitPolicyBlocker || legacyCommitPolicyPaths(job.error).length > 0) {
     return ["resolve_commit_policy", "cancel"];
   }
   if (job.commitPolicyResidue) return ["resolve_commit_policy_residue", "cancel"];
-  const lastCode = [...(job.audit ?? [])].reverse().find(event => event.code)?.code;
+  const lastCode = failureCode;
   if ((job.phase === "plan_stale" || new Set([
     "PLAN_STALE", "MAIN_HEAD_CHANGED", "MAIN_DIRTY", "WORKTREE_HEAD_CHANGED",
     "WORKTREE_CHANGES_CHANGED", "UNRELATED_MERGE_IN_PROGRESS", "INTEGRATION_INDEX_CHANGED"
-  ]).has(lastCode)) && !integrationExecutionProgressed(job)) return ["repreflight", "cancel"];
+  ]).has(lastCode))) return ["repreflight", "cancel"];
+  if (job.conflictResolution?.status === "ready") return ["retry", "cancel"];
   const current = (job.plan?.items ?? []).find(item => item.worktreeId === job.currentWorktreeId);
   if (job.phase === "conflict" || current?.mergeStatus === "conflict") {
     return ["resolve_conflict_with_agent", "retry", "cancel"];
@@ -3552,6 +3721,10 @@ function integrationJobAvailableActions(job) {
 function integrationJobRecovery(job, availableActions) {
   if (!["paused", "canceled"].includes(job.status)) return null;
   const action = availableActions[0] ?? null;
+  if (job.cleanupResult?.status === "blocked") return { kind: action,
+    message: `The task stopped, but Git cleanup is blocked in ${job.cleanupResult.targetPath}. Existing edits were preserved. Review the complete error, preserve or finish those edits, then use an available recovery action.` };
+  if (job.status === "canceled" && job.cleanupResult?.status === "completed") return { kind: action,
+    message: "The task stopped and its current Git merge was cleared. Completed commits and conflict-resolution commits were preserved. Generate a reviewed plan to finish merging the remaining code into main." };
   const messages = {
     resolve_commit_policy: "Choose an action for every blocked Markdown file, then continue.",
     resolve_commit_policy_residue: "Resolve the Markdown Ignore changes left by the interrupted integration, then continue.",

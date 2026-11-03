@@ -68,9 +68,11 @@ function sanitizeValue(value, key, depth, seen) {
   ]));
 }
 
-function redactInlineSecrets(value) {
+export function redactInlineSecrets(value) {
   return value
+    .replace(/((?:https?|ssh):\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, "$1[REDACTED]@")
+    .replace(/(\b[\w-]*cookie[\w-]*\b\s*[:=])[^\r\n]*/gi, "$1[REDACTED]")
     .replace(/\bauthorization\s*[:=]\s*bearer\s+[^\s,;&]+/gi, "authorization=[REDACTED]")
-    .replace(/(\b(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|cookie)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+    .replace(/(["']?\b[\w-]*(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|cookie)[\w-]*\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
       "$1[REDACTED]");
 }

@@ -2090,6 +2090,12 @@ test("replanning aborts only the recorded task-owned integration merge and resto
     assert.equal(aborted.mainHead, expectedMainHead);
     await assert.rejects(() => gitOutput(["rev-parse", "--verify", "MERGE_HEAD"], fixture.repository));
     assert.equal((await gitOutput(["status", "--porcelain=v1"], fixture.repository)).trim(), "");
+    await assert.rejects(() => manager.mergeIntegrationSource({ mainPath: fixture.repository,
+      sourceHead, expectedMainHead, jobId: "job:conflict-abort" }), { code: "MERGE_CONFLICT" });
+    await writeFile(join(fixture.repository, "shared.txt"), "manual resolution must survive\n");
+    await assert.rejects(manager.abortIntegrationMerge({ mainPath: fixture.repository,
+      sourceHead, expectedMainHead, jobId: "job:conflict-abort" }), { code: "INTEGRATION_CONFLICT_EDITS_PRESENT" });
+    assert.equal(await readFile(join(fixture.repository, "shared.txt"), "utf8"), "manual resolution must survive\n");
   } finally {
     await fixture.close();
   }
@@ -2286,6 +2292,86 @@ test("parallel sync inspects only each source and rebases independent branches o
   } finally {
     await fixture.close();
   }
+});
+
+test("parent conflict resolution retains earlier child merges and completion requires actual main containment", async () => {
+  const f = await createFixture("parent-target-continuation");
+  const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+  try {
+    await writeFile(join(f.repository, "shared.txt"), "base\n");
+    await git(["add", "shared.txt"], f.repository);
+    await git(["commit", "-m", "base"], f.repository);
+    const base = (await gitOutput(["rev-parse", "HEAD"], f.repository)).trim();
+    const parent = join(f.directory, "parent");
+    await git(["worktree", "add", "-b", "parent", parent, base], f.repository);
+    await writeFile(join(parent, "shared.txt"), "parent\n");
+    await git(["commit", "-am", "parent edit"], parent);
+    const children = [];
+    for (let index = 1; index <= 3; index++) {
+      const path = join(f.directory, `child-${index}`);
+      await git(["worktree", "add", "-b", `child-${index}`, path, base], f.repository);
+      const filename = index === 3 ? "shared.txt" : `child-${index}.txt`;
+      await writeFile(join(path, filename), `child-${index}\n`);
+      await git(["add", filename], path); await git(["commit", "-m", `child ${index}`], path);
+      children.push((await gitOutput(["rev-parse", "HEAD"], path)).trim());
+      if (index < 3) await git(["merge", "--no-edit", children.at(-1)], parent);
+    }
+    const targetHead = (await gitOutput(["rev-parse", "HEAD"], parent)).trim();
+    await assert.rejects(git(["merge", "--no-edit", children[2]], parent));
+    f.store.upsertGitWorkspaceSnapshot(await createGitWorkspaceSnapshot(f.repository));
+    const parentIdentity = await inspectGitWorkspace(parent);
+    const mainIdentity = await inspectGitWorkspace(f.repository);
+    const input = { repositoryId: f.repositoryId, workingDirectory: parent, mainPath: parent,
+      targetWorktreeId: parentIdentity.worktreeId, sourceHead: children[2], expectedMainHead: targetHead,
+      jobId: "job:parent-target" };
+    const workspace = await manager.prepareIntegrationConflictResolutionForProject(input);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], workspace.path)).trim(), targetHead);
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], parent)).trim(), "");
+    for (const child of children.slice(0, 2)) await git(["merge-base", "--is-ancestor", child, "HEAD"], workspace.path);
+    await assert.rejects(git(["merge", "--no-edit", children[2]], workspace.path));
+    await writeFile(join(workspace.path, "shared.txt"), "parent and child-3\n");
+    await git(["add", "shared.txt"], workspace.path); await git(["commit", "--no-edit"], workspace.path);
+    const verified = await manager.inspectIntegrationConflictResolutionForProject({ ...input, workspace });
+    await assert.rejects(manager.inspectIntegrationConflictResolutionForProject({ ...input,
+      targetWorktreeId: mainIdentity.worktreeId, workspace }), { code: "INTEGRATION_TARGET_CHANGED" });
+    await manager.mergeIntegrationSource({ mainPath: parent, sourceHead: verified.resolvedHead,
+      expectedMainHead: targetHead, strictExpectedMain: true, mergeStrategy: "ff-only" });
+    const completion = { repositoryId: f.repositoryId, targetWorktreeId: mainIdentity.worktreeId,
+      targetPath: f.repository, branchName: "main", expectedTargetHead: base,
+      requiredHeads: [...children, verified.resolvedHead] };
+    await assert.rejects(manager.inspectMainIntegrationCompletion(completion), { code: "INTEGRATION_RESULT_MISSING" });
+    await manager.mergeIntegrationSource({ mainPath: f.repository, sourceHead: verified.resolvedHead,
+      expectedMainHead: base, strictExpectedMain: true, mergeStrategy: "ff-only" });
+    const done = await manager.inspectMainIntegrationCompletion({ ...completion, expectedTargetHead: verified.resolvedHead });
+    assert.equal(done.mainHead, verified.resolvedHead);
+    assert.deepEqual(done.verifiedHeads, completion.requiredHeads);
+    await writeFile(join(f.repository, "uncommitted.txt"), "unfinished\n");
+    await assert.rejects(manager.inspectMainIntegrationCompletion({ ...completion, expectedTargetHead: verified.resolvedHead }),
+      { code: "INTEGRATION_POSTCONDITION_DIRTY" });
+  } finally { await f.close(); }
+});
+
+test("Git failure keeps complete diagnostics beyond the old limit while removing credentials", async () => {
+  const f = await createFixture("complete-git-diagnostic", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+  try {
+    await writeFile(join(f.activeWorktree, "feature.txt"), "feature\n");
+    await git(["add", "feature.txt"], f.activeWorktree); await git(["commit", "-m", "feature"], f.activeWorktree);
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], f.activeWorktree)).trim();
+    const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], f.repository)).trim();
+    const runGit = manager.runGit.bind(manager);
+    manager.runGit = async (path, args) => {
+      if (args[0] !== "merge") return runGit(path, args);
+      throw Object.assign(new Error("failed"), {
+      stderr: "line\n".repeat(3_000) + "https://secret-token@example.com/repo\npassword=secret-value\nLAST_GIT_LINE"
+    }); };
+    await assert.rejects(manager.mergeIntegrationSource({ mainPath: f.repository, sourceHead, expectedMainHead }), error => {
+      assert.match(error.message, /LAST_GIT_LINE/);
+      assert.doesNotMatch(error.message, /secret-token|secret-value/);
+      assert.ok(error.message.length > 10_000);
+      return error.code === "MERGE_FAILED";
+    });
+  } finally { await f.close(); }
 });
 
 async function createFixture(label, options = {}) {
