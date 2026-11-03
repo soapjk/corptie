@@ -114,12 +114,13 @@ extension UnifiedConsoleView {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .consoleHoverFeedback()
                 .accessibilityLabel(L10n(expandedParentTaskIDs.contains(task.id) ? "收起子任务" : "展开子任务"))
                 if expandedParentTaskIDs.contains(task.id), entityClient.taskChildrenCursors[task.id] != nil {
                     Button { Task { await entityClient.loadTaskChildren(task, more: true) } } label: {
                         Image(systemName: "ellipsis")
                     }
-                    .buttonStyle(.plain).accessibilityLabel(L10n("加载更多子任务"))
+                    .buttonStyle(.plain).consoleHoverFeedback().accessibilityLabel(L10n("加载更多子任务"))
                 }
             }
         }

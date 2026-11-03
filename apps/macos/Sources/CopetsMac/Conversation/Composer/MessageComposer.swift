@@ -116,7 +116,6 @@ struct SessionMessageComposerSurface: View {
     @State private var selectedMentions: [ConversationMention] = []
     @State private var quickMessageRefresh = 0
     @State private var showsQuickMessages = false
-    @State private var showsUsage = false
 
     init(
         sessionId: String,
@@ -323,19 +322,7 @@ struct SessionMessageComposerSurface: View {
         ComposerEditorRowLayout(minimumEditorWidth: 100) {
             HStack(spacing: 6) {
                 moreMenu
-                Button { showsUsage.toggle() } label: {
-                    Image(systemName: "chart.pie")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .help(L10n("会话状态与用量"))
-                .accessibilityLabel(L10n("会话状态与用量"))
-                .popover(isPresented: $showsUsage) { statusRow.padding(16).fixedSize() }
-                if let status, status == .running || status == .failed {
-                    SessionExecutionStatusText(state: status.sharedExecutionState).lineLimit(1)
-                }
+                statusRow
                 Spacer(minLength: 0)
             }
             HStack(spacing: 6) {

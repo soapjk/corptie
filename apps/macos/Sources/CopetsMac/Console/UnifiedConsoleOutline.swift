@@ -204,6 +204,7 @@ extension UnifiedConsoleView {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .consoleHoverFeedback()
         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
         .accessibilityLabel("展开全部 Task，还剩 \(hiddenCount) 个")
     }

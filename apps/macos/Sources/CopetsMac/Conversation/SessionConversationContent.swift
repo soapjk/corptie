@@ -494,7 +494,7 @@ struct SessionConversationSurface: View {
             .background {
                 conversationChromeFrame(.viewport)
             }
-            .safeAreaInset(edge: .top, spacing: 8) {
+            .safeAreaInset(edge: .top, spacing: showsHeader ? 8 : 0) {
                 VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
                     if showsHeader {
                         conversationHeader
@@ -507,10 +507,9 @@ struct SessionConversationSurface: View {
                 }
                 .background { conversationChromeFrame(.header) }
             }
-            .overlay(alignment: .bottomTrailing) {
+            .overlay(alignment: .bottom) {
                 jumpToLatestButton
-                    .padding(.trailing, 10)
-                    .padding(.bottom, composerClearance + 10)
+                    .padding(.bottom, composerClearance + 8)
             }
             .overlay(alignment: .bottom) {
                 // One editor at one structural position: placement changes must

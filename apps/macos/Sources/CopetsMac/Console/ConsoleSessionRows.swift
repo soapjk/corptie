@@ -115,6 +115,7 @@ struct ConsoleSessionRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SessionSelectionPressStyle())
+        .consoleHoverFeedback()
         .contextMenu {
             SessionContextMenuContent(session: session, isRenaming: $isRenaming)
         }
@@ -156,6 +157,7 @@ struct ConsoleWorkChatRowContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SessionSelectionPressStyle())
+        .consoleHoverFeedback()
         .listRowBackground(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)
@@ -206,6 +208,7 @@ struct ConsoleTaskRowContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SessionSelectionPressStyle())
+        .consoleHoverFeedback()
         .disabled(task.deletionStatus == "deleting")
         .help([task.title, sessionActivity.label, session?.external?.provider].compactMap { $0 }.joined(separator: " · "))
         .listRowBackground(

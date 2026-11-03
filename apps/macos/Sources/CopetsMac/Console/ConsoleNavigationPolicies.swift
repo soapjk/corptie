@@ -4,6 +4,28 @@ import CorptieConversation
 import AppKit
 import SwiftUI
 
+/// Pointer feedback stays in this small wrapper, outside list projections and
+/// row content. It changes only paint: no animation, layout or data work.
+private struct ConsoleHoverFeedback: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.primary.opacity(isEnabled && isHovering ? 0.065 : 0))
+                    .allowsHitTesting(false)
+            }
+            .onHover { isHovering = $0 }
+            .onDisappear { isHovering = false }
+    }
+}
+
+extension View {
+    func consoleHoverFeedback() -> some View { modifier(ConsoleHoverFeedback()) }
+}
+
 enum ConsoleNavigationCardWidthPolicy {
     static let minimumTaskColumnWidth = 220.0
     static let defaultTaskColumnWidth = 300.0
@@ -239,6 +261,7 @@ private struct ConsoleWorkDisclosureBody<Label: View, Content: View>: View {
                 .accessibilityLabel(L10n(isExpanded ? "Collapse group" : "Expand group"))
                 label.frame(maxWidth: .infinity, alignment: .leading)
             }
+            .consoleHoverFeedback()
 
             ConsoleDisclosureRevealLayout(fraction: fraction) {
                 if contentMounted {
@@ -358,6 +381,7 @@ struct HoverRevealHeaderAction<Header: View>: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .consoleHoverFeedback()
             .focused($isFocused)
             .opacity(isHovering || isFocused ? 1 : 0)
             .accessibilityLabel(accessibilityLabel)
@@ -424,6 +448,7 @@ struct ConsoleWorkOutlineHeader: View {
                                 in: RoundedRectangle(cornerRadius: 5))
             }
             .buttonStyle(.plain)
+            .consoleHoverFeedback()
             .focused($isChatFocused)
             .opacity(isHovering || isChatFocused || isChatSelected || hasUnreadChat ? 1 : 0)
             .help(L10n("Open Work Chat"))
@@ -448,6 +473,7 @@ struct ConsoleWorkOutlineHeader: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .consoleHoverFeedback()
             .focused($isCreateTaskFocused)
             .opacity(isHovering || isCreateTaskFocused ? 1 : 0)
             .accessibilityLabel(L10nFormat("Create Task in %@", work.name))
