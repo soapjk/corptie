@@ -46,7 +46,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let desktop = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
         // iPad uses 44pt touch geometry and a separate pagination footer.
         for (text, rowCall, childIndent, completionLabel, collapseLabel) in [
-            (desktop, "taskRow(task)", 24, "子任务完成进度", "收起子任务"),
+            (desktop, "taskRow(task, showsHoverFeedback: showsHoverFeedback)", 24, "子任务完成进度", "收起子任务"),
             (mobile, "taskRow(task, sessionID: sessionID)", 44, "子任务已完成", "的子任务")
         ] {
             let start = try #require(text.range(of: "func hierarchyTaskRow("))
@@ -76,7 +76,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(outline.contains("totalCount: workRows.rootCount"))
         #expect(outline.contains("workRows.rows(showsAll:"))
         #expect(!outline.contains("ForEach(tasks.prefix(visibleTaskCount))"))
-        #expect(rows.contains("func hierarchyTaskRow(_ task: CorptieTask)"))
+        #expect(rows.contains("func hierarchyTaskRow(_ task: CorptieTask, showsHoverFeedback: Bool = true)"))
         #expect(rows.contains("task.parentTaskId == nil ? 0 : 24"))
         #expect(rows.contains("收起子任务"))
     }
@@ -389,9 +389,10 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workOutlineMatchesIPadLeadingEdgeAndScrollerPlacement() throws {
+    func workOutlineUsesNativeSidebarScrollerPlacement() throws {
         let source = try source(named: "Console/UnifiedConsoleOutline.swift")
-        #expect(source.contains(".background(ConsoleOverlayScroller())"))
+        #expect(source.contains(".listStyle(.sidebar)"))
+        #expect(!source.contains(".background(ConsoleOverlayScroller())"))
         #expect(!source.contains("ConsoleOverlayScroller(placeOnLeadingEdge: true)"))
         #expect(!source.contains(".contentMargins(.leading"))
     }
