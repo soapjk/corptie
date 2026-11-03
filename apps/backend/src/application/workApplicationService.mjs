@@ -134,7 +134,7 @@ export class WorkApplicationService {
       }
     }
     const task = this.store.createTask(normalized, options.creationOrigin ?? {}, {
-      expectedParentResourceVersion: options.expectedParentResourceVersion, creationPending: options.creationPending === true
+      creationPending: options.creationPending === true
     });
     return options.creationPending ? task : this.emit("TaskChanged", task, "created");
   }

@@ -33,7 +33,6 @@ async function createTaskAndSessionOnce({
   model,
   reasoningLevel,
   idempotencyKey,
-  expectedParentResourceVersion,
   runtimeConfiguration = null,
   revalidate = () => {},
   verifyExistingSession = null,
@@ -53,7 +52,7 @@ async function createTaskAndSessionOnce({
   };
   let persisted;
   if (normalizedTaskInput.parentTaskId && !workService.store.getTask(normalizedTaskInput.id)) {
-    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput, { expectedParentResourceVersion })
+    await new TaskWorktreeHierarchyService({ store: workService.store }).validateCreate(normalizedTaskInput)
       .catch(error => { error.taskCreationRejectedBeforePersistence = true; throw error; });
   }
   if (persistTask) {
@@ -67,7 +66,7 @@ async function createTaskAndSessionOnce({
     } else {
       revalidate();
       persisted = {
-        task: workService.createTask(normalizedTaskInput, { creationOrigin, expectedParentResourceVersion, creationPending: true }),
+        task: workService.createTask(normalizedTaskInput, { creationOrigin, creationPending: true }),
         idempotentReplay: false
       };
     }

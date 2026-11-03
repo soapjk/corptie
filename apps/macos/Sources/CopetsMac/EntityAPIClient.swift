@@ -682,7 +682,6 @@ final class EntityAPIClient: ObservableObject {
                         model: String? = nil,
                         reasoningLevel: String? = nil,
                         parentTaskId: String? = nil,
-                        expectedParentResourceVersion: Int? = nil,
                         sourceSession explicitSourceSession: TaskSession? = nil) async -> CorptieTask? {
         let backendClient = BackendClient.shared
         guard let sourceSession = CorptieTaskSessionSourcePolicy.resolve(
@@ -711,7 +710,6 @@ final class EntityAPIClient: ObservableObject {
         if let id, !id.isEmpty { body["id"] = id }
         if let parentTaskId {
             body["parentTaskId"] = parentTaskId
-            body["expectedParentResourceVersion"] = expectedParentResourceVersion
         }
         if let description, !description.isEmpty { body["description"] = description }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
