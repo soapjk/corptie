@@ -1443,6 +1443,21 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         }
     }
 
+    private var navigationSessionID: String?
+    private var lastNavigationRevision = -1
+    private var pendingNavigationRowID: String?
+    func applyMessageNavigation(rowID: String?, revision: Int) {
+        if navigationSessionID != representedSessionID || lastNavigationRevision != revision {
+            navigationSessionID = representedSessionID
+            lastNavigationRevision = revision
+            pendingNavigationRowID = rowID
+        }
+        guard let id = pendingNavigationRowID,
+              let row = rows.firstIndex(where: { $0.id == id }), tableView != nil else { return }
+        pendingNavigationRowID = nil
+        scrollToRow(row)
+    }
+
     func scrollToTurn(_ turnID: String) {
         guard let row = AppKitChatTimelineView.rowIndex(forTurnID: turnID, in: rows) else { return }
         scrollToRow(row)

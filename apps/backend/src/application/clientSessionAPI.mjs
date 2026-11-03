@@ -129,7 +129,7 @@ function publicClientMessage(item) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ preparations = null, providerSettings = null, chatCreation = null, searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
+  constructor({ preparations = null, providerSettings = null, chatCreation = null, searchPage = null, deleteUserMessage = null, cancelQueuedMessage = null, quickMessages = null, userMessageNavigation = null, store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, respondToCollaborationConfirmation = null, respondToSessionChannelRequest = null, onReceiptChanged = null, inspector = null, admitReliableMessage = null }) {
     this.providerSettings = providerSettings;
     this.preparations = preparations;
     this.chatCreation = chatCreation;
@@ -140,6 +140,7 @@ export class ClientSessionAPI {
     ensureReliableMessageSchema(store);
     this.imageUploads = new ClientImageUploads(store);
     this.quickMessageReader = quickMessages;
+    this.userMessageNavigationReader = userMessageNavigation;
     this.searchPage = searchPage;
     this.inspector = inspector;
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
@@ -248,6 +249,15 @@ export class ClientSessionAPI {
     const limit = Number(rawLimit), anchor = query.get("before");
     if (anchor != null && (!anchor || anchor.length > 1024)) throw deviceError("INVALID_ANCHOR", 400);
     return this.messageWindow(sessionId, { limit, anchor });
+  }
+
+  async userMessageNavigation(identity, sessionId, query) {
+    const resolved = this.session(sessionId);
+    if (!this.userMessageNavigationReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    if ([...query.keys()].some(key => !["cursor", "direction"].includes(key))
+      || query.getAll("cursor").length > 1 || query.getAll("direction").length > 1) throw deviceError("INVALID_QUERY", 400);
+    return this.userMessageNavigationReader({ sessionId: resolved.sessionId,
+      cursor: query.get("cursor"), direction: query.get("direction") ?? "older" });
   }
 
   async quickMessages(identity, sessionId) {

@@ -3,6 +3,26 @@ import Testing
 @testable import CorptieClientCore
 
 struct SessionAPITests {
+    @Test func userMessageDirectoryUsesSharedCursorContractAndRejectsUnknownSchema() async throws {
+        for version in [1, 2] {
+            let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:1234")!)
+            let transport = BackendTransport(endpoint: endpoint, data: { request in
+                #expect(request.url?.path == "/client/v1/sessions/session:test/user-message-navigation")
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+                #expect(query?.first(where: { $0.name == "cursor" })?.value == "cursor+中文")
+                #expect(query?.first(where: { $0.name == "direction" })?.value == "newer")
+                let body = "{\"schemaVersion\":\(version),\"items\":[],\"olderCursor\":\"older\",\"newerCursor\":null,\"scannedCount\":1024}"
+                return (Data(body.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }, bytes: { _ in throw ClientConnectionError.invalidResponse })
+            do {
+                let page = try await ClientSessionAPI(transport: transport).userMessageNavigation(
+                    sessionId: "session:test", cursor: "cursor+中文", direction: "newer")
+                #expect(version == 1)
+                #expect(page.items.isEmpty && page.olderCursor == "older")
+            } catch { #expect(version == 2) }
+        }
+    }
+
     @Test func messageAPIReadsSupportedWindowVersionsAndRejectsUnknownVersions() async throws {
         for version in [1, 2, 3] {
             let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1:1234")!)
