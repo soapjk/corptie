@@ -2240,3 +2240,71 @@
 
 "Language and tools" = "语言与工具";
 "Language changes immediately; code diff requires Save Settings." = "语言更改即时生效；代码差异工具需点击“保存设置”。";
+/* Memory workspace */
+"Memory workspace" = "记忆工作区";
+"Memory library" = "记忆库";
+"Pending review" = "待审核";
+"Memory scope" = "记忆范围";
+"Search content, tags and keywords" = "搜索正文、标签和关键词";
+"Filters" = "筛选";
+"Clear filters" = "清除筛选";
+"loaded" = "条已加载";
+"More available" = "还有更多";
+"Updating…" = "正在更新…";
+"selected" = "条已选";
+"Select active, trusted memories from the same owner." = "选择同一归属下已生效且可信的记忆。";
+"Showing the last successfully loaded content." = "正在显示上次成功获取的内容。";
+"No matching memories" = "暂无匹配的记忆";
+"Could not load memories" = "无法加载记忆";
+"Choose another scope or clear the current filters." = "可选择其他范围或清除当前筛选。";
+"500 memories loaded. Narrow the search to continue browsing." = "已加载 500 条记忆，请缩小搜索范围以继续浏览。";
+"Back to list" = "返回列表";
+"More actions" = "更多操作";
+"Select a memory" = "选择一条记忆";
+"Read its content, scope and source evidence." = "查看记忆的正文、适用范围与来源依据。";
+"Legacy Role layer" = "Role 旧记忆层";
+"Could not save memory." = "无法保存记忆，请保留草稿并重试。";
+"Not participating in recall" = "未参与召回";
+"Candidates do not participate in recall until confirmed." = "候选记忆在确认前不参与召回。";
+"Keywords" = "关键词";
+"Source and evidence" = "来源与依据";
+"Source evidence was not recorded." = "未记录来源依据。";
+"Technical details" = "技术详情";
+"Version" = "版本";
+"Not recorded" = "未记录";
+"Recorded confidence" = "系统记录的置信值";
+"Recent extraction tasks · up to 100" = "最近返回的提取任务 · 最多 100 条";
+"No extraction tasks returned" = "当前未返回提取任务";
+"Could not load extraction queue" = "无法加载提取队列";
+"attempts" = "次尝试";
+"Next retry" = "下次重试";
+"No change records returned." = "暂无变更记录。";
+"No recall records returned." = "暂无召回记录。";
+"Restore the state before this change?" = "恢复到此次变更之前？";
+"A new rollback event will be recorded. Existing history is preserved. A field-by-field preview is not available." = "此次回退将写入新的审计事件并保留现有历史。暂不支持逐字段预览。";
+
+"All sources" = "所有来源";
+
+"Extracted" = "自动提取";
+
+"Consolidated" = "整合";
+
+"Checkpoint" = "压缩前检查点";
+
+"All trust levels" = "所有信任状态";
+
+"Trusted" = "可信";
+
+"Untrusted" = "待确认";
+
+"Loading memories…" = "正在加载记忆…";
+
+"Start this Task and bind a Session before managing its memories." = "启动此 Task 并绑定 Session 后，才可管理其记忆。";
+
+"Task has not started" = "Task 尚未启动";
+
+"Source events" = "来源事件序号";
+
+"Discard unsaved changes?" = "放弃尚未保存的修改？";
+
+"Discard" = "放弃修改";

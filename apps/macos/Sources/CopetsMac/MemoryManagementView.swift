@@ -1,7 +1,7 @@
 import SwiftUI
 import CorptieConversation
 
-private enum MemoryTopicChoices {
+enum MemoryTopicChoices {
     struct Choice: Identifiable { let id: String; let title: String }
     static let values: [Choice] = [
         .init(id: "personal", title: "个人信息"), .init(id: "life", title: "生活"),
@@ -194,7 +194,9 @@ struct MemoryManagementView: View {
                     secondaryTopics: secondaryTopics,
                     appliesTo: appliesTo, deliveryMode: deliveryMode) {
                     replace(updated)
+                    return true
                 }
+                return false
             }
         }
         .sheet(isPresented: $isAddingMemory) {
@@ -558,13 +560,14 @@ struct MemoryManagementView: View {
     }
 }
 
-private struct MemoryReviewSheet: View {
+struct MemoryReviewSheet: View {
     let memory: MemoryItem
     let onReview: (MemoryItem) -> Void
     @ObservedObject private var client = EntityAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     @State private var content: String
     @State private var isSaving = false
+    @State private var error: String?
 
     init(memory: MemoryItem, onReview: @escaping (MemoryItem) -> Void) {
         self.memory = memory
@@ -577,10 +580,13 @@ private struct MemoryReviewSheet: View {
             Text(L10n("Review extracted Memory")).font(.headline)
             Text(L10n("Confirm only durable information that should be recalled in future Sessions."))
                 .font(.caption).foregroundStyle(.secondary)
+            if let evidence = memory.structured?.extraction?.evidence {
+                Text(evidence).font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary).lineLimit(6)
+            }
             TextEditor(text: $content).frame(minHeight: 130)
             Text("\(memory.sourceSessionId ?? "") · \(memory.ownerType) · #\(memory.sourceEventSeqs?.first ?? 0)")
                 .font(.caption2).foregroundStyle(.tertiary)
-            if let error = client.errorMessage, !error.isEmpty {
+            if let error, !error.isEmpty {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
             HStack {
@@ -594,21 +600,23 @@ private struct MemoryReviewSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(minWidth: 320, idealWidth: 520, maxWidth: 520)
+        .interactiveDismissDisabled(isSaving)
     }
 
     private func review(_ action: String) async {
         isSaving = true
+        error = nil
         defer { isSaving = false }
         guard let updated = await client.reviewMemory(
             memoryId: memory.id, action: action, content: content, expectedVersion: memory.version ?? 1
-        ) else { return }
+        ) else { error = client.errorMessage ?? L10n("Could not save memory."); return }
         onReview(updated)
         dismiss()
     }
 }
 
-private struct MemoryCreationSheet: View {
+struct MemoryCreationSheet: View {
     let scope: MemoryManagementView.Scope
     let onCreate: (MemoryItem) -> Void
     @ObservedObject private var client = EntityAPIClient.shared
@@ -623,6 +631,7 @@ private struct MemoryCreationSheet: View {
     @State private var applicability = Set<String>()
     @State private var activePreference = false
     @State private var isSaving = false
+    @State private var creationError: String?
 
     init(scope: MemoryManagementView.Scope, onCreate: @escaping (MemoryItem) -> Void) {
         self.scope = scope
@@ -679,6 +688,7 @@ private struct MemoryCreationSheet: View {
                 }
             }
 
+            if let creationError { Text(creationError).foregroundStyle(.red) }
             HStack {
                 Spacer()
                 Button(L10n("Cancel")) { dismiss() }
@@ -689,7 +699,7 @@ private struct MemoryCreationSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(minWidth: 320, idealWidth: 520, maxWidth: 520)
         .task { selectFirstOwnerIfNeeded() }
         .onChange(of: ownerType) { _, _ in
             ownerId = ""
@@ -738,6 +748,7 @@ private struct MemoryCreationSheet: View {
 
     private func create() async {
         isSaving = true
+        creationError = nil
         defer { isSaving = false }
         let parsedTags = tags.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -754,7 +765,7 @@ private struct MemoryCreationSheet: View {
         ) {
             onCreate(created)
             dismiss()
-        }
+        } else { creationError = client.errorMessage ?? L10n("Could not save memory.") }
     }
 }
 
@@ -763,17 +774,19 @@ private struct MemoryOwnerOption: Identifiable {
     let label: String
 }
 
-private struct MemoryMergeSheet: View {
+struct MemoryMergeSheet: View {
     let memories: [MemoryItem]
     let onMerge: (String) async -> Bool
     @Environment(\.dismiss) private var dismiss
-    @State private var content: String
+    @State private var content = ""
+    @State private var preparing = true
     @State private var isSaving = false
+    @State private var mergeError: String?
 
     init(memories: [MemoryItem], onMerge: @escaping (String) async -> Bool) {
         self.memories = memories
         self.onMerge = onMerge
-        _content = State(initialValue: memories.map(\.content).joined(separator: "；"))
+
     }
 
     var body: some View {
@@ -781,7 +794,9 @@ private struct MemoryMergeSheet: View {
             Text(L10n("Merge memories")).font(.headline)
             Text(L10n("The selected memories will be superseded. The merged memory keeps their source references and can be rolled back."))
                 .font(.caption).foregroundStyle(.secondary)
+            if preparing { ProgressView().controlSize(.small) }
             TextEditor(text: $content).frame(minHeight: 120)
+            if let mergeError { Text(mergeError).foregroundStyle(.red) }
             HStack {
                 Spacer()
                 Button(L10n("Cancel")) { dismiss() }
@@ -790,18 +805,26 @@ private struct MemoryMergeSheet: View {
                         isSaving = true
                         defer { isSaving = false }
                         if await onMerge(content.trimmingCharacters(in: .whitespacesAndNewlines)) { dismiss() }
+                        else { mergeError = EntityAPIClient.shared.errorMessage ?? L10n("Could not save memory.") }
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isSaving || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(isSaving || preparing || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(minWidth: 320, idealWidth: 520, maxWidth: 520)
+        .task {
+            let sources = memories
+            let draft = await Task.detached(priority: .utility) { sources.map(\.content).joined(separator: "；") }.value
+            guard !Task.isCancelled else { return }
+            content = draft
+            preparing = false
+        }
     }
 }
 
-private struct MemoryAuditSheet: View {
+struct MemoryAuditSheet: View {
     let memory: MemoryItem
     let onRollback: (MemoryItem) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -868,9 +891,9 @@ private struct MemoryAuditSheet: View {
     }
 }
 
-private struct MemoryTagEditor: View {
+struct MemoryTagEditor: View {
     let memory: MemoryItem
-    let save: (String, [String], String?, [String], [String], String) async -> Void
+    let save: (String, [String], String?, [String], [String], String) async -> Bool
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
     @State private var content: String
@@ -878,8 +901,11 @@ private struct MemoryTagEditor: View {
     @State private var secondaryTopics: Set<String>
     @State private var applicability: Set<String>
     @State private var activePreference: Bool
+    @State private var isSaving = false
+    @State private var saveError: String?
+    @State private var discard = false
 
-    init(memory: MemoryItem, save: @escaping (String, [String], String?, [String], [String], String) async -> Void) {
+    init(memory: MemoryItem, save: @escaping (String, [String], String?, [String], [String], String) async -> Bool) {
         self.memory = memory
         self.save = save
         _text = State(initialValue: memory.keywords?.joined(separator: ", ") ?? "")
@@ -908,18 +934,39 @@ private struct MemoryTagEditor: View {
             }
             HStack {
                 Spacer()
-                Button(L10n("Cancel")) { dismiss() }
+                Button(L10n("Cancel")) { if hasChanges { discard = true } else { dismiss() } }
                 Button(L10n("Save")) {
                     let tags = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
                     let contexts = applicability.sorted()
                     let mode = activePreference && !contexts.isEmpty ? "applicable_preference" : "on_demand"
-                    Task { await save(content.trimmingCharacters(in: .whitespacesAndNewlines),
-                        tags, primaryTopic, secondaryTopics.sorted(), contexts, mode); dismiss() }
+                    Task {
+                        isSaving = true
+                        saveError = nil
+                        defer { isSaving = false }
+                        if await save(content.trimmingCharacters(in: .whitespacesAndNewlines),
+                            tags, primaryTopic, secondaryTopics.sorted(), contexts, mode) { dismiss() }
+                        else { saveError = EntityAPIClient.shared.errorMessage ?? L10n("Could not save memory.") }
+                    }
                 }.keyboardShortcut(.defaultAction)
                     .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(20).frame(width: 420)
+            if isSaving { ProgressView().controlSize(.small) }
+            if let saveError { Text(saveError).foregroundStyle(.red).font(WorkbenchTypography.font(for: .help)) }
+        }.padding(20).frame(minWidth: 320, idealWidth: 420, maxWidth: 520)
+            .disabled(isSaving).interactiveDismissDisabled(isSaving || hasChanges)
+            .alert(L10n("Discard unsaved changes?"), isPresented: $discard) {
+                Button(L10n("Discard"), role: .destructive) { dismiss() }
+                Button(L10n("Cancel"), role: .cancel) { }
+            }
     }
+    private var hasChanges: Bool {
+        content != memory.content || text != (memory.keywords ?? []).joined(separator: ", ")
+            || primaryTopic != (memory.primaryTopic ?? "other")
+            || secondaryTopics != Set(memory.secondaryTopics ?? [])
+            || applicability != Set(memory.appliesTo ?? [])
+            || activePreference != (memory.deliveryMode == "applicable_preference")
+    }
+
 }
 
 struct SessionMemoryDiagnosticsView: View {
