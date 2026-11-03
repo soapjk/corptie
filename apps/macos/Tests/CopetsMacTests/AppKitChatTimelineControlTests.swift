@@ -1304,9 +1304,14 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 cell.layoutSubtreeIfNeeded()
                 let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
                 let bodyFrame = body.convert(body.bounds, to: harness.scrollView.contentView)
-                // Body has 10pt padding and the original 2pt card inset.
-                XCTAssertEqual(harness.scrollView.contentView.bounds.maxX - bodyFrame.maxX, 12, accuracy: 1)
-                XCTAssertEqual(harness.tableView.tableColumns[0].width, harness.scrollView.bounds.width, accuracy: 1)
+                // The main-window skin has a reading-lane gutter; the card
+                // itself keeps the same 10pt padding plus 2pt trailing inset.
+                let viewportWidth = harness.scrollView.contentView.bounds.width
+                let lane = skin == .codexFlat ? WorkbenchStyle.lane(viewportWidth: viewportWidth)
+                    : CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
+                XCTAssertEqual(harness.scrollView.contentView.bounds.maxX - bodyFrame.maxX,
+                    viewportWidth - lane.maxX + 12, accuracy: 1)
+                XCTAssertEqual(harness.tableView.tableColumns[0].width, lane.width, accuracy: 1)
             }
         }
     }
@@ -1595,53 +1600,40 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                                  harness.scrollView.contentView.bounds.maxY - 96 + 2)
     }
 
-    func testMeasuredChromeClearancesUseVisibleFrameIntersections() {
-        let frames: [ConversationChromeElement: CGRect] = [
-            .viewport: CGRect(x: 0, y: 40, width: 420, height: 320),
-            .header: CGRect(x: 0, y: 40, width: 420, height: 72),
-            .composer: CGRect(x: 0, y: 264, width: 420, height: 96)
-        ]
-        let clearances = ConversationChromeClearances(frames: frames)
-        XCTAssertEqual(clearances?.top, 82)
-        XCTAssertEqual(clearances?.bottom, 106)
-    }
-
-    func testActualSwiftUIChromeAndNativeEndpointRowsDoNotOverlap() async throws {
-        let rows = (0..<30).map { row(id: "chrome-window-\($0)", text: "Message \($0)") }
-        let host = NSHostingView(rootView: MeasuredTwoSidedChromeFixture(rows: rows)
-            .frame(width: 420, height: 320))
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
-            styleMask: [.borderless], backing: .buffered, defer: false
-        )
-        window.contentView = host
-        window.layoutIfNeeded()
-        await settleMainQueue()
-        window.layoutIfNeeded()
-        await settleMainQueue()
-
-        func descendants(_ view: NSView) -> [NSView] {
-            [view] + view.subviews.flatMap(descendants)
+    func testNormalFlowEditorBoundsViewportAndOnlyQuickActionsReserveDocumentSpace() async throws {
+        let rows = (0..<30).map { row(id: "flow-\($0)", text: "Message \($0)") }
+        for (width, editorHeight) in [(CGFloat(420), CGFloat(96)), (680, 180), (1000, 96)] {
+            let host = NSHostingView(rootView: NormalFlowComposerFixture(rows: rows, editorHeight: editorHeight)
+                .frame(width: width, height: 600))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            window.layoutIfNeeded()
+            await settleMainQueue()
+            window.layoutIfNeeded()
+            await settleMainQueue()
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? FirstLayoutRestoringScrollView }.first)
+            let document = try XCTUnwrap(scroll.documentView)
+            let table = try XCTUnwrap(document.subviews.compactMap { $0 as? NSTableView }.first)
+            let editor = try XCTUnwrap(view(in: host, identifier: "test.flow.editor"))
+            let actions = try XCTUnwrap(view(in: host, identifier: "test.flow.actions"))
+            let editorFrame = editor.convert(editor.bounds, to: host)
+            let viewportFrame = scroll.convert(scroll.bounds, to: host)
+            let actionsFrame = actions.convert(actions.bounds, to: host)
+            XCTAssertEqual(viewportFrame.maxY, editorFrame.minY, accuracy: 1)
+            XCTAssertEqual(viewportFrame.height, 600 - 48 - editorHeight, accuracy: 1)
+            XCTAssertEqual(document.frame.height - table.frame.maxY, 40, accuracy: 1)
+            let bottomY = max(0, document.frame.height - scroll.contentView.bounds.height)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: bottomY))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            let lastRow = table.convert(table.rect(ofRow: rows.count - 1), to: host)
+            XCTAssertLessThanOrEqual(lastRow.maxY, actionsFrame.minY - 5)
+            // History uses the full viewport, including the space behind the chips.
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: bottomY / 2))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            XCTAssertTrue(table.convert(table.bounds, to: host).intersects(actionsFrame))
         }
-        let scroll = try XCTUnwrap(descendants(host).compactMap { $0 as? FirstLayoutRestoringScrollView }.first)
-        let document = try XCTUnwrap(scroll.documentView)
-        let table = try XCTUnwrap(document.subviews.compactMap { $0 as? NSTableView }.first)
-        let header = try XCTUnwrap(view(in: host, identifier: "test.chrome.header"))
-        let composer = try XCTUnwrap(view(in: host, identifier: "test.chrome.composer"))
-        let contentView = try XCTUnwrap(window.contentView)
-
-        scroll.contentView.scroll(to: .zero)
-        scroll.reflectScrolledClipView(scroll.contentView)
-        let firstRow = table.convert(table.rect(ofRow: 0), to: contentView)
-        let headerFrame = header.convert(header.bounds, to: contentView)
-        XCTAssertGreaterThanOrEqual(firstRow.minY, headerFrame.maxY + 8)
-
-        let bottomY = max(0, document.frame.height - scroll.contentView.bounds.height)
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: bottomY))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        let lastRow = table.convert(table.rect(ofRow: rows.count - 1), to: contentView)
-        let composerFrame = composer.convert(composer.bounds, to: contentView)
-        XCTAssertLessThanOrEqual(lastRow.maxY, composerFrame.minY - 8)
     }
 
     func testNativeDocumentKeepsBothEndpointRowsOutsideChrome() async {
@@ -3152,46 +3144,20 @@ private struct ChromeMarker: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-private struct MeasuredTwoSidedChromeFixture: View {
+private struct NormalFlowComposerFixture: View {
     let rows: [AppKitChatTimelineRow]
-    @State private var topClearance: CGFloat = 0
-    @State private var bottomClearance: CGFloat = 0
-
+    let editorHeight: CGFloat
     var body: some View {
-        AppKitChatTimelineView(
-            sessionID: "two-sided-chrome-test",
-            rows: rows,
-            scrollToBottomRevision: 0,
-            followsLatest: .constant(true),
-            onToggleExpansion: { _ in },
-            topClearance: topClearance,
-            bottomClearance: bottomClearance
-        )
-        .background { chromeFrame(.viewport) }
-        .overlay(alignment: .top) {
-            ChromeMarker(identifier: "test.chrome.header")
-                .frame(height: 72)
-                .background { chromeFrame(.header) }
-        }
-        .overlay(alignment: .bottom) {
-            ChromeMarker(identifier: "test.chrome.composer")
-                .frame(height: 96)
-                .background { chromeFrame(.composer) }
-        }
-        .coordinateSpace(name: ConversationChromeFramePreferenceKey.coordinateSpace)
-        .onPreferenceChange(ConversationChromeFramePreferenceKey.self) { frames in
-            guard let clearances = ConversationChromeClearances(frames: frames) else { return }
-            topClearance = clearances.top
-            bottomClearance = clearances.bottom
-        }
-    }
-
-    private func chromeFrame(_ element: ConversationChromeElement) -> some View {
-        GeometryReader { geometry in
-            Color.clear.preference(
-                key: ConversationChromeFramePreferenceKey.self,
-                value: [element: geometry.frame(in: .named(ConversationChromeFramePreferenceKey.coordinateSpace))]
-            )
+        VStack(spacing: 0) {
+            Color.clear.frame(height: 48)
+            AppKitChatTimelineView(sessionID: "normal-flow", rows: rows, scrollToBottomRevision: 0,
+                followsLatest: .constant(true), onToggleExpansion: { _ in }, bottomClearance: 40)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .overlay(alignment: .bottom) {
+                    ChromeMarker(identifier: "test.flow.actions").frame(height: 30).padding(.bottom, 4)
+                }
+            ChromeMarker(identifier: "test.flow.editor").frame(height: editorHeight)
         }
     }
 }
