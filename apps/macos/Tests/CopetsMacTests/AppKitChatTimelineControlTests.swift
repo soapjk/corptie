@@ -2671,6 +2671,23 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(receivedActionID, "approval:approve")
     }
 
+    func testUserMessageNavigationWaitsForItsRowWithoutSearchSelectionAndIsolatesSessions() {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        harness.coordinator.apply(rows: [row(id: "message:other", text: "Other")])
+        harness.coordinator.applyMessageNavigation(rowID: "message:target", revision: 1)
+        XCTAssertTrue(harness.followState.value)
+        harness.coordinator.apply(rows: [row(id: "message:other", text: "Other"), row(id: "message:target", text: "Target")])
+        harness.coordinator.applyMessageNavigation(rowID: "message:target", revision: 1)
+        XCTAssertFalse(harness.followState.value)
+        XCTAssertEqual(harness.tableView.selectedRow, -1)
+        XCTAssertEqual(harness.tableView.selectionHighlightStyle, .none)
+        harness.coordinator.switchSessionIfNeeded(to: "different-session", initialPosition: nil)
+        harness.coordinator.applyMessageNavigation(rowID: nil, revision: 0)
+        harness.coordinator.apply(rows: [row(id: "message:target", text: "Different Session")])
+        harness.coordinator.applyMessageNavigation(rowID: nil, revision: 0)
+        XCTAssertEqual(harness.tableView.selectedRow, -1)
+    }
+
     func testSearchTargetWaitsForItsMessageAndNeverSelectsAnUnrelatedRow() {
         let harness = makeHarness(followsLatest: true, height: 180)
         harness.coordinator.apply(rows: [row(id: "message:other", text: "Other")])

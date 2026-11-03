@@ -44,6 +44,8 @@ function execute(operation, input) {
   switch (operation) {
     case "unifiedSearch":
       return unifiedSearch(store, new URLSearchParams(input.query));
+    case "userMessageNavigation":
+      return store.timelineReadRepository.readUserMessageNavigationPage(input.sessionId, input);
     case "quickMessages":
       return readQuickMessages(store, input.sessionId);
     case "storedTimelineSnapshot": {

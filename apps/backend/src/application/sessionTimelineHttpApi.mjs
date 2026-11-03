@@ -7,6 +7,16 @@ export function handleSessionTimelineHttpRequest({
   readSessionHistory, readSessionTimelineWindow, publishStateChangesIfNeeded,
   readJson, sendJson, unifiedErrorStatus
 }) {
+  const navigationMatch = url.pathname.match(/^\/sessions\/([^/]+)\/user-message-navigation$/);
+  if (request.method === "GET" && navigationMatch) {
+    sessionApplicationService.referenceFor(decodeURIComponent(navigationMatch[1]))
+      .then(reference => getTimelineReadPool().readUserMessageNavigation({ sessionId: reference.sessionId,
+        cursor: url.searchParams.get("cursor"), direction: url.searchParams.get("direction") ?? "older" }))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, [400, 503].includes(error.statusCode) ? error.statusCode : unifiedErrorStatus(error),
+        { error: error.message, code: error.code }));
+    return true;
+  }
   const quickMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/quick-messages$/);
   if (request.method === "GET" && quickMessagesMatch) {
     sessionApplicationService.referenceFor(decodeURIComponent(quickMessagesMatch[1]))
