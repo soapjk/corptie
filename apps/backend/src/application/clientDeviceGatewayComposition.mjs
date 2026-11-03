@@ -50,6 +50,7 @@ export function startClientDeviceGateway({
       searchPage: query => getTimelineReadPool().readUnifiedSearch({ query: query.toString() }), readWindow: readSessionTimelineWindow,
       cancelQueuedMessage: cancelQueuedUserMessage,
       deleteUserMessage,
+      userMessageNavigation: input => getTimelineReadPool().readUserMessageNavigation(input),
       quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
       inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
         references: sessionContextReferenceService, artifacts: artifactService,

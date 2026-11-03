@@ -514,6 +514,13 @@ public struct ClientSessionAPI: Sendable {
         let result: Result = try await read(request)
         guard result.status == "deleted", result.messageId == messageId else { throw ClientConnectionError.invalidResponse }
     }
+    public func userMessageNavigation(sessionId: String, cursor: String? = nil, direction: String = "older") async throws -> ClientUserMessageNavigationPage {
+        let query = [URLQueryItem(name: "direction", value: direction)]
+            + (cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? [])
+        let value: ClientUserMessageNavigationPage = try await read(transport.endpoint.request(
+            path: ["client", "v1", "sessions", sessionId, "user-message-navigation"], query: query))
+        return try value.validated()
+    }
     public func quickMessages(sessionId: String) async throws -> ClientQuickMessageRecommendations {
         var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "quick-messages"])
         request.timeoutInterval = 8
