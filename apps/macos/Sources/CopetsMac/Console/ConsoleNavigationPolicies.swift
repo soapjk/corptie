@@ -261,10 +261,9 @@ struct ConsoleWorkOutlineHeader: View {
         WorkOutlineHeaderRow(toggleExpanded: toggleExpanded) {
             Button(action: toggleExpanded) {
                 HStack(spacing: 7) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18)
+                    WorkOutlineFolderIcon(isExpanded: isExpanded)
+                        .stroke(.secondary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                        .frame(width: 18, height: 14)
                     Text(work.name)
                         .font(WorkbenchTypography.font(for: .navigation))
                         .foregroundStyle(.primary)
@@ -399,3 +398,31 @@ enum ConsoleSelectionRefreshPolicy {
 //     没有收起/折叠按钮——只有 <48rem 移动端才 display:none（靠顶部 SlidersHorizontal 打开 Sheet）。
 //   - 字段区标题用 11px uppercase + tracking 的小字「Properties」标签，下面竖向排列字段。
 //   - 窄列固定像素宽度，主工作区吃掉剩余空间。
+
+/// The front flap opens without changing the header's icon or row geometry.
+struct WorkOutlineFolderIcon: Shape {
+    let isExpanded: Bool
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 1, y: 12.5))
+        path.addLine(to: CGPoint(x: 1, y: 2.5))
+        path.addQuadCurve(to: CGPoint(x: 2, y: 1.5), control: CGPoint(x: 1, y: 1.5))
+        path.addLine(to: CGPoint(x: 6, y: 1.5))
+        path.addLine(to: CGPoint(x: 8, y: 3.5))
+        path.addLine(to: CGPoint(x: 15, y: 3.5))
+        path.addQuadCurve(to: CGPoint(x: 16, y: 4.5), control: CGPoint(x: 16, y: 3.5))
+        if isExpanded {
+            path.addLine(to: CGPoint(x: 16, y: 6.5))
+            path.move(to: CGPoint(x: 1, y: 12.5))
+            path.addLine(to: CGPoint(x: 4, y: 6.5))
+            path.addLine(to: CGPoint(x: 17, y: 6.5))
+            path.addLine(to: CGPoint(x: 14, y: 12.5))
+        } else {
+            path.addLine(to: CGPoint(x: 16, y: 11.5))
+            path.addQuadCurve(to: CGPoint(x: 15, y: 12.5), control: CGPoint(x: 16, y: 12.5))
+        }
+        path.addLine(to: CGPoint(x: 1, y: 12.5))
+        return path.applying(CGAffineTransform(a: rect.width / 18, b: 0, c: 0,
+            d: rect.height / 14, tx: rect.minX, ty: rect.minY))
+    }
+}

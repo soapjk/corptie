@@ -398,8 +398,6 @@ struct UnifiedConsoleView: View {
     private var consoleSidebarHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
-                Text("Corptie")
-                    .font(.system(size: 16, weight: .semibold))
                 Spacer(minLength: 8)
                 searchToggleButton
                     .consoleHoverFeedback()
