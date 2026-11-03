@@ -1,3 +1,4 @@
+import { worktreeDispatchBlocker } from "./application/worktreeExecutionBarrier.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
@@ -1737,7 +1738,8 @@ const {
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
-  isWorkspaceMutationActive: sessionId => automaticWorktreeMutationActive(store, { sessionId })
+  isWorkspaceMutationActive: sessionId => automaticWorktreeMutationActive(store, { sessionId }),
+  inspectWorkspaceDispatchBlocker: sessionId => worktreeDispatchBlocker(store,{sessionId})
 });
 function cancelQueuedUserMessage(sessionId, taskId) {
   const routedSessionId = requireSessionReference(sessionId).sessionId;

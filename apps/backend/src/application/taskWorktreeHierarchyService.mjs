@@ -265,9 +265,9 @@ export class TaskWorktreeHierarchyService {
     return { task, binding, inventory };
   }
 
-  async validateCreate(taskInput, constraints = {}) {
+  async validateCreate(taskInput) {
     if (!taskInput?.parentTaskId) return;
-    this.store.assertParentForCreate({ ...taskInput, ...constraints });
+    this.store.assertParentForCreate(taskInput);
     const context = this.store.getTaskWorkspaceContext(taskInput.parentTaskId);
     if (context?.repository) {
       const { inventory } = this.resolveTaskDelivery(taskInput.parentTaskId);

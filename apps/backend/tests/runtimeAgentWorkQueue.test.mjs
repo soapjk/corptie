@@ -267,3 +267,37 @@ test("verified channel dispatch writes the returned turn and publishes work star
   assert.equal(f.settled[0][0], "started");
   assert.equal(f.sends.length, 0);
 });
+
+test('mailbox dispatch blocks carry reasons once and clear on actual resumption',async()=>{
+ let paused=true;
+ const f=fixture({sessionMailbox:{dispatchDecision:()=>paused?{allowed:false,code:'MAILBOX_PAUSED',message:'邮箱已暂停',kind:'paused'}:{allowed:true},validateOperation(){}}});
+ f.add('waiting');
+ for(let i=0;i<4;i++) await f.queue.drainAgentWork('session');
+ assert.equal(f.sends.length,0);assert.equal(f.tasks.get('waiting').source.dispatchBlock.code,'MAILBOX_PAUSED');
+ assert.equal(f.events.filter(([type])=>type==='AgentWorkDispatchBlocked').length,1);
+ paused=false;await f.queue.drainAgentWork('session');
+ assert.equal(f.sends.length,1);assert.equal(f.tasks.get('waiting').source.dispatchBlock,undefined);
+ assert.equal(f.events.filter(([type])=>type==='AgentWorkDispatchReady').length,1);
+});
+
+for(const type of ['role','worktree','running','unknown','transition','missing']) test(`non-dispatchable ${type} returns an explicit recoverable reason`,async()=>{
+ const f=fixture();f.add('waiting');let expected;
+ if(type==='role'){f.deps.collaborationCore.getAgentForSession=()=>null;expected='SESSION_ROLE_UNBOUND';}
+ if(type==='worktree'){f.deps.inspectWorkspaceDispatchBlocker=()=>({reason:'WORKTREE_CONFLICT_OR_RECOVERY',message:'工作区有冲突'});expected='WORKTREE_CONFLICT_OR_RECOVERY';}
+ if(type==='running'||type==='unknown'){
+  f.add('old',{status:'running'});f.deps.inspectCollaborationSession=async()=>type==='running'?'running':'missing';expected=type==='running'?'SESSION_BUSY':'SESSION_STATE_UNAVAILABLE';
+ }
+ if(type==='transition'){f.deps.store.getLogicalSessionByLegacySessionId=()=>({transitionState:'committingRoute'});expected='WORKSPACE_TRANSITION_IN_PROGRESS';}
+ if(type==='missing'){f.deps.store.getSession=()=>null;expected='RECIPIENT_SESSION_NOT_FOUND';}
+ const queue=createRuntimeAgentWorkQueue(f.deps);queue.registerRuntimeQueuedWork('session','waiting');
+ await queue.drainAgentWork('session');
+ assert.equal(f.sends.length,0);assert.equal(f.tasks.get('waiting').status,'queued');assert.equal(f.tasks.get('waiting').source.dispatchBlock.code,expected);
+ assert.equal(f.events.find(([event])=>event==='AgentWorkDispatchBlocked')[1].reason.code,expected);
+});
+
+test('mailbox hard rejection fails the operation with its original reason',async()=>{
+ const f=fixture({sessionMailbox:{dispatchDecision:()=>({allowed:false,code:'MAILBOX_MESSAGE_NOT_FOUND',message:'消息不存在',kind:'rejected'})}});
+ f.add('missing');await f.queue.drainAgentWork('session');
+ assert.equal(f.tasks.get('missing').status,'failed');assert.equal(f.events.find(([event])=>event==='AgentWorkFailed')[1].reason.code,'MAILBOX_MESSAGE_NOT_FOUND');
+ assert.equal(f.sends.length,0);
+});

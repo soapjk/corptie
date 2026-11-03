@@ -24,7 +24,8 @@ public struct ClientTaskStartup: Codable, Sendable, Equatable {
         case "TASK_HIERARCHY_BUSY": "父分支正在执行任务或 Git 操作，请处理完成后重试。"
         case "PARENT_WORKTREE_REQUIRED", "TASK_DELIVERY_BINDING_CHANGED": "父任务工作区不可用或绑定已改变，需要先恢复父任务。"
         case "TASK_PARENT_INVALID", "TASK_PARENT_UNAVAILABLE": "父任务不可用，不能重试启动。"
-        case "TASK_PARENT_VERSION_CONFLICT", "TASK_HIERARCHY_CHANGED": "父任务已变化，请刷新并重新选择父任务。"
+        case "TASK_PARENT_VERSION_CONFLICT": "旧服务仍要求父任务版本，请更新服务后重试。"
+        case "TASK_HIERARCHY_CHANGED": "任务层级已变化，请重新检查当前操作。"
         case "START_WORKTREE_PREPARATION_FAILED": "准备工作区失败，请检查本机 Git 与工作区路径后重试。"
         default: "会话启动失败，请核对错误代码和启动记录。"
         }

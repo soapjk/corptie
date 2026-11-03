@@ -15,6 +15,24 @@ public struct ClientTaskCreation: Codable, Sendable {
     public var parentTaskId: String?
     public var expectedParentResourceVersion: Int?
 
+    // Decode legacy requests, but new requests never use the parent's general
+    // resource revision as a creation precondition.
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(requestId, forKey: .requestId)
+        try values.encode(workId, forKey: .workId)
+        try values.encode(title, forKey: .title)
+        try values.encode(mainRoleId, forKey: .mainRoleId)
+        try values.encode(providerId, forKey: .providerId)
+        try values.encodeIfPresent(description, forKey: .description)
+        try values.encodeIfPresent(acceptanceCriteria, forKey: .acceptanceCriteria)
+        try values.encodeIfPresent(verificationCriteria, forKey: .verificationCriteria)
+        try values.encodeIfPresent(priority, forKey: .priority)
+        try values.encodeIfPresent(model, forKey: .model)
+        try values.encodeIfPresent(reasoningLevel, forKey: .reasoningLevel)
+        try values.encodeIfPresent(parentTaskId, forKey: .parentTaskId)
+    }
+
     public init(requestId: String, workId: String, title: String, mainRoleId: String, providerId: String) {
         self.requestId = requestId
         self.workId = workId

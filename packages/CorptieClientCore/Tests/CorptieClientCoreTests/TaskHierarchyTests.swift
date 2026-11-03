@@ -63,7 +63,11 @@ struct TaskHierarchyTests {
         creation.expectedParentResourceVersion = 7
         let child = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(creation)) as? [String: Any])
         #expect(child["parentTaskId"] as? String == "task:parent")
-        #expect(child["expectedParentResourceVersion"] as? Int == 7)
+        #expect(child["expectedParentResourceVersion"] == nil)
+        let legacy = try JSONDecoder().decode(ClientTaskCreation.self, from: Data(#"{"requestId":"request_legacy","workId":"work:w","title":"Child","mainAgentId":"agent:a","providerId":"neutral","parentTaskId":"task:parent","expectedParentResourceVersion":1}"#.utf8))
+        #expect(legacy.expectedParentResourceVersion == 1)
+        let encodedLegacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        #expect(encodedLegacy["expectedParentResourceVersion"] == nil)
     }
 
     @Test func indexDeduplicatesAncestorsWithoutPromotingOrphansOrTraversingCycles() {

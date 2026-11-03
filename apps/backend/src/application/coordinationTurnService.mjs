@@ -210,7 +210,7 @@ export class CoordinationTurnService {
               creation: { title: item.title, description: item.text, agentId: item.agentId }
             })
           })) });
-        answer = `已受理 ${admitted.dispatches.length} 项子任务指令，后台将继续执行。受理不代表已完成。\n`
+        answer = `已受理 ${admitted.dispatches.length} 项子任务指令，指令正在准备派发；实际启动或阻塞原因会另行回报。\n`
           + admitted.dispatches.map(row => `${row.dispatchId}：${row.status}`).join("\n");
       }
       const item = { id: `${turnId}:result`, turnId, bindingId: reference.bindingId, type: "agentMessage",

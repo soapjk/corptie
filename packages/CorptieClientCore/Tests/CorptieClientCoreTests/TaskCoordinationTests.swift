@@ -22,6 +22,14 @@ struct TaskCoordinationTests {
         let dispatch = try JSONDecoder().decode(ClientTaskCoordinationDispatch.self, from: Data(payload.utf8))
         #expect(dispatch.statusLabel == "等待父工作区操作完成")
     }
+    @Test func dispatchWaitAndBlockUseTheServerReason() throws {
+        for status in ["waiting_dispatch", "blocked", "failed"] {
+            let data = try JSONSerialization.data(withJSONObject: ["dispatchId": "dispatch:1", "title": "Child", "status": status,
+                "errorCode": "MAILBOX_PAUSED", "errorMessage": "接收会话的邮箱已暂停自动处理。"])
+            let dispatch = try JSONDecoder().decode(ClientTaskCoordinationDispatch.self, from: data)
+            #expect(dispatch.statusLabel == "接收会话的邮箱已暂停自动处理。")
+        }
+    }
     @Test func updateUsesOneTypedUserCommand() throws {
         var command = ClientTaskUpdate(requestId: "coordination:1")
         command.coordinationEnabled = true
