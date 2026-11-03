@@ -237,6 +237,10 @@ export class CorptieStore {
     return this.storeSettings.gatewaySettings();
   }
 
+  collaborationSettings() {
+    return this.storeSettings.collaborationSettings();
+  }
+
   logDirectory() {
     return this.dataLocation.logDirectory();
   }
