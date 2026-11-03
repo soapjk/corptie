@@ -50,11 +50,12 @@ extension UnifiedConsoleView {
                                 .frame(height: ConsoleWorkOutlineRowMetrics.height)
                         } else {
                             ForEach(assistantSessionRows) { row in
-                                sessionRow(row)
+                                sessionRow(row, showsHoverFeedback: false)
                                     .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                    .background(outlineChildSelectionBackground(
-                                        selectionController.presentationSessionID == row.session.id
-                                    ))
+                                    .padding(.trailing, 16)
+                                    .consoleHoverFeedback(isSelected:
+                                        selectionController.presentationSessionID == row.session.id, horizontalInset: 8
+                                    )
                                     .frame(height: ConsoleWorkOutlineRowMetrics.height)
                             }
                         }
@@ -94,9 +95,10 @@ extension UnifiedConsoleView {
                             let rows: [SessionRowModel] = archivedRowsByWorkID[work.id] ?? []
                             ConsoleWorkOutlineRows(rowCount: max(1, orderedTasks.count + rows.count)) {
                                 ForEach(orderedTasks) { task in
-                                    hierarchyTaskRow(task)
+                                    hierarchyTaskRow(task, showsHoverFeedback: false)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(selectedTaskId == task.id))
+                                        .padding(.trailing, 16)
+                                        .consoleHoverFeedback(isSelected: selectedTaskId == task.id, horizontalInset: 8)
                                         .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 }
                                 if rows.isEmpty && orderedTasks.isEmpty {
@@ -104,11 +106,12 @@ extension UnifiedConsoleView {
                                         .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 } else {
                                     ForEach(rows) { row in
-                                        sessionRow(row)
+                                        sessionRow(row, showsHoverFeedback: false)
                                             .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                            .background(outlineChildSelectionBackground(
-                                                selectionController.presentationSessionID == row.session.id
-                                            ))
+                                            .padding(.trailing, 16)
+                                            .consoleHoverFeedback(isSelected:
+                                                selectionController.presentationSessionID == row.session.id, horizontalInset: 8
+                                            )
                                             .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                     }
                                 }
@@ -116,11 +119,12 @@ extension UnifiedConsoleView {
                         } else {
                             ConsoleWorkOutlineRows(rowCount: visibleTasks.count + (hiddenTaskCount > 0 ? 1 : 0)) {
                                 ForEach(visibleTasks) { task in
-                                    hierarchyTaskRow(task)
+                                    hierarchyTaskRow(task, showsHoverFeedback: false)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(
-                                            selectedTaskId == task.id
-                                        ))
+                                        .padding(.trailing, 16)
+                                        .consoleHoverFeedback(isSelected:
+                                            selectedTaskId == task.id, horizontalInset: 8
+                                        )
                                         .frame(height: ConsoleWorkOutlineRowMetrics.height)
                                 }
                                 if hiddenTaskCount > 0 {
@@ -207,12 +211,6 @@ extension UnifiedConsoleView {
         .consoleHoverFeedback()
         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
         .accessibilityLabel("展开全部 Task，还剩 \(hiddenCount) 个")
-    }
-
-    func outlineChildSelectionBackground(_ isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)
-            .padding(.horizontal, 8)
     }
 
     func outlineWorkIsExpanded(_ workID: String) -> Bool {
