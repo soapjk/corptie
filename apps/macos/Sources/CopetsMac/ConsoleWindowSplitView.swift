@@ -259,7 +259,6 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private(set) var contentUpdateCount = 0
     private var restoredWidth = false
     private var isRestoring = false
-    private var saveWork: DispatchWorkItem?
 
     init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail) {
         self.mode = mode
@@ -292,6 +291,8 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         // Reserve the transcript column beside the two-cell widget rail.
         detail.minimumThickness = ConversationDetailWidgetMetrics.railWidth + 264
         addSplitViewItem(detail)
+        NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingDidEnd(_:)),
+            name: ConsoleNativeSplitView.didEndDividerTracking, object: nil)
         super.viewDidLoad()
     }
 
@@ -343,7 +344,6 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
 
     private func restoreWidth() {
         guard isViewLoaded, splitView.bounds.width > 0 else { return }
-        saveWork?.cancel()
         isRestoring = true
         let stored = CorptieAppEnvironment.userDefaults.double(forKey: widthKey)
         let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : 284)
@@ -358,12 +358,10 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         if width >= 284 { CorptieAppEnvironment.userDefaults.set(width, forKey: widthKey) }
     }
 
-    override func splitViewDidResizeSubviews(_ notification: Notification) {
-        super.splitViewDidResizeSubviews(notification)
-        guard restoredWidth, !isRestoring else { return }
-        saveWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.saveWidth() }
-        saveWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    @objc private func dividerTrackingDidEnd(_ notification: Notification) {
+        guard isActive, restoredWidth, !isRestoring,
+              !splitView.isHiddenOrHasHiddenAncestor,
+              let window = notification.object as? NSWindow, window === view.window else { return }
+        saveWidth()
     }
 }
