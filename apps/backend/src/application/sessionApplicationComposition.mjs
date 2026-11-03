@@ -31,6 +31,15 @@ export function createSessionApplicationComposition({
     },
     observeLifecycle: ({ type, sessionId, ...payload }) => {
       console.info(`[session-lifecycle] ${JSON.stringify({ type, sessionId, ...payload })}`);
+      if (type === "SessionToolPreparationWarning") {
+        const id = `tool-preparation-warning:${payload.bindingId}:${payload.turnId}`;
+        emitEvent(type, { ...payload, item: {
+          id, turnId: id, type: "system", title: "工具配置提示",
+          text: "工具配置暂未就绪，本次对话已继续；部分工具可能暂不可用。",
+          status: "completed", turnStatus: "completed", createdAt: new Date().toISOString()
+        } }, { sessionId, eventId: id });
+        return;
+      }
       emitEvent(type, payload, { sessionId });
     },
     toolHostService,
