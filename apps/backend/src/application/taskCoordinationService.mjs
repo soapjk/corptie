@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
+import { isDeepStrictEqual } from "node:util";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 import { createStartupTiming } from "../utils/startupTiming.mjs";
 
 const terminal = new Set(["completed", "failed", "cancelled", "unknown"]);
 const fail = (code, message = code, statusCode = 409) => { throw Object.assign(new Error(message), { code, statusCode }); };
+
+function parentCreationGuard({ resource_version, execution_status, updated_at, ...guard }) {
+  // Only execution projection writes may be rebased. Keep every definition,
+  // lifecycle, policy and hierarchy field fenced, including future fields.
+  return guard;
+}
 
 // Durable admission/outbox metadata. Message ownership, delivery and execution
 // remain in SessionMailboxService and the existing runtime queue.
@@ -87,6 +94,30 @@ export class TaskCoordinationService {
     this.running.set(id, promise);
     return promise;
   }
+  async createDispatchTask(row, request) {
+    const idempotencyKey = `coordination:${row.dispatch_id}`;
+    const runtime = JSON.parse(row.runtime_json);
+    for (let attempt = 0; ; attempt++) {
+      const current = this.sourceContext(row);
+      const before = current.scope.parent;
+      try {
+        return await this.collaboration.createTaskAndSession(current.metadata, row.source_role_id, {
+          ...request.creation, parentTaskId: row.parent_task_id, expectedParentResourceVersion: before.resource_version,
+          providerId: runtime.providerId, idempotencyKey
+        }, { runtimeConfiguration: runtime });
+      } catch (error) {
+        if (error.code !== "TASK_PARENT_VERSION_CONFLICT" || attempt >= 2 || error.creationRecovery?.taskId) throw error;
+        // Never replay a startup or allocation. A CAS rejected before the Task
+        // row exists is the only safe automatic retry boundary.
+        const persisted = this.store.selectOne("SELECT id FROM tasks WHERE created_by_session_id=? AND idempotency_key=?",
+          [row.source_session_id, idempotencyKey]);
+        if (persisted) throw error;
+        const after = this.sourceContext(row).scope.parent;
+        if (before.resource_version === after.resource_version
+          || !isDeepStrictEqual(parentCreationGuard(before), parentCreationGuard(after))) throw error;
+      }
+    }
+  }
   async execute(id) {
     let row = this.get(id);
     if (!row || !["accepted", "preparing"].includes(row.status)) return;
@@ -98,11 +129,7 @@ export class TaskCoordinationService {
         providerId: JSON.parse(row.runtime_json).providerId });
       const pending = timing.measure("dispatch.creation-chain", async span => {
         await span.measure("dispatch.wait-parent-startup", () => prior.catch(() => {}));
-        const current = this.sourceContext(row);
-        return span.measure("dispatch.child-startup", () => this.collaboration.createTaskAndSession(current.metadata, row.source_role_id, {
-          ...request.creation, parentTaskId: row.parent_task_id, expectedParentResourceVersion: current.scope.parent.resource_version,
-          providerId: JSON.parse(row.runtime_json).providerId, idempotencyKey: `coordination:${id}`
-        }, { runtimeConfiguration: JSON.parse(row.runtime_json) }));
+        return span.measure("dispatch.child-startup", () => this.createDispatchTask(row, request));
       });
       this.creationChains.set(row.parent_task_id, pending);
       const cleanup = () => { if (this.creationChains.get(row.parent_task_id) === pending) this.creationChains.delete(row.parent_task_id); };
