@@ -28,7 +28,11 @@ actor UserMessageNavigationReader {
 
 struct UserMessageNavigationGroup: Identifiable, Equatable {
     let items: [ClientUserMessageNavigationPage.Item]
-    var id: String { items[0].id }
+    let ordinal: Int
+    init(items: [ClientUserMessageNavigationPage.Item], ordinal: Int = 0) {
+        self.items = items; self.ordinal = ordinal
+    }
+    var id: String { items.first?.id ?? "empty-navigation-page" }
 }
 
 @MainActor @Observable
@@ -69,8 +73,18 @@ final class UserMessageNavigationState {
         loading = true
         defer { if generation == request { loading = false } }
         do {
-            let next = try await load(baseURL, sessionID, cursor, direction).validated()
-            guard !Task.isCancelled, generation == request else { return }
+            var next: ClientUserMessageNavigationPage?
+            // Skip sparse ranges in bounded background batches. No placeholder
+            // markers and no need to click through model/tool-only pages.
+            for _ in 0..<8 {
+                let candidate = try await load(baseURL, sessionID, cursor, direction).validated()
+                guard !Task.isCancelled, generation == request else { return }
+                next = candidate
+                let continuation = direction == "older" ? candidate.olderCursor : candidate.newerCursor
+                guard candidate.items.isEmpty, let continuation, continuation != cursor else { break }
+                cursor = continuation
+            }
+            guard let next else { return }
             error = nil
             guard next.items != page?.items || next.olderCursor != page?.olderCursor
                 || next.newerCursor != page?.newerCursor else { return }
@@ -80,7 +94,7 @@ final class UserMessageNavigationState {
             let chronological = Array(next.items.reversed())
             let groupSize = max(1, (chronological.count + 31) / 32)
             groups = stride(from: 0, to: chronological.count, by: groupSize).map {
-                UserMessageNavigationGroup(items: Array(chronological[$0..<min($0 + groupSize, chronological.count)]))
+                UserMessageNavigationGroup(items: Array(chronological[$0..<min($0 + groupSize, chronological.count)]), ordinal: $0 / groupSize)
             }
         } catch {
             guard !Task.isCancelled, generation == request else { return }
@@ -94,7 +108,7 @@ struct UserMessageNavigationRail: View {
     let sessionID: String
     let active: Bool
     let navigate: (String) -> Void
-    @Environment(\.scenePhase) private var scenePhase
+    @State private var visibility = MacQuickMessageVisibility()
     @State private var state = UserMessageNavigationState()
     @State private var preview: UserMessageNavigationGroup?
     @State private var selectedID: String?
@@ -103,21 +117,19 @@ struct UserMessageNavigationRail: View {
     @State private var dismissal: Task<Void, Never>?
 
     var body: some View {
+        let emphasizedIndex = preview?.ordinal
+            ?? state.groups.first(where: { $0.items.contains(where: { $0.id == selectedID }) })?.ordinal
+            ?? max(0, state.groups.count - 1)
         ScrollView(.vertical, showsIndicators: false) {
-        VStack(spacing: 3) {
-            Button { move(state.page?.olderCursor, "older") } label: {
-                Image(systemName: "chevron.up").frame(width: 24, height: 24)
-            }
-            .disabled(state.loading || state.page?.olderCursor == nil)
-            .help("更早的用户消息").accessibilityLabel("更早的用户消息")
+        VStack(alignment: .leading, spacing: 2) {
             ForEach(state.groups) { group in
                 Button {
                     if group.items.count == 1 { jump(group.items[0].id) }
                     else { preview = group }
                 } label: {
-                    Capsule().fill(Color.primary.opacity(preview?.id == group.id || group.items.contains(where: { $0.id == selectedID }) ? 0.8 : 0.32))
-                        .frame(width: 12, height: 2)
-                        .frame(width: 24, height: 7)
+                    Rectangle().fill(Color.primary.opacity(group.ordinal == emphasizedIndex ? 0.9 : 0.18))
+                        .frame(width: markerWidth(distance: abs(group.ordinal - emphasizedIndex)), height: 2)
+                        .frame(width: 32, height: 8, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .onHover { inside in
@@ -125,24 +137,18 @@ struct UserMessageNavigationRail: View {
                 }
                 .accessibilityLabel(group.items.first?.preview.isEmpty == false
                     ? group.items[0].preview : "历史用户消息")
-                .help("预览并跳转到用户消息")
+                .popover(isPresented: Binding(get: { preview?.id == group.id }, set: { shown in
+                    if !shown && preview?.id == group.id { preview = nil }
+                }), attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
+                    previewPanel
+                }
             }
-            if state.loading && state.groups.isEmpty { ProgressView().controlSize(.mini).frame(width: 24, height: 18) }
-            Button { move(state.page?.newerCursor, "newer") } label: {
-                Image(systemName: "chevron.down").frame(width: 24, height: 24)
-            }
-            .disabled(state.loading || state.page?.newerCursor == nil)
-            .help("更新的用户消息").accessibilityLabel("更新的用户消息")
-            Button { move(nil, "older") } label: {
-                Image(systemName: state.error == nil ? "clock.arrow.circlepath" : "arrow.clockwise")
-                    .frame(width: 24, height: 24)
-            }
-            .disabled(state.loading)
-            .help(state.error ?? "回到最近的用户消息目录")
-            .accessibilityLabel(state.error == nil ? "最近的用户消息目录" : "重试读取用户消息目录")
         }
         }
-        .frame(width: 24).frame(maxHeight: 360)
+        .frame(width: 32).frame(maxHeight: 360)
+        .opacity(state.groups.isEmpty ? 0 : 1)
+        .allowsHitTesting(active && !state.groups.isEmpty)
+        .background { UserMessageNavigationVisibilityBridge { visibility = $0 } }
         .disabled(!active)
         .font(.system(size: 9, weight: .semibold))
         .buttonStyle(.plain)
@@ -151,28 +157,8 @@ struct UserMessageNavigationRail: View {
             pointerOnRail = inside
             if inside { dismissal?.cancel() } else { scheduleDismissal() }
         }
-        .popover(item: $preview, arrowEdge: .leading) { group in
-            VStack(alignment: .leading, spacing: 6) {
-                Text("历史用户消息").font(.caption).foregroundStyle(.secondary)
-                ForEach(group.items) { item in
-                    Button { jump(item.id) } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.preview.isEmpty ? "附件或空消息" : item.preview)
-                                .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
-                            Text(item.createdAt).font(.caption2).foregroundStyle(.secondary)
-                        }.padding(8).contentShape(Rectangle())
-                    }.buttonStyle(.plain).consoleHoverFeedback()
-                }
-            }
-            .font(.system(size: 12))
-            .padding(10).frame(width: 300)
-            .onHover { inside in
-                pointerOnPreview = inside
-                if inside { dismissal?.cancel() } else { scheduleDismissal() }
-            }
-        }
-        .task(id: "\(baseURL.absoluteString):\(sessionID):\(active):\(scenePhase)") {
-            guard active, scenePhase == .active else { state.stop(); preview = nil; return }
+        .task(id: "\(baseURL.absoluteString):\(sessionID):\(active):\(visibility.visible):\(visibility.activation)") {
+            guard active, visibility.visible else { state.stop(); preview = nil; return }
             state.activate(baseURL: baseURL, sessionID: sessionID)
             // Current-page polling handles edits/deletions/backfills without
             // observing model streaming updates or doing work on hover.
@@ -182,13 +168,67 @@ struct UserMessageNavigationRail: View {
             }
         }
         .onChange(of: state.groups) { _, groups in
-            if let id = preview?.id { preview = groups.first { $0.id == id } }
+            if let id = preview?.id { preview = groups.first { $0.id == id } ?? groups.last ?? .init(items: []) }
         }
         .onDisappear { dismissal?.cancel(); state.stop() }
     }
+    private func markerWidth(distance: Int) -> CGFloat {
+        switch distance {
+        case 0: 26
+        case 1, 2: 20
+        case 3: 14
+        default: 10
+        }
+    }
+
+    private var previewPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(preview?.items ?? []) { item in
+                Button { jump(item.id) } label: {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(item.preview.isEmpty ? "附件或空消息" : item.preview)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                        if let reply = item.replyPreview, !reply.isEmpty {
+                            Text(reply).font(.system(size: 13)).foregroundStyle(.secondary)
+                                .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Text(String(item.createdAt.prefix(16)).replacingOccurrences(of: "T", with: " "))
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }.padding(6).contentShape(Rectangle())
+                }.buttonStyle(.plain).consoleHoverFeedback()
+            }
+            if state.loading { ProgressView().controlSize(.small) }
+            if let error = state.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            if state.page?.olderCursor != nil || state.page?.newerCursor != nil || state.error != nil {
+                Divider()
+                HStack(spacing: 12) {
+                    Button("更早") { move(state.page?.olderCursor, "older") }
+                        .disabled(state.loading || state.page?.olderCursor == nil)
+                    Button("更新") { move(state.page?.newerCursor, "newer") }
+                        .disabled(state.loading || state.page?.newerCursor == nil)
+                    Spacer()
+                    Button(state.error == nil ? "最近" : "重试") { move(nil, "older") }
+                        .disabled(state.loading)
+                }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12).frame(width: 340)
+        .onHover { inside in
+            pointerOnPreview = inside
+            if inside { dismissal?.cancel() } else { scheduleDismissal() }
+        }
+        .onDisappear { pointerOnPreview = false }
+    }
+
     private func move(_ cursor: String?, _ direction: String) {
-        preview = nil
-        Task { await state.move(cursor: cursor, direction: direction) }
+        Task {
+            await state.move(cursor: cursor, direction: direction)
+            guard active, visibility.visible else { return }
+            preview = (direction == "older" ? state.groups.last : state.groups.first) ?? .init(items: [])
+        }
     }
     private func jump(_ id: String) { selectedID = id; preview = nil; navigate(id) }
     private func scheduleDismissal() {
@@ -199,4 +239,13 @@ struct UserMessageNavigationRail: View {
             preview = nil
         }
     }
+}
+
+/// Reuse the event-driven NSWindow probe also used by the composer. Independently
+/// hosted AppKit pages cannot rely on a SwiftUI Scene's phase propagation.
+private struct UserMessageNavigationVisibilityBridge: NSViewRepresentable {
+    let changed: @MainActor (MacQuickMessageVisibility) -> Void
+    func makeNSView(context: Context) -> MacQuickMessageVisibilityView { .init(changed: changed) }
+    func updateNSView(_ view: MacQuickMessageVisibilityView, context: Context) { view.changed = changed }
+    static func dismantleNSView(_ view: MacQuickMessageVisibilityView, coordinator: ()) { view.stop() }
 }
