@@ -523,6 +523,18 @@ struct SettingsView: View {
 
                 Divider()
 
+                SettingsSectionHeading(title: L10n("Session collaboration"), mode: L10n("Requires Save Settings"))
+                SettingsOptionRow(title: L10n("Confirm the first collaboration message"),
+                                  explanation: L10n("Ask before two sessions first communicate. Turn off to send directly; existing channels and parent-child collaboration keep their current permissions.")) {
+                    Toggle(L10n("Confirm the first collaboration message"), isOn: $draft.collaboration.requireFirstMessageConfirmation)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .disabled(draft.isReadOnly)
+                        .accessibilityIdentifier("settings.collaboration.requireFirstMessageConfirmation")
+                }
+
+                Divider()
+
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         SettingsSectionHeading(title: L10n("Storage"), mode: L10n("Requires Save Settings"))
@@ -758,7 +770,8 @@ struct SettingsView: View {
                 codeDiff: submitted.codeDiff,
                 agentProxy: submitted.agentProxy,
                 gateway: submitted.gateway,
-                sessionCreationDefaults: draft.dirtyTabs.contains(.provider) ? submitted.taskCreation : nil
+                sessionCreationDefaults: draft.dirtyTabs.contains(.provider) ? submitted.taskCreation : nil,
+                collaboration: submitted.collaboration
             )
             guard updated, let settings = settingsState.settings else {
                 throw BackendError.message(backendClient.lastError ?? L10n("Save failed"))
