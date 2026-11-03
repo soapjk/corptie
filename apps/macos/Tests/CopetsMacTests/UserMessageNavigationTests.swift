@@ -52,7 +52,8 @@ import CorptieClientCore
         func read() -> ClientUserMessageNavigationPage {
             count += 1
             let items: [ClientUserMessageNavigationPage.Item] = count == produceAt
-                ? [.init(id: "real-user-message", createdAt: "2026-11-03", preview: "Real message")] : []
+                ? (0..<6).reversed().map { .init(id: $0 == 0 ? "real-user-message" : "real-user-message-\($0)",
+                    createdAt: "2026-11-03", preview: "Real message") } : []
             return .init(items: items, olderCursor: "range-\(count)", newerCursor: nil, scannedCount: 1024)
         }
         func calls() -> Int { count }
@@ -78,6 +79,38 @@ import CorptieClientCore
         let secondBatch = await loader.calls()
         XCTAssertEqual(secondBatch, 16)
         XCTAssertFalse(state.loading)
+    }
+
+    private actor PageFeed {
+        var value = ClientUserMessageNavigationPage(items: [], olderCursor: nil, newerCursor: nil, scannedCount: 0)
+        func set(_ next: ClientUserMessageNavigationPage) { value = next }
+        func read() -> ClientUserMessageNavigationPage { value }
+    }
+    func testShortHistoryHidesUntilSixUsersAndHidesAgainAfterDeletion() async {
+        let feed = PageFeed()
+        let state = UserMessageNavigationState { _, _, _, _ in await feed.read() }
+        state.activate(baseURL: URL(string: "http://127.0.0.1:49989")!, sessionID: "short")
+        for count in [0, 1, 5, 6, 5] {
+            let items = (0..<count).map { ClientUserMessageNavigationPage.Item(id: "u-\($0)", createdAt: "", preview: "Question") }
+            await feed.set(.init(items: items, olderCursor: nil, newerCursor: nil, scannedCount: count))
+            await state.refresh()
+            XCTAssertEqual(state.showsNavigation, count >= 6)
+        }
+    }
+    func testThresholdUsesDistinctUsersAcrossFullHistoryPages() async {
+        func items(_ ids: [String]) -> [ClientUserMessageNavigationPage.Item] {
+            ids.map { .init(id: $0, createdAt: "", preview: "Question") }
+        }
+        let first = ClientUserMessageNavigationPage(items: items(["a", "b"]), olderCursor: "older-a", newerCursor: nil, scannedCount: 1024)
+        let second = ClientUserMessageNavigationPage(items: items(["b", "c"]), olderCursor: "older-b", newerCursor: "newer-a", scannedCount: 1024)
+        let third = ClientUserMessageNavigationPage(items: items(["d", "e", "f"]), olderCursor: nil, newerCursor: "newer-b", scannedCount: 3)
+        let state = UserMessageNavigationState { _, _, cursor, _ in
+            cursor == nil ? first : (cursor == "older-a" ? second : third)
+        }
+        state.activate(baseURL: URL(string: "http://127.0.0.1:49989")!, sessionID: "paged")
+        await state.refresh()
+        XCTAssertTrue(state.showsNavigation)
+        XCTAssertEqual(state.page?.items.count, 3, "A small historical page must not hide a known long conversation")
     }
 
     func testReplyPreviewIsAdditiveAndBounded() throws {

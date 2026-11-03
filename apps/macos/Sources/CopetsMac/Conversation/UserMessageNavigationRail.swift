@@ -37,6 +37,10 @@ struct UserMessageNavigationGroup: Identifiable, Equatable {
 
 @MainActor @Observable
 final class UserMessageNavigationState {
+    static let minimumUserMessages = 6
+    private var knownUserIDs: [String] = []
+    private var hasEnoughHistory = false
+    var showsNavigation: Bool { hasEnoughHistory && !groups.isEmpty }
     private(set) var groups: [UserMessageNavigationGroup] = []
     private(set) var page: ClientUserMessageNavigationPage?
     private(set) var loading = false
@@ -54,6 +58,7 @@ final class UserMessageNavigationState {
     func activate(baseURL: URL, sessionID: String) {
         if self.baseURL != baseURL || self.sessionID != sessionID {
             groups = []; page = nil; cursor = nil; direction = "older"
+            knownUserIDs = []; hasEnoughHistory = false
         }
         self.baseURL = baseURL; self.sessionID = sessionID
         stop()
@@ -80,8 +85,24 @@ final class UserMessageNavigationState {
                 let candidate = try await load(baseURL, sessionID, cursor, direction).validated()
                 guard !Task.isCancelled, generation == request else { return }
                 next = candidate
+                if candidate.olderCursor == nil && candidate.newerCursor == nil {
+                    // A complete small directory is authoritative, including
+                    // after deletion. Do not retain an obsolete visible state.
+                    knownUserIDs = Array(candidate.items.prefix(Self.minimumUserMessages).map(\.id))
+                } else {
+                    for item in candidate.items where knownUserIDs.count < Self.minimumUserMessages {
+                        if !knownUserIDs.contains(item.id) { knownUserIDs.append(item.id) }
+                    }
+                }
+                hasEnoughHistory = knownUserIDs.count >= Self.minimumUserMessages
                 let continuation = direction == "older" ? candidate.olderCursor : candidate.newerCursor
-                guard candidate.items.isEmpty, let continuation, continuation != cursor else { break }
+                guard candidate.items.isEmpty || !hasEnoughHistory else { break }
+                guard let continuation, continuation != cursor else {
+                    // Short histories must recheck the newest range next time,
+                    // so a newly sent sixth message can reveal the rail.
+                    if !hasEnoughHistory { cursor = nil; direction = "older" }
+                    break
+                }
                 cursor = continuation
             }
             guard let next else { return }
@@ -122,7 +143,7 @@ struct UserMessageNavigationRail: View {
             ?? max(0, state.groups.count - 1)
         ScrollView(.vertical, showsIndicators: false) {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(state.groups) { group in
+            ForEach(state.showsNavigation ? state.groups : []) { group in
                 Button {
                     if group.items.count == 1 { jump(group.items[0].id) }
                     else { preview = group }
@@ -137,17 +158,19 @@ struct UserMessageNavigationRail: View {
                 }
                 .accessibilityLabel(group.items.first?.preview.isEmpty == false
                     ? group.items[0].preview : "历史用户消息")
+                // arrowEdge is the source anchor's edge on macOS: trailing
+                // attaches to the marker's right, not the preview's left edge.
                 .popover(isPresented: Binding(get: { preview?.id == group.id }, set: { shown in
                     if !shown && preview?.id == group.id { preview = nil }
-                }), attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
+                }), attachmentAnchor: .rect(.bounds), arrowEdge: .trailing) {
                     previewPanel
                 }
             }
         }
         }
         .frame(width: 32).frame(maxHeight: 360)
-        .opacity(state.groups.isEmpty ? 0 : 1)
-        .allowsHitTesting(active && !state.groups.isEmpty)
+        .opacity(state.showsNavigation ? 1 : 0)
+        .allowsHitTesting(active && state.showsNavigation)
         .background { UserMessageNavigationVisibilityBridge { visibility = $0 } }
         .disabled(!active)
         .font(.system(size: 9, weight: .semibold))
@@ -166,6 +189,9 @@ struct UserMessageNavigationRail: View {
                 await state.refresh()
                 do { try await Task.sleep(for: .seconds(5)) } catch { break }
             }
+        }
+        .onChange(of: state.showsNavigation) { _, shown in
+            if !shown { preview = nil }
         }
         .onChange(of: state.groups) { _, groups in
             if let id = preview?.id { preview = groups.first { $0.id == id } ?? groups.last ?? .init(items: []) }
