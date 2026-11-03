@@ -63,6 +63,7 @@ extension UnifiedConsoleView {
                 : assistantRows.map { .session($0) },
             isExpanded: outlineAssistantExpandedBinding.wrappedValue,
             allowsCollapse: !queryIsActive,
+            showsDisclosureIndicator: false,
             expansionChanged: { outlineAssistantExpandedBinding.wrappedValue = $0 }
         )]
         groups.append(.init(id: "projects-heading", header: AnyView(Text(L10n("Projects"))
@@ -90,6 +91,7 @@ extension UnifiedConsoleView {
                     .contextMenu { workContextMenuContent(for: work) }),
                 rows: rows, isExpanded: outlineWorkIsExpanded(work.id),
                 allowsCollapse: !queryIsActive,
+                showsDisclosureIndicator: false,
                 expansionChanged: { outlineWorkExpandedBinding(work.id).wrappedValue = $0 }))
         }
         return groups
@@ -103,6 +105,10 @@ extension UnifiedConsoleView {
                 expanded.wrappedValue = !expanded.wrappedValue
             } label: {
                 HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
                     Text(L10n("Chat"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
