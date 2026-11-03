@@ -46,6 +46,23 @@ struct SettingsWindowLayoutTests {
         }
     }
 
+    @Test func loadedFormsFitCompactWidthsAndKeepDraftWhenSidebarCollapses() throws {
+        let draft = SettingsDraftState()
+        draft.receive(try JSONDecoder().decode(BackendSettings.self, from: Data(#"{"dataRoot":"/test/root"}"#.utf8)))
+        draft.codeDiff.tool = "vscode"
+        let host = NSHostingView(rootView: SettingsView(draft: draft, loadsSettings: false))
+        for width: CGFloat in [900, 799, 600, 479, 900] {
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 560)
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            host.layoutSubtreeIfNeeded()
+            #expect(host.fittingSize.width <= width)
+            #expect(host.fittingSize.height <= 560)
+            #expect(draft.codeDiff.tool == "vscode")
+            #expect(draft.dirtyTabs == [.general])
+        }
+    }
+
     @Test
     func everyExistingSettingsRouteRemainsDeclared() throws {
         #expect(Set(SettingsTab.allCases) == [
@@ -80,8 +97,8 @@ struct SettingsWindowLayoutTests {
         #expect(!contents.contains("SettingsWindowLayout"))
         #expect(!contents.contains("sidebarToggle"))
         #expect(!contents.contains("@ObservedObject private var backendClient"))
-        #expect(contents.contains("backendClient.$lastError.removeDuplicates()"))
-        #expect(contents.contains("Button(L10n(\"Save\"))"))
+        #expect(contents.contains("settingsState.settings"))
+        #expect(contents.contains("settings.save"))
         #expect(contents.contains("await saveAllSettings()"))
         let general = contents.components(separatedBy: "private var generalSettingsTab")[1]
             .components(separatedBy: "private var providerSettingsTab")[0]
@@ -92,7 +109,7 @@ struct SettingsWindowLayoutTests {
         #expect(contents.contains("draft: Binding("))
         #expect(!contents.contains("Text(L10n(\"Codex Backend\"))"))
         #expect(!contents.contains("DisclosureGroup(\"终端选项解析"))
-        #expect(contents.contains("sessionCreationDefaults: sessionCreationDraft"))
+        #expect(contents.contains("sessionCreationDefaults:"))
         let mobileSource = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()

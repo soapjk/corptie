@@ -75,113 +75,74 @@ struct SettingsView: View {
     @AppStorage(SessionSwitchingPreferences.preferenceKey, store: CorptieAppEnvironment.userDefaults)
     private var acceleratedSessionSwitching = SessionSwitchingPreferences.launchEnabled
     @State private var selectedTab = SettingsTab.general
-    @State private var lastSavedAt: Date?
     @State private var archivedSessionPendingDeletion: TaskSession?
-    @State private var dataRoot = ""
-    @State private var choiceParser = ChoiceParserSettings.defaults
-    @State private var savedChoiceParser = ChoiceParserSettings.defaults
-    @State private var codexBackend = CodexBackendSettings.defaults
-    @State private var savedCodexBackend = CodexBackendSettings.defaults
-    @State private var codeDiff = CodeDiffSettings.defaults
-    @State private var savedCodeDiff = CodeDiffSettings.defaults
-    @State private var agentProxy = AgentProxySettings.defaults
-    @State private var savedAgentProxy = AgentProxySettings.defaults
-    @State private var gateway = GatewaySettings.defaults
-    @State private var savedGateway = GatewaySettings.defaults
-    @State private var choiceParserStatus: ChoiceParserStatus = .idle
+    @State private var draft = SettingsDraftState()
+    @State private var foundationDraft = FoundationModelDraft()
+    @State private var discardConfirmation = false
+    @FocusState private var dataRootFocused: Bool
     @State private var feishuAddMode = "credentials"
     @State private var newFeishuAppId = ""
     @State private var newFeishuAppSecret = ""
     @State private var newFeishuProfile = ""
     @State private var feishuPairingCodes: [String: FeishuPairingCodeResponse] = [:]
     @State private var dataRootMigrationDialog: DataRootMigrationDialogState?
-    @State private var settingsError: String?
-    @State private var sessionCreationDraft: TaskCreationDefaults?
+
+    private let loadsSettings: Bool
+
+    init(initialTab: SettingsTab = .general, draft: SettingsDraftState = SettingsDraftState(), loadsSettings: Bool = true) {
+        _selectedTab = State(initialValue: initialTab)
+        _draft = State(initialValue: draft)
+        self.loadsSettings = loadsSettings
+    }
 
     var body: some View {
-        HSplitView {
-            settingsCategories
-                .mainWindowPageCard()
-                // Constrain the card, not just its contents: the shared card
-                // deliberately expands, which otherwise widens this split pane.
-                .frame(minWidth: SettingsPageLayout.sidebarMinimum,
-                       idealWidth: SettingsPageLayout.sidebarIdeal,
-                       maxWidth: SettingsPageLayout.sidebarMaximum, maxHeight: .infinity)
-                .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
-            VStack(spacing: 12) {
-                HStack {
-                    Text(L10n(selectedTab.titleKey)).font(WorkbenchTypography.font(for: .pageTitle))
-                    Spacer()
-                }
-                Divider()
-                selectedSettingsTab.frame(maxWidth: .infinity, maxHeight: .infinity)
-                if backendClient.settings != nil || sessionCreationDraft != nil {
-                    Divider()
-                    HStack {
-                        if let settingsError { Text(settingsError).font(.caption).foregroundStyle(.red).lineLimit(2) }
-                        else if let lastSavedAt {
-                            Text("\(L10n("最近保存")) \(lastSavedAt.formatted(date: .omitted, time: .shortened))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button(L10n("Save")) {
-                            Task { await saveAllSettings() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(backendClient.isUpdatingSettings
-                            || dataRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("settings.save")
-                    }
-                }
+        GeometryReader { geometry in
+            let wide = geometry.size.width >= 800
+            HSplitView {
+                settingsCategories
+                    .modifier(SettingsSurface(sidebar: true))
+                    .frame(minWidth: wide ? SettingsPageLayout.sidebarMinimum : 0,
+                           idealWidth: wide ? SettingsPageLayout.sidebarIdeal : 0,
+                           maxWidth: wide ? SettingsPageLayout.sidebarMaximum : 0, maxHeight: .infinity)
+                    .clipped()
+                    .accessibilityHidden(!wide)
+                    .padding(.trailing, wide ? MainWindowPageLayoutMetrics.halfColumnSpacing : 0)
+                settingsDetail(compact: !wide, inset: geometry.size.width < 480 ? 16 : 20)
+                    .modifier(SettingsSurface())
+                    .padding(.leading, wide ? MainWindowPageLayoutMetrics.halfColumnSpacing : 0)
             }
-            .frame(maxWidth: SettingsPageLayout.contentMaximum, maxHeight: .infinity, alignment: .topLeading)
-            .padding(20)
-            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .mainWindowPageCard()
-            .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
+            .padding(MainWindowPageLayoutMetrics.outerPadding)
         }
-        .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .background(WorkbenchStyle.canvas)
         .accessibilityIdentifier("settings.page")
         .environmentObject(backendClient)
-        .onReceive(backendClient.$lastError.removeDuplicates()) { settingsError = $0 }
-        .task {
-            await backendClient.loadSettings()
-            await feishuStore.loadFeishuBots()
-            await feishuStore.loadFeishuProfiles()
-            selectDefaultFeishuProfileIfNeeded()
-            dataRoot = backendClient.settings?.dataRoot
-                ?? (dataRoot.isEmpty ? defaultDataRoot : dataRoot)
-            choiceParser = backendClient.settings?.choiceParser ?? .defaults
-            savedChoiceParser = choiceParser
-            codexBackend = backendClient.settings?.codexBackend ?? .defaults
-            savedCodexBackend = codexBackend
-            codeDiff = backendClient.settings?.codeDiff ?? .defaults
-            savedCodeDiff = codeDiff
-            agentProxy = backendClient.settings?.agentProxy ?? .defaults
-            savedAgentProxy = agentProxy
-            gateway = backendClient.settings?.gateway ?? .defaults
-            savedGateway = gateway
+        .task { if loadsSettings { await loadSettings() } }
+        .onChange(of: settingsState.settings) { _, settings in
+            guard !draft.isSaving, let settings else { return }
+            draft.receive(settings)
         }
-        .onChange(of: backendClient.settings) { _, settings in
-            if let settings {
-                dataRoot = settings.dataRoot
-                choiceParser = settings.choiceParser ?? .defaults
-                savedChoiceParser = choiceParser
-                codexBackend = settings.codexBackend ?? .defaults
-                savedCodexBackend = codexBackend
-                codeDiff = settings.codeDiff ?? .defaults
-                savedCodeDiff = codeDiff
-                agentProxy = settings.agentProxy ?? .defaults
-                savedAgentProxy = agentProxy
-                gateway = settings.gateway ?? .defaults
-                savedGateway = gateway
-                choiceParserStatus = .idle
-            }
+        .onChange(of: draft.isReadOnly, initial: true) { _, readOnly in
+            foundationDraft.readOnly = readOnly
+        }
+        .onChange(of: dataRootFocused) { _, focused in
+            if !focused { draft.showValidation = true }
+        }
+        .confirmationDialog(L10n("Discard unsaved settings?"), isPresented: $discardConfirmation, titleVisibility: .visible) {
+            Button(L10n("Discard Changes"), role: .destructive) { draft.discard() }
+            Button(L10n("Cancel"), role: .cancel) { }
+        } message: {
+            Text(L10n("Only pending shared settings will be discarded. Immediate changes and separately saved regions are kept."))
         }
         .onChange(of: selectedTab) { _, tab in
-            guard tab == .archivedSessions else { return }
-            Task { await backendClient.refreshArchivedSessions(sessionKind: .assistantChat) }
+            if tab == .archivedSessions {
+                Task { await backendClient.refreshArchivedSessions(sessionKind: .assistantChat) }
+            } else if tab == .gateway {
+                Task {
+                    await feishuStore.loadFeishuBots()
+                    await feishuStore.loadFeishuProfiles()
+                    selectDefaultFeishuProfileIfNeeded()
+                }
+            }
         }
         .sheet(
             isPresented: Binding(
@@ -240,6 +201,8 @@ struct SettingsView: View {
                         Text(L10n("Corptie will temporarily stop new commands and persistent writes, copy and verify all data, restart the Backend, and reconnect automatically. Active work may block the migration. Do not disconnect the target drive or quit Corptie while migration is running."))
                             .font(.system(size: 12))
                             .foregroundStyle(CorptiePalette.secondaryText)
+                        Text(L10n("Other pending shared settings are submitted with this migration. Separately saved regions are not included."))
+                            .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                         Text(L10n("If migration fails, the original Data Root remains authoritative. The old directory is retained after success and is never deleted automatically."))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(CorptiePalette.secondaryText)
@@ -247,15 +210,12 @@ struct SettingsView: View {
                 case .migrating:
                     let phase = backendClient.dataRootMigrationPresentationPhase ?? "preflight"
                     VStack(alignment: .leading, spacing: 9) {
-                        ProgressView(value: DataRootMigrationPresentation.progress(for: phase), total: 1)
+                        ProgressView().controlSize(.small)
                             .progressViewStyle(.linear)
                         HStack {
                             Text(dataRootMigrationPhaseLabel(phase))
                                 .font(.system(size: 12, weight: .semibold))
                             Spacer()
-                            Text("\(Int(DataRootMigrationPresentation.progress(for: phase) * 100))%")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(CorptiePalette.secondaryText)
                         }
                         Text(L10n("The Backend may disconnect briefly during restart. This is expected; Corptie will reconnect automatically."))
                             .font(.system(size: 11))
@@ -331,19 +291,177 @@ struct SettingsView: View {
         }
     }
 
+    private func loadSettings() async {
+        await backendClient.loadSettings()
+        if let settings = settingsState.settings { draft.receive(settings) }
+        else { draft.loadError = backendClient.lastError ?? L10n("Unable to load settings.") }
+        // Only the gateway needs these inventories. Do not put them ahead of the
+        // first visible form or fetch them on every settings entry.
+    }
+
+    private func settingsDetail(compact: Bool, inset: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if compact {
+                Menu {
+                    ForEach(SettingsTab.allCases, id: \.self) { tab in
+                        Button { selectedTab = tab } label: {
+                            Label(categoryLabel(tab), systemImage: tab.systemImage)
+                        }
+                    }
+                } label: {
+                    Label(L10n("Category") + ": " + L10n(selectedTab.titleKey), systemImage: "line.3.horizontal")
+                }
+                .accessibilityIdentifier("settings.categoryMenu")
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n(selectedTab.titleKey)).font(WorkbenchTypography.font(for: .pageTitle))
+                    .accessibilityIdentifier("settings.page.title")
+                    .accessibilityAddTraits(.isHeader)
+                Text(selectedTab.saveExplanation).font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
+            }
+            Divider()
+            if !draft.isLoaded && selectedTab.hasSharedSettings {
+                if let error = draft.loadError {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                        Button(L10n("Retry")) { Task { await loadSettings() } }
+                    }
+                    .font(WorkbenchTypography.font(for: .help))
+                } else {
+                    ProgressView(L10n("Loading settings…"))
+                }
+                Spacer(minLength: 0)
+            } else {
+                selectedSettingsTab
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .disabled(draft.isSaving)
+            }
+            Divider()
+            settingsFeedback
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 12) {
+                    saveStatus.fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 12)
+                    saveActions
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    saveStatus
+                    HStack { Spacer(minLength: 0); saveActions }
+                }
+            }
+            .frame(minHeight: 52)
+        }
+        .frame(maxWidth: SettingsPageLayout.contentMaximum, maxHeight: .infinity, alignment: .topLeading)
+        .padding(inset)
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var saveStatus: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !draft.dirtyTabs.isEmpty {
+                Menu {
+                    ForEach(SettingsTab.allCases.filter { draft.dirtyTabs.contains($0) }, id: \.self) { tab in
+                        Button(L10n(tab.titleKey)) { selectedTab = tab }
+                    }
+                } label: {
+                    Label(L10nFormat("%lld categories have unsaved changes", draft.dirtyTabs.count), systemImage: "pencil.circle")
+                }
+                .accessibilityIdentifier("settings.unsaved")
+            } else if selectedTab.hasSharedSettings {
+                if let date = draft.lastSavedAt {
+                    Label(L10n("Settings saved") + " · " + date.formatted(date: .omitted, time: .shortened), systemImage: "checkmark.circle")
+                } else {
+                    Text(L10n("No unsaved changes"))
+                }
+            } else {
+                Text(selectedTab.saveExplanation)
+            }
+            if foundationDraft.isDirty {
+                Button(L10n("Background model has changes to save separately")) { selectedTab = .provider }
+                    .buttonStyle(.link)
+            }
+            if !newFeishuAppId.isEmpty || !newFeishuAppSecret.isEmpty {
+                Button(L10n("Bot credentials have not been added")) { selectedTab = .gateway }
+                    .buttonStyle(.link)
+            }
+        }
+        .font(WorkbenchTypography.font(for: .help))
+        .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private var saveActions: some View {
+        if !draft.dirtyTabs.isEmpty {
+            Button(L10n("Discard Changes")) { discardConfirmation = true }
+                .disabled(draft.isSaving)
+                .accessibilityIdentifier("settings.discard")
+        }
+        if selectedTab.hasSharedSettings || !draft.dirtyTabs.isEmpty {
+            Button {
+                Task { await saveAllSettings() }
+            } label: {
+                HStack(spacing: 6) {
+                    if draft.isSaving { ProgressView().controlSize(.small) }
+                    Text(L10n(draft.isSaving ? "Saving…" : "Save Settings"))
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(!draft.canSave)
+            .accessibilityIdentifier("settings.save")
+        }
+    }
+
+    @ViewBuilder private var settingsFeedback: some View {
+        if draft.isReadOnly && selectedTab.hasSharedSettings {
+            Label(L10n("Read-only preview. Shared settings cannot be saved."), systemImage: "lock")
+        }
+        if !draft.conflictTabs.isEmpty {
+            Label(L10n("Settings changed elsewhere. Your edits are kept. Discard shared changes to load the latest values before saving."), systemImage: "exclamationmark.triangle")
+                .foregroundStyle(CorptiePalette.amber)
+        }
+        if let error = draft.saveError {
+            Label(L10n("Settings were not fully saved.") + " " + error, systemImage: "exclamationmark.circle")
+                .foregroundStyle(.red).textSelection(.enabled)
+                .accessibilityIdentifier("settings.save.error")
+        }
+        if draft.showValidation, let error = draft.dataRootError {
+            Button {
+                selectedTab = .general
+                dataRootFocused = true
+            } label: { Label(error, systemImage: "exclamationmark.circle") }
+                .buttonStyle(.link)
+        }
+    }
+
+    private func categoryLabel(_ tab: SettingsTab) -> String {
+        let suffix = draft.conflictTabs.contains(tab) ? L10n("Conflict")
+            : draft.dirtyTabs.contains(tab) || (tab == .provider && foundationDraft.isDirty)
+                ? L10n("Unsaved changes") : ""
+        return L10n(tab.titleKey) + (suffix.isEmpty ? "" : " · " + suffix)
+    }
+
     private var settingsCategories: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("Settings")).font(WorkbenchTypography.font(for: .pageTitle)).padding(.bottom, 12)
+                Text(L10n("Settings")).font(WorkbenchTypography.font(for: .navigationHeading)).padding(.bottom, 12)
                 ForEach(SettingsTab.allCases, id: \.self) { tab in
-                    Button {
-                        selectedTab = tab
-                    } label: {
-                        ManagementCategoryRow(title: L10n(tab.titleKey),
-                                              systemImage: tab.systemImage,
-                                              isSelected: selectedTab == tab)
+                    if tab == .general || tab == .devices || tab == .archivedSessions {
+                        Text(tab.groupTitle)
+                            .font(WorkbenchTypography.font(for: .navigationHeading)).foregroundStyle(.secondary)
+                            .padding(.top, tab == .general ? 0 : 16).padding(.bottom, 4)
+                    }
+                    Button { selectedTab = tab } label: {
+                        HStack(spacing: 0) {
+                            ManagementCategoryRow(title: L10n(tab.titleKey), systemImage: tab.systemImage, isSelected: selectedTab == tab)
+                            if draft.conflictTabs.contains(tab) {
+                                Image(systemName: "exclamationmark.triangle").foregroundStyle(CorptiePalette.amber)
+                            } else if draft.dirtyTabs.contains(tab) || (tab == .provider && foundationDraft.isDirty) {
+                                Image(systemName: "circle.fill").font(.system(size: 5))
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(categoryLabel(tab))
                     .accessibilityIdentifier("settings.tab.\(tab)")
                     .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                 }
@@ -378,7 +496,37 @@ struct SettingsView: View {
     private var generalSettingsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                GroupBox(L10n("性能")) {
+                SettingsSectionHeading(title: L10n("Language and tools"), mode: L10n("Language changes immediately; code diff requires Save Settings."))
+                SettingsOptionRow(title: L10n("Language")) {
+                    Picker(L10n("Language"), selection: $appLanguage.selection) {
+                        ForEach(AppLanguage.allCases) { language in
+                            Text(L10n(language.localizationKey)).tag(language)
+                        }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
+                    .accessibilityIdentifier("settings.language")
+                }
+
+                SettingsOptionRow(title: L10n("Code Diff Tool"),
+                                  explanation: L10n("Used when reviewing files changed during a session.")) {
+                    Picker(L10n("Code Diff Tool"), selection: $draft.codeDiff.tool) {
+                        Text(L10n("Automatic")).tag("automatic")
+                        Text(L10n("Git Difftool")).tag("git-difftool")
+                        Text(L10n("FileMerge")).tag("filemerge")
+                        Text(L10n("Visual Studio Code")).tag("vscode")
+                        Text(L10n("Kaleidoscope")).tag("kaleidoscope")
+                        Text(L10n("Beyond Compare")).tag("beyond-compare")
+                        Text(L10n("Sublime Merge")).tag("sublime-merge")
+                    }
+                    .labelsHidden()
+                    .disabled(draft.isReadOnly)
+                    .accessibilityIdentifier("settings.codeDiff")
+                }
+
+                Divider()
+
+                SettingsSectionHeading(title: L10n("性能"), mode: L10n("Saved locally; restart the app to apply."))
+                GroupBox {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle(L10n("加速会话切换"), isOn: $acceleratedSessionSwitching)
                             .accessibilityIdentifier("settings.sessionSwitchingAcceleration")
@@ -395,8 +543,7 @@ struct SettingsView: View {
                 }
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n("Storage"))
-                            .font(WorkbenchTypography.font(for: .sectionTitle))
+                        SettingsSectionHeading(title: L10n("Storage"), mode: L10n("Requires Save Settings"))
                         Text(L10nFormat(
                             "%@ environment on port %lld.",
                             L10n(CorptieAppEnvironment.displayName),
@@ -417,7 +564,10 @@ struct SettingsView: View {
                         .font(WorkbenchTypography.font(for: .body))
                         .foregroundStyle(CorptiePalette.secondaryText)
                     HStack(spacing: 8) {
-                        TextField(L10n("Choose a data root"), text: $dataRoot)
+                        TextField(L10n("Choose a data root"), text: $draft.dataRoot)
+                            .disabled(draft.isReadOnly)
+                            .focused($dataRootFocused)
+                            .accessibilityIdentifier("settings.dataRoot")
                             .textFieldStyle(.roundedBorder)
                             .font(WorkbenchTypography.font(for: .technical))
 
@@ -426,7 +576,14 @@ struct SettingsView: View {
                         } label: {
                             Image(systemName: "folder")
                         }
+                        .disabled(draft.isReadOnly)
                         .help(L10n("Choose data root"))
+                        .accessibilityLabel(L10n("Choose data root"))
+                    }
+                    if draft.showValidation, let error = draft.dataRootError {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.red)
+                            .accessibilityIdentifier("settings.dataRoot.error")
                     }
                     Text(L10n("Database, configuration, logs, Artifacts, Provider runtimes, Skills, cache, state, and backups are migrated and verified before a controlled Backend restart. The old Data Root is retained and is never deleted automatically."))
                         .font(WorkbenchTypography.font(for: .help))
@@ -462,42 +619,17 @@ struct SettingsView: View {
                 }
 
 
-                SettingsOptionRow(title: L10n("Language")) {
-                    Picker(L10n("Language"), selection: $appLanguage.selection) {
-                        ForEach(AppLanguage.allCases) { language in
-                            Text(L10n(language.localizationKey)).tag(language)
-                        }
-                    }
-                    .pickerStyle(.menu).labelsHidden()
-                }
-
                 VStack(alignment: .leading, spacing: 12) {
                     Text(L10n("Session Management"))
                         .font(WorkbenchTypography.font(for: .sectionTitle))
                     SettingsOptionRow(title: L10n("Archived Sessions"),
                                       explanation: L10n("View or restore sessions removed from the main screen.")) {
                         Button(L10n("View…"), systemImage: "archivebox") { selectedTab = .archivedSessions }
+                            .accessibilityIdentifier("settings.archivedSessions.open")
                     }
                 }
 
-                SettingsOptionRow(title: L10n("Code Diff Tool"),
-                                  explanation: L10n("Used when reviewing files changed during a session.")) {
-                    Picker(L10n("Code Diff Tool"), selection: $codeDiff.tool) {
-                        Text(L10n("Automatic")).tag("automatic")
-                        Text(L10n("Git Difftool")).tag("git-difftool")
-                        Text(L10n("FileMerge")).tag("filemerge")
-                        Text(L10n("Visual Studio Code")).tag("vscode")
-                        Text(L10n("Kaleidoscope")).tag("kaleidoscope")
-                        Text(L10n("Beyond Compare")).tag("beyond-compare")
-                        Text(L10n("Sublime Merge")).tag("sublime-merge")
-                    }
-                    .labelsHidden()
-                }
 
-                if let error = settingsError {
-                    Text(error).font(WorkbenchTypography.font(for: .help))
-                        .foregroundStyle(.red).lineLimit(2)
-                }
             }
             .padding(.trailing, 8)
         }
@@ -506,23 +638,25 @@ struct SettingsView: View {
     private var providerSettingsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                Text(L10n("共用配置")).font(WorkbenchTypography.font(for: .sectionTitle))
+                SettingsSectionHeading(title: L10n("共用配置"), mode: L10n("Session defaults use Save Settings below. Background models are saved separately."))
                 GroupBox {
                     TaskCreationDefaultsSettingsView(
                         load: { try await ProviderSettingsAPI.readTaskDefaults(providerId: $0) },
                         save: { try await ProviderSettingsAPI.saveTaskDefaults($0) },
                         draft: Binding(
-                            get: { sessionCreationDraft ?? backendClient.settings?.newSessionDefaults?.taskCreation ?? TaskCreationDefaults() },
-                            set: { sessionCreationDraft = $0 }))
+                            get: { draft.taskCreation },
+                            set: { draft.taskCreation = $0 }))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
+                        .disabled(draft.isReadOnly)
                 }
                 GroupBox {
-                    FoundationModelSettingsView(modelCatalog: backendClient.modelCatalog)
+                    FoundationModelSettingsView(modelCatalog: backendClient.modelCatalog, draft: foundationDraft)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
                 ProviderEnvironmentSettingsView(defaultProviderId: backendClient.settings?.newSessionDefaults?.taskCreation?.providerId)
+                    .disabled(draft.isReadOnly)
             }
             .padding(.trailing, 8)
         }
@@ -536,14 +670,15 @@ struct SettingsView: View {
     }
 
     private var proxySettingsTab: some View {
-        ProxySettingsTab(backendClient: backendClient, agentProxy: $agentProxy)
+        ProxySettingsTab(backendClient: backendClient, agentProxy: $draft.agentProxy)
+            .disabled(draft.isReadOnly)
     }
 
     private var feishuSettingsTab: some View {
         FeishuSettingsTab(
             backendClient: backendClient,
             feishuStore: feishuStore,
-            gateway: $gateway,
+            gateway: $draft.gateway,
             feishuAddMode: $feishuAddMode,
             newFeishuAppId: $newFeishuAppId,
             newFeishuAppSecret: $newFeishuAppSecret,
@@ -553,6 +688,7 @@ struct SettingsView: View {
             selectDefaultFeishuProfileIfNeeded: selectDefaultFeishuProfileIfNeeded,
             addTrustedWorkspace: addTrustedWorkspace
         )
+        .disabled(draft.isReadOnly)
     }
 
     private var availableFeishuProfiles: [FeishuProfile] {
@@ -570,20 +706,6 @@ struct SettingsView: View {
             ?? ""
     }
 
-    private var llmInteractionEnabled: Binding<Bool> {
-        Binding(
-            get: { choiceParser.provider != "disabled" },
-            set: { enabled in
-                choiceParser.provider = enabled ? (savedChoiceParser.provider == "openai" ? "openai" : "local-agent") : "disabled"
-                choiceParserStatus = .idle
-            }
-        )
-    }
-
-    private var isChoiceParserDirty: Bool {
-        choiceParser != savedChoiceParser
-    }
-
     private func addTrustedWorkspace() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -595,14 +717,20 @@ struct SettingsView: View {
         for url in panel.urls {
             WorkspaceAccessStore.shared.authorize(url)
             let path = url.standardizedFileURL.path
-            if !gateway.trustedWorkspaces.contains(path) {
-                gateway.trustedWorkspaces.append(path)
+            if !draft.gateway.trustedWorkspaces.contains(path) {
+                draft.gateway.trustedWorkspaces.append(path)
             }
         }
     }
 
     private func saveAllSettings() async {
-        let requestedDataRoot = dataRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.showValidation = true
+        guard draft.canSave else {
+            if draft.dataRootError != nil { selectedTab = .general; dataRootFocused = true }
+            return
+        }
+        draft.saveError = nil
+        let requestedDataRoot = draft.dataRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         if let activeDataRoot = backendClient.settings?.dataRoot,
            !DataRootMigrationPresentation.pathsEqual(activeDataRoot, requestedDataRoot) {
             dataRootMigrationDialog = DataRootMigrationDialogState(
@@ -625,7 +753,7 @@ struct SettingsView: View {
 
         if await persistSettings(dataRoot: dialog.targetDataRoot) {
             recordSavedSettings()
-            dataRoot = backendClient.settings?.dataRoot ?? dialog.targetDataRoot
+            draft.dataRoot = backendClient.settings?.dataRoot ?? dialog.targetDataRoot
             dialog.phase = .completed
             dataRootMigrationDialog = dialog
             return
@@ -633,7 +761,6 @@ struct SettingsView: View {
 
         let operation = backendClient.dataRootMigration
         await backendClient.loadSettings()
-        dataRoot = backendClient.settings?.dataRoot ?? dialog.sourceDataRoot
         dialog.phase = .failed
         dialog.errorCode = operation?.error?.code
         dialog.errorMessage = operation?.error?.message ?? backendClient.lastError ?? L10n("The migration failed before activation.")
@@ -641,54 +768,31 @@ struct SettingsView: View {
     }
 
     private func persistSettings(dataRoot: String) async -> Bool {
-        await backendClient.updateSettings(
-            dataRoot: dataRoot,
-            choiceParser: choiceParser,
-            codexBackend: codexBackend,
-            codeDiff: codeDiff,
-            agentProxy: agentProxy,
-            gateway: gateway,
-            sessionCreationDefaults: sessionCreationDraft
-        )
+        let success = await draft.save { submitted in
+            let updated = await backendClient.updateSettings(
+                dataRoot: dataRoot,
+                choiceParser: submitted.choiceParser,
+                codexBackend: submitted.codexBackend,
+                codeDiff: submitted.codeDiff,
+                agentProxy: submitted.agentProxy,
+                gateway: submitted.gateway,
+                sessionCreationDefaults: draft.dirtyTabs.contains(.provider) ? submitted.taskCreation : nil
+            )
+            guard updated, let settings = settingsState.settings else {
+                throw BackendError.message(backendClient.lastError ?? L10n("Save failed"))
+            }
+            return settings
+        }
+        if !success {
+            // The endpoint can save ordinary fields before migration fails.
+            await backendClient.loadSettings()
+            if let settings = settingsState.settings { draft.receive(settings) }
+        }
+        return success
     }
 
     private func recordSavedSettings() {
-        lastSavedAt = Date()
-        settingsError = nil
-        sessionCreationDraft = nil
-        savedChoiceParser = choiceParser
-        savedCodexBackend = codexBackend
-        savedCodeDiff = codeDiff
-        savedAgentProxy = agentProxy
-        savedGateway = gateway
-        choiceParserStatus = .saved
-    }
-
-    private func confirmChoiceParser() async {
-        choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataRoot: dataRoot, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
-            savedChoiceParser = choiceParser
-            savedCodexBackend = codexBackend
-            savedCodeDiff = codeDiff
-            savedAgentProxy = agentProxy
-            savedGateway = gateway
-            choiceParserStatus = .saved
-        } else {
-            choiceParserStatus = .failed(backendClient.lastError ?? L10n("Save failed"))
-        }
-    }
-
-    private func testChoiceParser() async {
-        choiceParserStatus = .idle
-        guard choiceParser.provider != "disabled" else {
-            return
-        }
-        switch await backendClient.testChoiceParser(choiceParser, agentProxy: agentProxy) {
-        case .success(let message):
-            choiceParserStatus = .passed(message)
-        case .failure(let error):
-            choiceParserStatus = .failed(error.localizedDescription)
-        }
+        if let settings = settingsState.settings { draft.saved(settings) }
     }
 
     private func chooseDataRoot() {
@@ -697,11 +801,11 @@ struct SettingsView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.directoryURL = URL(fileURLWithPath: dataRoot.isEmpty ? defaultDataRoot : dataRoot)
+        panel.directoryURL = URL(fileURLWithPath: draft.dataRoot.isEmpty ? defaultDataRoot : draft.dataRoot)
 
         if panel.runModal() == .OK, let url = panel.url {
             WorkspaceAccessStore.shared.authorize(url)
-            dataRoot = url.path
+            draft.dataRoot = url.path
         }
     }
 
