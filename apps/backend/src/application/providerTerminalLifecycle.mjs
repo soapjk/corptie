@@ -1,5 +1,5 @@
 export function createProviderTerminalLifecycle({
-  store, emitEvent, recordWorkSettled, sessionMailbox, settleEntityTaskFromSession,
+  onChecklistTerminal = () => {}, store, emitEvent, recordWorkSettled, sessionMailbox, settleEntityTaskFromSession,
   collaborationCore, refreshWorkspaceInventoryAfterTurn,
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
   resumeWorkAfterTransition, scheduleAgentWorkDrain
@@ -14,8 +14,9 @@ export function createProviderTerminalLifecycle({
     const failed = terminalStatus === "failed";
     const cancelled = terminalStatus === "cancelled";
 
+    const runningWork = store.getRunningAgentTaskForSession(nextSession.id);
     const completedWork = store.getAgentTaskForTurn(nextSession.id, event.turnId)
-      ?? store.getRunningAgentTaskForSession(nextSession.id);
+      ?? (runningWork && (!runningWork.targetTurnId || runningWork.targetTurnId === event.turnId) ? runningWork : null);
     if (completedWork?.status === "running") {
       const updatedWork = store.updateAgentTask(completedWork.taskId, {
         status: failed ? "failed" : (cancelled ? "cancelled" : "completed"),
@@ -29,6 +30,7 @@ export function createProviderTerminalLifecycle({
     }
     sessionMailbox?.settleAdopted(nextSession.id, event.turnId, terminalStatus);
     settleEntityTaskFromSession(nextSession);
+    onChecklistTerminal({ event, projection, logicalRoute, completedWork });
     // Recovered execution state does not prove the final business result was
     // delivered. Require user review before advancing queued work.
     if (event.payload?.suppressAutomaticContinuation === true) return;

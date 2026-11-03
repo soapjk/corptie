@@ -36,6 +36,7 @@ const DOMAIN_PROFILES = Object.freeze({
     ["skill", "skills", "agent skill", "技能", "能力包"],
     "corptie_skill_search"
   ),
+  "execution-checklist": profile(["execution checklist", "todo", "清单", "执行清单", "待办"], "corptie_execution_checklist_manage"),
   "scheduled-tasks": profile(
     [
       "scheduled-tasks", "scheduled task", "scheduled tasks", "automation", "automations",

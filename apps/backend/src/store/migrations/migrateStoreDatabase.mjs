@@ -1,3 +1,4 @@
+import { migrateExecutionChecklist } from "./executionChecklistMigrations.mjs";
 import { migrateSessionMailbox } from "./sessionMailboxMigrations.mjs";
 import { migrateChannelMailbox } from "./channelMailboxMigrations.mjs";
 import { migrateTaskProjectionColumns, migrateTaskCreationOrigins, migrateTaskLifecycleGuards } from "./taskEvolutionMigrations.mjs";
@@ -47,6 +48,7 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
 
     // --- 实体层：Work / Task / 依赖 DAG（净新增，见 15 Phase 1） ---
     db.run(workDomainSchemaSql);
+    migrateExecutionChecklist(db);
     ensureColumn("worktree_integration_jobs", "fingerprint_version", "INTEGER");
     ensureColumn("worktree_integration_jobs", "idempotency_key", "TEXT");
     ensureColumn("worktree_integration_jobs", "start_request_fingerprint", "TEXT");
