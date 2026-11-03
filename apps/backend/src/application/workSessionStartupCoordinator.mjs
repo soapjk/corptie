@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { decodeWorkSessionStartCommand } from "../contracts/workSessionStartCommand.mjs";
+import { createStartupTiming } from "../utils/startupTiming.mjs";
 
 const ACTIVE_STATES = new Set([
   "allocated", "worktree_prepared", "session_bound", "provider_bound", "compensating"
@@ -166,30 +167,37 @@ export class WorkSessionStartupCoordinator {
   }
 
   async #drive(operationId) {
+    const operation = this.#operation(operationId);
+    const timing = createStartupTiming({ startupOperationId: operationId, taskId: operation?.task_id,
+      providerId: operation?.provider_id, attempt: operation?.attempt });
+    return timing.measure("startup.total", span => this.#driveMeasured(operationId, span));
+  }
+
+  async #driveMeasured(operationId, timing) {
     let operation = this.#operation(operationId);
     try {
       if (!operation) throw coded("START_REFERENCE_INVALID", "Startup operation disappeared.", 404, false);
       if (!this.#leaseOwned(operation) && !this.#takeLease(operation)) return this.#pendingView(this.#operation(operationId));
-      const context = await this.authorizeStart(this.#inputFor(operation));
+      const context = await timing.measure("startup.authorize", () => this.authorizeStart(this.#inputFor(operation)));
       operation = this.#operation(operationId);
 
       let allocation = jsonObject(operation.allocation_json);
       if (operation.state === "allocated") {
         try {
-          allocation = await this.prepareWorktree({
+          allocation = await timing.measure("startup.worktree.prepare", span => this.prepareWorktree({
             startupOperationId: operationId,
             taskId: operation.task_id,
             repositoryId: operation.repository_id,
             idempotencyKey: operation.idempotency_key,
-            expectedTaskVersion: operation.expected_task_version
-          });
-          allocation = await this.#verifiedAllocation(operation, allocation);
+            expectedTaskVersion: operation.expected_task_version, startupTiming: span
+          }));
+          allocation = await timing.measure("startup.worktree.verify", span => this.#verifiedAllocation(operation, allocation, span));
         } catch (error) {
           throw phaseFailure(error, "START_WORKTREE_PREPARATION_FAILED", "worktree_preparation");
         }
         operation = this.#transition(operation, "worktree_prepared", { allocation });
       } else if (allocation) {
-        allocation = await this.#verifiedAllocation(operation, allocation);
+        allocation = await timing.measure("startup.worktree.reverify", span => this.#verifiedAllocation(operation, allocation, span));
       }
 
       let session = operation.legacy_session_id ? this.store.getSession(operation.legacy_session_id) : null;
@@ -197,15 +205,15 @@ export class WorkSessionStartupCoordinator {
         let logical;
         try {
           if (!session) {
-            session = await this.providerWorkSessionPort.createSession({
+            session = await timing.measure("startup.session.create", span => this.providerWorkSessionPort.createSession({
               ...this.#inputFor(operation),
               workId: context.workId,
               repositoryId: context.repositoryId,
               taskTitle: context.taskTitle,
               workspace: allocation,
               startupOperationId: operationId,
-              trustedContext: this.#trustedSnapshot(operation, allocation)
-            });
+              trustedContext: this.#trustedSnapshot(operation, allocation), startupTiming: span
+            }));
           }
           logical = this.#verifiedLogicalSession(operation, session, allocation);
         } catch (error) {
@@ -226,17 +234,17 @@ export class WorkSessionStartupCoordinator {
           if (!binding) binding = this.#allocateProviderBinding(operation, allocation);
           let proof = null;
           try {
-            proof = await this.providerWorkSessionPort.inspectBinding(
+            proof = await timing.measure("startup.provider.inspect-binding", () => this.providerWorkSessionPort.inspectBinding(
               this.#providerBindingInput(operation, binding, allocation)
-            );
+            ));
           } catch (error) {
             if (error?.code !== "START_PROVIDER_BINDING_NOT_FOUND") throw error;
           }
           if (!proof) {
-            proof = await this.providerWorkSessionPort.bindWorkspace(
+            proof = await timing.measure("startup.provider.bind-workspace", () => this.providerWorkSessionPort.bindWorkspace(
               this.#providerBindingInput(operation, binding, allocation),
               { workingDirectory: allocation.canonicalWorktreePath }
-            );
+            ));
           }
           this.acceptProviderProof(proof);
         } catch (error) {
@@ -247,7 +255,7 @@ export class WorkSessionStartupCoordinator {
 
       if (operation.state === "provider_bound") {
         try {
-          operation = await this.#ensureProviderActivated(operation, allocation);
+          operation = await timing.measure("startup.provider.activate", span => this.#ensureProviderActivated(operation, allocation, span));
         } catch (error) {
           throw operation.dispatch_initial_turn === 0
             ? phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_activation")
@@ -270,7 +278,7 @@ export class WorkSessionStartupCoordinator {
         };
         throw error;
       }
-      await this.#failAndCompensate(operation, error);
+      await timing.measure("startup.compensate", () => this.#failAndCompensate(operation, error));
       error.startup = this.#failureView(this.#operation(operationId));
       throw error;
     }
@@ -389,10 +397,10 @@ export class WorkSessionStartupCoordinator {
     return result;
   }
 
-  async #verifiedAllocation(operation, input) {
+  async #verifiedAllocation(operation, input, startupTiming = null) {
     const allocation = normalizeAllocation(input, operation);
     const inspected = normalizeAllocation(
-      await this.inspectWorktree({ operation, allocation }), operation
+      await this.inspectWorktree({ operation, allocation, startupTiming }), operation
     );
     const fields = [
       "repositoryId", "worktreeId", "canonicalWorktreePath", "sourceCommitOid",
@@ -510,7 +518,7 @@ export class WorkSessionStartupCoordinator {
     };
   }
 
-  async #ensureProviderActivated(operation, allocation) {
+  async #ensureProviderActivated(operation, allocation, startupTiming = null) {
     let binding = this.#binding(operation.startup_operation_id);
     if (!binding) throw coded("START_PROVIDER_BINDING_FAILED", "Provider binding disappeared before activation.", 409, true);
     if (binding.activation_proof_json) {
@@ -524,7 +532,8 @@ export class WorkSessionStartupCoordinator {
       ...this.#providerBindingInput(operation, binding, allocation),
       session: this.store.getSession(operation.legacy_session_id),
       startupOperationId: operation.startup_operation_id,
-      dispatchInitialTurn: operation.dispatch_initial_turn !== 0
+      dispatchInitialTurn: operation.dispatch_initial_turn !== 0,
+      ...(startupTiming ? { startupTiming } : {})
     });
     const verified = this.#verifiedActivationProof(binding, proof, allocation);
     const now = this.clock();

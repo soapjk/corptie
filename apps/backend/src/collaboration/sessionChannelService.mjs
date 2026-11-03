@@ -37,6 +37,8 @@ export class SessionChannelService {
           409
         );
       }
+      const resolved = this.tryConfirmPendingParentChildRequest(presented, input);
+      if (resolved) return resolved;
       if (presented.status === "confirmed" && this.store.selectOne(
         "SELECT 1 FROM session_collaboration_channel_authorizations WHERE request_id=? AND json_extract(evidence_json,'$.type')='parent_child_policy'", [presented.requestId])) {
         return this.parentChildSendReceipt(presented, input);
@@ -104,23 +106,39 @@ export class SessionChannelService {
   }
 
   resolveParentChildAuthorization(sourceId, recipientId) {
-    const source = this.#resourceContext(sourceId), recipient = this.#resourceContext(recipientId);
+    const sourceLogical = this.#requireActiveLogicalSession(sourceId, "sourceSessionId");
+    const recipientLogical = this.#requireActiveLogicalSession(recipientId, "recipientSessionId");
+    const source = this.#resourceContext(sourceLogical.logicalSessionId), recipient = this.#resourceContext(recipientLogical.logicalSessionId);
     if (!source.taskId || !recipient.taskId || !source.workId || source.workId !== recipient.workId) return null;
-    const parent = this.store.getTask(source.taskId), child = this.store.getTask(recipient.taskId);
+    const sourceTask = this.store.getTask(source.taskId), recipientTask = this.store.getTask(recipient.taskId);
+    if (!sourceTask || !recipientTask) return null;
+    const parent = recipientTask.parent_task_id === sourceTask.id ? sourceTask : recipientTask;
+    const child = recipientTask.parent_task_id === sourceTask.id ? recipientTask : sourceTask;
     if (!parent || !child || parent.parent_task_id || child.parent_task_id !== parent.id
       || parent.work_id !== child.work_id || parent.work_id !== source.workId
       || parent.archived || child.archived || parent.deletion_status || child.deletion_status
-      || parent.current_session_id !== this.#requireLogicalSession(sourceId).legacySessionId
-      || child.current_session_id !== this.#requireLogicalSession(recipientId).legacySessionId) return null;
-    const [a,b] = canonicalPair(sourceId,recipientId);
+      || sourceTask.current_session_id !== sourceLogical.legacySessionId
+      || recipientTask.current_session_id !== recipientLogical.legacySessionId) return null;
+    const [a,b] = canonicalPair(sourceLogical.logicalSessionId,recipientLogical.logicalSessionId);
     if (this.store.selectOne("SELECT 1 FROM session_collaboration_channels WHERE session_a_id=? AND session_b_id=? AND status='revoked'",[a,b])) return null;
     return {type:"parent_child_policy",parentTaskId:parent.id,childTaskId:child.id,
-      sourceSessionId:sourceId,recipientSessionId:recipientId};
+      sourceSessionId:sourceLogical.logicalSessionId,recipientSessionId:recipientLogical.logicalSessionId};
+  }
+
+  tryConfirmPendingParentChildRequest(request, input) {
+    // Retry-driven repair only. Never replay historical/rejected requests or
+    // resolve a missing recipient by choosing another Task's current Session.
+    if (request.status !== "pending" || !request.requestedRecipientSessionId) return null;
+    const evidence = this.resolveParentChildAuthorization(request.requestingSessionId, request.requestedRecipientSessionId);
+    if (!evidence) return null;
+    const confirmed = this.confirmRequest(request.requestId, {}, evidence);
+    return confirmed.status === "confirmed" ? this.parentChildSendReceipt(confirmed, input) : confirmed;
   }
 
   parentChildSendReceipt(request, input) {
     const sent = this.sendMessage({channelId:request.channelId,senderSessionId:request.requestingSessionId,
-      body:input.body,messageKind:input.messageKind,inReplyToMessageId:input.inReplyToMessageId,idempotencyKey:input.idempotencyKey});
+      body:input.body,messageKind:input.messageKind,deliveryIntent:input.deliveryIntent,
+      inReplyToMessageId:input.inReplyToMessageId,idempotencyKey:input.idempotencyKey});
     return {status:"sent",routeAuthorization:"parent_child_policy",requestId:request.requestId,...sent};
   }
 
@@ -144,20 +162,28 @@ export class SessionChannelService {
   }
 
   confirmRequest(requestId, target = {}, evidence = {}) {
-    const request = this.getRequest(requestId);
-    if (!request) throw channelError("CHANNEL_REQUEST_NOT_FOUND", `Channel request ${requestId} was not found.`, 404);
-    if (request.status !== "pending") return request;
-    const source = this.#requireActiveLogicalSession(request.requestingSessionId, "requestingSessionId");
-    const recipientId = target.recipientSessionId ?? request.requestedRecipientSessionId;
-    const recipient = this.#requireActiveLogicalSession(recipientId, "recipientSessionId");
-    if (source.logicalSessionId === recipient.logicalSessionId) {
-      throw channelError("CHANNEL_SELF_TARGET_FORBIDDEN", "A Session cannot open a Channel to itself.");
-    }
-    const [sessionAId, sessionBId] = canonicalPair(source.logicalSessionId, recipient.logicalSessionId);
-    const timestamp = this.clock();
-    let channel = this.findActiveChannel(sessionAId, sessionBId);
-    let message;
+    // Read and decide under the same Store transaction as all existing writes.
+    // Concurrent user/policy confirmation must not create a second first message.
     this.store.runInTransaction(() => {
+      const request = this.getRequest(requestId);
+      if (!request) throw channelError("CHANNEL_REQUEST_NOT_FOUND", `Channel request ${requestId} was not found.`, 404);
+      if (request.status !== "pending") return;
+      const source = this.#requireActiveLogicalSession(request.requestingSessionId, "requestingSessionId");
+      const recipientId = target.recipientSessionId ?? request.requestedRecipientSessionId;
+      const recipient = this.#requireActiveLogicalSession(recipientId, "recipientSessionId");
+      if (evidence?.type === "parent_child_policy") {
+        const current = this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId);
+        if (!current || ["parentTaskId", "childTaskId", "sourceSessionId", "recipientSessionId"].some(key => current[key] !== evidence[key])) {
+          throw channelError("CHANNEL_PARENT_CHILD_BINDING_CHANGED", "The current direct parent/child binding no longer authorizes this Channel.", 409);
+        }
+        evidence = current;
+      }
+      if (source.logicalSessionId === recipient.logicalSessionId) {
+        throw channelError("CHANNEL_SELF_TARGET_FORBIDDEN", "A Session cannot open a Channel to itself.");
+      }
+      const [sessionAId, sessionBId] = canonicalPair(source.logicalSessionId, recipient.logicalSessionId);
+      const timestamp = this.clock();
+      let channel = this.findActiveChannel(sessionAId, sessionBId);
       if (!channel) {
         const channelId = `channel:${this.idFactory()}`;
         this.store.db.run(
@@ -176,7 +202,7 @@ export class SessionChannelService {
         [`channel_authorization:${this.idFactory()}`, request.requestId, channel.channelId, source.logicalSessionId,
           JSON.stringify(evidence ?? {}), timestamp]
       );
-      message = this.#insertMessage(channel, {
+      const message = this.#insertMessage(channel, {
         senderSessionId: source.logicalSessionId,
         body: request.request.body,
         messageKind: request.request.messageKind,
@@ -191,23 +217,23 @@ export class SessionChannelService {
       this.store.db.run(
         `UPDATE session_collaboration_channel_requests
          SET channel_id=?, requested_recipient_session_id=?, status='confirmed',
-             first_message_id=?, resolved_at=?, failure_json=NULL WHERE request_id=?`,
+             first_message_id=?, resolved_at=?, failure_json=NULL WHERE request_id=? AND status='pending'`,
         [channel.channelId, recipient.logicalSessionId, message.messageId, timestamp, request.requestId]
       );
     });
     this.store.scheduleSave();
-    return this.getRequest(request.requestId);
+    return this.getRequest(requestId);
   }
 
   rejectRequest(requestId, evidence = {}) {
-    const request = this.getRequest(requestId);
-    if (!request) throw channelError("CHANNEL_REQUEST_NOT_FOUND", `Channel request ${requestId} was not found.`, 404);
-    if (request.status !== "pending") return request;
-    const timestamp = this.clock();
     this.store.runInTransaction(() => {
+      const request = this.getRequest(requestId);
+      if (!request) throw channelError("CHANNEL_REQUEST_NOT_FOUND", `Channel request ${requestId} was not found.`, 404);
+      if (request.status !== "pending") return;
+      const timestamp = this.clock();
       this.store.db.run(
         `UPDATE session_collaboration_channel_requests
-         SET status='rejected', failure_json=?, resolved_at=? WHERE request_id=?`,
+         SET status='rejected', failure_json=?, resolved_at=? WHERE request_id=? AND status='pending'`,
         [JSON.stringify(evidence ?? {}), timestamp, requestId]
       );
       this.store.db.run(
@@ -227,7 +253,7 @@ export class SessionChannelService {
     if (!request || request.status !== "pending") return request;
     this.store.db.run(
       `UPDATE session_collaboration_channel_requests
-       SET status='failed', failure_json=?, resolved_at=? WHERE request_id=?`,
+       SET status='failed', failure_json=?, resolved_at=? WHERE request_id=? AND status='pending'`,
       [JSON.stringify({ code: error?.code ?? "CHANNEL_TARGET_PREPARATION_FAILED", message: error?.message ?? String(error) }),
         this.clock(), requestId]
     );
@@ -618,7 +644,7 @@ export class SessionChannelService {
   #requireActiveLogicalSession(sessionId, field) {
     const logical = this.#requireLogicalSession(sessionId, field);
     const session = logical.legacySessionId ? this.store.getSession(logical.legacySessionId) : null;
-    if (!session || session.deletedAt || session.archived || logical.activeBinding?.state !== "active") {
+    if (!session || session.deletedAt || session.archived || logical.archived || logical.activeBinding?.state !== "active") {
       throw channelError("SESSION_UNAVAILABLE", `Session ${logical.logicalSessionId} is not an active Channel endpoint.`, 409);
     }
     return logical;
