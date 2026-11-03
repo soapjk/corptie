@@ -25,17 +25,30 @@ export class TimelineReadRepository {
       throw Object.assign(new Error("Invalid navigation direction."), { statusCode: 400, code: "INVALID_NAVIGATION_DIRECTION" });
     }
     const ascending = direction === "newer";
-    const rows = this.selectAll(`SELECT id, created_at, type,
-        CASE WHEN type = 'userMessage' THEN substr(COALESCE(presentation_text, text, ''), 1, 180) ELSE '' END AS preview
+    const rows = this.selectAll(`SELECT id, created_at, type, turn_id, presentation_role,
+        CASE WHEN type IN ('userMessage', 'agentMessage') AND COALESCE(presentation_role, '') NOT IN ('commentary', 'reasoning')
+          THEN substr(COALESCE(presentation_text, text, ''), 1, 180) ELSE '' END AS preview
       FROM session_items WHERE session_id = ?
         ${anchor ? `AND (created_at, id) ${ascending ? ">" : "<"} (?, ?)` : ""}
       ORDER BY created_at ${ascending ? "ASC" : "DESC"}, id ${ascending ? "ASC" : "DESC"} LIMIT 1024`,
       [sessionId, ...(anchor ? [anchor.t, anchor.i] : [])]);
+    // Resolve reply excerpts only from this bounded read, by Session-owned turn
+    // identity. Never issue one extra query per marker or scan a full transcript.
+    const replies = new Map();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[ascending ? rows.length - index - 1 : index];
+      if (row.type === "agentMessage" && row.turn_id && row.preview && !replies.has(row.turn_id)) {
+        replies.set(row.turn_id, { index, text: row.preview.replace(/\s+/gu, " ").trim() });
+      }
+    }
     const entries = [];
     let scanned = 0, bytes = 0;
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
+      const reply = replies.get(row.turn_id);
+      const position = ascending ? rows.length - index - 1 : index;
       const item = row.type === "userMessage" ? { id: row.id, createdAt: row.created_at,
-        preview: row.preview.replace(/\s+/gu, " ").trim() } : null;
+        preview: row.preview.replace(/\s+/gu, " ").trim(),
+        replyPreview: reply && reply.index < position ? reply.text : null } : null;
       if (item && Buffer.byteLength(item.id) > 2048) throw Object.assign(new Error("Message identity exceeds navigation limits."), { statusCode: 503, code: "NAVIGATION_ITEM_TOO_LARGE" });
       const size = item ? Buffer.byteLength(JSON.stringify(item)) : 0;
       if (item && entries.length && bytes + size > 100000) break;
