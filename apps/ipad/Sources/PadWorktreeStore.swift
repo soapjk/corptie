@@ -29,7 +29,8 @@ enum PadWorktreeFailure {
             let reason = ClientWorktreeBusyContext.failureMessage(code: failure.code, context: failure.busyContext,
                 localize: { busyTranslations[$0] ?? $0 }) ?? reasons[failure.code] ?? "服务端返回错误。"
             let uncertain = mutation && failure.statusCode >= 500 ? "\n执行结果可能未确认，请先核对状态，不要重复提交。" : ""
-            return "\(stage)：\(reason)\n\(failure.code) · HTTP \(failure.statusCode)\(uncertain)"
+            let detail = failure.message.map { "\n\n\($0)" } ?? ""
+            return "\(stage)：\(reason)\n\(failure.code) · HTTP \(failure.statusCode)\(detail)\(uncertain)"
         }
         let detail: String
         if error is DecodingError { detail = "服务端响应无法解析（响应格式不匹配）。" }
@@ -366,6 +367,11 @@ final class PadWorktreeStore {
     @discardableResult func jobAction(_ action: String, decisions: [ClientWorktreeCommitDecision] = [], reviewedJob: ClientWorktreeJob? = nil,
                    connection: PadConnection) async -> Bool {
         guard let job, !jobBusy, !planning else { return false }
+        let capability = action == "resolve-conflict" ? "resolve_conflict_with_agent" : action
+        guard job.supports(capability) else {
+            errorMessage = job.recovery?.message ?? "任务状态已变化，请刷新后使用当前可用操作。"
+            return false
+        }
         if action == "confirm" {
             guard let reviewedJob, reviewedJob.id == job.id,
                   reviewedJob.planFingerprint == job.planFingerprint,
@@ -392,7 +398,10 @@ final class PadWorktreeStore {
             case "cancel": updated = try await api.cancel(jobId: job.id)
             case "retry": updated = try await api.retry(jobId: job.id)
             case "resolve-conflict": updated = try await api.resolveConflict(jobId: job.id)
-            default: return false
+            case "repreflight": updated = try await api.cancel(jobId: job.id, replan: true)
+            default:
+                errorMessage = "不支持的集成操作：\(action)"
+                return false
             }
             guard token == operationScope else { return false }
             if ["confirm", "retry", "resolve-conflict"].contains(action) {

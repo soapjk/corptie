@@ -492,6 +492,17 @@ test("real TLS route boundary and authenticated local approval", async () => {
     const internal=await call(repositoryJobsPath,{token:creds.accessToken,method:"POST",value:{idempotencyKey:"start:internal"}});
     assert.equal(internal.status,500);
     assert.equal(internal.body.busyContext,undefined);
+    const fullGitError = "Git failed\n" + "diagnostic\n".repeat(2_000) + "password=private-value\nFINAL_GIT_DETAIL";
+    gateway.worktreeAPI.startCandidate = async () => { throw Object.assign(new Error(fullGitError), {
+      code: "GIT_FAILED", statusCode: 500
+    }); };
+    const fullFailure = await call(repositoryJobsPath, { token: creds.accessToken, method: "POST", value: {} });
+    assert.equal(fullFailure.status, 500);
+    assert.match(fullFailure.body.error, /FINAL_GIT_DETAIL/);
+    assert.doesNotMatch(fullFailure.body.error, /private-value/);
+    const deniedFailure = await call(repositoryJobsPath, { method: "POST", value: {} });
+    assert.equal(deniedFailure.status, 401);
+    assert.doesNotMatch(JSON.stringify(deniedFailure.body), /FINAL_GIT_DETAIL/);
 
     assert.equal((await call(messagesPath, { token: creds.accessToken })).body.sessionId, "session:test");
     const readReceiptPath = "/client/v1/sessions/session%3Atest/read-receipt";

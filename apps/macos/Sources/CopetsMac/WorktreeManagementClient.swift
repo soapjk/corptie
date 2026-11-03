@@ -758,7 +758,11 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func retryJob() async {
-        guard let job, job.status == "paused", job.supports("retry") else { return }
+        guard let job else { return }
+        guard job.status == "paused", job.supports("retry") else {
+            errorMessage = job.recovery?.message ?? L10n("任务状态已变化，请刷新并使用当前可用操作。")
+            return
+        }
         await mutate {
             let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
                 "worktree-management/jobs/\(job.id)/retry",

@@ -188,6 +188,11 @@ public struct ClientGitCommitProtectionStatus: Decodable, Equatable, Sendable {
 
 public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
     public var graphExecution: ClientWorktreeGraphExecution? = nil
+    public var availableActions: [String]? = nil
+    public var recovery: ClientWorktreeRecovery? = nil
+    public var diagnosticText: String? = nil
+    public var errorSummary: String? = nil
+    public var completionEvidence: ClientWorktreeCompletionEvidence? = nil
     public let notification: OperationJobSnapshot?
     public let id: String
     public let repositoryId: String
@@ -206,17 +211,33 @@ public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
     public let conflictAutomation: ClientWorktreeConflictAutomation?
 
     public var shouldPoll: Bool {
-        ["queued", "running", "cancellation_requested", "replanning"].contains(status)
+        if ["completed", "canceled"].contains(status) { return false }
+        return ["queued", "running", "cancellation_requested", "replanning"].contains(status)
             || conflictResolution?.status == "running"
     }
     public var canCancel: Bool {
-        ["awaiting_confirmation", "queued", "running", "paused"].contains(status)
-            && conflictResolution?.status != "running"
+        supports("cancel")
     }
+    public func supports(_ action: String) -> Bool { availableActions?.contains(action) == true }
     public var hasMergeConflict: Bool {
         status == "paused" && plan.operationType != "sync"
             && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
     }
+}
+
+public struct ClientWorktreeRecovery: Decodable, Equatable, Sendable {
+    public let kind: String?
+    public let message: String
+}
+
+public struct ClientWorktreeCompletionEvidence: Decodable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let verifiedAt: String
+    public let repositoryId: String
+    public let mainWorktreeId: String
+    public let branchName: String?
+    public let mainHead: String
+    public let verifiedHeads: [String]
 }
 
 public struct ClientWorktreeGraphExecution: Decodable, Equatable, Sendable {
@@ -434,9 +455,9 @@ public struct ClientWorktreeAPI: Sendable {
                                                             commitProtectionDecisions: decisions))
     }
 
-    public func cancel(jobId: String) async throws -> ClientWorktreeJob {
-        struct Body: Encodable { let replan = false }
-        return try await jobAction(jobId, "cancel", Body())
+    public func cancel(jobId: String, replan: Bool = false) async throws -> ClientWorktreeJob {
+        struct Body: Encodable { let replan: Bool }
+        return try await jobAction(jobId, "cancel", Body(replan: replan))
     }
 
     public func deletionNotification(operationId: String) async throws -> OperationJobSnapshot {

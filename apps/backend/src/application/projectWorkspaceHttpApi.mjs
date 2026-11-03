@@ -1,3 +1,5 @@
+import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
+
 // Project and repository operations are independent of Agent Provider adapters.
 export function handleProjectWorkspaceHttpRequest({
   request, response, url, projectApplicationService,
@@ -306,7 +308,7 @@ function decodeRouteId(value, code) {
 
 export function worktreeErrorBody(error) {
   return {
-    error: error.message,
+    error: redactInlineSecrets(String(error.message ?? "Worktree operation failed.")),
     code: error.code,
     ...(error.busyContext ? {busyContext:Object.fromEntries(
       ["worktreeId","sessionId","sessionTitle","reason","jobId","status","phase","count"]
