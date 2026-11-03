@@ -43,17 +43,22 @@ struct SessionInterruptObservabilityTests {
     }
 
     @Test
-    func stopButtonHasDefinedCircleInComposerFooter() throws {
+    func stopButtonUsesTintedCircleAndOnlyOccupiesSpaceWhileInterruptible() throws {
         let button = try source(named: "SessionComposerStopButton.swift")
-        #expect(button.contains(".conversationGlassControl(tint: .red)"))
-        #expect(button.contains(".contentShape(Rectangle())"))
-        #expect(button.contains(".frame(width: compact ? ComposerShellMetrics.actionHitEdge : 44,"))
+        #expect(button.contains(".background(Color.red.opacity(0.12), in: Circle())"))
+        #expect(button.contains(".contentShape(Circle())"))
+        #expect(!button.contains("conversationGlassControl"))
+        #expect(!button.contains("strokeBorder"))
+        #expect(!button.contains("compact ? ComposerShellMetrics.actionHitEdge : 44"))
         let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
         #expect(composer.contains("headerAtBottom: true"))
         let footer = try #require(composer.range(of: "private var composerToolbar:"))
         let status = try #require(composer.range(of: "statusRow", range: footer.lowerBound..<composer.endIndex))
         let stop = try #require(composer.range(of: "stopButton(compact: false)", range: footer.lowerBound..<composer.endIndex))
         #expect(status.lowerBound < stop.lowerBound)
+        #expect(composer.contains("if showsStopControl {"))
+        #expect(composer.contains(".transition(.move(edge: .trailing).combined(with: .opacity))"))
+        #expect(composer.contains(".animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showsStopControl)"))
     }
 
     private func source(named name: String) throws -> String {

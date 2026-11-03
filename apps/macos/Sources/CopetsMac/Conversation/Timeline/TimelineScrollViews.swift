@@ -69,7 +69,7 @@ final class IntrinsicHeightTableView: NSTableView {
     }
 }
 
-final class TimelineIntentScroller: ConsoleThinScroller {
+class TimelineIntentScroller: ConsoleThinScroller {
     override var paintedKnobWidth: CGFloat { 4.5 }
     override class func scrollerWidth(for controlSize: NSControl.ControlSize,
                                      scrollerStyle: NSScroller.Style) -> CGFloat {

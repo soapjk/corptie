@@ -40,9 +40,11 @@ struct SessionConversationHeaderSurface: View {
     private let backendClient: BackendClient
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
+    @State private var workspacePathCopyFeedbackTask: Task<Void, Never>?
     struct ProjectStatusSnapshot {
         let serverID: String
         let sessionID: String?
@@ -96,15 +98,20 @@ struct SessionConversationHeaderSurface: View {
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
                 didCopySessionTitle = false
+                workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
+                didCopyWorkspacePath = false
             }
             .onChange(of: isPresentationActive) { _, active in
                 guard !active else { return }
                 sessionTitleCopyFeedbackTask?.cancel(); sessionTitleCopyFeedbackTask = nil
+                workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
                 didCopySessionTitle = false; didCopyWorkspacePath = false
             }
             .onDisappear {
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
+                workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
+                didCopySessionTitle = false; didCopyWorkspacePath = false
             }
     }
 
@@ -233,23 +240,13 @@ struct SessionConversationHeaderSurface: View {
                             ConsoleScheduledWakeIcon(isActive: scenePhase == .active && isPresentationActive)
                                 .accessibilityIdentifier("conversation-task-scheduled-wake")
                         }
+                        copyConfirmation(visible: didCopySessionTitle)
                     }
                 }
                 .buttonStyle(.plain)
                 .help(L10n("Click to copy Session title"))
                 .accessibilityLabel(L10n("Copy Session title"))
                 .accessibilityValue(selectedTitle)
-
-                if didCopySessionTitle {
-                    Label(L10n("Copied"), systemImage: "checkmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(CorptiePalette.connected)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
-                        .transition(.opacity.combined(with: .scale(scale: 0.94)))
-                        .accessibilityHidden(true)
-                }
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if showsHistoricalThread {
@@ -263,17 +260,16 @@ struct SessionConversationHeaderSurface: View {
                 }
             }
             HStack(alignment: .center, spacing: 6) {
+                if let selectedSession = session {
+                    SessionHeaderProviderIdentity(session: selectedSession, providers: providers)
+                        .font(WorkbenchTypography.font(for: .conversationMetadata))
+                }
                 if let cwd = workspacePath, !cwd.isEmpty {
                     Button(action: copyWorkspacePath) {
                         HStack(spacing: 4) {
                             Text(projectName ?? URL(fileURLWithPath: cwd).lastPathComponent)
                                 .lineLimit(1)
-                            if didCopyWorkspacePath {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(CorptiePalette.connected)
-                                    .transition(.opacity.combined(with: .scale))
-                            }
+                            copyConfirmation(visible: didCopyWorkspacePath)
                         }
                         .font(WorkbenchTypography.font(for: .conversationMetadata))
                         .foregroundStyle(.secondary)
@@ -281,6 +277,10 @@ struct SessionConversationHeaderSurface: View {
                     }
                     .buttonStyle(.plain)
                     .help(L10nFormat("Copy full workspace path: %@", cwd))
+                }
+                if hasWorktreeTarget {
+                    headerActionButton(.manageWorktrees)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 if let status = displayedProjectStatus {
                     ProjectServiceStatusDot(status: status.service)
@@ -478,31 +478,37 @@ struct SessionConversationHeaderSurface: View {
         session?.canInterruptNow == true
     }
 
+    private func copyConfirmation(visible: Bool) -> some View {
+        Image(systemName: "checkmark")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(CorptiePalette.connected)
+            .frame(width: 12, height: 12)
+            .opacity(visible ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: visible)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+    }
+
     private func copyWorkspacePath() {
         guard copySessionNameToPasteboard(workspacePath) else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
-            didCopyWorkspacePath = true
-        }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            withAnimation(.easeOut(duration: 0.12)) {
-                didCopyWorkspacePath = false
-            }
+        workspacePathCopyFeedbackTask?.cancel()
+        didCopyWorkspacePath = true
+        workspacePathCopyFeedbackTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(900)) }
+            catch { return }
+            didCopyWorkspacePath = false
+            workspacePathCopyFeedbackTask = nil
         }
     }
 
     private func copySessionTitle(_ title: String) {
         guard copySessionNameToPasteboard(title) else { return }
         sessionTitleCopyFeedbackTask?.cancel()
-        withAnimation(.easeOut(duration: 0.12)) {
-            didCopySessionTitle = true
-        }
+        didCopySessionTitle = true
         sessionTitleCopyFeedbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(900))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.12)) {
-                didCopySessionTitle = false
-            }
+            do { try await Task.sleep(for: .milliseconds(900)) }
+            catch { return }
+            didCopySessionTitle = false
             sessionTitleCopyFeedbackTask = nil
         }
     }

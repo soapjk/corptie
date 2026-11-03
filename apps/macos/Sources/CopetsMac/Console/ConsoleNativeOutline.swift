@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// Hide only the disclosure geometry, retaining AppKit's collapse capability.
+/// Returning false from shouldShowOutlineCellForItem also disables collapse
+/// paths in AppKit; Work headers supply their own folder toggle instead.
+final class ConsoleNativeOutlineView: NSOutlineView {
+    var showsDisclosure: (Any) -> Bool = { _ in true }
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect {
+        if row >= 0, row < numberOfRows, let item = item(atRow: row), !showsDisclosure(item) { return .zero }
+        return super.frameOfOutlineCell(atRow: row)
+    }
+}
+
 /// AppKit owns row reuse, disclosure geometry and animation. SwiftUI supplies
 /// the existing row controls; no animated height or presentation state is kept.
 struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
@@ -10,6 +21,7 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var isExpanded = false
     var isSection = false
     var allowsCollapse = true
+    var showsDisclosureIndicator = true
     var expansionChanged: (Bool) -> Void = { _ in }
 }
 
@@ -144,7 +156,8 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let outline = NSOutlineView()
+        let outline = ConsoleNativeOutlineView()
+        outline.showsDisclosure = { ($0 as? Node)?.group?.showsDisclosureIndicator ?? true }
         let column = NSTableColumn(identifier: .init("content"))
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
@@ -158,11 +171,14 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         outline.backgroundColor = .clear
         outline.dataSource = context.coordinator
         outline.delegate = context.coordinator
-        let scroll = NSScrollView()
+        let scroll = WorkOutlineScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
+        scroll.verticalScroller = WorkOutlineThinScroller()
+        scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
         scroll.documentView = outline
+        (scroll.verticalScroller as? WorkOutlineThinScroller)?.bindScrollActivity(to: scroll)
         context.coordinator.update(outline, initial: true)
         return scroll
     }
