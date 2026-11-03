@@ -138,8 +138,11 @@ struct ResourceDocumentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(GeometryReader { proxy in Color.clear.preference(key: ResourceDocumentWidth.self, value: proxy.size.width) })
-        .onPreferenceChange(ResourceDocumentWidth.self) { if abs(width - $0) > 1 { width = max(1, $0) } }
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            max(1, floor(geometry.size.width))
+        } action: { nextWidth in
+            if width != nextWidth { width = nextWidth }
+        }
     }
 }
 
@@ -150,11 +153,6 @@ struct ResourceDocumentView: View {
     UIPasteboard.general.string = text
     #endif
 }
-private struct ResourceDocumentWidth: PreferenceKey {
-    static let defaultValue: CGFloat = 300
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 /// SwiftUI owns wrapping and layout; no NSTextView ensureLayout/height feedback.
 private struct ResourceNativeText: View {
     let value: NSAttributedString

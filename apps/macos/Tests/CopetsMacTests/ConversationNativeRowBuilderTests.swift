@@ -8,6 +8,66 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
+    func testChildResultsAndScheduledTriggersUseSpecialCardsInBothSkins() throws {
+        let summary = "收到 1 个子任务的执行结果。\n\n子任务 1 · 已完成\n实现完成"
+        let notice = try item(["id": "mailbox-event:result", "type": "userMessage", "presentationRole": "system_event",
+            "systemEventKind": "child_task_result", "systemEventSource": "task_coordination",
+            "text": "private control preamble and JSON", "presentationText": summary])
+        let row = builder().nativeAppKitRow(.init(kind: .message(notice)), expandedTurnIds: [])
+        XCTAssertEqual(row.nativeStyle, .agent)
+        XCTAssertEqual(row.contentSurfaceRole, .interaction)
+        XCTAssertEqual(row.title, ConversationEventText(languageCode: AppLanguageController.shared.languageCode).systemKind("child_task_result"))
+        XCTAssertTrue(row.showsHeader)
+        XCTAssertNil(row.messageStatus)
+        XCTAssertEqual(row.copyText, summary)
+        XCTAssertFalse(row.nativeText.contains("private control"))
+        XCTAssertFalse(row.nativeText.contains(ConversationEventText(languageCode: AppLanguageController.shared.languageCode).systemNotice))
+        for skin in [ConversationSkin.classic, .codexFlat] {
+            XCTAssertLessThanOrEqual(NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 1000, skin: skin).cardWidth, 480)
+        }
+        let trigger = try item(["id": "trigger", "type": "userMessage", "presentationRole": "automation",
+            "messageOrigin": "scheduled_task", "automationName": "定时检查", "automationRunId": "run:one",
+            "automationRunStatus": "queued", "text": String(repeating: "完整触发消息。", count: 100)])
+        let triggerRow = builder().nativeAppKitRow(.init(kind: .message(trigger)), expandedTurnIds: [])
+        XCTAssertEqual(triggerRow.nativeStyle, .agent)
+        XCTAssertEqual(triggerRow.contentSurfaceRole, .interaction)
+        XCTAssertNotNil(triggerRow.scheduledTrigger)
+        XCTAssertFalse(triggerRow.scheduledTrigger?.isExpanded ?? true)
+        XCTAssertNil(triggerRow.messageStatus)
+    }
+
+    func testAuthoritativeProcessingRendersACollapsedProcessBeforeFirstProviderItem() throws {
+        _ = NSApplication.shared
+        let user = try item(["id": "early-user", "type": "userMessage", "presentationRole": NSNull(),
+            "turnId": "turn:early", "turnStatus": "processing", "userMessageStatus": "processing"])
+        let projected = ConversationReplyProgressProjection.entries(makeChatDisplayEntries(from: [user]))
+        let entry = try XCTUnwrap(projected.last)
+        let waiting = builder().nativeAppKitRow(entry, expandedTurnIds: [])
+        XCTAssertEqual(waiting.id, "process:turn:early")
+        XCTAssertEqual(waiting.processCount, 0)
+        XCTAssertEqual(waiting.processState, .running)
+        XCTAssertFalse(waiting.isExpanded)
+        XCTAssertTrue(waiting.processSummaryText(languageCode: "zh").contains("处理中"))
+        XCTAssertTrue(MacSharedMessageTextCard.supportsProcess(waiting))
+        for skin in [ConversationSkin.classic, .codexFlat] {
+            let layout = NativeTimelineLayoutCache.shared.layout(for: waiting, columnWidth: 600, skin: skin)
+            XCTAssertGreaterThan(layout.rowHeight, 0)
+            let cell = AppKitSharedMessageTextCell(identifier: .init("early-process"))
+            cell.frame = .init(x: 0, y: 0, width: 600, height: layout.rowHeight)
+            cell.updateAppearance(skin: skin)
+            cell.setContent(waiting, availableWidth: 600, onToggleExpansion: { _ in })
+            cell.layoutSubtreeIfNeeded()
+            XCTAssertFalse(cell.subviews.isEmpty)
+        }
+        let step = try item(["id": "first-tool", "type": "mcpToolCall", "presentationRole": NSNull(),
+            "turnId": "turn:early", "turnStatus": "inProgress"])
+        let populated = ConversationReplyProgressProjection.entries(makeChatDisplayEntries(from: [user, step]))
+        let working = builder().nativeAppKitRow(try XCTUnwrap(populated.last), expandedTurnIds: [])
+        XCTAssertEqual(working.id, waiting.id)
+        XCTAssertEqual(working.processCount, 1)
+        XCTAssertNotEqual(working.contentRevision, waiting.contentRevision)
+    }
+
     func testScheduledTriggerPreviewsThreeVisualLinesAndExpandsWithoutTruncatingCopy() throws {
         let message = (0..<30).map { "Trigger line \($0): " + String(repeating: "完整任务内容 **literal** ", count: 8) }.joined(separator: "\n")
         let entry = ChatDisplayEntry(kind: .message(try item(["id": "scheduled-preview", "type": "automationEvent",
