@@ -194,12 +194,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("worktree.repository.column"))
         XCTAssertTrue(contents.contains("worktree.list.column"))
         XCTAssertTrue(contents.contains("worktree.detail.column"))
-        XCTAssertEqual(contents.components(separatedBy: ".mainWindowPageCard(.lightweight)").count - 1, 3)
+        XCTAssertFalse(contents.contains(".mainWindowPageCard(.lightweight)"))
+        XCTAssertTrue(contents.contains("WorktreePanel(sidebar: true)"))
+        XCTAssertTrue(contents.contains(".background(WorkbenchStyle.canvas)"))
         XCTAssertTrue(contents.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
-        XCTAssertGreaterThanOrEqual(
-            contents.components(separatedBy: ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)").count - 1,
-            3
-        )
+        XCTAssertTrue(contents.contains("alignment: .topLeading"))
         XCTAssertTrue(contents.contains("@ObservedObject private var backendClient = BackendClient.shared"))
         XCTAssertTrue(contents.contains(".task(id: worktreeReloadTrigger)"))
         XCTAssertTrue(contents.contains("guard backendClient.isOnline else"))
@@ -366,7 +365,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains(".contextMenu"))
         XCTAssertTrue(view.contains("worktree.delete.\\(worktree.worktreeId)"))
         XCTAssertTrue(view.contains("worktree.cleanup"))
-        XCTAssertTrue(view.contains("Delete this Worktree?"))
+        let presentation = try String(contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreePresentation.swift"), encoding: .utf8)
+        XCTAssertTrue(presentation.contains("Delete this Worktree?"))
+        XCTAssertTrue(view.contains(".sheet(item: $pendingDeletion)"))
         XCTAssertTrue(view.contains("Only these Worktrees"))
         XCTAssertTrue(view.contains("WorktreeCleanupConfirmationView("))
         XCTAssertTrue(view.contains("ScrollView(.vertical)"))
