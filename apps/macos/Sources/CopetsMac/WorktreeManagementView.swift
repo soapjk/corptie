@@ -1583,8 +1583,6 @@ struct WorktreeManagementView: View {
                 if worktree.isMain { statusBadge("main", color: .blue) }
                 worktreeStateControl(worktree)
                 if !worktree.associations.isEmpty { Label("\(worktree.associations.count)", systemImage: "link").font(WorkbenchTypography.font(for: .conversationMetadata)) }
-            }
-            HStack(spacing: 7) {
                 if let h=worktree.hierarchy {
                     Text("↑\(h.comparison.ahead.map(String.init) ?? "—") ↓\(h.comparison.behind.map(String.init) ?? "—") · \(h.comparison.branchName ?? "—")").font(WorkbenchTypography.font(for: .conversationMetadata))
                 } else if !worktree.isMain {
@@ -1603,6 +1601,7 @@ struct WorktreeManagementView: View {
                     statusBadge(localizedIntegrationStatus(item.mergeStatus), color: item.mergeStatus == "conflict" || item.mergeStatus == "failed" ? .orange : .secondary)
                 }
             }
+            .lineLimit(1)
         }
         .padding(.vertical, 5)
         .padding(.leading,worktree.hierarchy?.role == "child" ? 14 : 0)
@@ -1673,7 +1672,9 @@ struct WorktreeManagementView: View {
     }
 
     private func statusBadge(_ text: String, color: Color) -> some View {
-        Text(text).font(WorkbenchTypography.font(for: .conversationMetadata)).padding(.horizontal, 6).padding(.vertical, 2)
+        Text(text).font(WorkbenchTypography.font(for: .conversationMetadata))
+            .lineLimit(1).help(text)
+            .padding(.horizontal, 6).padding(.vertical, 2)
             .background(color.opacity(0.12), in: Capsule()).foregroundStyle(color)
     }
 
