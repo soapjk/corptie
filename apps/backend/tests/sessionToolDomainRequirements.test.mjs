@@ -8,14 +8,14 @@ test("recommended project-code is required for every Provider-neutral Worker Ses
     assert.deepEqual(requiredToolDomainsForSession({
       sessionKind: "worker",
       providerId
-    }, { projectCodeRecommendationEnabled: true }), ["artifacts", "project-code"]);
+    }, { projectCodeRecommendationEnabled: true }), ["artifacts", "execution-checklist", "project-code"]);
   }
 });
 
 test("project-code is not forced before its benchmark recommendation gate passes", () => {
   assert.deepEqual(requiredToolDomainsForSession({
     sessionKind: "worker"
-  }, { projectCodeRecommendationEnabled: false }), ["artifacts"]);
+  }, { projectCodeRecommendationEnabled: false }), ["artifacts", "execution-checklist"]);
 });
 
 test("non-Worker Sessions never receive repository-scoped project-code authority", () => {

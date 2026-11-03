@@ -11,7 +11,7 @@ export function createRuntimeAgentWorkQueue({
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
   channelMailbox, sessionMailbox,
-  isWorkspaceMutationActive = () => false
+  checklist = null, isWorkspaceMutationActive = () => false
 }) {
   const drainingAgentWorkSessionIds = new Set();
   const runtimeQueuedTasksBySession = new Map();
@@ -230,6 +230,7 @@ export function createRuntimeAgentWorkQueue({
     logSessionMessageLatency(latencyTrace, "task_claimed");
     try {
       sessionMailbox?.validateOperation(claimed);
+      checklist?.validateOperation(claimed);
       emitEvent("AgentWorkPreparing", { sessionId, task: claimed }, { sessionId, source: claimed.source });
       let turnId = null;
       if (claimed.kind === "collaboration") {
@@ -268,6 +269,7 @@ export function createRuntimeAgentWorkQueue({
         );
         turnId = response.result?.turnId ?? response.result?.turn?.id ?? null;
       }
+      checklist?.onStarted(claimed, turnId);
       if (store.getAgentTask(claimed.taskId)?.status === "running") {
         store.updateAgentTask(claimed.taskId, { status: "running", targetTurnId: turnId, lastError: null });
         const startedWork = store.getAgentTask(claimed.taskId);
@@ -296,6 +298,7 @@ export function createRuntimeAgentWorkQueue({
         registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
       } else {
         preDeliveryRetryCounts.delete(claimed.taskId);
+        checklist?.onFailed(claimed, error);
         emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, task: failedWork }, {
           sessionId: claimed.sessionId,
           source: claimed.source

@@ -9,6 +9,7 @@ export function requiredToolDomainsForSession(context = {}, options = {}) {
       roleCapabilities: context.roleCapabilities ?? []
     })
     .requiredBeforeFirstTurn.map((requirement) => requirement.domainId);
+  if (context.sessionKind === "worker") required.push("execution-checklist");
   if (options.projectCodeRecommendationEnabled === true && context.sessionKind === "worker") {
     required.push(PROJECT_CODE_DOMAIN_ID);
   }
