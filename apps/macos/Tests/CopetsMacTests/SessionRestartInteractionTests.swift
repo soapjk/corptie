@@ -31,6 +31,10 @@ struct SessionRestartInteractionTests {
             .contains("DetailHeaderView(session: selectedSession, historicalWorkspacePath: displayedDetail?.cwd)"))
         #expect(header.contains("Text(selectedTitle)"))
         #expect(header.contains("copySessionTitle(selectedTitle)"))
+        #expect(header.contains("copyConfirmation(visible: didCopySessionTitle)"))
+        #expect(header.contains("copyConfirmation(visible: didCopyWorkspacePath)"))
+        #expect(!header.contains("Label(L10n(\"Copied\"), systemImage: \"checkmark\")"))
+        #expect(!header.contains(".transition(.opacity.combined(with: .scale"))
     }
 
     @Test
@@ -44,7 +48,7 @@ struct SessionRestartInteractionTests {
     }
 
     @Test
-    func sessionHeaderGroupsMetadataInOneGlassCapsuleAndKeepsActionsSeparate() throws {
+    func sessionHeaderKeepsProviderPathAndWorktreeBelowTheTitle() throws {
         let source = try contents(of: "Conversation/ConversationHeader.swift")
         let rowStart = try #require(source.range(of: "private var headerControlRow: some View"))
         let rowEnd = try #require(source.range(of: "private var selectedTitle:", range: rowStart.upperBound..<source.endIndex))
@@ -52,10 +56,8 @@ struct SessionRestartInteractionTests {
 
         #expect(source.contains("GlassEffectContainer(spacing: 6)"))
         #expect(row.contains("headerIdentityCapsule"))
-        #expect(row.components(separatedBy: ".frame(width: detailColumnVisibility == nil ? 66 : 142, alignment:").count - 1 == 2)
-        #expect(row.contains("VStack(alignment: .center, spacing: 3)"))
-        #expect(row.contains(".multilineTextAlignment(.center)"))
-        #expect(row.contains(".platformGlassSurface(in: Capsule())"))
+        #expect(row.contains("VStack(alignment: .leading, spacing: 4)"))
+        #expect(row.contains(".multilineTextAlignment(.leading)"))
         #expect(row.contains("SessionHeaderProviderIdentity(session: selectedSession, providers: providers)"))
         #expect(row.contains(".foregroundStyle(.primary)"))
         #expect(row.contains("if let cwd = workspacePath"))
@@ -67,14 +69,12 @@ struct SessionRestartInteractionTests {
         #expect(!source.contains("shouldSuggestWorktreeManagement"))
         #expect(source.contains("session?.external?.workspace?.repositoryId != nil || displayedProjectStatus != nil"))
         #expect(source.contains(".accessibilityIdentifier(\"session.detail.worktree\")"))
-        #expect(row.components(separatedBy: ".platformGlassSurface(in: Circle(), interactive: true)").count - 1 >= 2)
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.detach\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.actions\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.toggle-column\")"))
         #expect(row.contains("visibility.wrappedValue.toggle()"))
-        let menu = try #require(row.range(of: "Menu {"))
-        let menuGlass = try #require(row.range(of: ".platformGlassSurface(in: Circle(), interactive: true)", range: menu.upperBound..<row.endIndex))
-        #expect(menu.upperBound < menuGlass.lowerBound)
+        #expect(row.contains(".menuStyle(.borderlessButton)"))
+        #expect(row.contains(".menuIndicator(.hidden)"))
         #expect(!row.contains(".conversationGlassControl()"))
     }
 

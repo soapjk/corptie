@@ -27,7 +27,8 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
             ConsoleNativeOutline(groups: {
                 [ConsoleNativeOutlineGroup(id: "work", header: AnyView(Text("Work")),
                     rows: state.showsAll ? tasks : Array(tasks.prefix(5)),
-                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse, expansionChanged: { state.expanded = $0 }),
+                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse,
+                    showsDisclosureIndicator: false, expansionChanged: { state.expanded = $0 }),
                  ConsoleNativeOutlineGroup(id: "next", header: AnyView(Text("Next Work")), isSection: true)]
             }) { task in
                 ConsoleTaskRowContent(task: task, sessionActivity: .idle,
@@ -50,6 +51,8 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         defer { window.orderOut(nil); window.contentView = nil }
         settle(0.15)
         let table = try XCTUnwrap(findTable(in: host))
+        let nativeOutline = try XCTUnwrap(table as? NSOutlineView)
+        XCTAssertTrue(nativeOutline.frameOfOutlineCell(atRow: 0).isEmpty)
         XCTAssertEqual(table.numberOfRows, 2)
         let nextRow = try XCTUnwrap(table.rowView(atRow: 1, makeIfNecessary: true))
         let collapsedY = nextRow.frame.minY

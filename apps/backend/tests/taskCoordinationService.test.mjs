@@ -527,6 +527,51 @@ test("paired mobile HTTP toggle uses the injected shared Detail service, persist
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_command_receipts WHERE device_id=? AND status='completed'", [credentials.deviceId]).n, 2);
 });
 
+test("coordination publishes processing before its planner returns on both supported Providers", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
+    const f = await restrictedFixture(t, provider);
+    const reference = f.reference();
+    const binding = f.store.getAgentSessionBinding(reference.bindingId);
+    const create = id => f.store.createUserMessageDelivery({ deliveryId: id, messageId: `message:${id}`,
+      sessionId: reference.sessionId, binding, agentId: f.role.agentId, text: "请协调处理" });
+    const admitted = create("delivery:coordination-feedback");
+    create("delivery:still-queued");
+    f.store.updateMessageDelivery(admitted.delivery.deliveryId, { status: "dispatching", attemptCount: 1 });
+    f.store.updateAgentTask(admitted.task.taskId, { status: "running" });
+    const revision = f.store.sessionTimelineRevision(reference.sessionId);
+    let entered, release;
+    const planning = new Promise(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    f.run(async () => {
+      entered();
+      await held;
+      return { text: JSON.stringify({ kind: "discussion", reply: "协调答复", items: [] }) };
+    });
+    const operation = f.application.sendMessage(reference.sessionId, "请协调处理", {
+      idempotencyKey: admitted.delivery.deliveryId,
+      source: { type: "desktop", deliveryId: admitted.delivery.deliveryId }, options: { agentTask: admitted.task }
+    });
+    try {
+      await planning;
+      const delivery = f.store.getMessageDelivery(admitted.delivery.deliveryId);
+      assert.equal(delivery.status, "processing");
+      assert.equal(delivery.providerTurnId, `coordination:${admitted.delivery.deliveryId}`);
+      assert.equal(f.store.getSessionTurn(reference.sessionId, reference.bindingId, delivery.providerTurnId).execution_status, "running");
+      const message = f.store.getSessionItem(reference.sessionId, admitted.delivery.messageId);
+      assert.equal(message.status, "processing");
+      assert.equal(message.turnId, delivery.providerTurnId);
+      assert.ok(f.store.sessionTimelineRevision(reference.sessionId) > revision);
+      assert.equal(f.store.getMessageDelivery("delivery:still-queued").status, "queued");
+      assert.equal(f.store.getMessageDelivery("delivery:still-queued").providerTurnId, null);
+      assert.ok(f.events.some(event => event.type === "SessionCoordinationStarted"));
+    } finally {
+      release();
+      await operation;
+    }
+    assert.equal(f.store.settleMessageDeliveryFromTurn(admitted.delivery.deliveryId).status, "completed");
+  });
+});
+
 test("restricted coordination bypasses all native tools and sends on both no-tools Providers", async t => {
   for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
     const f = await restrictedFixture(t, provider);

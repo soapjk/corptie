@@ -78,6 +78,7 @@ struct MessageComposer: View {
 }
 
 struct SessionMessageComposerSurface: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let modelCatalog: ProviderCatalogStore
     private let backendClient: BackendClient
@@ -352,10 +353,18 @@ struct SessionMessageComposerSurface: View {
             }
             HStack(spacing: 6) {
                 if allowsModelSwitch && canSwitchModel { modelMenu }
-                stopButton(compact: false)
+                if showsStopControl {
+                    stopButton(compact: false)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
                 sendButton
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showsStopControl)
         }
+    }
+
+    private var showsStopControl: Bool {
+        session?.executionTaskStatus == .running && session?.canInterruptNow == true
     }
 
     private var compactEditorRow: some View {
