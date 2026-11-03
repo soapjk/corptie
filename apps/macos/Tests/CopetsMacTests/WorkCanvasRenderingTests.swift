@@ -5,6 +5,27 @@ import Testing
 
 @MainActor
 struct WorkCanvasRenderingTests {
+    @Test func inactiveWorkspaceDoesNotMountCanvasInputOrCardContent() async throws {
+        _ = NSApplication.shared
+        let workspace = ConsoleCardWorkspace(isActive: false, works: [], tasks: [], sessions: [],
+            selectedTaskID: nil, query: "", attentionCount: .constant(0), openChat: { _ in }, createChat: {},
+            openTask: { _, _ in }, clearSelection: {}, discuss: { _ in }, createTask: { _ in },
+            taskMenu: { _ in EmptyView() }).environmentObject(BackendClient.shared)
+        let host = NSHostingView(rootView: workspace)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { window.contentView = nil; window.close() }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(40))
+        host.layoutSubtreeIfNeeded()
+        func canvasInputs(_ view: NSView) -> Int {
+            (String(reflecting: type(of: view)).contains("WheelView") ? 1 : 0)
+                + view.subviews.reduce(0) { $0 + canvasInputs($1) }
+        }
+        #expect(canvasInputs(host) == 0, "An inactive canvas must not create native input views and render its cards")
+    }
+
     @Test func realTaskGridsKeepWideWorksInMultipleColumnsAfterCanvasLayout() async throws {
         _ = NSApplication.shared
         for width in [CGFloat(600), 900] {
