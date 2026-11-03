@@ -6,6 +6,7 @@ public protocol ConversationTimelineItem: Sendable {
     var id: String { get }
     var timelineTurnID: String { get }
     var timelineTurnStatus: String { get }
+    var userMessageStatus: String? { get }
     var type: String { get }
     var text: String { get }
     var createdAt: String? { get }
@@ -18,6 +19,7 @@ public protocol ConversationTimelineItem: Sendable {
 }
 
 public extension ConversationTimelineItem {
+    var userMessageStatus: String? { nil }
     var collaborationDirection: String? { nil }
     var timelineHasImages: Bool { false }
     var timelineMessageOrigin: String? { nil }
@@ -404,6 +406,23 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         }
     }
     flushProcessBuffer(isLastInTurn: true)
+    // The authoritative delivery state can start a turn before the Provider
+    // emits any visible content. Reuse the first process row's identity without
+    // inventing a source message, tool step or persisted placeholder.
+    if lastProcessIndex == nil, !isTerminalTurn, !baseTurnId.isEmpty,
+       let input = items.last(where: { item in
+           guard item.userMessageStatus?.lowercased() == "processing" else { return false }
+           let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+           return kind == .userMessage || kind == .systemEvent || kind == .automationEvent
+               || (kind == .collaborationMessage && item.collaborationDirection?.lowercased() == "inbound")
+       }) {
+        let insertion = entries.lastIndex(where: { entry in
+            guard case .message(let item) = entry.kind else { return false }
+            return item.id == input.id
+        }).map { $0 + 1 } ?? 0
+        entries.insert(.init(kind: .process(turnId: baseTurnId, items: []),
+                             processReplyState: .running), at: insertion)
+    }
     return entries
 }
 

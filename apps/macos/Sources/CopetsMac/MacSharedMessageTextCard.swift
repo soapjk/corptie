@@ -9,13 +9,7 @@ struct MacReplyIdentityHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Group {
-                if skin == .codexFlat {
-                    Text(DefaultAvatarInitials.make(from: identity.name))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.primary.opacity(0.05))
-                } else if let path = identity.avatarPath, !path.isEmpty {
+                if let path = identity.avatarPath, !path.isEmpty {
                     AnimatedAvatarImage(path: path, animates: false)
                 } else {
                     DefaultInitialAvatarView(familySeed: identity.name, variationSeed: identity.roleID,

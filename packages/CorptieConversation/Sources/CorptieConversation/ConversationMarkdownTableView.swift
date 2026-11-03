@@ -20,7 +20,7 @@ public final class ConversationMarkdownTableLayout {
     public var contentWidth: CGFloat { columnWidths.reduce(0, +) }
     public var height: CGFloat { rowHeights.reduce(0, +) + 12 }
     public static let horizontalInset: CGFloat = 8
-    public static let verticalInset: CGFloat = 6
+    public static let verticalInset: CGFloat = 8
 
     @MainActor private final class CellMeasurement {
         let typography: ConversationTypography
@@ -143,6 +143,13 @@ public final class ConversationMarkdownTableLayout {
                 widths[index] -= reduction; excess -= reduction
             }
         }
+        // Let fitting tables use the prose lane; retain horizontal overflow
+        // when the columns' readable minimum widths exceed the viewport.
+        let spareWidth = width - widths.reduce(0, +)
+        if spareWidth > 0, !widths.isEmpty {
+            let share = spareWidth / CGFloat(widths.count)
+            widths = widths.map { $0 + share }
+        }
         columnWidths = widths
         let textHeights = measuredCells.map { row in
             row.enumerated().map { column, cell in
@@ -191,18 +198,18 @@ public struct ConversationMarkdownTableView: View {
                             allowsSelection: allowsSelection, openLink: openLink)
                             .frame(width: layout.columnWidths[column] - 16,
                                    height: layout.textHeights[row][column])
-                            .padding(.horizontal, 8).padding(.vertical, 6)
+                            .padding(.horizontal, ConversationMarkdownTableLayout.horizontalInset)
+                            .padding(.vertical, ConversationMarkdownTableLayout.verticalInset)
                             .frame(width: layout.columnWidths[column], height: layout.rowHeights[row],
                                    alignment: .topLeading)
-                            .background(row == 0 ? Color.primary.opacity(0.06) : .clear)
-                            .overlay(alignment: .trailing) {
-                                Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 0.5)
-                            }
                             .accessibilityLabel("\(row == 0 ? "表头" : "第\(row)行")，\(table.rows[0][column].plainText)：\(table.rows[row][column].plainText)")
                     }
                 }
                 .overlay(alignment: .bottom) {
-                    Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 0.5)
+                    if row < layout.cells.count - 1 {
+                        Rectangle().fill(Color.primary.opacity(row == 0 ? 0.14 : 0.06))
+                            .frame(height: 0.5)
+                    }
                 }
             }
         }

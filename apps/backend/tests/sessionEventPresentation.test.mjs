@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { normalizeStoredItem } from "../src/store/storedTimelinePresentation.mjs";
+import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../src/utils/sessionEventPresentation.mjs";
 import {
   automationTimelineItems,
   collaborationEnvelopeFailure
@@ -124,4 +126,57 @@ test("every lifecycle event updates one run identity without duplicating instruc
     payload: {task: {taskId: "task"}, run: {runId: "run", status: "queued"}}}],
     {resolveRun: () => ({runId: "run", status: "completed", createdAt: "original"})});
   assert.equal(resolved.automationRunStatus, "completed");
+});
+
+test("mailbox child results receive a read-only special-card projection on every Provider", () => {
+  const text = `${CHILD_TASK_RESULT_NOTICE_PREFIX}请读取权威状态。\n${JSON.stringify([
+    {dispatchId: "dispatch:one", targetTaskId: "task:one", status: "completed", resultExcerpt: "实现完成"},
+    {dispatchId: "dispatch:two", status: "failed", errorMessage: "检查失败"}
+  ])}`;
+  for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
+    const item = {id: "mailbox-event:one", type: "userMessage", text, presentationRole: null,
+      rawMetadataJSON: JSON.stringify({sourceChannel: "mailbox_event", userMessageStatus: "processing"})};
+    const original = structuredClone(item);
+    const projected = normalizeStoredItem(item, provider);
+    assert.equal(projected.presentationRole, "system_event");
+    assert.equal(projected.systemEventKind, "child_task_result");
+    assert.equal(projected.systemEventSource, "task_coordination");
+    assert.match(projected.presentationText, /2 个子任务/);
+    assert.match(projected.presentationText, /已完成/);
+    assert.match(projected.presentationText, /执行失败/);
+    assert.ok(!projected.presentationText.includes("dispatchId"));
+    assert.ok(!projected.presentationText.includes("请读取权威状态"));
+    assert.equal(projected.text, text);
+    assert.deepEqual(item, original);
+    assert.equal(normalizeStoredItem({...item, rawMetadataJSON: JSON.stringify({sourceChannel: "desktop"})}, provider).presentationRole, null);
+    assert.equal(normalizeStoredItem({...item, presentationRole: "collaboration"}, provider).presentationRole, "collaboration");
+  }
+});
+
+test("child report previews remain bounded and Unicode-safe; malformed reports stay special notices", () => {
+  const item = {id: "mailbox-event:many", type: "userMessage", sourceChannel: "mailbox_event"};
+  const reports = Array.from({length: 12}, (_, index) => ({dispatchId: `dispatch:${index}`, status: "completed",
+    resultExcerpt: "A".repeat(239) + "👨‍👩‍👧‍👦".repeat(200)}));
+  const projected = normalizeStoredItem({...item, text: `${CHILD_TASK_RESULT_NOTICE_PREFIX}\n${JSON.stringify(reports)}`});
+  assert.match(projected.presentationText, /另有 4 个/);
+  assert.ok(projected.presentationText.length < 3000);
+  assert.ok(projected.presentationText.isWellFormed());
+  const invalid = normalizeStoredItem({...item, text: `${CHILD_TASK_RESULT_NOTICE_PREFIX}\nnot json`});
+  assert.equal(invalid.systemEventKind, "child_task_result");
+  assert.ok(!invalid.presentationText.includes("not json"));
+  assert.equal(normalizeStoredItem({...item, text: "ordinary mailbox message"}).presentationRole, undefined);
+});
+
+test("scheduled trigger messages use the Automation card without changing their execution payload", () => {
+  const item = {id: "scheduled", type: "userMessage", text: "执行任务", status: "running", presentationRole: null,
+    rawMetadataJSON: JSON.stringify({sourceChannel: "scheduled_session_task", messageOrigin: "scheduled_task",
+      automationId: "automation:one", automationRunId: "run:one", automationName: "定时检查"})};
+  const original = structuredClone(item);
+  const projected = normalizeStoredItem(item, "claude-sdk");
+  assert.equal(projected.presentationRole, "automation");
+  assert.equal(projected.automationRunId, "run:one");
+  assert.equal(projected.automationRunStatus, "running");
+  assert.equal(projected.text, "执行任务");
+  assert.deepEqual(item, original);
+  assert.equal(normalizeStoredItem({...item, presentationRole: "automation", automationEventType: "existing"}).automationEventType, "existing");
 });

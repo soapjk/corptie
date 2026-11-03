@@ -79,8 +79,8 @@ public enum ConversationReplyProgressProjection {
                 return false
             }
             for preceding in start..<first where !isQuestion(preceding) { result.append(entries[preceding]) }
-            if let archivedFirst = archived.first {
-                result.append(.init(kind: .process(turnId: processID ?? "commentary:" + archivedFirst.id, items: archived),
+            if let archiveID = processID ?? archived.first.map({ "commentary:" + $0.id }) {
+                result.append(.init(kind: .process(turnId: archiveID, items: archived),
                     processReplyCompleted: completed, processReplyState: {
                         if completed { return .completed }
                         switch lastStatus?.lowercased() {

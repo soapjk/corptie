@@ -170,6 +170,7 @@ struct ConsoleTaskRowContent: View {
     var session: TaskSession? = nil
     let isSelected: Bool
     let isUnread: Bool
+    var isActive = true
     let onOpen: () -> Void
 
     var body: some View {
@@ -186,7 +187,7 @@ struct ConsoleTaskRowContent: View {
                 Spacer(minLength: 0)
                 if [.processing, .waitingForInput, .paused, .failed].contains(sessionActivity) {
                     TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState,
-                        label: L10nFormat("Session: %@", sessionActivity.label))
+                        label: L10nFormat("Session: %@", sessionActivity.label), isActive: isActive)
                 }
                 if task.deletionStatus == "deleting" {
                     ProgressView()
