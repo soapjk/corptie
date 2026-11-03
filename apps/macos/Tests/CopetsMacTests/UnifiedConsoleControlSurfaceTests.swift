@@ -89,11 +89,10 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!console.contains("刷新重点 Task"))
         #expect(!workspace.contains("refreshRevision"))
         #expect(!workspace.contains("rebuild(reset:"))
-        for observer in [".onChange(of: tasks)", ".onChange(of: works)", ".onChange(of: sessions.map(CardSessionKey.init))"] {
-            #expect(workspace.contains(observer))
-        }
-        #expect(workspace.contains("WorkTaskCardGrid(itemCount: visibleTasks.count, availableWidth: availableWidth)"))
-        #expect(workspace.contains("ForEach(visibleTasks)"))
+        #expect(workspace.contains(".onChange(of: WorkCanvasDataRebuildInput("))
+        #expect(workspace.contains("if previous.active && next.active { rebuild() }"))
+        #expect(workspace.contains("WorkTaskCardGrid(itemCount: roots.count, availableWidth: availableWidth)"))
+        #expect(workspace.contains("ForEach(roots)"))
         #expect(workspace.contains("groupInteraction(for: work.id, availableWidth: availableWidth)"))
         #expect(!workspace.contains("ContentSizedTaskCardLayout { card(task) }"))
     }
