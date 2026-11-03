@@ -52,7 +52,7 @@ struct MainTabNotificationIsolationTests {
     @Test
     func navigationRailFitsCompactTrafficLightsAndRetainsTheLabelToggle() throws {
         _ = NSApplication.shared
-        #expect(MainNavigationRailLayout.width == 56)
+        #expect(MainNavigationRailLayout.width == 64)
         let source = try mainTabSource()
         #expect(!source.contains("navigationRailExpanded"))
         #expect(source.contains(".frame(width: showsNavigationLabels ? 168 : MainNavigationRailLayout.width)"))

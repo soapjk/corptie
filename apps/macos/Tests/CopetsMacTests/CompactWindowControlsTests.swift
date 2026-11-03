@@ -9,53 +9,57 @@ struct CompactWindowControlsTests {
         func windowShouldClose(_ sender: NSWindow) -> Bool { requests += 1; return false }
     }
 
-    @Test func mountingPreservesSystemControlsAndRestoresTheirPositions() throws {
+    @Test func compactButtonsFitInsideRailAndRestoreTheHiddenSystemControls() throws {
         let window = makeWindow()
         defer { window.contentView = nil; window.close() }
         let native = try [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].map {
             try #require(window.standardWindowButton($0))
         }
+        native[1].isHidden = true
         let frames = native.map(\.frame)
-        let frameNotifications = native.map(\.postsFrameChangedNotifications)
-        let parents = native.map(\.superview)
-        let actions = native.map(\.action)
-        let targets = native.map(\.target)
         let controls = mount(on: window)
-        window.orderBack(nil)
-        window.layoutIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
-        #expect(controls.buttons.count == 3)
-        for index in native.indices {
-            let button = native[index]
-            #expect(controls.buttons[index] === button)
-            #expect(button.superview === parents[index])
-            #expect(button.target === targets[index])
-            #expect(button.action == actions[index])
-            #expect(button.frame.size == frames[index].size)
-            #expect(button.frame.minY == frames[index].minY)
-            #expect(!button.isHidden)
-            let rect = controls.convert(button.bounds, from: button)
-            #expect(rect.minX >= 0 && rect.maxX <= 56)
-        }
-        #expect(controls.hitTest(.zero) == nil)
-        // AppKit can lay out the native title bar after the SwiftUI anchor.
-        // Exercise that later reset without calling our positioning method.
-        for (button, original) in zip(native, frames) { button.setFrameOrigin(original.origin) }
-        for button in native {
-            let rect = controls.convert(button.bounds, from: button)
-            #expect(rect.minX >= 0 && rect.maxX <= 56)
-        }
-        controls.viewDidMoveToWindow()
-        window.setContentSize(NSSize(width: 900, height: 500))
-        window.layoutIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
-        for button in native {
-            let rect = controls.convert(button.bounds, from: button)
-            #expect(rect.minX >= 0 && rect.maxX <= 56)
+        #expect(native.allSatisfy { $0.isHidden })
+        for button in controls.buttons {
+            let rect = controls.convert(button.dotRect, from: button)
+            #expect(rect.width == 12)
+            #expect(rect.minX >= 8 && rect.maxX <= MainNavigationRailLayout.width - 8)
+            #expect(controls.bounds.contains(button.frame))
+            let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+            #expect(controls.button(at: center) === button)
         }
         controls.removeFromSuperview()
-        #expect(native.map { $0.frame.minX } == frames.map(\.minX))
-        #expect(native.map(\.postsFrameChangedNotifications) == frameNotifications)
+        #expect(!native[0].isHidden && native[1].isHidden && !native[2].isHidden)
+        #expect(native.map(\.frame) == frames)
+        #expect(window.compactWindowControls == nil)
+    }
+
+    @Test func placementsRespectDesktopCoordinatesAndStayInsideTheVisibleScreen() {
+        for area in [NSRect(x: 0, y: 24, width: 1440, height: 850),
+                     NSRect(x: -1920, y: -900, width: 1920, height: 1080)] {
+            for placement in CompactWindowPlacement.allCases {
+                #expect(area.contains(placement.frame(in: area)))
+            }
+            let left = CompactWindowPlacement.left.frame(in: area)
+            let right = CompactWindowPlacement.right.frame(in: area)
+            #expect(left.maxX == right.minX)
+            #expect(left.union(right) == area)
+            #expect(CompactWindowPlacement.top.frame(in: area).maxY == area.maxY)
+            #expect(CompactWindowPlacement.bottom.frame(in: area).minY == area.minY)
+        }
+    }
+
+    @Test func placingAndRestoringOperateOnTheBoundWindow() throws {
+        let window = makeWindow()
+        defer { window.contentView = nil; window.close() }
+        let controls = mount(on: window)
+        let original = window.frame
+        let screen = try #require(window.screen)
+        controls.place(.fill)
+        #expect(window.frame == screen.visibleFrame)
+        controls.place(.left)
+        #expect(window.frame == CompactWindowPlacement.left.frame(in: screen.visibleFrame))
+        controls.restore()
+        #expect(window.frame == original)
     }
 
     @Test func closeUsesTheBoundWindowsDelegateAndDoesNotSelectAnotherWindow() throws {
