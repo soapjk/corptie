@@ -7,23 +7,32 @@ import SwiftUI
 /// Pointer feedback stays in this small wrapper, outside list projections and
 /// row content. It changes only paint: no animation, layout or data work.
 private struct ConsoleHoverFeedback: ViewModifier {
+    var enabled = true
+    var isSelected = false
+    var horizontalInset: CGFloat = 0
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func body(content: Content) -> some View {
         content
             .background {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.primary.opacity(isEnabled && isHovering ? 0.065 : 0))
-                    .allowsHitTesting(false)
+                if enabled {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(isSelected ? 0.055 : isEnabled && isHovering ? 0.065 : 0))
+                        .padding(.horizontal, horizontalInset)
+                        .allowsHitTesting(false)
+                }
             }
-            .onHover { isHovering = $0 }
+            .onHover { if enabled { isHovering = $0 } }
             .onDisappear { isHovering = false }
     }
 }
 
 extension View {
-    func consoleHoverFeedback() -> some View { modifier(ConsoleHoverFeedback()) }
+    func consoleHoverFeedback(enabled: Bool = true, isSelected: Bool = false,
+                              horizontalInset: CGFloat = 0) -> some View {
+        modifier(ConsoleHoverFeedback(enabled: enabled, isSelected: isSelected, horizontalInset: horizontalInset))
+    }
 }
 
 enum ConsoleNavigationCardWidthPolicy {
