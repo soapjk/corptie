@@ -880,7 +880,7 @@ private struct MeasuredMessageText: NSViewRepresentable {
         view.linkBaseDirectory = baseDirectory
         view.cardContextMenu = contextMenu
         view.textContainer?.maximumNumberOfLines = maximumLines
-        view.textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byCharWrapping
+        view.textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
         if context.coordinator.text !== text {
             let selection = view.selectedRanges
             let sameText = view.string == text.string

@@ -22,7 +22,7 @@ final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
             height: CGFloat.greatestFiniteMagnitude
         ))
         textContainer.lineFragmentPadding = 0
-        textContainer.lineBreakMode = .byCharWrapping
+        textContainer.lineBreakMode = .byWordWrapping
         textContainer.widthTracksTextView = true
         textContainer.heightTracksTextView = false
         layoutManager.addTextContainer(textContainer)

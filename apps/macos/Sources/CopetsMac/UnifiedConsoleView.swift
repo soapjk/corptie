@@ -142,7 +142,8 @@ struct UnifiedConsoleView: View {
     var body: some View {
         ConsoleWindowSplitView(mode: navigationMode, isActive: sidebarState.isSelected) {
             consoleNavigationContent
-                .background(WorkbenchStyle.sidebarColor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(WorkbenchStyle.workColumnColor)
                 .ignoresSafeArea(.container, edges: .top)
                 .environmentObject(router)
                 .environmentObject(sidebarState)
