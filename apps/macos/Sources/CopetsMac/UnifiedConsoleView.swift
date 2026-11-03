@@ -401,6 +401,7 @@ struct UnifiedConsoleView: View {
                     .font(.system(size: 16, weight: .semibold))
                 Spacer(minLength: 8)
                 searchToggleButton
+                    .consoleHoverFeedback()
                 Menu {
                     outlineSortMenu
                     navigationModeToggle
@@ -409,6 +410,7 @@ struct UnifiedConsoleView: View {
                     Image(systemName: "ellipsis").frame(width: 28, height: 28)
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .consoleHoverFeedback()
                 .fixedSize().help(L10n("更多选项"))
             }
             outlineCreationMenu
@@ -941,8 +943,6 @@ struct UnifiedConsoleView: View {
                 Image(systemName: "plus").font(.system(size: 13))
                 Text(L10n("Create")).font(WorkbenchTypography.font(for: .navigation))
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 10)
@@ -951,6 +951,7 @@ struct UnifiedConsoleView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .consoleHoverFeedback()
         .help(L10n("Create Task, Work, or chat"))
         .accessibilityLabel(L10n("Create Task, Work, or chat"))
         .accessibilityIdentifier("work-outline-create")
@@ -984,6 +985,7 @@ struct UnifiedConsoleView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .consoleHoverFeedback()
     }
 
     func presentTaskCreation(for workID: String?) {
@@ -1248,7 +1250,8 @@ struct UnifiedConsoleView: View {
                     initialTimelinePosition: viewportController.position(for: session.id),
                     onTimelinePositionChange: { position in
                         viewportController.store(position, for: session.id)
-                    }
+                    },
+                    showsHeader: false
                 )
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
@@ -1269,6 +1272,10 @@ struct UnifiedConsoleView: View {
                         .frame(maxHeight: .infinity)
                 }
                 }
+            } header: {
+                DetailHeaderView(session: session,
+                    historicalWorkspacePath: backendClient.selectedDetail?.cwd)
+                    .padding(.bottom, 8)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
             .environment(\.detailColumnVisibility, $showsDetailColumn)

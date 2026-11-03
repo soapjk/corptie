@@ -67,10 +67,19 @@ enum ConversationColumnLayoutPolicy {
 
 /// The same mounted transcript survives an inspector toggle and window resize.
 /// A compact inspector overlays the conversation without taking reading width.
-struct AdaptiveConversationColumns<Transcript: View, Detail: View>: View {
+struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let detail: () -> Detail
+    @ViewBuilder let header: () -> Header
+
+    init(isVisible: Binding<Bool>, @ViewBuilder transcript: @escaping () -> Transcript,
+         @ViewBuilder detail: @escaping () -> Detail, @ViewBuilder header: @escaping () -> Header) {
+        _isVisible = isVisible
+        self.transcript = transcript
+        self.detail = detail
+        self.header = header
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -95,6 +104,16 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View>: View {
             }
             .clipped()
         }
+        // The controls belong to the whole page, never the shrinking transcript.
+        // Both the inline rail and compact overlay start below this shared header.
+        .safeAreaInset(edge: .top, spacing: 0) { header() }
+    }
+}
+
+extension AdaptiveConversationColumns where Header == EmptyView {
+    init(isVisible: Binding<Bool>, @ViewBuilder transcript: @escaping () -> Transcript,
+         @ViewBuilder detail: @escaping () -> Detail) {
+        self.init(isVisible: isVisible, transcript: transcript, detail: detail, header: { EmptyView() })
     }
 }
 

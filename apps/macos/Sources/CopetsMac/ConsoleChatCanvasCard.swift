@@ -20,7 +20,7 @@ struct ConsoleChatCanvasCard: View {
                     Image(systemName: "plus").font(.system(size: 10, weight: .semibold))
                         .frame(width: 20, height: 18)
                 }
-                .buttonStyle(.plain).focused($createFocused)
+                .buttonStyle(.plain).consoleHoverFeedback().focused($createFocused)
                 .opacity(isHovering || createFocused ? 1 : 0)
                 .accessibilityLabel(L10n("New Assistant Session"))
                 .help(L10n("New Assistant Session"))
@@ -58,6 +58,7 @@ private struct ConsoleChatCanvasRow: View {
             }
         }
         .buttonStyle(.plain)
+        .consoleHoverFeedback()
         .contextMenu { SessionContextMenuContent(session: session, isRenaming: $isRenaming) }
         .sheet(isPresented: $isRenaming) {
             RenameSessionSheet(session: session) { isRenaming = false }
