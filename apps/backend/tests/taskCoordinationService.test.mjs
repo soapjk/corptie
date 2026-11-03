@@ -692,3 +692,16 @@ test("cosmetic title updates do not cancel dispatch but off-on toggles invalidat
     assert.equal(f.coordinator.listForParent(f.parent.id).length, toggle ? 0 : 1);
   });
 });
+
+for (const providerId of ["codex-app-server", "claude-code"]) test(`workspace contention waits for a job event before creating a child (${providerId})`,async t=>{
+  const f=await fixture(t,providerId), original=f.collaboration.createTaskAndSession.bind(f.collaboration);
+  let busy=true,calls=0;
+  f.collaboration.createTaskAndSession=async(...args)=>{calls++;if(busy)throw Object.assign(new Error('Parent workspace busy'),{code:'TASK_HIERARCHY_BUSY'});return original(...args);};
+  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('workspace')]});
+  const id=accepted.dispatches[0].dispatchId;
+  await nextTick();await f.coordinator.running.get(id);
+  assert.equal(f.coordinator.get(id).status,'waiting_workspace');assert.equal(f.coordinator.get(id).target_task_id,null);
+  assert.equal(calls,1);busy=false;f.coordinator.onRuntimeEvent('WorktreeIntegrationJobChanged',{job:{status:'completed'}});
+  await nextTick();await f.coordinator.running.get(id);
+  assert.equal(f.coordinator.get(id).status,'queued');assert.ok(f.coordinator.get(id).target_task_id);assert.equal(calls,2);assert.equal(f.starts.length,1);
+});

@@ -1,3 +1,4 @@
+import { snapshotBaseForWorktree } from "../runtime/workspaceSnapshotIntegration.mjs";
 import { ChildTaskDeliveryRepository } from "../store/repositories/childTaskDeliveryRepository.mjs";
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
@@ -141,7 +142,18 @@ export class ChildTaskDeliveryService {
     const git=operation.snapshot.git;
     const parent=this.store.getGitWorktree(git.parentWorktreeId), path=parent?.canonicalPath || parent?.path;
     if(!path) throw failure("TASK_DELIVERY_BINDING_CHANGED","父工作区不可用。");
-    if(await this.gitWorkspaces.gitSucceeds(path,["merge-base","--is-ancestor",git.headOid,"HEAD"])) return true;
+    const snapshotBase=snapshotBaseForWorktree(this.store,git.worktreeId);
+    if(snapshotBase && (await this.gitWorkspaces.gitOutput(path,["rev-parse",`${git.headOid}^{tree}`])).trim()===snapshotBase.baseTreeOid) return true;
+    const verifyReceipt=async job=>{
+      const receipt=job?.plan?.items?.find(item=>item.worktreeId===git.worktreeId)?.snapshotReceipt;
+      if(!receipt || receipt.childHead!==git.headOid || receipt.baseCommitOid!==snapshotBase.baseCommitOid) return false;
+      if(!await this.gitWorkspaces.gitSucceeds(path,["merge-base","--is-ancestor",receipt.parentAfter,"HEAD"])) return false;
+      const tree=(await this.gitWorkspaces.gitOutput(path,["rev-parse",`${receipt.parentAfter}^{tree}`])).trim();
+      return receipt.resultTree ? tree===receipt.resultTree : receipt.resolvedHead
+        && tree===(await this.gitWorkspaces.gitOutput(path,["rev-parse",`${receipt.resolvedHead}^{tree}`])).trim();
+    };
+    if(!snapshotBase && await this.gitWorkspaces.gitSucceeds(path,["merge-base","--is-ancestor",git.headOid,"HEAD"])) return true;
+
     let job=operation.progress.gitJobId && this.jobs.get(operation.progress.gitJobId);
     if(!job) {
       this.hierarchy.assertIdle([git.worktreeId,git.parentWorktreeId],true);
@@ -151,7 +163,7 @@ export class ChildTaskDeliveryService {
     }
     if(["failed","canceled"].includes(job.status) || job.status==="paused") throw failure("CHILD_DELIVERY_GIT_PAUSED","代码交付已暂停，请处理对应 Git 作业后重试。");
     if(job.status==="completed") {
-      if(!await this.gitWorkspaces.gitSucceeds(path,["merge-base","--is-ancestor",git.headOid,"HEAD"])) throw failure("CHILD_DELIVERY_GIT_UNPROVEN","Git 作业未证明子版本已进入父分支。");
+      if(snapshotBase ? !await verifyReceipt(job) : !await this.gitWorkspaces.gitSucceeds(path,["merge-base","--is-ancestor",git.headOid,"HEAD"])) throw failure("CHILD_DELIVERY_GIT_UNPROVEN","Git 作业未证明子版本已进入父分支。");
       return true;
     }
     return false;

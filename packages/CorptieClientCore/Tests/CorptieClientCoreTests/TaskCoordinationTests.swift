@@ -17,6 +17,11 @@ struct TaskCoordinationTests {
         #expect(current.coordinationDispatches[0].statusLabel.contains("未代表验收"))
         #expect(current.lifecycleState == previous.lifecycleState)
     }
+    @Test func waitingForParentWorkspaceIsNotAReportedFailure() throws {
+        let payload = #"{"dispatchId":"dispatch:waiting","taskId":null,"title":"Child","status":"waiting_workspace","errorCode":"TASK_HIERARCHY_BUSY"}"#
+        let dispatch = try JSONDecoder().decode(ClientTaskCoordinationDispatch.self, from: Data(payload.utf8))
+        #expect(dispatch.statusLabel == "等待父工作区操作完成")
+    }
     @Test func updateUsesOneTypedUserCommand() throws {
         var command = ClientTaskUpdate(requestId: "coordination:1")
         command.coordinationEnabled = true
