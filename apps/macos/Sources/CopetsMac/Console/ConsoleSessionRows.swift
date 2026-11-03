@@ -79,6 +79,7 @@ struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
 /// so switching between the two groups does not change navigation density. It
 /// observes the stable row model directly so content-only patches stay local.
 struct ConsoleSessionRow: View {
+    var showsHoverFeedback = true
     @ObservedObject var row: SessionRowModel
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
@@ -115,7 +116,7 @@ struct ConsoleSessionRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SessionSelectionPressStyle())
-        .consoleHoverFeedback()
+        .consoleHoverFeedback(enabled: showsHoverFeedback)
         .contextMenu {
             SessionContextMenuContent(session: session, isRenaming: $isRenaming)
         }
@@ -167,6 +168,7 @@ struct ConsoleWorkChatRowContent: View {
 }
 
 struct ConsoleTaskRowContent: View {
+    var showsHoverFeedback = true
     let task: CorptieTask
     let sessionActivity: TaskSessionActivity
     var session: TaskSession? = nil
@@ -208,7 +210,7 @@ struct ConsoleTaskRowContent: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(SessionSelectionPressStyle())
-        .consoleHoverFeedback()
+        .consoleHoverFeedback(enabled: showsHoverFeedback)
         .disabled(task.deletionStatus == "deleting")
         .help([task.title, sessionActivity.label, session?.external?.provider].compactMap { $0 }.joined(separator: " · "))
         .listRowBackground(
