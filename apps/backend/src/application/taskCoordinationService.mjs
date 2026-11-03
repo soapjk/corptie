@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
+import { createStartupTiming } from "../utils/startupTiming.mjs";
 
 const terminal = new Set(["completed", "failed", "cancelled", "unknown"]);
 const fail = (code, message = code, statusCode = 409) => { throw Object.assign(new Error(message), { code, statusCode }); };
@@ -92,12 +93,15 @@ export class TaskCoordinationService {
     this.update(id, { status: "preparing", error_code: null, error_message: null });
     if (!row.target_task_id) {
       const prior = this.creationChains.get(row.parent_task_id) ?? Promise.resolve();
-      const pending = prior.catch(() => {}).then(() => {
+      const timing = createStartupTiming({ dispatchId: id, parentTaskId: row.parent_task_id,
+        providerId: JSON.parse(row.runtime_json).providerId });
+      const pending = timing.measure("dispatch.creation-chain", async span => {
+        await span.measure("dispatch.wait-parent-startup", () => prior.catch(() => {}));
         const current = this.sourceContext(row);
-        return this.collaboration.createTaskAndSession(current.metadata, row.source_role_id, {
+        return span.measure("dispatch.child-startup", () => this.collaboration.createTaskAndSession(current.metadata, row.source_role_id, {
           ...request.creation, parentTaskId: row.parent_task_id, expectedParentResourceVersion: current.scope.parent.resource_version,
           providerId: JSON.parse(row.runtime_json).providerId, idempotencyKey: `coordination:${id}`
-        }, { runtimeConfiguration: JSON.parse(row.runtime_json) });
+        }, { runtimeConfiguration: JSON.parse(row.runtime_json) }));
       });
       this.creationChains.set(row.parent_task_id, pending);
       const cleanup = () => { if (this.creationChains.get(row.parent_task_id) === pending) this.creationChains.delete(row.parent_task_id); };

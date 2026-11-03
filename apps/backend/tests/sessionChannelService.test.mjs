@@ -8,6 +8,9 @@ import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
+import { createCollaborationHttpRoutes } from "../src/application/collaborationHttpComposition.mjs";
+import { callCollaborationDynamicTool } from "../src/collaboration/collaborationDynamicTools.mjs";
+import { createServer } from "node:http";
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-channel-"));
@@ -53,6 +56,173 @@ async function fixture() {
   });
   return { directory, store, service };
 }
+
+async function childFixture(t) {
+  const f = await fixture();
+  t.after(async () => { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); });
+  f.store.createTask({ id: "task:child", workId: "work:channel", title: "Child", parentTaskId: "task:a" }, {},
+    { expectedParentResourceVersion: f.store.getTask("task:a").resource_version });
+  f.store.createSession({ id: "provider:child", title: "Child", agentId: "agent:b", sessionKind: "worker",
+    workId: "work:channel", taskId: "task:child", cwd: f.directory });
+  f.store.createLogicalSessionRoute({ logicalSessionId: "session:child", legacySessionId: "provider:child",
+    providerThreadId: "provider:child", providerSessionId: "provider:child", providerId: "another-provider",
+    boundCwd: f.directory, sessionName: "Child" });
+  f.service.collaborationCore.bindSession({ agentId: "agent:b", sessionId: "provider:child" });
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:a' WHERE id='task:a'");
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+  f.input = { requestingSessionId: "session:child", recipientSessionId: "session:a", body: "子会话主动回报",
+    deliveryIntent: "response_required", messageKind: "update", idempotencyKey: "child-first" };
+  return f;
+}
+
+test("either current parent or child can initiate a fresh cross-Provider Channel without user confirmation", async t => {
+  for (const reverse of [false, true]) for (const intent of ["action_required", "response_required", "notification", "acknowledgement"]) {
+    await t.test(`${reverse ? "child-first" : "parent-first"}:${intent}`, async t => {
+      const f = await childFixture(t);
+      const input = { ...f.input, deliveryIntent: intent, ...(reverse ? {} : {
+        requestingSessionId: "session:a", recipientSessionId: "session:child"
+      }) };
+      const result = f.service.requestChannel(input);
+      assert.equal(result.status, "sent");
+      assert.equal(result.routeAuthorization, "parent_child_policy");
+      assert.equal(result.message.senderSessionId, input.requestingSessionId);
+      assert.equal(result.message.recipientSessionId, input.recipientSessionId);
+      assert.equal(result.message.deliveryIntent, intent);
+      assert.equal(f.service.requestChannel(input).message.messageId, result.message.messageId);
+      assert.equal(f.service.pendingRequestForSession(input.requestingSessionId), null);
+      const evidence = JSON.parse(f.store.selectOne("SELECT evidence_json FROM session_collaboration_channel_authorizations WHERE request_id=?", [result.requestId]).evidence_json);
+      assert.equal(evidence.parentTaskId, "task:a"); assert.equal(evidence.childTaskId, "task:child");
+      assert.equal(evidence.sourceSessionId, input.requestingSessionId);
+      assert.equal(evidence.recipientSessionId, input.recipientSessionId);
+      for (const table of ["session_collaboration_channels", "session_collaboration_messages", "session_collaboration_channel_authorizations"]) {
+        assert.equal(f.store.selectOne(`SELECT COUNT(*) AS n FROM ${table}`).n, 1);
+      }
+    });
+  }
+});
+
+test("retry upgrades only a still-pending exact parent-child request and is idempotent against later confirmation or rejection", async t => {
+  const f = await childFixture(t);
+  f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:child'");
+  const pending = f.service.requestChannel(f.input);
+  assert.equal(pending.status, "pending");
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+  assert.throws(() => f.service.requestChannel({ ...f.input, body: "changed" }), { code: "CHANNEL_IDEMPOTENCY_CONFLICT" });
+  const sent = f.service.requestChannel(f.input);
+  assert.equal(sent.requestId, pending.requestId); assert.equal(sent.status, "sent");
+  assert.equal(f.service.confirmRequest(pending.requestId, {}, { type: "desktop" }).status, "confirmed");
+  assert.equal(f.service.rejectRequest(pending.requestId, { type: "desktop" }).status, "confirmed");
+  assert.equal(f.service.failRequest(pending.requestId, new Error("late failure")).status, "confirmed");
+  assert.equal(f.service.requestChannel(f.input).message.messageId, sent.message.messageId);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_channel_authorizations").n, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_messages").n, 1);
+});
+
+test("a user rejection is not upgraded and an earlier manual confirmation keeps its actual provenance", async t => {
+  for (const approved of [false, true]) await t.test(String(approved), async t => {
+    const f = await childFixture(t);
+    f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:child'");
+    const pending = f.service.requestChannel(f.input);
+    f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+    if (approved) f.service.confirmRequest(pending.requestId, {}, { type: "desktop" });
+    else f.service.rejectRequest(pending.requestId, { type: "desktop" });
+    const replay = f.service.requestChannel(f.input);
+    assert.equal(replay.status, approved ? "confirmed" : "rejected");
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_messages").n, approved ? 1 : 0);
+    assert.equal(f.store.selectOne("SELECT json_extract(evidence_json,'$.type') AS source FROM session_collaboration_channel_authorizations").source, "desktop");
+  });
+});
+
+test("parent-child policy is revalidated inside confirmation and never revives a revoked pair", async t => {
+  const f = await childFixture(t);
+  const evidence = f.service.resolveParentChildAuthorization("session:child", "session:a");
+  f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:child'");
+  const pending = f.service.requestChannel(f.input);
+  assert.throws(() => f.service.confirmRequest(pending.requestId, {}, evidence), { code: "CHANNEL_PARENT_CHILD_BINDING_CHANGED" });
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_channels").n, 0);
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+  const sent = f.service.requestChannel(f.input);
+  f.service.revokeChannel(sent.channel.channelId, "session:child", "explicit stop");
+  for (const reverse of [false, true]) {
+    const input = { ...f.input, idempotencyKey: `revoked:${reverse}`, ...(reverse ? {
+      requestingSessionId: "session:a", recipientSessionId: "session:child"
+    } : {}) };
+    assert.equal(f.service.requestChannel(input).status, "pending");
+    assert.equal(f.service.requestChannel(input).status, "pending");
+  }
+  assert.throws(() => f.service.requestChannel(f.input), { code: "CHANNEL_NOT_ACTIVE" });
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_channels").n, 1);
+});
+
+test("unrelated, sibling, stale and cross-Work endpoints do not inherit parent-child authorization", async t => {
+  const f = await childFixture(t);
+  assert.equal(f.service.requestChannel({ ...f.input, recipientSessionId: "session:b", idempotencyKey: "unrelated" }).status, "pending");
+  f.store.createTask({ id: "task:sibling", workId: "work:channel", title: "Sibling", parentTaskId: "task:a" }, {},
+    { expectedParentResourceVersion: f.store.getTask("task:a").resource_version });
+  f.store.createSession({ id: "provider:sibling", title: "Sibling", agentId: "agent:b", sessionKind: "worker",
+    workId: "work:channel", taskId: "task:sibling", cwd: f.directory });
+  f.store.createLogicalSessionRoute({ logicalSessionId: "session:sibling", legacySessionId: "provider:sibling",
+    providerThreadId: "provider:sibling", providerSessionId: "provider:sibling", providerId: "another-provider",
+    boundCwd: f.directory, sessionName: "Sibling" });
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:sibling' WHERE id='task:sibling'");
+  assert.equal(f.service.requestChannel({ ...f.input, recipientSessionId: "session:sibling", idempotencyKey: "siblings" }).status, "pending");
+  f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:a'");
+  assert.equal(f.service.requestChannel(f.input).status, "pending");
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:a' WHERE id='task:a'");
+  f.store.createWork({ id: "work:other", name: "Other", contributorAgentIds: ["agent:b"] });
+  f.store.createTask({ id: "task:other", workId: "work:other", title: "Other", mainAgentId: "agent:b" });
+  f.store.createSession({ id: "provider:other", title: "Other", agentId: "agent:b", sessionKind: "worker",
+    workId: "work:other", taskId: "task:other", cwd: f.directory });
+  f.store.createLogicalSessionRoute({ logicalSessionId: "session:other", legacySessionId: "provider:other",
+    providerThreadId: "provider:other", providerSessionId: "provider:other", providerId: "another-provider",
+    boundCwd: f.directory, sessionName: "Other" });
+  assert.equal(f.service.requestChannel({ ...f.input, recipientSessionId: "session:other", idempotencyKey: "cross-work" }).status, "pending");
+  f.store.db.run("UPDATE logical_sessions SET archived=1 WHERE logical_session_id='session:child'");
+  assert.throws(() => f.service.requestChannel({ ...f.input, idempotencyKey: "archived" }), { code: "SESSION_UNAVAILABLE" });
+});
+
+test("child-first HTTP and dynamic tool flow resolves an old card without asking for approval or re-sending", async t => {
+  const f = await childFixture(t), events = [], projected = [];
+  f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:child'");
+  const pending = f.service.requestChannel(f.input);
+  f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+  const scoped = new SessionCollaborationService({ store: f.store, workService: new WorkApplicationService({ store: f.store }),
+    collaborationCore: f.service.collaborationCore, defaultProviderId: "test-provider",
+    workSessionStartApplicationService: { start: async () => assert.fail("must not create a Task") } });
+  let scheduled = 0;
+  const route = createCollaborationHttpRoutes({ collaborationCore: f.service.collaborationCore,
+    sessionCollaborationV2Enabled: true, sessionCollaborationService: scoped, sessionChannelService: f.service,
+    emitEvent: (type, payload, options) => events.push({ type, payload, options }),
+    projectSessionChannelMessageForSender: result => projected.push(result.message.messageId),
+    syncSessionChannelDeliveriesIntoAgentWorkQueue: async () => { scheduled++; } });
+  const server = createServer((request, response) => {
+    if (!route({ request, response, url: new URL(request.url, "http://localhost") })) { response.writeHead(404); response.end(); }
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const client = { post: async (path, body) => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, { method: "POST",
+      headers: { "content-type": "application/json", "x-corptie-agent-id": "agent:b", "x-corptie-session-id": "session:child",
+        "x-corptie-task-id": "task:child", "x-corptie-work-id": "work:channel" }, body: JSON.stringify(body) });
+    const value = await response.json(); assert.equal(response.status, 201, JSON.stringify(value)); return value;
+  } };
+  const input = { recipient_session_id: "session:a", body: f.input.body, message_kind: "update",
+    delivery_intent: "response_required", idempotency_key: f.input.idempotencyKey };
+  const result = await callCollaborationDynamicTool(client, "corptie_collaboration_channel_open", input);
+  assert.equal(result.request.status, "sent"); assert.equal(result.request.requestId, pending.requestId);
+  assert.equal(result.coordination.requiresUserAction, false);
+  assert.equal(result.coordination.delivery, "push");
+  assert.equal(result.request.message.senderSessionId, "session:child");
+  assert.equal(events.some(event => event.type === "SessionChannelAuthorizationRequested"), false);
+  assert.equal(events[0].type, "SessionChannelRequestResolved");
+  assert.equal(events[0].payload.request.status, "confirmed");
+  assert.equal(events[0].options.source.type, "parent_child_policy");
+  const replay = await callCollaborationDynamicTool(client, "corptie_collaboration_channel_open", input);
+  assert.equal(replay.request.message.messageId, result.request.message.messageId);
+  assert.equal(events[0].options.eventId, events[1].options.eventId);
+  assert.equal(scheduled, 2); assert.equal(new Set(projected).size, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_deliveries").n, 1);
+});
 
 test("current parent to direct child auto-authorizes one durable channel; siblings, stale bindings and revocation do not",async()=>{
   const f=await fixture();

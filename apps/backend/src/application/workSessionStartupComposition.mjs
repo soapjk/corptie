@@ -7,6 +7,7 @@ import { WorktreeStartupPreparer } from "./worktreeStartupPreparer.mjs";
 import { ProviderWorkspaceBindingService } from "../agent-provider/providerWorkspaceBindingService.mjs";
 import { ProviderWorkSessionPort } from "../agent-provider/providerWorkSessionPort.mjs";
 import { taskExecutionPrompt } from "./taskAcceptance.mjs";
+import { measureStartup } from "../utils/startupTiming.mjs";
 
 // One startup composition for managed Worktree and sandbox execution. The
 // Provider port returns proofs; only the coordinator commits readiness.
@@ -20,7 +21,7 @@ export function createWorkSessionStartupComposition({
   const startupWorktreePreparer = new WorktreeStartupPreparer({
     store,
     ensureWorkspace: async (input) => {
-      const source = await forkContextForTask(input.task.id);
+      const source = await measureStartup(input.startupTiming, "workspace.resolve-fork-context", () => forkContextForTask(input.task.id));
       if (input.task.parent_task_id && source) throw Object.assign(new Error("Child Task cannot also fork another conversation workspace."), {code:"INVALID_CHILD_CREATION_MODE",statusCode:409});
       return source ? prepareConversationForkWorkspace(source, input.task.id) : ensureTaskWorkspace(input);
     }
@@ -30,7 +31,7 @@ export function createWorkSessionStartupComposition({
   });
   const providerWorkSessionPort = new ProviderWorkSessionPort({
     workspaceBinding: providerWorkspaceBindingService,
-    createSession: async ({ taskId, assigneeAgentId, providerId, title, model, reasoningLevel, workspace }) => {
+    createSession: async ({ taskId, assigneeAgentId, providerId, title, model, reasoningLevel, workspace, startupTiming }) => {
       const task = workService.getTask(taskId);
       const agent = store.getAgent(assigneeAgentId);
       return createProviderWorkSession({
@@ -43,7 +44,8 @@ export function createWorkSessionStartupComposition({
         title,
         model,
         reasoningLevel,
-        forkSource: await forkContextForTask(taskId),
+        forkSource: await measureStartup(startupTiming, "session.resolve-fork-context", () => forkContextForTask(taskId)),
+        ...(startupTiming ? { startupTiming } : {}),
         workingDirectory: workspace.canonicalExecutionPath ?? workspace.canonicalWorktreePath,
         autoUniqueTitle: true,
         deferInitialPromptUntilBound: true,
@@ -52,7 +54,7 @@ export function createWorkSessionStartupComposition({
     },
     activateSession: async ({
       session, taskId, assigneeAgentId, workingDirectory, dispatchInitialTurn,
-      initialPrompt, startupOperationId, activationProof
+      initialPrompt, startupOperationId, activationProof, startupTiming
     }) => {
       const task = workService.getTask(taskId);
       try {
@@ -60,14 +62,14 @@ export function createWorkSessionStartupComposition({
         // authoritative logical binding exists. Finalize and verify that
         // binding before admitting the first Turn; durable admission alone
         // does not apply the Provider Tool contract.
-        await sessionApplicationService.resumeSession(session.id, {
+        await measureStartup(startupTiming, "session.tool-host.activate", () => sessionApplicationService.resumeSession(session.id, {
           source: "task-start",
           purpose: "session-create-finalization",
           actorId: assigneeAgentId,
           workId: task.work_id,
           taskId,
           sessionKind: "worker"
-        });
+        }));
         const current = store.getSession(session.id);
         const logical = store.getLogicalSessionByLegacySessionId(session.id);
         const activeBinding = logical?.activeBinding;

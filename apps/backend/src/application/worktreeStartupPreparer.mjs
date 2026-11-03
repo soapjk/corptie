@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs";
 import { ensureProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
 import { gitScalarOutput } from "../utils/gitScalarOutput.mjs";
+import { measureStartup } from "../utils/startupTiming.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -25,7 +26,8 @@ export class WorktreeStartupPreparer {
       || this.store.getTaskWorkspaceContext(task)?.repository?.id !== input.repositoryId) {
       throw coded("START_REFERENCE_INVALID", "Task Repository binding changed before Worktree preparation.", false);
     }
-    const baseContext = await this.hierarchy.freezeBaseForStartup(input);
+    const timing = input.startupTiming;
+    const baseContext = await measureStartup(timing, "worktree.freeze-parent-base", () => this.hierarchy.freezeBaseForStartup(input));
     const owned = this.store.selectOne(
       `SELECT worktree_id FROM git_worktrees
        WHERE repository_id=? AND created_by_startup_operation_id=? AND dedicated=1
@@ -41,7 +43,8 @@ export class WorktreeStartupPreparer {
       isDetached: prepared.isDetached,
       inventoryVersion: prepared.inventoryVersion,
       reused: true
-    } : await this.ensureWorkspace({ task, session: null, ...(baseContext ? { baseContext } : {}) });
+    } : await measureStartup(timing, "worktree.ensure-workspace", span => this.ensureWorkspace({ task, session: null,
+      ...(span ? { startupTiming: span } : {}), ...(baseContext ? { baseContext } : {}) }));
     if (workspace.workspaceMode === "unborn-main") {
       throw coded("START_SOURCE_IDENTITY_UNAVAILABLE", "Unborn Repository has no commit/tree for a dedicated Work Session.", false);
     }
@@ -63,16 +66,16 @@ export class WorktreeStartupPreparer {
       }
       this.store.scheduleSave();
     }
-    return this.#verify({
+    return measureStartup(timing, "worktree.verify-prepared", span => this.#verify({
       operationId: input.startupOperationId,
       repositoryId: input.repositoryId,
       workspace,
       baseContext,
-      reused: workspace.reused === true
-    });
+      reused: workspace.reused === true, startupTiming: span
+    }));
   }
 
-  async inspect({ operation, allocation }) {
+  async inspect({ operation, allocation, startupTiming = null }) {
     const row = this.store.getGitWorktree(allocation.worktreeId);
     if (!row) throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Worktree is absent from the authoritative inventory.", true);
     return this.#verify({
@@ -87,11 +90,11 @@ export class WorktreeStartupPreparer {
         isDetached: row.isDetached,
         inventoryVersion: row.inventoryVersion
       },
-      reused: allocation.reused === true
+      reused: allocation.reused === true, startupTiming
     });
   }
 
-  async #verify({ operationId, repositoryId, workspace, reused, baseContext = null }) {
+  async #verify({ operationId, repositoryId, workspace, reused, baseContext = null, startupTiming = null }) {
     const repository = this.store.getGitRepository(repositoryId);
     const inventory = this.store.getGitWorktree(workspace.worktreeId);
     if (!repository || !inventory || inventory.repositoryId !== repositoryId
@@ -99,26 +102,26 @@ export class WorktreeStartupPreparer {
       || inventory.dedicated !== true || inventory.createdByStartupOperationId !== operationId) {
       throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Dedicated Worktree inventory is unavailable or belongs to another Repository.", true);
     }
-    const canonicalWorktreePath = await canonical(workspace.path);
-    const inventoryPath = await canonical(inventory.canonicalPath || inventory.path);
+    const canonicalWorktreePath = await measureStartup(startupTiming, "worktree.verify.canonical-path", () => canonical(workspace.path));
+    const inventoryPath = await measureStartup(startupTiming, "worktree.verify.inventory-path", () => canonical(inventory.canonicalPath || inventory.path));
     if (canonicalWorktreePath !== inventoryPath) {
       throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Worktree canonical path differs from Store inventory.", true);
     }
-    for (const other of this.store.listGitWorktrees(repositoryId)) {
+    await measureStartup(startupTiming, "worktree.verify.registered-paths", async () => { for (const other of this.store.listGitWorktrees(repositoryId)) {
       if (other.worktreeId === inventory.worktreeId || other.availability !== "available") continue;
       const otherPath = await canonical(other.canonicalPath || other.path);
       if (pathContains(otherPath, canonicalWorktreePath)) {
         throw coded("START_WORKTREE_COLLISION", "Dedicated Worktree is nested inside another Git Worktree.", false);
       }
-    }
-    const commonGitDirText = await this.execGit(canonicalWorktreePath, ["rev-parse", "--git-common-dir"]);
+    } });
+    const commonGitDirText = await measureStartup(startupTiming, "worktree.verify.git-common-dir", () => this.execGit(canonicalWorktreePath, ["rev-parse", "--git-common-dir"]));
     const commonGitDir = await canonical(resolve(canonicalWorktreePath, gitScalarOutput(commonGitDirText)));
     const registeredCommonGitDir = await canonical(repository.commonGitDirCanonicalPath);
     if (commonGitDir !== registeredCommonGitDir) {
       throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Worktree common Git directory differs from the registered Repository.", true);
     }
-    const sourceCommitOid = gitScalarOutput(await this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD"]));
-    const sourceTreeOid = gitScalarOutput(await this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD^{tree}"]));
+    const sourceCommitOid = gitScalarOutput(await measureStartup(startupTiming, "worktree.verify.git-head", () => this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD"])));
+    const sourceTreeOid = gitScalarOutput(await measureStartup(startupTiming, "worktree.verify.git-tree", () => this.execGit(canonicalWorktreePath, ["rev-parse", "HEAD^{tree}"])));
     if (!fullOid(sourceCommitOid) || !fullOid(sourceTreeOid)) {
       throw coded("START_SOURCE_IDENTITY_UNAVAILABLE", "Repository has no verifiable source commit/tree.", false);
     }
@@ -128,7 +131,7 @@ export class WorktreeStartupPreparer {
     }
     const branch = inventory.branchName ?? workspace.branchName ?? null;
     if (!detached && !branch) throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Branch Worktree has no branch identity.", true);
-    if (!workspace.localState) await ensureProjectLocalState(canonicalWorktreePath, { scope: "worktreeLocal" });
+    if (!workspace.localState) await measureStartup(startupTiming, "worktree.verify.local-state", () => ensureProjectLocalState(canonicalWorktreePath, { scope: "worktreeLocal" }));
     return {
       repositoryId,
       worktreeId: inventory.worktreeId,
