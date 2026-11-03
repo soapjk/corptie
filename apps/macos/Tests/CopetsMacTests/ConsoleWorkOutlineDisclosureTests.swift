@@ -26,8 +26,9 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
             List {
                 DisclosureGroup(isExpanded: $state.expanded.animation()) {
                     ForEach(state.showsAll ? tasks : Array(tasks.prefix(5))) { task in
-                        ConsoleTaskRowContent(task: task, sessionActivity: .idle,
+                        ConsoleTaskRowContent(showsHoverFeedback: false, task: task, sessionActivity: .idle,
                             session: session, isSelected: false, isUnread: true, onOpen: {})
+                            .consoleOutlineRowSurface(isSelected: false)
                             .onAppear { state.mounted.insert(task.id) }
                     }
                 } label: {

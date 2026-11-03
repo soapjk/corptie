@@ -46,10 +46,7 @@ extension UnifiedConsoleView {
                 } else {
                     ForEach(assistantSessionRows) { row in
                         sessionRow(row, showsHoverFeedback: false)
-                            .padding(.trailing, 16)
-                            .consoleHoverFeedback(isSelected:
-                                selectionController.presentationSessionID == row.session.id, horizontalInset: 8
-                            )
+                            .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
                     }
                 }
             } label: {
@@ -76,25 +73,20 @@ extension UnifiedConsoleView {
                             let rows: [SessionRowModel] = archivedRowsByWorkID[work.id] ?? []
                             ForEach(orderedTasks) { task in
                                 hierarchyTaskRow(task, showsHoverFeedback: false)
-                                    .padding(.trailing, 16)
-                                    .consoleHoverFeedback(isSelected: selectedTaskId == task.id, horizontalInset: 8)
+                                    .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
                             }
                             if rows.isEmpty && orderedTasks.isEmpty {
                                 outlineGroupEmptyRow(L10n("No Archived Sessions"))
                             } else {
                                 ForEach(rows) { row in
                                     sessionRow(row, showsHoverFeedback: false)
-                                        .padding(.trailing, 16)
-                                        .consoleHoverFeedback(isSelected:
-                                            selectionController.presentationSessionID == row.session.id, horizontalInset: 8
-                                        )
+                                        .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
                                 }
                             }
                         } else {
                             ForEach(visibleTasks) { task in
                                 hierarchyTaskRow(task, showsHoverFeedback: false)
-                                    .padding(.trailing, 16)
-                                    .consoleHoverFeedback(isSelected: selectedTaskId == task.id, horizontalInset: 8)
+                                    .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
                             }
                             if hiddenTaskCount > 0 {
                                 outlineShowAllTasksButton(workID: work.id, hiddenCount: hiddenTaskCount)
