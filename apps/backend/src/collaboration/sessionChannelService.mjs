@@ -37,11 +37,12 @@ export class SessionChannelService {
           409
         );
       }
-      const resolved = this.tryConfirmPendingParentChildRequest(presented, input);
+      const resolved = this.tryConfirmPendingPolicyRequest(presented, input);
       if (resolved) return resolved;
-      if (presented.status === "confirmed" && this.store.selectOne(
-        "SELECT 1 FROM session_collaboration_channel_authorizations WHERE request_id=? AND json_extract(evidence_json,'$.type')='parent_child_policy'", [presented.requestId])) {
-        return this.parentChildSendReceipt(presented, input);
+      const authorization = presented.status === "confirmed" && this.store.selectOne(
+        "SELECT json_extract(evidence_json,'$.type') AS policy FROM session_collaboration_channel_authorizations WHERE request_id=? AND json_extract(evidence_json,'$.type') IN ('parent_child_policy','first_message_confirmation_disabled')", [presented.requestId]);
+      if (authorization) {
+        return this.authorizedSendReceipt(presented, input, authorization.policy);
       }
       return presented;
     }
@@ -83,7 +84,7 @@ export class SessionChannelService {
       summary: optionalText(input.summary) ?? body,
       sourceContext: this.#resourceContext(source.logicalSessionId)
     };
-    const authorization = recipient ? this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId) : null;
+    const authorization = recipient ? this.resolveAutomaticAuthorization(source.logicalSessionId, recipient.logicalSessionId) : null;
     let confirmed;
     this.store.runInTransaction(() => {
     this.store.db.run(
@@ -95,13 +96,11 @@ export class SessionChannelService {
         JSON.stringify(request), idempotencyKey, timestamp]
     );
     if (authorization) {
-      const current = this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId);
-      if (!current) throw channelError("CHANNEL_PARENT_CHILD_BINDING_CHANGED", "The parent/child Session binding changed.", 409);
-      confirmed = this.confirmRequest(requestId, {}, current);
+      confirmed = this.confirmRequest(requestId, {}, authorization);
     }
     });
     this.store.scheduleSave();
-    if (confirmed) return this.parentChildSendReceipt(confirmed, input);
+    if (confirmed) return this.authorizedSendReceipt(confirmed, input, authorization.type);
     return this.getRequest(requestId);
   }
 
@@ -125,21 +124,31 @@ export class SessionChannelService {
       sourceSessionId:sourceLogical.logicalSessionId,recipientSessionId:recipientLogical.logicalSessionId};
   }
 
-  tryConfirmPendingParentChildRequest(request, input) {
+  resolveAutomaticAuthorization(sourceId, recipientId) {
+    const parentChild = this.resolveParentChildAuthorization(sourceId, recipientId);
+    if (parentChild) return parentChild;
+    if (this.store.collaborationSettings().requireFirstMessageConfirmation) return null;
+    const [a, b] = canonicalPair(sourceId, recipientId);
+    // Disabling first-contact prompts never reverses an explicit revocation.
+    if (this.store.selectOne("SELECT 1 FROM session_collaboration_channels WHERE session_a_id=? AND session_b_id=? AND status='revoked'", [a, b])) return null;
+    return { type: "first_message_confirmation_disabled", sourceSessionId: sourceId, recipientSessionId: recipientId };
+  }
+
+  tryConfirmPendingPolicyRequest(request, input) {
     // Retry-driven repair only. Never replay historical/rejected requests or
     // resolve a missing recipient by choosing another Task's current Session.
     if (request.status !== "pending" || !request.requestedRecipientSessionId) return null;
-    const evidence = this.resolveParentChildAuthorization(request.requestingSessionId, request.requestedRecipientSessionId);
+    const evidence = this.resolveAutomaticAuthorization(request.requestingSessionId, request.requestedRecipientSessionId);
     if (!evidence) return null;
     const confirmed = this.confirmRequest(request.requestId, {}, evidence);
-    return confirmed.status === "confirmed" ? this.parentChildSendReceipt(confirmed, input) : confirmed;
+    return confirmed.status === "confirmed" ? this.authorizedSendReceipt(confirmed, input, evidence.type) : confirmed;
   }
 
-  parentChildSendReceipt(request, input) {
+  authorizedSendReceipt(request, input, policy) {
     const sent = this.sendMessage({channelId:request.channelId,senderSessionId:request.requestingSessionId,
       body:input.body,messageKind:input.messageKind,deliveryIntent:input.deliveryIntent,
       inReplyToMessageId:input.inReplyToMessageId,idempotencyKey:input.idempotencyKey});
-    return {status:"sent",routeAuthorization:"parent_child_policy",requestId:request.requestId,...sent};
+    return {status:"sent",routeAuthorization:policy,requestId:request.requestId,...sent};
   }
 
   getRequest(requestId) {
@@ -175,6 +184,14 @@ export class SessionChannelService {
         const current = this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId);
         if (!current || ["parentTaskId", "childTaskId", "sourceSessionId", "recipientSessionId"].some(key => current[key] !== evidence[key])) {
           throw channelError("CHANNEL_PARENT_CHILD_BINDING_CHANGED", "The current direct parent/child binding no longer authorizes this Channel.", 409);
+        }
+        evidence = current;
+      }
+      if (evidence?.type === "first_message_confirmation_disabled") {
+        const current = this.resolveAutomaticAuthorization(source.logicalSessionId, recipient.logicalSessionId);
+        if (current?.type !== evidence.type || evidence.sourceSessionId !== source.logicalSessionId
+          || evidence.recipientSessionId !== recipient.logicalSessionId) {
+          throw channelError("CHANNEL_CONFIRMATION_POLICY_CHANGED", "First-message confirmation is required for this Session pair.", 409);
         }
         evidence = current;
       }
