@@ -73,7 +73,8 @@ struct ResidentSessionPageRoot: View {
                 SessionConversationSurface(sessionId: inputs.scope.sessionID, presentationCache: cache,
                     composerDraftRepository: drafts, backendClient: backend,
                     initialTimelinePosition: viewport.position(for: inputs.scope.sessionID),
-                    onTimelinePositionChange: { viewport.store($0, for: inputs.scope.sessionID) }, renderInputs: inputs)
+                    onTimelinePositionChange: { viewport.store($0, for: inputs.scope.sessionID) },
+                    showsHeader: false, renderInputs: inputs)
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             }
             .modifier(ConversationColumnSurface(.transcript))
@@ -81,6 +82,9 @@ struct ResidentSessionPageRoot: View {
             SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
                 activity: inputs.activity, detailPresentation: detailPresentation)
                 .frame(maxHeight: .infinity)
+        } header: {
+            ResidentSessionPageHeader(inputs: inputs, backend: backend)
+                .padding(.bottom, 8)
         }
         .padding(MainWindowPageLayoutMetrics.outerPadding)
         // Both columns share the full-height viewport. Compensating only the
@@ -90,6 +94,19 @@ struct ResidentSessionPageRoot: View {
         .modifier(ConversationSkinHost())
         .environmentObject(layout)
         .environmentObject(backend)
+    }
+}
+
+/// Observe header data here rather than invalidating the whole page for it.
+private struct ResidentSessionPageHeader: View {
+    let inputs: SessionPageRenderInputs
+    let backend: BackendClient
+    var body: some View {
+        SessionConversationHeaderSurface(session: inputs.session, historicalWorkspacePath: inputs.detail?.cwd,
+            backendClient: backend, projectStatus: inputs.projectStatus,
+            showsHistoricalThread: inputs.historicalThreadID != nil,
+            hasPendingScheduledWake: inputs.tasks.first { $0.id == inputs.session.taskId }?.hasPendingScheduledWake == true,
+            providers: inputs.providers, renderInputs: inputs)
     }
 }
 

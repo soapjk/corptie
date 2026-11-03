@@ -291,14 +291,14 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         defer { window.orderOut(nil); window.contentView = nil }
         settle(0.1)
         state.expanded = true; settle(0.35)
-        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 36, accuracy: 1)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 28, accuracy: 1)
         print("1000-row Work initial row constructions:", constructions.ids.count)
         XCTAssertLessThan(constructions.ids.count, 150, "Offscreen rows must remain unconstructed")
         XCTAssertFalse(constructions.ids.contains("task:999"))
         state.rows = 995; settle(0.1)
-        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 995) + 36, accuracy: 1)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 995) + 28, accuracy: 1)
         state.rows = 1_000; settle(0.1)
-        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 36, accuracy: 1)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 28, accuracy: 1)
         func findScroll(_ view: NSView) -> NSScrollView? {
             if let scroll = view as? NSScrollView { return scroll }
             return view.subviews.lazy.compactMap(findScroll).first
@@ -308,7 +308,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         scroll.reflectScrolledClipView(scroll.contentView)
         settle(0.2)
         XCTAssertTrue(constructions.ids.contains("task:999"), "The last row must become available when scrolled into view")
-        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 36, accuracy: 1)
+        XCTAssertEqual(probe.frame.height, ConsoleWorkOutlineRowMetrics.contentHeight(count: 1_000) + 28, accuracy: 1)
         state.expanded = false; settle(0.35)
         XCTAssertLessThan(probe.frame.height, 40)
         XCTAssertEqual(scroll.contentView.bounds.minY, 0, accuracy: 1)
@@ -525,7 +525,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         state.rows = 9; settle(0.06); host.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(measurements.count, beforeChange)
         XCTAssertEqual(lifetime.view.frame.height, oldHeight + 3 * 24, accuracy: 1)
-        XCTAssertEqual(probe.frame.height, lifetime.view.frame.height + 36, accuracy: 1,
+        XCTAssertEqual(probe.frame.height, lifetime.view.frame.height + 28, accuracy: 1,
             "The card must update its measured full height, not clip newly added rows")
         XCTAssertEqual(lifetime.created, 1)
         print("Work reveal full measurements during unchanged animation: \(animatedMeasurements); native mounts: \(lifetime.created)")
@@ -568,7 +568,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         XCTAssertGreaterThan(measurements.count, before)
         XCTAssertEqual(lifetime.view.frame.height, oldHeight + 3 * 24, accuracy: 1)
         settle(0.3)
-        XCTAssertEqual(probe.frame.height, lifetime.view.frame.height + 36, accuracy: 1)
+        XCTAssertEqual(probe.frame.height, lifetime.view.frame.height + 28, accuracy: 1)
         XCTAssertEqual(lifetime.created, 1)
         XCTAssertEqual(lifetime.removed, 0)
     }

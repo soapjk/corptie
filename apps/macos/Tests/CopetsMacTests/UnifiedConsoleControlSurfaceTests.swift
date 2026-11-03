@@ -44,7 +44,11 @@ struct UnifiedConsoleControlSurfaceTests {
             .appendingPathComponent("../ipad/Sources/PadWorkOutline.swift")
         let mobile = try String(contentsOf: mobileURL, encoding: .utf8)
         let desktop = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
-        for (text, rowCall, childIndent) in [(desktop, "taskRow(task)", 24), (mobile, "taskRow(task, sessionID: sessionID)", 44)] {
+        // iPad uses 44pt touch geometry and a separate pagination footer.
+        for (text, rowCall, childIndent, completionLabel, collapseLabel) in [
+            (desktop, "taskRow(task)", 24, "子任务完成进度", "收起子任务"),
+            (mobile, "taskRow(task, sessionID: sessionID)", 44, "子任务已完成", "的子任务")
+        ] {
             let start = try #require(text.range(of: "func hierarchyTaskRow("))
             let tail = String(text[start.lowerBound...])
             let content = try #require(tail.range(of: rowCall))
@@ -53,9 +57,9 @@ struct UnifiedConsoleControlSurfaceTests {
             let rowEnd = try #require(tail.range(of: "task.parentTaskId == nil ? 0 : \(childIndent)"))
             let row = String(tail[..<rowEnd.upperBound])
             #expect(!row.contains("Color.clear"))
-            #expect(text.contains("加载更多子任务")) // iPad places pagination in its child-list footer.
-            #expect(row.contains("收起") && row.contains("子任务"))
-            #expect(row.contains("子任务完成进度") || row.contains("子任务已完成"))
+            #expect(text.contains("加载更多子任务"))
+            #expect(row.contains(collapseLabel))
+            #expect(row.contains(completionLabel))
         }
     }
 
