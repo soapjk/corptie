@@ -351,6 +351,9 @@ export function handleCollaborationHttpRequest({
           await onChannelMessageCreated?.(channelRequest);
           return sendJson(response, 201, { request: channelRequest });
         }
+        // An idempotent retry can return an already resolved request. It is
+        // never a new authorization prompt, nor permission to re-send it.
+        if (channelRequest.status !== "pending") return sendJson(response, 201, { request: channelRequest });
         try {
           await onChannelRequestStaged?.(channelRequest);
         } catch (error) {

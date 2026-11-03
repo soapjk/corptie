@@ -29,6 +29,7 @@ export function createEntitySessionLaunchers({
     deferInitialPromptUntilBound = false,
     deferToolHostFinalization = false,
     forkSource = null,
+    startupTiming = null,
     observePerformance = () => {}
   }) {
     const providerId = resolveSessionProviderId(requestedProviderId);
@@ -74,6 +75,7 @@ export function createEntitySessionLaunchers({
         taskId,
         sessionKind: "worker",
         deferToolHostFinalization,
+        ...(startupTiming ? { startupTiming } : {}),
         forkSource
       }
     );
