@@ -1,3 +1,5 @@
+import AppKit
+import CorptieConversation
 import SwiftUI
 
 enum RolesSkillsLayoutMode: Equatable {
@@ -9,74 +11,121 @@ enum RolesSkillsLayoutMetrics {
     static let skillsColumnWidth: CGFloat = 300
     static let headerHeight: CGFloat = 60
     static let columnPadding: CGFloat = 16
-    static let minimumAgentsColumnWidth: CGFloat = 520
+    static let minimumAgentsColumnWidth: CGFloat = 568
     static let dividerWidth: CGFloat = 1
 
     static func mode(for availableWidth: CGFloat) -> RolesSkillsLayoutMode {
-        availableWidth >= minimumAgentsColumnWidth + skillsColumnWidth + dividerWidth ? .split : .compact
+        availableWidth >= minimumAgentsColumnWidth + skillsColumnWidth + dividerWidth
+            ? .split : .compact
+    }
+
+    static func showsInlineSkills(
+        width: CGFloat, sidebarVisible: Bool, preference: Bool, sheetPresented: Bool
+    ) -> Bool {
+        mode(for: width) == .split && sidebarVisible && preference && !sheetPresented
+    }
+
+    static func gridColumnCount(for width: CGFloat) -> Int {
+        guard width.isFinite else { return 1 }
+        return max(1, Int(floor(max(0, width - 16) / 276)))
+    }
+
+    static func sheetSize(in availableSize: CGSize, ideal: CGSize) -> CGSize {
+        CGSize(
+            width: max(1, min(ideal.width, availableSize.width - 32)),
+            height: max(1, min(ideal.height, availableSize.height - 48)))
     }
 }
 
-// 顶层 Agents Tab 同时管理 Agent 和共享 Skill 注册表。宽屏平级双列，紧凑宽度仅保留 Agent 主列。
 struct RoleManagementView: View {
-    @ObservedObject private var client = EntityAPIClient.shared
+    // The client performs existing commands; only the registry projection is observed.
+    private let client = EntityAPIClient.shared
+    @StateObject private var registry = RoleRegistryPresentation()
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
     @State private var isCreatingRole = false
     @State private var isRegisteringSkill = false
     @State private var isShowingSkillsSheet = false
-    @AppStorage("ui.roles.showSkills", store: CorptieAppEnvironment.userDefaults) private var showsSkillsColumn = true
+    @AppStorage("ui.roles.showSkills", store: CorptieAppEnvironment.userDefaults) private
+        var showsSkillsColumn = true
     @State private var isShowingMcpSheet = false
     @State private var selectedRoleForDetail: Role?
     @State private var roleForSessionCreation: Role?
     @State private var pendingSkillDeletion: SkillDeletionImpact?
     @State private var skillDeletionError: String?
     @State private var isDeletingSkill = false
+    @State private var inspectingSkillID: String?
+    @State private var roleQuery = ""
+    @State private var skillQuery = ""
+    @State private var roleSearchFocusRequest = 0
+    @State private var skillSearchFocusRequest = 0
+    @State private var returnRoleID: String?
+    @FocusState private var focusedRoleID: String?
+    @FocusState private var skillsButtonFocused: Bool
 
-    // 自适应网格：卡片最小 260pt，随窗口宽度自动增减列数。
-    private let columns = [GridItem(.adaptive(minimum: 260, maximum: 420), spacing: 16)]
+    private var hasModal: Bool {
+        isCreatingRole || isShowingSkillsSheet || isShowingMcpSheet || isRegisteringSkill
+            || selectedRoleForDetail != nil || roleForSessionCreation != nil
+            || pendingSkillDeletion != nil || skillDeletionError != nil
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            let layoutMode = RolesSkillsLayoutMetrics.mode(for: geometry.size.width)
+            let inlineSkills = RolesSkillsLayoutMetrics.showsInlineSkills(
+                width: geometry.size.width, sidebarVisible: sidebarState.isVisible,
+                preference: showsSkillsColumn, sheetPresented: isShowingSkillsSheet
+            )
+            let roleWidth = geometry.size.width - (inlineSkills ? 301 : 0)
+            let skillsSize = RolesSkillsLayoutMetrics.sheetSize(
+                in: geometry.size, ideal: CGSize(width: 420, height: 680))
+            let mcpSize = RolesSkillsLayoutMetrics.sheetSize(
+                in: geometry.size, ideal: CGSize(width: 760, height: 620))
 
-            HStack(spacing: 0) {
-                rolesColumn(showsSkillsButton: true, compactSkills: layoutMode == .compact)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                if sidebarState.isVisible && layoutMode == .split && showsSkillsColumn {
+            HStack(alignment: .top, spacing: 0) {
+                rolesColumn(
+                    width: roleWidth, inlineSkills: inlineSkills,
+                    canInlineSkills: RolesSkillsLayoutMetrics.mode(for: geometry.size.width)
+                        == .split
+                        && sidebarState.isVisible
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                if inlineSkills {
                     Divider()
-                    skillsColumn
+                    skillsColumn(isSheet: false)
                         .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
                 }
             }
+            .background(Color(nsColor: .textBackgroundColor))
+            .sheet(isPresented: $isShowingSkillsSheet, onDismiss: { skillsButtonFocused = true }) {
+                skillsColumn(isSheet: true)
+                    .frame(width: skillsSize.width, height: skillsSize.height)
+            }
+            .sheet(isPresented: $isShowingMcpSheet) {
+                McpManagementView(roles: registry.roles, preferredSize: mcpSize)
+            }
         }
-        .sheet(isPresented: $isShowingSkillsSheet) {
-            skillsColumn
-                .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
-                .frame(minHeight: 520, idealHeight: 680)
+        .sheet(isPresented: $isCreatingRole) { RoleCreateView() }
+        .sheet(item: $selectedRoleForDetail, onDismiss: restoreRoleFocus) { role in
+            if let current = registry.roles.first(where: { $0.id == role.id }) {
+                RoleDetailView(agent: current)
+            } else {
+                missingRoleView
+            }
         }
-        .sheet(isPresented: $isShowingMcpSheet) {
-            McpManagementView(roles: client.roles)
-        }
-        .sheet(isPresented: $isCreatingRole) {
-            RoleCreateView()
-        }
-        .sheet(item: $selectedRoleForDetail) { agent in
-            RoleDetailView(agent: agent)
-        }
-        .sheet(item: $roleForSessionCreation) { agent in
-            NewSessionCreationSheet(fixedAgent: agent) { session in
-                router.openSession(session.id, source: .createdSession)
+        .sheet(item: $roleForSessionCreation, onDismiss: restoreRoleFocus) { role in
+            if let current = registry.roles.first(where: { $0.id == role.id }) {
+                NewSessionCreationSheet(fixedAgent: current) { session in
+                    router.openSession(session.id, source: .createdSession)
+                }
+            } else {
+                missingRoleView
             }
         }
         .alert(
             L10n("Delete Skill?"),
             isPresented: Binding(
-                get: { pendingSkillDeletion != nil },
-                set: { if !$0 { pendingSkillDeletion = nil } }
-            ),
-            presenting: pendingSkillDeletion
+                get: { pendingSkillDeletion != nil }, set: { if !$0 { pendingSkillDeletion = nil } }
+            ), presenting: pendingSkillDeletion
         ) { impact in
             if SkillDeletionConfirmationPolicy.canOfferDestructiveAction(for: impact) {
                 Button(L10n("Delete"), role: .destructive) {
@@ -88,136 +137,312 @@ struct RoleManagementView: View {
         } message: { impact in
             Text(skillDeletionConfirmationMessage(impact))
         }
-        .alert(L10n("Unable to delete Skill"), isPresented: Binding(
-            get: { skillDeletionError != nil },
-            set: { if !$0 { skillDeletionError = nil } }
-        )) {
+        .alert(
+            L10n("Unable to delete Skill"),
+            isPresented: Binding(
+                get: { skillDeletionError != nil }, set: { if !$0 { skillDeletionError = nil } }
+            )
+        ) {
             Button(L10n("OK"), role: .cancel) { skillDeletionError = nil }
         } message: {
             Text(skillDeletionError ?? "")
         }
-        .task {
-            async let roles: Void = client.refreshRoles()
-            async let skills: Void = client.refreshSkills()
-            _ = await (roles, skills)
+        .background {
+            Button(L10n("Search roles")) { roleSearchFocusRequest &+= 1 }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(!sidebarState.isSelected || hasModal)
+                .hidden().frame(width: 0, height: 0).accessibilityHidden(true)
         }
+        .task { await registry.refresh() }
     }
 
-    private func rolesColumn(showsSkillsButton: Bool, compactSkills: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(L10n("Roles"))
-                    .font(.title2.bold())
-                Text("\(client.roles.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
-                Spacer()
-                if showsSkillsButton {
-                    Button {
-                        if compactSkills {
-                            isShowingSkillsSheet = true
-                        } else { showsSkillsColumn.toggle() }
-                    } label: {
-                        Label(L10n("Skills"), systemImage: "shippingbox")
-                    }
-                    .help(L10n("Show Skills"))
-                }
-                Button {
-                    isShowingMcpSheet = true
-                } label: {
-                    Label("MCP", systemImage: "point.3.connected.trianglepath.dotted")
-                }
-                .help("管理独立 MCP Server")
-                Button {
-                    isCreatingRole = true
-                } label: {
-                    Label(L10n("新建 角色"), systemImage: "plus")
-                }
-            }
-            .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
-            .frame(height: RolesSkillsLayoutMetrics.headerHeight)
-
-            Text(L10n("Roles define reusable instructions and skills. Sessions run through execution engines."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
-                .padding(.bottom, 8)
-
-            Divider()
-
-            if client.isLoading && client.roles.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if client.roles.isEmpty {
-                ContentUnavailableView(
-                    "暂无 角色",
-                    systemImage: "person.2",
-                    description: Text(L10n("点击右上角「新建 角色」创建第一个"))
+    private func rolesColumn(width: CGFloat, inlineSkills: Bool, canInlineSkills: Bool) -> some View
+    {
+        let matches = registry.matchingRoles(roleQuery)
+        let columns = Array(
+            repeating: GridItem(.flexible(minimum: 0), spacing: 16),
+            count: RolesSkillsLayoutMetrics.gridColumnCount(for: width))
+        return VStack(alignment: .leading, spacing: 0) {
+            rolesHeader(width: width, inlineSkills: inlineSkills, canInlineSkills: canInlineSkills)
+            Text(
+                L10n(
+                    "Roles define reusable instructions and skills. Sessions run through execution engines."
                 )
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
-                        ForEach(client.roles) { agent in
-                            roleCard(agent)
-                        }
+            )
+            .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 16).padding(.bottom, 8)
+            HStack(spacing: 12) {
+                RegistrySearchField(
+                    text: $roleQuery,
+                    placeholder: L10n("Search role names, descriptions or specialties"),
+                    identifier: "roles-search", focusRequest: roleSearchFocusRequest
+                )
+                .frame(height: 32)
+                if registry.isRefreshing {
+                    ProgressView().controlSize(.small).accessibilityLabel(L10n("Loading roles"))
+                }
+                Text("\(matches.count) / \(registry.roles.count)")
+                    .font(WorkbenchTypography.font(for: .metadata)).monospacedDigit()
+                    .foregroundStyle(
+                        .secondary
+                    )
+                    .fixedSize().accessibilityLabel(
+                        L10nFormat("%d of %d roles", matches.count, registry.roles.count))
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider()
+            registryError
+            switch registry.phase(itemCount: registry.roles.count) {
+            case .loading:
+                loadingView("Loading roles")
+            case .failed:
+                failedView
+            case .empty:
+                ContentUnavailableView {
+                    Label(L10n("No roles yet"), systemImage: "person.2")
+                } description: {
+                    Text(L10n("Create a reusable role for conversations and tasks."))
+                } actions: {
+                    createRoleButton
+                }
+            case .content:
+                if matches.isEmpty {
+                    noMatchesView(title: "No matching roles", clear: { roleQuery = "" })
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                            ForEach(matches) { role in roleCard(role) }
+                        }.padding(16)
                     }
-                    .padding(RolesSkillsLayoutMetrics.columnPadding)
+                    .accessibilityIdentifier("roles-grid")
                 }
             }
         }
     }
 
-    private var skillsColumn: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(L10n("Skills"))
-                    .font(.title2.bold())
-                Spacer()
+    @ViewBuilder
+    private func rolesHeader(width: CGFloat, inlineSkills: Bool, canInlineSkills: Bool) -> some View
+    {
+        if width < 420 {
+            HStack(spacing: 8) {
+                rolesTitle
+                Spacer(minLength: 4)
+                Menu(L10n("Manage")) {
+                    Button(L10n("Skills")) { isShowingSkillsSheet = true }
+                    Button(L10n("Manage MCP")) { isShowingMcpSheet = true }
+                }.fixedSize()
+                createRoleButton
+            }.padding(.horizontal, 16).frame(minHeight: 60)
+        } else if width < 600 {
+            VStack(alignment: .leading, spacing: 8) {
+                rolesTitle
+                HStack(spacing: 8) {
+                    managementButtons(inlineSkills: inlineSkills, canInlineSkills: canInlineSkills)
+                    Spacer(minLength: 0)
+                    createRoleButton
+                }
+            }.padding(16)
+        } else {
+            HStack(spacing: 8) {
+                rolesTitle
+                Spacer(minLength: 8)
+                managementButtons(inlineSkills: inlineSkills, canInlineSkills: canInlineSkills)
+                createRoleButton
+            }.padding(.horizontal, 16).frame(minHeight: 60)
+        }
+    }
+
+    private var rolesTitle: some View {
+        HStack(spacing: 8) {
+            Text(L10n("Roles")).font(WorkbenchTypography.font(for: .pageTitle))
+            Text("\(registry.roles.count)")
+                .font(WorkbenchTypography.font(for: .metadata)).monospacedDigit().foregroundStyle(
+                    .secondary
+                )
+                .padding(.horizontal, 8).padding(.vertical, 2).background(
+                    .quaternary, in: Capsule())
+        }.fixedSize()
+    }
+
+    private var createRoleButton: some View {
+        Button {
+            isCreatingRole = true
+        } label: {
+            Label(L10n("New role"), systemImage: "plus")
+        }
+        .buttonStyle(.borderedProminent).disabled(!registry.isReachable)
+        .accessibilityIdentifier("roles-create")
+    }
+
+    @ViewBuilder
+    private func managementButtons(inlineSkills: Bool, canInlineSkills: Bool) -> some View {
+        Button {
+            if canInlineSkills { showsSkillsColumn.toggle() } else { isShowingSkillsSheet = true }
+        } label: {
+            Label(L10n("Skills"), systemImage: "shippingbox")
+        }
+        .buttonStyle(.bordered).focused($skillsButtonFocused)
+        .tint(inlineSkills ? .accentColor : nil)
+        .background(
+            inlineSkills ? Color.accentColor.opacity(0.12) : .clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .accessibilityValue(L10n(inlineSkills ? "Expanded" : "Collapsed"))
+        .accessibilityAddTraits(inlineSkills ? .isSelected : [])
+        .accessibilityIdentifier("roles-skills")
+        Button {
+            isShowingMcpSheet = true
+        } label: {
+            Label(L10n("Manage MCP"), systemImage: "point.3.connected.trianglepath.dotted")
+        }.buttonStyle(.bordered).help(L10n("Manage independent MCP Servers and role assignments"))
+            .accessibilityIdentifier("roles-mcp")
+    }
+
+    private func skillsColumn(isSheet: Bool) -> some View {
+        let matches = registry.matchingSkills(skillQuery)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(L10n("Skills")).font(WorkbenchTypography.font(for: .sectionTitle))
+                Spacer(minLength: 0)
                 Button {
                     isRegisteringSkill = true
                 } label: {
-                    Label(L10n("登记"), systemImage: "plus")
+                    Label(L10n("Register Skill"), systemImage: "plus")
                 }
-            }
-            .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
-            .frame(height: RolesSkillsLayoutMetrics.headerHeight)
-
+                .disabled(!registry.isReachable).accessibilityIdentifier("skills-register")
+                if isSheet {
+                    Button {
+                        isShowingSkillsSheet = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .keyboardShortcut(.cancelAction).accessibilityLabel(L10n("Close Skills"))
+                }
+            }.padding(.horizontal, 16).frame(minHeight: 60)
+            Text(L10n("Shared registry. Assign registered skills in role details."))
+                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16).padding(.bottom, 8)
+            RegistrySearchField(
+                text: $skillQuery, placeholder: L10n("Search Skills"), identifier: "skills-search",
+                focusRequest: skillSearchFocusRequest
+            )
+            .frame(height: 32).padding(.horizontal, 16).padding(.vertical, 12)
             Divider()
-
-            if client.skills.isEmpty {
+            switch registry.phase(itemCount: registry.skills.count) {
+            case .loading: loadingView("Loading Skills")
+            case .failed: failedView
+            case .empty:
                 ContentUnavailableView(
-                    L10n("No Skills"),
-                    systemImage: "shippingbox",
-                    description: Text(L10n("尚未登记任何 Skill，点「登记」从本地目录或 Git 仓库添加。"))
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(client.skills.enumerated()), id: \.element.id) { index, skill in
-                            SkillRegistryRow(skill: skill) {
-                                Task { await prepareSkillDeletion(skill) }
-                            }
-                            if index < client.skills.count - 1 {
-                                Divider()
-                                    .padding(.leading, RolesSkillsLayoutMetrics.columnPadding)
+                    L10n("No Skills"), systemImage: "shippingbox",
+                    description: Text(
+                        L10n("Register a Skill from a local directory or Git repository.")))
+            case .content:
+                if matches.isEmpty {
+                    noMatchesView(title: "No matching Skills", clear: { skillQuery = "" })
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(matches) { skill in
+                                SkillRegistryRow(
+                                    skill: skill, isInspecting: inspectingSkillID == skill.id,
+                                    canDelete: registry.isReachable && inspectingSkillID == nil
+                                        && !isDeletingSkill
+                                ) {
+                                    Task { await prepareSkillDeletion(skill) }
+                                }
+                                Divider().padding(.leading, 16)
                             }
                         }
-                    }
+                    }.accessibilityIdentifier("skills-registry")
                 }
             }
         }
-        .sheet(isPresented: $isRegisteringSkill) {
-            SkillRegisterView { _ in }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .sheet(isPresented: $isRegisteringSkill) { SkillRegisterView { _ in } }
+        .background {
+            if isSheet {
+                Button(L10n("Search Skills")) { skillSearchFocusRequest &+= 1 }
+                    .keyboardShortcut("f", modifiers: .command).disabled(isRegisteringSkill)
+                    .hidden().frame(width: 0, height: 0).accessibilityHidden(true)
+            }
+        }
+    }
+
+    @ViewBuilder private var registryError: some View {
+        if let error = registry.syncError {
+            HStack(alignment: .top, spacing: 8) {
+                Label(
+                    L10n("Registry unavailable. Displayed data may be out of date."),
+                    systemImage: "exclamationmark.triangle")
+                Spacer(minLength: 0)
+                Button(L10n("Retry")) { Task { await registry.refresh() } }.disabled(
+                    registry.isRefreshing)
+            }
+            .font(WorkbenchTypography.font(for: .help))
+            .help(error).padding(16).accessibilityLabel(error)
+        }
+    }
+
+    private func loadingView(_ title: String) -> some View {
+        ProgressView(L10n(title)).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var failedView: some View {
+        ContentUnavailableView {
+            Label(L10n("Unable to load registry"), systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(registry.syncError ?? L10n("Retry"))
+        } actions: {
+            Button(L10n("Retry")) { Task { await registry.refresh() } }.disabled(
+                registry.isRefreshing)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func noMatchesView(title: String, clear: @escaping () -> Void) -> some View {
+        ContentUnavailableView {
+            Label(L10n(title), systemImage: "magnifyingglass")
+        } description: {
+            Text(L10n("Try another search or clear the current query."))
+        } actions: {
+            Button(L10n("Clear search"), action: clear)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var missingRoleView: some View {
+        ContentUnavailableView {
+            Label(L10n("Role no longer exists"), systemImage: "person.crop.circle.badge.xmark")
+        } description: {
+            Text(L10n("The registry was updated. Return to choose another role."))
+        } actions: {
+            Button(L10n("Close")) {
+                selectedRoleForDetail = nil
+                roleForSessionCreation = nil
+            }.keyboardShortcut(.cancelAction)
+        }
+        .frame(width: 480, height: 300)
+    }
+
+    private func restoreRoleFocus() {
+        if let id = returnRoleID, registry.matchingRoles(roleQuery).contains(where: { $0.id == id })
+        {
+            focusedRoleID = id
+        } else {
+            focusedRoleID = registry.matchingRoles(roleQuery).first?.id
         }
     }
 
     private func prepareSkillDeletion(_ skill: Skill) async {
+        guard inspectingSkillID == nil, !isDeletingSkill else { return }
+        inspectingSkillID = skill.skillId
+        defer { inspectingSkillID = nil }
         guard let impact = await client.skillDeletionImpact(skillId: skill.skillId) else {
-            skillDeletionError = client.errorMessage ?? L10n("Unable to inspect Skill deletion impact.")
+            skillDeletionError =
+                client.errorMessage ?? L10n("Unable to inspect Skill deletion impact.")
             return
         }
         pendingSkillDeletion = impact
@@ -237,213 +462,219 @@ struct RoleManagementView: View {
 
     private func skillDeletionConfirmationMessage(_ impact: SkillDeletionImpact) -> String {
         let agentNames = impact.affectedAgents.map(\.name).joined(separator: "、")
-        let affected = impact.affectedAgentCount == 0
+        let affected =
+            impact.affectedAgentCount == 0
             ? L10n("No Role currently uses this Skill.")
-            : L10nFormat("This permanently removes the Skill from %d Role(s): %@.", impact.affectedAgentCount, agentNames)
+            : L10nFormat(
+                "This permanently removes the Skill from %d Role(s): %@.",
+                impact.affectedAgentCount,
+                agentNames)
         if impact.canDelete {
-            return affected + "\n\n" + L10n("All Provider runtime copies and the Git cache will be removed. This cannot be undone.")
+            return affected + "\n\n"
+                + L10n(
+                    "All Provider runtime copies and the Git cache will be removed. This cannot be undone."
+                )
         }
-        let sessions = impact.activeSessions.map { "\($0.title)（\($0.agentName)）" }.joined(separator: "、")
-        return affected + "\n\n" + L10nFormat(
-            "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first.",
-            impact.activeSessionCount,
-            sessions
+        let sessions = impact.activeSessions.map { "\($0.title)（\($0.agentName)）" }.joined(
+            separator: "、")
+        return affected + "\n\n"
+            + L10nFormat(
+                "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first.",
+                impact.activeSessionCount,
+                sessions
+            )
+    }
+
+    private func roleCard(_ role: Role) -> some View {
+        RoleCard(
+            agent: role, canStartSession: registry.isReachable, focusedRoleID: $focusedRoleID,
+            onOpenDetail: {
+                returnRoleID = role.id
+                selectedRoleForDetail = role
+            },
+            onStartSession: {
+                returnRoleID = role.id
+                roleForSessionCreation = role
+            }
         )
+        .contextMenu {
+            Button(L10n("开始新会话")) {
+                returnRoleID = role.id
+                roleForSessionCreation = role
+            }
+            .disabled(role.status == "unavailable" || !registry.isReachable)
+            Button(L10n("打开详情")) {
+                returnRoleID = role.id
+                selectedRoleForDetail = role
+            }
+            Divider()
+            Button {
+                NotificationCenter.default.post(
+                    name: .showAgentOrb, object: nil, userInfo: ["agentId": role.roleId])
+            } label: {
+                Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
+            }
+        }
     }
-
-    private func roleCard(_ agent: Role) -> some View {
-        RoleCard(agent: agent, onStartSession: { roleForSessionCreation = agent })
-            .contextMenu {
-                Button(L10n("开始新会话")) { roleForSessionCreation = agent }
-                Button(L10n("打开详情")) { selectedRoleForDetail = agent }
-                Divider()
-                Button {
-                    NotificationCenter.default.post(
-                        name: .showAgentOrb,
-                        object: nil,
-                        userInfo: ["agentId": agent.roleId]
-                    )
-                } label: {
-                    Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
-                }
-            }
-            .onTapGesture { selectedRoleForDetail = agent }
-            .focusable()
-            .onKeyPress(.return) {
-                selectedRoleForDetail = agent
-                return .handled
-            }
-            .onKeyPress(.space) {
-                selectedRoleForDetail = agent
-                return .handled
-            }
-            .accessibilityAction(named: Text(L10n("打开详情"))) {
-                selectedRoleForDetail = agent
-            }
-    }
-
 }
 
 struct SkillRegistryRow: View {
     let skill: Skill
+    var isInspecting = false
+    var canDelete = true
     let onDelete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(skill.name)
-                    .font(.headline)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Label(L10n(skill.isManaged ? "托管安装" : "来源引用"), systemImage: skill.isManaged ? "checkmark.shield.fill" : "link")
-                    .font(.caption2)
-                    .foregroundStyle(skill.isManaged ? .green : .secondary)
-                    .labelStyle(.titleAndIcon)
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
+                Text(skill.name).font(WorkbenchTypography.font(for: .cardTitle)).lineLimit(1).help(
+                    skill.name)
+                Spacer(minLength: 0)
+                if isInspecting {
+                    ProgressView().controlSize(.small).accessibilityLabel(
+                        L10n("Checking deletion impact"))
                 }
-                .buttonStyle(.borderless)
-                .help(L10n("Delete Skill"))
-                .accessibilityLabel(L10n("Delete Skill"))
+                Menu {
+                    Button(L10n("Copy source")) {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(skill.source, forType: .string)
+                    }
+                    Divider()
+                    Button(L10n("Delete Skill"), role: .destructive, action: onDelete).disabled(
+                        !canDelete)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton).fixedSize().frame(minWidth: 28, minHeight: 28)
+                .accessibilityLabel(L10nFormat("Actions for %@", skill.name))
             }
-
             Text(skill.description.isEmpty ? L10n("No description") : skill.description)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
+                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary).lineLimit(2)
+            Text(L10n(skill.isManaged ? "托管安装" : "来源引用"))
+                .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+                .padding(.horizontal, 8).padding(.vertical, 2).background(
+                    .quaternary, in: Capsule())
             Label(
                 "\(L10n(skill.sourceKindLocalizationKey)) · \(skill.source)",
-                systemImage: skill.sourceType == "url" ? "link" : (skill.isGit ? "arrow.triangle.branch" : "folder")
+                systemImage: skill.sourceType == "url"
+                    ? "link" : (skill.isGit ? "arrow.triangle.branch" : "folder")
             )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.middle).help(skill.source)
         }
-        .padding(.horizontal, RolesSkillsLayoutMetrics.columnPadding)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
     }
 }
 
-// 单个 Agent 的网格卡片。所有 Agent 都可创建聊天或 Worker Session。
 struct RoleCard: View {
     let agent: Role
-    var onStartSession: (() -> Void)? = nil
-
-    private enum Metrics {
-        static let cardHeight: CGFloat = 244
-        static let descriptionHeight: CGFloat = 54
-    }
+    var canStartSession = true
+    @FocusState.Binding var focusedRoleID: String?
+    let onOpenDetail: () -> Void
+    let onStartSession: () -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // 顶部：头像 + 名字/角色 + 状态点
-            HStack(alignment: .top, spacing: 10) {
-                avatar
+        ZStack {
+            // A separate native button covers the card. Footer and popover
+            // buttons are siblings, never nested buttons or bubbling gestures.
+            Button(action: onOpenDetail) {
+                Color.clear.contentShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain).focused($focusedRoleID, equals: agent.id)
+            .onKeyPress(.return) {
+                onOpenDetail()
+                return .handled
+            }
+            .accessibilityLabel(L10nFormat("Open details for %@", agent.name))
+            .accessibilityIdentifier("role-detail-\(agent.id)")
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(agent.name)
-                        .font(.headline)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 10) {
+                    avatar
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(agent.name).font(WorkbenchTypography.font(for: .cardTitle)).lineLimit(
+                            1
+                        ).help(
+                            agent.name)
+                        Text(
+                            L10n(
+                                agent.isPlatformAssistant
+                                    ? "Platform managed" : "Available for chat and tasks")
+                        )
+                        .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(kindLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 0)
-
-                if agent.status == "unavailable" {
-                    Label(statusText, systemImage: "exclamationmark.circle")
-                        .font(.caption).foregroundStyle(statusColor)
-                        .help(agent.statusReason ?? statusText)
-                }
-            }
-
-            // 描述
-            Group {
-                if agent.description.isEmpty {
-                    Color.clear
-                        .accessibilityHidden(true)
-                } else {
-                    Text(agent.description)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-            }
-            .frame(maxWidth: .infinity, minHeight: Metrics.descriptionHeight, maxHeight: Metrics.descriptionHeight, alignment: .topLeading)
-
-            // 专长标签。它描述 Agent 擅长什么，不承载 Session 权限。
-            FlowTags(tags: agent.capabilities)
-
-            Spacer(minLength: 0)
-
-            // 底部：Session action + 状态文字
-            HStack(spacing: 6) {
-                Spacer()
-                if let onStartSession {
-                    Button {
-                        onStartSession()
-                    } label: {
-                        Label(L10n("开始新会话"), systemImage: "bubble.left.and.bubble.right")
-                            .font(.caption)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(agent.status == "unavailable")
+                    Spacer(minLength: 0)
                 }
-            }
+                .frame(minHeight: 40, alignment: .top).allowsHitTesting(false)
+                Text(agent.description.isEmpty ? L10n("No description") : agent.description)
+                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
+                    .lineLimit(3).frame(maxWidth: .infinity, minHeight: 54, alignment: .topLeading)
+                    .padding(.top, 8).allowsHitTesting(false)
+                FlowTags(tags: agent.capabilities).padding(.top, 8)
+                Spacer(minLength: 10)
+                HStack(spacing: 8) {
+                    if agent.status == "unavailable" {
+                        Label(L10n("Unavailable"), systemImage: "exclamationmark.circle")
+                            .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.red)
+                            .lineLimit(1)
+                            .help(agent.statusReason ?? L10n("Unavailable"))
+                            .accessibilityLabel(agent.statusReason ?? L10n("Unavailable"))
+                    }
+                    Spacer(minLength: 0)
+                    Button(action: onStartSession) {
+                        Label(L10n("开始新会话"), systemImage: "bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.bordered).frame(minHeight: 28)
+                    .disabled(agent.status == "unavailable" || !canStartSession)
+                    .accessibilityIdentifier("role-start-\(agent.id)")
+                }
+            }.padding(16)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: Metrics.cardHeight, maxHeight: Metrics.cardHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 268, alignment: .leading)
         .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
+        .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(.quaternary, lineWidth: 1)
-        )
+                .strokeBorder(
+                    focusedRoleID == agent.id
+                        ? Color.accentColor
+                        : Color(
+                            nsColor: contrast == .increased
+                                ? .separatorColor : .quaternaryLabelColor),
+                    lineWidth: focusedRoleID == agent.id ? 2 : 1
+                )
+                .allowsHitTesting(false)
+        }
     }
 
     private var avatar: some View {
-        Group {
-            if let avatarPath = agent.avatarPath, !avatarPath.isEmpty {
-                AnimatedAvatarImage(path: avatarPath)
-            } else {
-                DefaultInitialAvatarView(
-                    familySeed: agent.name,
-                    variationSeed: agent.roleId,
-                    initials: DefaultAvatarInitials.make(from: agent.name),
-                    size: 40
-                )
-            }
-        }
-        .frame(width: 40, height: 40)
-        .clipShape(Circle())
-    }
-
-    private var kindLabel: String {
-        L10n(agent.isPlatformAssistant ? "Platform managed" : "Available for chat and tasks")
-    }
-
-    private var statusColor: Color {
-        switch agent.status {
-        case "unavailable": .red
-        default: .green
-        }
-    }
-
-    private var statusText: String {
-        switch agent.status {
-        case "unavailable": L10n("Unavailable")
-        default: L10n("Available")
-        }
+        RoleCardAvatar(role: agent)
     }
 }
 
-// 最多展示两行标签；超出行数或单标签宽度时显示“…”入口，完整内容在 Popover 中查看。
+private struct RoleCardAvatar: View {
+    let role: Role
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                DefaultInitialAvatarView(
+                    familySeed: role.name, variationSeed: role.roleId,
+                    initials: DefaultAvatarInitials.make(from: role.name), size: 40)
+            }
+        }.frame(width: 40, height: 40).clipShape(Circle()).accessibilityHidden(true)
+            .task(id: role.avatarPath) {
+                // Static thumbnails; loading is tied to the path, never body evaluation.
+                image = role.avatarPath.flatMap { AvatarImageSupport.loadImage(at: $0) }
+            }
+    }
+}
+
 struct FlowTags: View {
     let tags: [String]
     @State private var isShowingAllTags = false
@@ -451,74 +682,55 @@ struct FlowTags: View {
     var body: some View {
         Group {
             if tags.isEmpty {
-                Text(L10n("无专长标签"))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(L10n("无专长标签")).font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(
+                    .secondary
+                )
+                .frame(maxWidth: .infinity, alignment: .leading).allowsHitTesting(false)
             } else {
                 CappedFlowLayout(spacing: 6, maxRows: 2) {
                     ForEach(Array(tags.enumerated()), id: \.offset) { _, tag in
-                        Text(tag)
-                            .font(.caption2)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(.quaternary, in: Capsule())
+                        Text(tag).font(WorkbenchTypography.font(for: .metadata)).lineLimit(1)
+                            .truncationMode(
+                                .tail
+                            )
+                            .padding(.horizontal, 7).padding(.vertical, 3).background(
+                                .quaternary, in: Capsule()
+                            )
+                            .allowsHitTesting(false)
                     }
-
                     Button {
                         isShowingAllTags = true
                     } label: {
-                        Text("…")
-                            .font(.caption.bold())
-                            .frame(minWidth: 18)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 3)
-                            .background(.quaternary, in: Capsule())
+                        Text("…").font(WorkbenchTypography.font(for: .metadata)).frame(minWidth: 18)
+                            .padding(.horizontal, 4).padding(.vertical, 3).background(
+                                .quaternary, in: Capsule())
                     }
-                    .buttonStyle(.plain)
-                    .help(L10n("查看全部标签"))
-                    .accessibilityLabel(L10n("查看全部标签"))
-                    .popover(isPresented: $isShowingAllTags, arrowEdge: .bottom) {
-                        allTagsPopover
-                    }
+                    .buttonStyle(.plain).help(L10n("查看全部标签")).accessibilityLabel(L10n("查看全部标签"))
+                    .popover(isPresented: $isShowingAllTags, arrowEdge: .bottom) { allTagsPopover }
                 }
             }
-        }
-        .frame(height: CappedFlowLayout.regionHeight, alignment: .topLeading)
-        .clipped()
+        }.frame(height: CappedFlowLayout.regionHeight, alignment: .topLeading).clipped()
     }
 
     private var allTagsPopover: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L10n("全部专长标签"))
-                .font(.headline)
-
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n("全部专长标签")).font(WorkbenchTypography.font(for: .sectionTitle))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(tags.enumerated()), id: \.offset) { _, tag in
-                        Text(tag)
-                            .font(.callout)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        Text(tag).font(WorkbenchTypography.font(for: .help)).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true).frame(
+                                maxWidth: .infinity, alignment: .leading)
                     }
                 }
-            }
-            .frame(maxHeight: 260)
-        }
-        .padding(14)
-        .frame(minWidth: 260, idealWidth: 320, maxWidth: 380)
+            }.frame(maxHeight: 260)
+        }.padding(16).frame(minWidth: 260, idealWidth: 320, maxWidth: 380)
     }
 }
 
 // 最后一个子视图固定为溢出入口。Layout 会先尝试完整排布；只有内容确实溢出时才放置入口。
 struct CappedFlowLayout: Layout {
-    static let regionHeight: CGFloat = 46
+    static let regionHeight: CGFloat = 48
 
     var spacing: CGFloat = 6
     var maxRows: Int = 2
