@@ -10,7 +10,7 @@ struct BackendSettingsAPI {
         dataRoot: String, expectedSourceDataRoot: String?,
         choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings?,
         codeDiff: CodeDiffSettings?, agentProxy: AgentProxySettings?, gateway: GatewaySettings?,
-        sessionCreationDefaults: TaskCreationDefaults? = nil
+        sessionCreationDefaults: TaskCreationDefaults? = nil, collaboration: CollaborationSettings? = nil
     ) -> [String: Any] {
         var body: [String: Any] = ["dataRoot": dataRoot]
         if let value = sessionCreationDefaults {
@@ -48,6 +48,9 @@ struct BackendSettingsAPI {
         }
         if let gateway {
             body["gateway"] = ["trustedWorkspaces": gateway.trustedWorkspaces]
+        }
+        if let collaboration {
+            body["collaboration"] = ["requireFirstMessageConfirmation": collaboration.requireFirstMessageConfirmation]
         }
         return body
     }

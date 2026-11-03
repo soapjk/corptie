@@ -159,6 +159,13 @@ export class CoordinationTurnService {
           });
         }
       });
+      if (context.options?.agentTask?.taskId) {
+        // Publish only after Turn, Task and Delivery admission have committed.
+        // Queued collaboration messages also need the ordinary running projection.
+        this.emitEvent("AgentWorkStarted", {
+          sessionId: reference.sessionId, task: this.store.getAgentTask(context.options.agentTask.taskId)
+        }, { sessionId: reference.sessionId, source: context.source });
+      }
       this.emitEvent("SessionCoordinationStarted", { turnId }, { sessionId: reference.sessionId });
       const session = this.store.getSession(reference.sessionId);
       const work = this.store.getWork(task.work_id);

@@ -4,6 +4,40 @@ import CorptieClientCore
 @testable import CorptieMac
 
 @MainActor struct SettingsDraftStateTests {
+    @Test func firstCollaborationConfirmationDefaultsOnAndParticipatesInSaveDiscardAndRefresh() async throws {
+        let state = SettingsDraftState()
+        state.receive(try settings())
+        #expect(state.collaboration.requireFirstMessageConfirmation)
+        state.collaboration.requireFirstMessageConfirmation = false
+        #expect(state.dirtyTabs == [.general])
+        state.receive(try settings(["codeDiff": ["tool": "vscode"]]))
+        #expect(!state.collaboration.requireFirstMessageConfirmation)
+        #expect(state.codeDiff.tool == "vscode")
+        #expect(state.canSave)
+        let success = await state.save { snapshot in
+            #expect(!snapshot.collaboration.requireFirstMessageConfirmation)
+            return try settings(["collaboration": ["requireFirstMessageConfirmation": false]])
+        }
+        #expect(success)
+        #expect(state.dirtyTabs.isEmpty)
+        state.collaboration.requireFirstMessageConfirmation = true
+        state.discard()
+        #expect(!state.collaboration.requireFirstMessageConfirmation)
+        #expect(state.dirtyTabs.isEmpty)
+        #expect(try settings(["collaboration": [:]]).collaboration?.requireFirstMessageConfirmation == true)
+    }
+
+    @Test func firstCollaborationConfirmationSerializesFalseAsBoolean() throws {
+        let body = BackendSettingsAPI.updateBody(dataRoot: "/test", expectedSourceDataRoot: nil,
+            choiceParser: nil, codexBackend: nil, codeDiff: nil, agentProxy: nil, gateway: nil,
+            collaboration: .init(requireFirstMessageConfirmation: false))
+        let collaboration = try #require(body["collaboration"] as? [String: Any])
+        #expect(collaboration["requireFirstMessageConfirmation"] as? Bool == false)
+        #expect(JSONSerialization.isValidJSONObject(body))
+        let decoded = try settings(["collaboration": collaboration])
+        #expect(decoded.collaboration?.requireFirstMessageConfirmation == false)
+    }
+
     private func settings(_ extra: [String: Any] = [:]) throws -> BackendSettings {
         var value: [String: Any] = ["dataRoot": "/test/root"]
         value.merge(extra) { _, new in new }
