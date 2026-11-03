@@ -282,7 +282,7 @@ struct ConversationNativeRowBuilder {
                 row.userInput = item.userInput
                 row.userInputItemID = item.id
                 row.userInputStatus = item.status
-            } else if (item.type == "executionPlan" || item.type == "plan"),
+            } else if (item.type == "executionPlan" || item.type == "plan" || item.type == "executionChecklist"),
                       let plan = item.executionPlan, plan.schemaVersion == 1 {
                 row.executionPlan = plan
             }

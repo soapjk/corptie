@@ -47,7 +47,7 @@ public enum ConversationPresentationKind: String, Equatable, Sendable {
         case "agentMessage": return .agentMessage
         case "choice", "approval": return .approval
         case "userInput": return .userInput
-        case "plan", "executionPlan": return .executionPlan
+        case "plan", "executionPlan", "executionChecklist": return .executionPlan
         default: return .unknown
         }
     }

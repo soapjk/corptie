@@ -45,6 +45,12 @@ function publicExecutionPlan(value) {
   return {
     schemaVersion: 1,
     planId: value.planId,
+    ...(typeof value.taskId === "string" ? {
+      taskId: value.taskId,
+      executionAvailable: value.executionAvailable === true,
+      stopReason: typeof value.stopReason === "string" ? value.stopReason : null,
+      completedCount: Number.isInteger(value.completedCount) ? value.completedCount : 0
+    } : {}),
     revision: value.revision,
     lifecycle: typeof value.lifecycle === "string" ? value.lifecycle : "unknown",
     explanation: typeof value.explanation === "string" ? boundedUnicodeText(value.explanation, 2_000) : null,
@@ -53,7 +59,11 @@ function publicExecutionPlan(value) {
       stepId: boundedUnicodeText(step?.stepId ?? "", 200),
       ordinal,
       text: boundedUnicodeText(step?.text ?? "", 2_000),
-      status: typeof step?.status === "string" ? step.status : "unknown"
+      status: typeof step?.status === "string" ? step.status : "unknown",
+      ...(typeof value.taskId === "string" ? {
+        condition: typeof step?.condition === "string" ? boundedUnicodeText(step.condition, 2000) : null,
+        reason: typeof step?.reason === "string" ? boundedUnicodeText(step.reason, 2000) : null
+      } : {})
     }))
   };
 }
@@ -113,7 +123,7 @@ function publicClientMessage(item) {
         mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
         byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null,
         ...normalizedImageGeometry(image.pixelWidth, image.pixelHeight) })) : [],
-    executionPlan: item.type === "executionPlan" ? publicExecutionPlan(item.executionPlan) : null,
+    executionPlan: ["executionPlan", "executionChecklist"].includes(item.type) ? publicExecutionPlan(item.executionPlan) : null,
     toolExecution: publicToolExecution(item.toolExecution),
     changeSet: publicChangeSet(item.changeSet),
     userInput: item.type === "userInput" ? publicUserInput(item.userInput) : null,

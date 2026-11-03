@@ -387,7 +387,9 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         ))
     }
 
+    let taskChecklists = items.filter { $0.type == "executionChecklist" }
     for (index, item) in items.enumerated() {
+        if item.type == "executionChecklist" { continue }
         if isProcessItem(item) {
             processBuffer.append(item)
         } else if item.type == "agentMessage" {
@@ -422,6 +424,14 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         }).map { $0 + 1 } ?? 0
         entries.insert(.init(kind: .process(turnId: baseTurnId, items: []),
                              processReplyState: .running), at: insertion)
+    }
+    if !taskChecklists.isEmpty {
+        let insertion = entries.lastIndex(where: { $0.isProcessGroup }).map { $0 + 1 }
+            ?? entries.firstIndex(where: { entry in
+                if case .message(let item) = entry.kind { return item.type == "agentMessage" }
+                return false
+            }) ?? entries.count
+        entries.insert(contentsOf: taskChecklists.map { ConversationEntry<Item>(kind: .message($0)) }, at: insertion)
     }
     return entries
 }
