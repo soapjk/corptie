@@ -711,25 +711,10 @@ export class SessionApplicationService {
     }
     const releaseNativeAdmission = this.coordinationTurns?.beginNative(reference);
     try {
-    let ready;
-    const preparationStartedAt = Date.now();
-    logSessionMessageLatency(context.latencyTrace, "tools_preparation_started");
-    try {
-      ready = await this.ensureActiveBindingToolsReady(reference.requestedSessionId, {
-        ...context,
-        purpose: "conversation-turn-boundary",
-        resolvedReference: reference,
-        expectedLogicalSessionId: reference.logicalSessionId,
-        expectedProviderBindingId: reference.bindingId,
-        expectedProviderSessionId: reference.providerSessionId,
-        expectedRoutingVersion: reference.routingVersion,
-        activeTurn: false
-      });
-    } catch (error) {
-      throw withDispatchStateNotSent(error);
-    }
-    logSessionMessageLatency(context.latencyTrace, "tools_preparation_completed", { durationMs: Date.now() - preparationStartedAt });
-    const prepared = ready.reference;
+    // Tool readiness is advisory for ordinary conversation admission. Never
+    // hold a user message behind catalog refresh, receipt repair or resume.
+    // Actual Tool calls retain the authoritative applied-domain/ACL gates.
+    const prepared = reference;
     let sessionContext;
     let dispatchReference;
     try {
@@ -753,6 +738,7 @@ export class SessionApplicationService {
       logSessionMessageLatency(context.latencyTrace, "context_assembly_completed", { durationMs: Date.now() - assemblyStartedAt });
       dispatchReference = await this.referenceFor(prepared.requestedSessionId);
       assertSameBinding(prepared, dispatchReference);
+      assertSameToolScope(prepared, dispatchReference);
       await this.assertMessageDispatchAllowed?.(dispatchReference, context);
     } catch (error) {
       throw withDispatchStateNotSent(error);
@@ -808,6 +794,7 @@ export class SessionApplicationService {
     contextReceipt.commit();
     this.#recordMemoryDispatch(sessionContext, "provider_accepted");
     const receipt = validateConversationSendReceipt(result);
+    if (receipt.delivery === "accepted") this.#scheduleToolReadinessNotice(dispatchReference, receipt.turnId);
     return { ...receipt,
       sessionId: dispatchReference.sessionId,
       logicalSessionId: dispatchReference.logicalSessionId ?? null,
@@ -817,6 +804,39 @@ export class SessionApplicationService {
       routingVersion: dispatchReference.routingVersion ?? null
     };
     } finally { releaseNativeAdmission?.(); }
+  }
+
+  #scheduleToolReadinessNotice(reference, turnId) {
+    if (!this.toolMaterializationPort) return;
+    // After admission, never resume or replace a physical Session as a tool
+    // repair side effect. The coordinator advertises which in-turn refreshes
+    // are supported; unsupported refreshes produce a notice instead.
+    setImmediate(async () => {
+      try {
+        const current = await this.referenceFor(reference.requestedSessionId);
+        assertSameBinding(reference, current);
+        assertSameToolScope(reference, current);
+        const session = current.metadata?.session ?? {};
+        const context = this.#materializationContext({
+          purpose: "conversation-tool-advisory", activeTurn: true,
+          actorId: session.agentId, sessionId: current.sessionId,
+          logicalSessionId: current.logicalSessionId, providerBindingId: current.bindingId,
+          sessionKind: session.sessionKind, workId: session.workId, taskId: session.taskId
+        });
+        await this.#ensureDomains(context, context.desiredToolDomains);
+      } catch (error) {
+        try {
+          const current = await this.referenceFor(reference.requestedSessionId);
+          assertSameBinding(reference, current);
+          assertSameToolScope(reference, current);
+          this.observeLifecycle({ type: "SessionToolPreparationWarning", sessionId: current.sessionId,
+            turnId, bindingId: current.bindingId, errorCode: error?.code ?? "TOOL_PREPARATION_UNAVAILABLE" });
+        } catch {
+          // A changed/retired binding or failed notice must never affect an
+          // already accepted message or produce an unhandled rejection.
+        }
+      }
+    });
   }
 
   #recordMemoryDispatch(sessionContext, status) {
