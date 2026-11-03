@@ -94,6 +94,41 @@ function receipt(input, overrides = {}) {
   });
 }
 
+test("unloaded domain documentation updates do not block an unchanged applied Session", async () => {
+  const catalog = description => new HostToolCatalog([
+    { id: "artifacts", tools: [{ name: "corptie_artifact_get", inputSchema: { type: "object" } }], execute: () => null },
+    { id: "memory", tools: [{ name: "corptie_memory_search", description, inputSchema: { type: "object" } }], execute: () => null }
+  ]);
+  const initial = catalog("Original documentation");
+  const value = await fixture({ catalog: initial, apply: async input => receipt(input, {
+    providerDefinitionsHash: input.plan.providerDefinitionsHash,
+    providerContractHash: input.plan.providerContractHash,
+    providerDefinitionsCount: input.plan.providerDefinitions.length,
+    providerObservationKind: "provider_schema_accepted"
+  }) });
+  try {
+    const before = await value.port.ensureDomainsApplied("logical:one", ["artifacts"]);
+    const oldReceipt = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one").providerReceipt;
+    const updated = catalog("Updated documentation for an unloaded domain");
+    assert.notEqual(initial.snapshot().catalogVersion, updated.snapshot().catalogVersion);
+    value.coordinator.catalog = updated;
+    const after = await value.port.ensureCurrentApplied("logical:one");
+    assert.equal(after.status, "Applied");
+    assert.equal(after.appliedVersion, before.appliedVersion);
+    assert.equal(after.appliedCatalogVersion, updated.snapshot().catalogVersion);
+    assert.equal(value.applyCount, 1);
+    const record = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one");
+    assert.deepEqual(record.providerReceipt, oldReceipt);
+    assert.equal(record.exposurePlan.compatibilityProof.sourceReceiptId, oldReceipt.receiptId);
+    const repeated = await value.port.ensureCurrentApplied("logical:one");
+    assert.equal(repeated.receiptId, before.receiptId);
+    assert.equal(value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one").resourceVersion, record.resourceVersion);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("public ToolMaterializationPort resolves the current binding and returns only committed applied domains", async () => {
   const value = await fixture();
   try {
