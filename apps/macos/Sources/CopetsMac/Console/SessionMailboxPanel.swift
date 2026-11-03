@@ -23,6 +23,8 @@ struct SessionMailboxMessage: Decodable, Identifiable, Equatable {
     let batchId: String?
     let batchCount: Int
     let turnId: String?
+    let processingSessionId: String?
+    let processingItemId: String?
     let canHandle: Bool
     let createdAt: String
     let cursor: String
@@ -191,6 +193,14 @@ struct SessionMailboxPanel: View {
                         Text(full.senderSessionId ?? full.sourceId).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                         Text(full.createdAt).font(.caption2).foregroundStyle(.secondary)
                         if let turn = full.turnId { Text("Turn · \(turn)").font(.caption2.monospaced()).textSelection(.enabled) }
+                        if let targetSession = full.processingSessionId, let itemID = full.processingItemId {
+                            Button(L10n("View processing activity"), systemImage: "arrow.up.forward.app") {
+                                AppTabRouter.shared.openSession(targetSession, source: .userSelection)
+                                UnifiedSearchNavigation.shared.request(sessionID: targetSession, messageID: itemID)
+                            }
+                            .font(.caption)
+                            .accessibilityIdentifier("session-mailbox.processing.\(message.id)")
+                        }
                     }
                     if message.canHandle && model.canWrite {
                         HStack {

@@ -17,7 +17,8 @@ test("history migration replaces linked events only, emits deletion deltas, and 
       store.appendSessionEvent({eventId, sessionId: "session", type: ["ScheduledSessionTaskDue", "ScheduledSessionRunQueued", "ScheduledSessionRunCompleted"][i],
         payload: {task: {taskId: "task", name: "Original", message: {text: "instruction"}}, run: {runId: "run", status, createdAt: "2026-10-01T00:00:00Z"}},
         createdAt: "2026-10-01T00:00:00Z"});
-      store.upsertTimelineItemProjection("session", {id: `automation-event:${eventId}`, type: "automationEvent", text: "old"});
+      store.db.run("INSERT INTO session_items(session_id,id,turn_id,type,text,created_at,turn_status,title) VALUES(?,?,?,?,?,?,'completed','Automation')",
+        ["session", `automation-event:${eventId}`, "old-turn", "automationEvent", "old", "2026-10-01T00:00:00Z"]);
     }
     store.upsertTimelineItemProjection("session", {id: "ordinary", type: "userMessage", text: "instruction"});
     const revision = store.sessionTimelineRevision("session");
@@ -25,7 +26,8 @@ test("history migration replaces linked events only, emits deletion deltas, and 
     const options = {db: store.db, selectAll: (...args) => store.selectAll(...args), selectOne: (...args) => store.selectOne(...args),
       runDataMigrationOnce: (_, action) => { if (!migrated) { store.runInTransaction(action); migrated = true; } }};
     migrateAutomationTimelineV2(options);
-    assert.equal(store.getSessionItem("session", "automation-run:run").automationRunStatus, "completed");
+    // The newer mailbox-only policy also fences the legacy migration writer.
+    assert.equal(store.getSessionItem("session", "automation-run:run"), null);
     assert.equal(store.getSessionItem("session", "ordinary").text, "instruction");
     assert.equal(store.getSessionItem("session", "automation-event:event:0"), null);
     assert.ok(store.sessionTimelineChangesAfter("session", revision).changes.some(c => c.operation === "delete"));

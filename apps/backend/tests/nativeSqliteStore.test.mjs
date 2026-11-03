@@ -625,11 +625,11 @@ test("stored timeline items restore provider-neutral supplementary presentation 
   try {
     store.upsertSession({ id: "metadata-window", title: "Metadata", agent: "Codex", provider: "codex-app-server", status: "complete" });
     store.upsertTimelineItemProjection("metadata-window", {
-      id: "automation:event-1",
-      turnId: "automation:event-1",
+      id: "tool:event-1",
+      turnId: "tool:event-1",
       turnStatus: "completed",
-      type: "automationEvent",
-      title: "Automation",
+      type: "dynamicToolCall",
+      title: "Tool",
       text: "Run checks",
       createdAt: "2026-08-26T10:00:00.000Z",
       rawMetadataJSON: JSON.stringify({
@@ -640,7 +640,7 @@ test("stored timeline items restore provider-neutral supplementary presentation 
       })
     });
     const [item] = store.getLatestTimelineItemWindow("metadata-window").items;
-    assert.equal(item.id, "automation:event-1");
+    assert.equal(item.id, "tool:event-1");
     assert.equal(item.automationId, "automation:1");
     assert.equal(item.automationName, "Nightly checks");
     assert.equal(item.automationEventType, "ScheduledSessionTaskCreated");
@@ -650,7 +650,7 @@ test("stored timeline items restore provider-neutral supplementary presentation 
   }
 });
 
-test("historical Automation card migration keeps the whitelist and authoritative events", async () => {
+test("Automation lifecycle events remain authoritative outside the conversation timeline", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-automation-card-migration-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
@@ -674,7 +674,7 @@ test("historical Automation card migration keeps the whitelist and authoritative
 
     assert.deepEqual(
       store.getLatestTimelineItemWindow("automation-history").items.map((item) => item.automationEventType),
-      ["ScheduledSessionTaskCreated"]
+      []
     );
     assert.equal(store.listSessionEvents("automation-history").length, 2);
   } finally {
