@@ -1,6 +1,6 @@
 import Foundation
 
-enum SceneJSONValue: Codable, Equatable {
+enum SceneJSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -35,7 +35,7 @@ enum SceneJSONValue: Codable, Equatable {
     var boolValue: Bool? { if case let .bool(value) = self { value } else { nil } }
 }
 
-struct SceneTemplateSummary: Codable, Identifiable, Hashable {
+struct SceneTemplateSummary: Codable, Identifiable, Hashable, Sendable {
     let templateId: String
     let version: Int
     let title: String
@@ -43,7 +43,7 @@ struct SceneTemplateSummary: Codable, Identifiable, Hashable {
     var id: String { "\(templateId):\(version)" }
 }
 
-struct SceneInstance: Codable, Identifiable, Hashable {
+struct SceneInstance: Codable, Identifiable, Hashable, Sendable {
     let instanceId: String
     let templateId: String
     let templateVersion: Int
@@ -57,7 +57,7 @@ struct SceneInstance: Codable, Identifiable, Hashable {
     var id: String { instanceId }
 }
 
-struct SceneRecord: Codable, Identifiable, Equatable {
+struct SceneRecord: Codable, Identifiable, Equatable, Sendable {
     let instanceId: String
     let recordId: String
     let recordType: String
@@ -69,21 +69,21 @@ struct SceneRecord: Codable, Identifiable, Equatable {
     var id: String { recordId }
 }
 
-struct SceneViewDefinition: Codable, Equatable {
+struct SceneViewDefinition: Codable, Equatable, Sendable {
     let viewId: String
     let title: String
     let kind: String
     let recordTypes: [String]
 }
 
-struct SceneViewResponse: Codable {
+struct SceneViewResponse: Codable, Sendable {
     let scene: SceneInstance
     let view: SceneViewDefinition
     let records: [SceneRecord]
     let nextOffset: Int?
 }
 
-struct SceneMutationReceipt: Codable {
+struct SceneMutationReceipt: Codable, Sendable {
     let mutationId: String
     let instanceId: String
     let instanceRevision: Int
@@ -95,4 +95,5 @@ struct CreateSceneDraft: Identifiable {
     var templateId: String
     var name: String
     var timezone: String = TimeZone.current.identifier
+    var templateVersion: Int = 1
 }
