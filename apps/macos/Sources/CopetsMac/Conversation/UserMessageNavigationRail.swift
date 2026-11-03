@@ -124,49 +124,109 @@ final class UserMessageNavigationState {
     }
 }
 
+/// One cancellable dwell task for the entire rail. Pointer exit is reconciled
+/// on the next event turn (no dismissal timer), allowing source-to-panel transfer.
+@MainActor @Observable
+final class UserMessageNavigationHover {
+    static let delay: Duration = .milliseconds(600)
+    private(set) var preview: UserMessageNavigationGroup?
+    private var markerID: String?
+    private var insidePanel = false
+    private var pending: Task<Void, Never>?
+    private var exitCheck: Task<Void, Never>?
+    private let wait: @Sendable (Duration) async throws -> Void
+
+    init(wait: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.wait = wait
+    }
+    func enter(_ group: UserMessageNavigationGroup) {
+        exitCheck?.cancel()
+        markerID = group.id
+        pending?.cancel()
+        guard preview?.id != group.id else { return }
+        preview = nil
+        let wait = wait
+        pending = Task { [weak self] in
+            do { try await wait(Self.delay) } catch { return }
+            guard !Task.isCancelled, let self, self.markerID == group.id else { return }
+            self.pending = nil
+            self.preview = group
+        }
+    }
+    func leave(_ group: UserMessageNavigationGroup) {
+        guard markerID == group.id else { return }
+        markerID = nil
+        pending?.cancel(); pending = nil
+        reconcileExit()
+    }
+    func leaveRail() {
+        markerID = nil
+        pending?.cancel(); pending = nil
+        reconcileExit()
+    }
+    func panelHover(_ inside: Bool) {
+        insidePanel = inside
+        if inside { exitCheck?.cancel() } else { reconcileExit() }
+    }
+    func showImmediately(_ group: UserMessageNavigationGroup) {
+        pending?.cancel(); pending = nil
+        exitCheck?.cancel()
+        preview = group
+    }
+    func close() {
+        pending?.cancel(); pending = nil
+        exitCheck?.cancel(); exitCheck = nil
+        markerID = nil; insidePanel = false; preview = nil
+    }
+    private func reconcileExit() {
+        exitCheck?.cancel()
+        exitCheck = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self, self.markerID == nil, !self.insidePanel else { return }
+            self.close()
+        }
+    }
+}
+
 struct UserMessageNavigationRail: View {
     let baseURL: URL
     let sessionID: String
     let active: Bool
     let navigate: (String) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visibility = MacQuickMessageVisibility()
     @State private var state = UserMessageNavigationState()
-    @State private var preview: UserMessageNavigationGroup?
-    @State private var selectedID: String?
-    @State private var pointerOnPreview = false
-    @State private var pointerOnRail = false
-    @State private var dismissal: Task<Void, Never>?
+    @State private var hover = UserMessageNavigationHover()
 
     var body: some View {
-        let emphasizedIndex = preview?.ordinal
-            ?? state.groups.first(where: { $0.items.contains(where: { $0.id == selectedID }) })?.ordinal
-            ?? max(0, state.groups.count - 1)
+        let emphasizedIndex = hover.preview?.ordinal
         ScrollView(.vertical, showsIndicators: false) {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(state.showsNavigation ? state.groups : []) { group in
-                Button {
-                    if group.items.count == 1 { jump(group.items[0].id) }
-                    else { preview = group }
-                } label: {
-                    Rectangle().fill(Color.primary.opacity(group.ordinal == emphasizedIndex ? 0.9 : 0.18))
-                        .frame(width: markerWidth(distance: abs(group.ordinal - emphasizedIndex)), height: 2)
-                        .frame(width: 32, height: 8, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .onHover { inside in
-                    if inside { dismissal?.cancel(); preview = group }
-                }
-                .accessibilityLabel(group.items.first?.preview.isEmpty == false
-                    ? group.items[0].preview : "历史用户消息")
-                // arrowEdge is the source anchor's edge on macOS: trailing
-                // attaches to the marker's right, not the preview's left edge.
-                .popover(isPresented: Binding(get: { preview?.id == group.id }, set: { shown in
-                    if !shown && preview?.id == group.id { preview = nil }
-                }), attachmentAnchor: .rect(.bounds), arrowEdge: .trailing) {
-                    previewPanel
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(state.showsNavigation ? state.groups : []) { group in
+                    Button {
+                        if group.items.count == 1 { jump(group.items[0].id) }
+                        else { hover.showImmediately(group) }
+                    } label: {
+                        Rectangle().fill(Color.primary.opacity(group.ordinal == emphasizedIndex ? 0.9 : 0.18))
+                            .frame(width: emphasizedIndex.map { markerWidth(distance: abs(group.ordinal - $0)) } ?? 20, height: 2)
+                            // Animate only this tiny painted bar. The outer hit
+                            // area and the conversation layout stay fixed.
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: emphasizedIndex)
+                            .frame(width: 32, height: 8, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .onHover { inside in
+                        if inside { hover.enter(group) } else { hover.leave(group) }
+                    }
+                    .accessibilityLabel(group.items.first?.preview.isEmpty == false ? group.items[0].preview : "历史用户消息")
+                    // macOS uses the source anchor edge; trailing presents right.
+                    .popover(isPresented: Binding(get: { hover.preview?.id == group.id }, set: { shown in
+                        if !shown && hover.preview?.id == group.id { hover.close() }
+                    }), attachmentAnchor: .rect(.bounds), arrowEdge: .trailing) {
+                        previewPanel
+                    }
                 }
             }
-        }
         }
         .frame(width: 32).frame(maxHeight: 360)
         .opacity(state.showsNavigation ? 1 : 0)
@@ -176,27 +236,22 @@ struct UserMessageNavigationRail: View {
         .font(.system(size: 9, weight: .semibold))
         .buttonStyle(.plain)
         .padding(.vertical, 4)
-        .onHover { inside in
-            pointerOnRail = inside
-            if inside { dismissal?.cancel() } else { scheduleDismissal() }
-        }
+        .onHover { inside in if !inside { hover.leaveRail() } }
         .task(id: "\(baseURL.absoluteString):\(sessionID):\(active):\(visibility.visible):\(visibility.activation)") {
-            guard active, visibility.visible else { state.stop(); preview = nil; return }
+            guard active, visibility.visible else { state.stop(); hover.close(); return }
             state.activate(baseURL: baseURL, sessionID: sessionID)
-            // Current-page polling handles edits/deletions/backfills without
-            // observing model streaming updates or doing work on hover.
             while !Task.isCancelled {
                 await state.refresh()
                 do { try await Task.sleep(for: .seconds(5)) } catch { break }
             }
         }
-        .onChange(of: state.showsNavigation) { _, shown in
-            if !shown { preview = nil }
-        }
+        .onChange(of: state.showsNavigation) { _, shown in if !shown { hover.close() } }
         .onChange(of: state.groups) { _, groups in
-            if let id = preview?.id { preview = groups.first { $0.id == id } ?? groups.last ?? .init(items: []) }
+            if let id = hover.preview?.id {
+                hover.showImmediately(groups.first { $0.id == id } ?? groups.last ?? .init(items: []))
+            }
         }
-        .onDisappear { dismissal?.cancel(); state.stop() }
+        .onDisappear { hover.close(); state.stop() }
     }
     private func markerWidth(distance: Int) -> CGFloat {
         switch distance {
@@ -206,15 +261,13 @@ struct UserMessageNavigationRail: View {
         default: 10
         }
     }
-
     private var previewPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(preview?.items ?? []) { item in
+            ForEach(hover.preview?.items ?? []) { item in
                 Button { jump(item.id) } label: {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(item.preview.isEmpty ? "附件或空消息" : item.preview)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.primary)
+                            .font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
                             .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
                         if let reply = item.replyPreview, !reply.isEmpty {
                             Text(reply).font(.system(size: 13)).foregroundStyle(.secondary)
@@ -236,35 +289,22 @@ struct UserMessageNavigationRail: View {
                     Button("更新") { move(state.page?.newerCursor, "newer") }
                         .disabled(state.loading || state.page?.newerCursor == nil)
                     Spacer()
-                    Button(state.error == nil ? "最近" : "重试") { move(nil, "older") }
-                        .disabled(state.loading)
+                    Button(state.error == nil ? "最近" : "重试") { move(nil, "older") }.disabled(state.loading)
                 }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(12).frame(width: 340)
-        .onHover { inside in
-            pointerOnPreview = inside
-            if inside { dismissal?.cancel() } else { scheduleDismissal() }
-        }
-        .onDisappear { pointerOnPreview = false }
+        .onHover { hover.panelHover($0) }
+        .onDisappear { hover.panelHover(false) }
     }
-
     private func move(_ cursor: String?, _ direction: String) {
         Task {
             await state.move(cursor: cursor, direction: direction)
             guard active, visibility.visible else { return }
-            preview = (direction == "older" ? state.groups.last : state.groups.first) ?? .init(items: [])
+            hover.showImmediately((direction == "older" ? state.groups.last : state.groups.first) ?? .init(items: []))
         }
     }
-    private func jump(_ id: String) { selectedID = id; preview = nil; navigate(id) }
-    private func scheduleDismissal() {
-        dismissal?.cancel()
-        dismissal = Task {
-            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-            guard !pointerOnRail, !pointerOnPreview else { return }
-            preview = nil
-        }
-    }
+    private func jump(_ id: String) { hover.close(); navigate(id) }
 }
 
 /// Reuse the event-driven NSWindow probe also used by the composer. Independently
