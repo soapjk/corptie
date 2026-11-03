@@ -12,6 +12,7 @@ import {
 } from "./sharedAgentConfiguration.mjs";
 import { stageValidatedIntegrationTree } from "./integrationStagedTreeValidator.mjs";
 import { ensureProjectLocalState } from "./projectLocalStateDirectory.mjs";
+import { measureStartup } from "../utils/startupTiming.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -1497,10 +1498,11 @@ export class GitWorkspaceManager {
   }
 
   async ensureTaskWorktreeForProject(input) {
+    const timing = input.startupTiming;
     const repositoryId = requiredText(input.repositoryId, "repositoryId");
     const taskId = requiredText(input.taskId, "taskId");
     const workingDirectory = absolutePath(input.workingDirectory);
-    let snapshot = await createGitWorkspaceSnapshot(workingDirectory);
+    let snapshot = await measureStartup(timing, "git.inventory.before", () => createGitWorkspaceSnapshot(workingDirectory));
     if (snapshot.repository.id !== repositoryId) {
       throw new Error("The Task project no longer belongs to the registered repository.");
     }
@@ -1533,7 +1535,7 @@ export class GitWorkspaceManager {
         || !/^[a-f0-9]{40,64}$/i.test(baseContext.baseCommitOid ?? "")) {
         throw integrationGitError("TASK_DELIVERY_BINDING_CHANGED", "Child Worktree requires a durable, verified parent base.");
       }
-      const tree = (await this.gitOutput(main.path, ["rev-parse", `${baseContext.baseCommitOid}^{tree}`])).trim();
+      const tree = (await measureStartup(timing, "git.verify-parent-tree", () => this.gitOutput(main.path, ["rev-parse", `${baseContext.baseCommitOid}^{tree}`]))).trim();
       if (tree !== baseContext.baseTreeOid) throw integrationGitError("START_BASE_DIVERGED", "Frozen base object changed.");
     } else if (this.store.getTask?.(taskId)?.parent_task_id) {
       throw integrationGitError("PARENT_WORKTREE_REQUIRED", "Child Worktree cannot fall back to the main branch.");
@@ -1544,14 +1546,14 @@ export class GitWorkspaceManager {
     const worktreesRoot = configuredRoot
       ? absolutePath(configuredRoot)
       : resolve(dirname(main.path), `.corptie-worktrees-${repositoryId.split(":").at(-1)}`);
-    const identity = await this.allocateTaskWorkspaceIdentity({
+    const identity = await measureStartup(timing, "git.allocate-identity", () => this.allocateTaskWorkspaceIdentity({
       taskId,
       mainPath: main.path,
       worktreesRoot,
       worktrees: snapshot.worktrees
-    });
+    }));
     const { suffix, branchName, targetPath } = identity;
-    const canonicalTargetPath = await canonicalFuturePath(targetPath);
+    const canonicalTargetPath = await measureStartup(timing, "git.resolve-target-path", () => canonicalFuturePath(targetPath));
     if (snapshot.worktrees.some((worktree) => {
       const registeredPath = resolve(worktree.canonicalPath || worktree.path);
       return registeredPath !== canonicalTargetPath && pathContains(registeredPath, canonicalTargetPath);
@@ -1574,8 +1576,8 @@ export class GitWorkspaceManager {
     }
 
     if (existing) {
-      await this.runGit(main.path, ["worktree", "prune"]);
-      snapshot = await createGitWorkspaceSnapshot(main.path);
+      await measureStartup(timing, "git.prune-stale-worktree", () => this.runGit(main.path, ["worktree", "prune"]));
+      snapshot = await measureStartup(timing, "git.inventory.after-prune", () => createGitWorkspaceSnapshot(main.path));
       this.store.upsertGitWorkspaceSnapshot(snapshot);
       main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
       if (!main) throw new Error("The repository's main worktree is unavailable.");
@@ -1587,9 +1589,9 @@ export class GitWorkspaceManager {
 
     await mkdir(worktreesRoot, { recursive: true });
     await assertPathMissing(targetPath);
-    const branchExists = await this.gitSucceeds(main.path, [
+    const branchExists = await measureStartup(timing, "git.branch-exists", () => this.gitSucceeds(main.path, [
       "show-ref", "--verify", `refs/heads/${branchName}`
-    ]);
+    ]));
     if (baseContext && !branchExists && this.store.getTaskDeliveryBinding(taskId)) {
       throw integrationGitError("CHILD_SOURCE_MISSING", "The delivered child branch is missing; it cannot be recreated as new work.");
     }
@@ -1598,16 +1600,16 @@ export class GitWorkspaceManager {
       : ["-b", branchName, targetPath, baseContext?.baseCommitOid ?? main.headOid];
     try {
       this.invalidateInspectionCache(input.repositoryId, "create_task_worktree");
-      await this.execFile(
+      await measureStartup(timing, "git.worktree-add", () => this.execFile(
         "git",
         ["-C", main.path, "worktree", "add", ...args],
         { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
-      );
+      ));
     } catch (error) {
       throw new Error(safeGitError(error, "Could not create the Task Worktree"));
     }
 
-    const updated = await createGitWorkspaceSnapshot(targetPath);
+    const updated = await measureStartup(timing, "git.inventory.after-create", () => createGitWorkspaceSnapshot(targetPath));
     this.store.upsertGitWorkspaceSnapshot(updated);
     const created = resolveExisting(updated.worktrees);
     if (!created || created.availability !== "available") {
@@ -1616,11 +1618,11 @@ export class GitWorkspaceManager {
     if (identity.compact) {
       await this.runGit(main.path, ["config", taskWorkspaceOwnerKey(suffix), taskId]);
     }
-    const sharedAgentConfiguration = await linkSharedAgentConfiguration({
+    const sharedAgentConfiguration = await measureStartup(timing, "git.link-agent-config", () => linkSharedAgentConfiguration({
       mainPath: main.canonicalPath || main.path,
       targetPath: created.canonicalPath || created.path,
       commonGitDir: updated.repository.commonGitDirCanonicalPath
-    });
+    }));
     return presentEnsuredTaskWorkspace(created, false, sharedAgentConfiguration);
   }
 

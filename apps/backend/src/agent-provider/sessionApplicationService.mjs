@@ -1,5 +1,6 @@
 import { logSessionMessageLatency } from "../utils/sessionMessageLatency.mjs";
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError, validateConversationSendReceipt } from "./contracts.mjs";
+import { measureStartup } from "../utils/startupTiming.mjs";
 import { SingleFlight } from "../utils/singleFlight.mjs";
 import { SessionContextDelivery } from "../application/sessionContextDelivery.mjs";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
@@ -76,6 +77,13 @@ export class SessionApplicationService {
   }
 
   async createSession(providerId, input = {}, context = {}) {
+    // Diagnostics are in-process only; never expose or persist them through
+    // Provider, Tool Host, configuration, or binding contracts.
+    const startupTiming = context.startupTiming;
+    if (Object.hasOwn(context, "startupTiming")) {
+      const { startupTiming: _timing, ...providerContext } = context;
+      context = providerContext;
+    }
     // Rebinding/recovery reuses an existing product title; it is not a rename.
     if (context.deferSessionBinding !== true && input.title !== undefined) {
       validateEntityName(input.title, "title", "Chat");
@@ -86,10 +94,10 @@ export class SessionApplicationService {
       throw error;
     }
     // All new product Sessions share this policy. Forks retain source runtime.
-    if (!context.forkSource) ({ providerId, input } = await this.resolveCreationDefaults(providerId, input, context));
+    if (!context.forkSource) ({ providerId, input } = await measureStartup(startupTiming, "session.resolve-defaults", () => this.resolveCreationDefaults(providerId, input, context)));
     const provider = this.registry.get(providerId);
     const preparedInput = typeof provider.prepareSessionInput === "function"
-      ? await provider.prepareSessionInput(input, context)
+      ? await measureStartup(startupTiming, "session.prepare-input", () => provider.prepareSessionInput(input, context))
       : input;
     const hasPreparedToolHost = Object.prototype.hasOwnProperty.call(context, "preparedToolHost");
     if (hasPreparedToolHost && context.deferSessionBinding !== true) {
@@ -103,25 +111,25 @@ export class SessionApplicationService {
     const toolHost = hasPreparedToolHost
       ? context.preparedToolHost
       : this.toolHostService
-        ? await this.toolHostService.prepareSession(providerId, {
+        ? await measureStartup(startupTiming, "session.tool-host.prepare", () => this.toolHostService.prepareSession(providerId, {
             purpose: "session-bootstrap",
             ...bootstrapContext
-          })
+          }))
         : null;
     const forkSource = context.forkSource ?? null;
     if (forkSource && forkSource.reference?.providerId !== providerId) {
       throw new TypeError("A conversation fork must retain its Provider.");
     }
-    const session = await this.registry.invoke(
+    const session = await measureStartup(startupTiming, forkSource ? "session.provider.fork" : "session.provider.create", () => this.registry.invoke(
       providerId,
       forkSource ? AGENT_PROVIDER_CAPABILITIES.SESSION_FORK : AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       toolHost ? { ...preparedInput, toolHost } : preparedInput,
       context
-    );
+    ));
     let reference = null;
     try {
       reference = this.bindCreatedSession && context.deferSessionBinding !== true
-        ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
+        ? await measureStartup(startupTiming, "session.store.bind", () => this.bindCreatedSession({ providerId, session, input: preparedInput, context }))
         : null;
     } catch (error) {
       // A failed bind can leave a persisted projection without an executable
@@ -141,7 +149,7 @@ export class SessionApplicationService {
     }
     if (context.deferToolHostFinalization !== true) {
       try {
-        await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
+        await measureStartup(startupTiming, "session.tool-host.finalize", () => this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference));
       } catch (error) {
         // Another committed route now owns this logical Session. Never let stale
         // creation cleanup tombstone or detach the replacement binding.
