@@ -176,7 +176,6 @@ export class PlatformOperationService {
         const title = validateEntityName(args.title, "title", "Task");
         const authorization = this.#authorizeTaskCreation(args, binding);
         const created = await this.createTask({
-          expectedParentResourceVersion: args.expected_parent_resource_version,
           taskInput: {
             ...(args.patch ?? {}),
             workId: required(args.work_id, "work_id"),

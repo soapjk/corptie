@@ -113,7 +113,7 @@ test("mode defaults off, root user update persists without revising the definiti
   assert.match(buildTaskCoordinationContext(f.store.getTask(f.parent.id), null), /END this turn/);
 });
 
-test("creation recovers an execution-only parent update between async preflight and persistence", async t => {
+test("creation accepts execution projection updates between async preflight and persistence", async t => {
   for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
     const f = await fixture(t, provider);
     const original = f.store.assertParentForCreate.bind(f.store);
@@ -136,7 +136,7 @@ test("creation recovers an execution-only parent update between async preflight 
   });
 });
 
-test("creation does not rebase a changed parent definition", async t => {
+test("creation does not fence parent description changes", async t => {
   const f = await fixture(t);
   const original = f.store.assertParentForCreate.bind(f.store);
   let injected = false;
@@ -150,12 +150,12 @@ test("creation does not rebase a changed parent definition", async t => {
   };
   const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("changed")] });
   await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
-  assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).error_code, "TASK_PARENT_VERSION_CONFLICT");
-  assert.equal(f.starts.length, 0);
-  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 0);
+  assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).status, "queued");
+  assert.equal(f.starts.length, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 1);
 });
 
-test("parent CAS recovery is bounded and rejects unrelated or unchanged conflicts", async t => {
+test("dispatch never polls or loops on an unexpected downstream conflict", async t => {
   for (const mode of ["continuous-status", "unchanged", "hierarchy", "other-error"]) await t.test(mode, async t => {
     const f = await fixture(t);
     let attempts = 0;
@@ -169,7 +169,7 @@ test("parent CAS recovery is bounded and rejects unrelated or unchanged conflict
     };
     const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item(mode)] });
     await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
-    assert.equal(attempts, mode === "continuous-status" ? 3 : 1);
+    assert.equal(attempts, 1);
     assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).status, "failed");
     assert.equal(f.starts.length, 0);
   });
@@ -749,4 +749,79 @@ for (const providerId of ["codex-app-server", "claude-code"]) test(`workspace co
   assert.equal(calls,1);busy=false;f.coordinator.onRuntimeEvent('WorktreeIntegrationJobChanged',{job:{status:'completed'}});
   await nextTick();await f.coordinator.running.get(id);
   assert.equal(f.coordinator.get(id).status,'queued');assert.ok(f.coordinator.get(id).target_task_id);assert.equal(calls,2);assert.equal(f.starts.length,1);
+});
+
+test("generated summary projection changes cannot reject an otherwise unchanged parent creation",async t=>{
+ for(const provider of ["codex-app-server","claude-sdk","openclacky"]) await t.test(provider,async t=>{
+  const f=await fixture(t,provider),original=f.store.assertParentForCreate.bind(f.store);let injected=false;
+  f.store.assertParentForCreate=input=>{
+   const result=original(input);
+   if(!injected){injected=true;queueMicrotask(()=>f.store.db.run(
+    "UPDATE tasks SET user_summary_json=?,resource_version=resource_version+1 WHERE id=?",
+    [JSON.stringify({state:'stale',content:{focus:'Projection changed'}}),f.parent.id]));}
+   return result;
+  };
+  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('summary')]});
+  await f.coordinator.runDispatch(accepted.dispatches[0].dispatchId);
+  assert.equal(f.coordinator.get(accepted.dispatches[0].dispatchId).status,'queued');assert.equal(f.starts.length,1);
+  assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?',[f.parent.id]).n,1);
+ });
+});
+
+for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`dispatch blockage reaches the parent once and a cancelled child can receive new instructions (${provider})`,async t=>{
+ const {createRuntimeAgentWorkQueue}=await import('../src/runtime/runtimeAgentWorkQueue.mjs');
+ const f=await fixture(t,provider);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('blocked-report')]});
+ const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+ const dispatch=f.coordinator.get(id),child=f.store.getTask(dispatch.target_task_id),childSession=child.current_session_id;
+ const logical=f.store.getLogicalSessionByLegacySessionId(childSession).logicalSessionId;
+ f.store.db.run("UPDATE sessions SET status='cancelled' WHERE id=?",[childSession]);
+ f.store.db.run("UPDATE sessions SET status='complete' WHERE id=?",[f.source.sessionId]);
+ let sends=0;
+ const queue=createRuntimeAgentWorkQueue({store:f.store,collaborationCore:f.core,sessionMailbox:f.mailbox,
+  sessionChannelService:{},collaborationDispatcher:{},workspaceContinuationCoordinator:{recordWorkStarted(){},recordWorkSettled(){},recordWorkRequeued(){},assertWorkTarget(){}},
+  inspectCollaborationSession:async()=> 'idle',resolveCollaborationDeliveryRoute:async()=>{},scheduleAgentWorkDrain(){},dispatchSessionChannelDelivery:async()=>{},
+  sendUnifiedSessionMessage:async()=>{sends++;return {result:{turnId:'turn:new'}};},
+  emitEvent:(type,payload)=>f.coordinator.onRuntimeEvent(type,payload),
+  syncSessionChannelDeliveriesIntoAgentWorkQueue:async()=>{},syncCollaborationDeliveriesIntoAgentWorkQueue:async()=>{}});
+ f.mailbox.setPaused(logical,true);queue.registerRuntimeQueuedWork(childSession,dispatch.operation_id);
+ for(let i=0;i<3;i++)await queue.drainAgentWork(childSession);
+ assert.equal(sends,0);assert.equal(f.coordinator.get(id).status,'blocked');assert.equal(f.coordinator.get(id).error_code,'MAILBOX_PAUSED');
+ assert.equal(f.mailbox.get(logical,dispatch.mailbox_message_id).dispatchBlock.code,'MAILBOX_PAUSED');
+ f.coordinator.flushReports();
+ let reports=f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
+ assert.equal(reports.length,1);assert.match(reports[0].body,/MAILBOX_PAUSED/);assert.equal(reports[0].intent,'response_required');
+ assert.equal(f.store.listTaskCoordinationDispatches(f.parent.id)[0].errorMessage,'接收会话的邮箱已暂停自动处理。');
+ f.coordinator.flushReports();assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+ f.mailbox.setPaused(logical,false);await queue.drainAgentWork(childSession);
+ assert.equal(sends,1);assert.equal(f.coordinator.get(id).status,'running');assert.equal(f.coordinator.get(id).error_code,null);
+ assert.equal(f.store.getAgentTask(dispatch.operation_id).source.dispatchBlock,undefined);
+ // A delayed status notice is historical telemetry, not an executable command;
+ // it remains readable after the child resumes, and tells the parent to query state.
+ assert.doesNotThrow(()=>f.mailbox.validate(reports[0]));
+ assert.throws(()=>f.coordinator.validateMailbox({...reports[0],recipient_session_id:'logical:wrong'},JSON.parse(reports[0].authorization_json)),{code:'COORDINATION_REPORT_SCOPE_INVALID'});
+});
+
+test('ordinary child mailbox failures notify the exact parent without a coordination dispatch and do not repeat',async t=>{
+ const f=await fixture(t);
+ const admitted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('ordinary-report')]});
+ await f.coordinator.runDispatch(admitted.dispatches[0].dispatchId);
+ const child=f.store.getTask(f.coordinator.get(admitted.dispatches[0].dispatchId).target_task_id);
+ const logical=f.store.getLogicalSessionByLegacySessionId(child.current_session_id).logicalSessionId;
+ const message=f.mailbox.receiveEvent({recipientSessionId:logical,sourceType:'background',sourceId:'direct-parent-message',intent:'action_required',
+  body:'New instruction',idempotencyKey:'direct-parent-message',authorization:{ownerLogicalSessionId:logical,sourceId:'direct-parent-message',sourceSessionId:'logical:parent'}});
+ const raw=f.mailbox.raw(logical,message.messageId),work=f.store.getAgentTask(raw.operation_id);
+ const blocked=f.store.updateAgentTask(work.taskId,{lastError:'工作区有冲突',source:{...work.source,
+  dispatchBlock:{code:'WORKTREE_CONFLICT_OR_RECOVERY',message:'工作区有冲突',kind:'waiting'}}});
+ f.mailbox.reportDispatchBlock(blocked);f.mailbox.reportDispatchBlock(blocked);
+ const reports=f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
+ assert.equal(reports.length,1);assert.equal(reports[0].intent,'response_required');assert.match(reports[0].body,/WORKTREE_CONFLICT_OR_RECOVERY/);
+ assert.equal(f.store.getAgentTask(work.taskId).source.dispatchBlock.reportMessageId,reports[0].message_id);
+ const other=f.store.createTask({workId:f.work.id,title:'Unrelated_parent',mainAgentId:f.role.agentId});f.open('unrelated-origin',other.id);
+ const wrong=f.mailbox.receiveEvent({recipientSessionId:logical,sourceType:'background',sourceId:'wrong-origin',intent:'action_required',body:'Another instruction',
+  idempotencyKey:'wrong-origin',authorization:{ownerLogicalSessionId:logical,sourceId:'wrong-origin',sourceSessionId:'logical:unrelated-origin'}});
+ const wrongWork=f.store.getAgentTask(f.mailbox.raw(logical,wrong.messageId).operation_id);
+ f.mailbox.reportDispatchBlock(f.store.updateAgentTask(wrongWork.taskId,{source:{...wrongWork.source,dispatchBlock:{code:'MAILBOX_PAUSED',message:'Paused',kind:'paused'}}}));
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:unrelated-origin'").n,0);
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
 });

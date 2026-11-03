@@ -129,11 +129,11 @@ export function startClientDeviceGateway({
             throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
           }
         },
-        create: (id, { taskInput, providerId, model, reasoningLevel, expectedParentResourceVersion, operationID }) => {
+        create: (id, { taskInput, providerId, model, reasoningLevel, operationID }) => {
           const sourceSessionId = requireSessionReference(id).logicalSessionId;
           return createTaskAndSession({ workService,
             startWorkSession: input => workSessionStartApplicationService.start(input),
-            taskInput, sourceSessionId, providerId, model, reasoningLevel, expectedParentResourceVersion, idempotencyKey: operationID,
+            taskInput, sourceSessionId, providerId, model, reasoningLevel, idempotencyKey: operationID,
             creationOrigin: { originType: "session", creatorSessionId: sourceSessionId, operationId: operationID } });
         }
       },

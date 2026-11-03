@@ -9,7 +9,7 @@ export class TaskRepository {
   listTaskCoordinationDispatches(parentTaskId, limit = 5) {
     return this.selectAll(`SELECT d.dispatch_id AS dispatchId,d.target_task_id AS taskId,
       COALESCE(substr(t.title,1,120),'准备子任务') AS title,
-      CASE WHEN d.status='running' AND s.status='blocked' THEN 'blocked' ELSE d.status END AS status,d.error_code AS errorCode
+      CASE WHEN d.status='running' AND s.status='blocked' THEN 'blocked' ELSE d.status END AS status,d.error_code AS errorCode,d.error_message AS errorMessage
       FROM task_coordination_dispatches d LEFT JOIN tasks t ON t.id=d.target_task_id LEFT JOIN sessions s ON s.id=t.current_session_id
       WHERE d.parent_task_id=? ORDER BY d.created_at DESC,d.dispatch_id LIMIT ?`, [parentTaskId, Math.max(1, Math.min(20, limit))]);
   }
