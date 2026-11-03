@@ -244,30 +244,13 @@ struct ConsoleOverlayScrollerTests {
         #expect(maximumAlpha <= 0.46)
     }
 
-    @Test func timelineThumbFadesAfterIdleAndCanReappear() async throws {
-        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 8, height: 240))
-        #expect(scroller.alphaValue == 0)
-        scroller.beginScrollInteraction()
-        #expect(scroller.alphaValue == 1)
-        scroller.endScrollInteraction()
-        try await Task.sleep(for: .milliseconds(450))
+    @Test func timelineThumbDoesNotHideItselfOutsideNativeVisibilityManagement() async {
+        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 12, height: 240))
         #expect(scroller.alphaValue == 1)
         scroller.beginScrollInteraction()
         scroller.endScrollInteraction()
-        try await Task.sleep(for: .milliseconds(450))
+        try? await Task.sleep(for: .milliseconds(1000))
         #expect(scroller.alphaValue == 1)
-        try await Task.sleep(for: .milliseconds(650))
-        #expect(scroller.alphaValue == 0)
-        scroller.beginScrollInteraction()
-        #expect(scroller.alphaValue == 1)
-        scroller.endScrollInteraction()
-        let event = NSEvent()
-        scroller.mouseEntered(with: event)
-        try await Task.sleep(for: .milliseconds(1000))
-        #expect(scroller.alphaValue == 1)
-        scroller.mouseExited(with: event)
-        try await Task.sleep(for: .milliseconds(1100))
-        #expect(scroller.alphaValue == 0)
     }
 
     @Test func contentProbeConfiguresOnlyItsEnclosingScrollView() {

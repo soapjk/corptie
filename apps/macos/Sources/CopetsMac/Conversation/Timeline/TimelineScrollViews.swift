@@ -132,84 +132,19 @@ final class TimelineIntentScroller: ConsoleThinScroller {
         return NSColor(calibratedWhite: dark ? 1 : 0.4, alpha: 0.45)
     }
     override var knobColor: NSColor { Self.visibleKnobColor }
-    private var hideTimer: Timer?
-    private var pointerArea: NSTrackingArea?
-    private var pointerInside = false
-    private var interacting = false
-
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        alphaValue = 0
     }
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         wantsLayer = true
-        alphaValue = 0
-    }
-    isolated deinit { hideTimer?.invalidate() }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let pointerArea { removeTrackingArea(pointerArea) }
-        let area = NSTrackingArea(rect: .zero,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self)
-        addTrackingArea(area)
-        pointerArea = area
-    }
-    override func mouseEntered(with event: NSEvent) {
-        pointerInside = true
-        reveal()
-    }
-    override func mouseExited(with event: NSEvent) {
-        pointerInside = false
-        scheduleHide()
-    }
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window == nil {
-            hideTimer?.invalidate()
-            hideTimer = nil
-            pointerInside = false
-            interacting = false
-            alphaValue = 0
-        }
     }
 
-    func beginScrollInteraction() {
-        interacting = true
-        reveal()
-    }
-    func endScrollInteraction() {
-        interacting = false
-        scheduleHide()
-    }
-    private func reveal() {
-        // Keep one event-driven deadline per gesture, not one task per wheel tick.
-        hideTimer?.fireDate = .distantFuture
-        layer?.removeAnimation(forKey: "opacity")
-        alphaValue = 1
-    }
-    private func scheduleHide() {
-        guard !pointerInside, !interacting else { return }
-        if let hideTimer {
-            hideTimer.fireDate = Date().addingTimeInterval(0.8)
-            return
-        }
-        let timer = Timer(timeInterval: 0.8, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.hideTimer = nil
-                guard !self.pointerInside, !self.interacting else { return }
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
-                    self.animator().alphaValue = 0
-                }
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        hideTimer = timer
-    }
+    // NSScrollView owns overlay visibility. A second alpha/timer state machine
+    // can leave the custom thumb transparent even when AppKit reveals it.
+    func beginScrollInteraction() { enclosingScrollView?.flashScrollers() }
+    func endScrollInteraction() {}
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
 
