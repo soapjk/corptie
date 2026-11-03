@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import Foundation
 import Testing
 @testable import CorptieMac
@@ -323,6 +325,57 @@ struct WorktreeManagementLoadingTests {
 
         await reload.value
         #expect(client.detail?.project.worktrees.map(\.worktreeId) == ["wt:main", "wt:fresh"])
+    }
+
+    @MainActor
+    @Test func destructiveReviewCannotExecuteAgainstAChangedRepository() async throws {
+        let recorder = RequestRecorder(details: ["repository:one": Self.detail(repositoryId: "repository:one", worktrees: [Self.worktree("wt:feature", branch: "feature")])])
+        let client = makeClient(recorder: recorder)
+        await client.loadRepositories()
+        let tree = try #require(client.selectedWorktree)
+        let path = "/worktree-management/repositories/repository:one/worktrees/wt:feature/delete"
+        #expect(await client.deleteWorktree(tree, expectedRepositoryID: "repository:previous") == false)
+        await client.cleanupMergedWorktrees([tree], expectedRepositoryID: "repository:previous")
+        #expect(recorder.count(path: path) == 0)
+        #expect(client.isMutating == false)
+        #expect(client.cleanupResult == nil)
+    }
+
+    @MainActor
+    @Test func fixturePageRendersAtWideMediumAndCompactWidthsWithoutMutation() async throws {
+        let recorder = RequestRecorder(details: ["repository:one": Self.detail(repositoryId: "repository:one", worktrees: [
+            Self.worktree("wt:main", branch: "main", isMain: true),
+            Self.worktree("wt:feature", branch: "feature/a-long-branch-name-for-layout-validation", dirty: true)
+        ])])
+        let client = makeClient(recorder: recorder)
+        await client.loadRepositories()
+        let router = AppTabRouter()
+        let sidebar = TabSidebarState(tab: .worktrees)
+        let view = WorktreeManagementView(client: client).environmentObject(router).environmentObject(sidebar)
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 1300, height: 850), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.orderOut(nil); window.contentView = nil }
+        for (name, width, appearance) in [("wide-light", 1300.0, NSAppearance.Name.aqua), ("medium-light", 850.0, .aqua), ("compact-dark", 600.0, .darkAqua)] {
+            window.appearance = NSAppearance(named: appearance)
+            window.setContentSize(NSSize(width: width, height: 850))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 850)
+            try await Task.sleep(for: .milliseconds(250))
+            host.layoutSubtreeIfNeeded()
+            #expect(abs(host.bounds.width - width) < 1)
+            #expect(client.selection.repositoryId == "repository:one")
+            #expect(client.selection.worktreeId == "wt:main")
+            #expect(window.defaultButtonCell == nil)
+            if let directory = ProcessInfo.processInfo.environment["CORPTIE_UI_EVIDENCE_DIR"] {
+                let url = URL(fileURLWithPath: directory, isDirectory: true)
+                #expect(!url.path.hasPrefix(FileManager.default.currentDirectoryPath + "/"))
+                let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let png = try #require(bitmap.representation(using: .png, properties: [:]))
+                try png.write(to: url.appendingPathComponent(name + ".png"))
+            }
+        }
+        #expect(recorder.count(path: "/worktree-management/repositories/repository:one/worktrees/wt:main/delete") == 0)
     }
 
     @MainActor

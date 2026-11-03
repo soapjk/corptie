@@ -301,8 +301,9 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     @discardableResult
-    func deleteWorktree(_ worktree: ManagedWorktree) async -> Bool {
-        guard let repositoryId = selection.repositoryId else { return false }
+    func deleteWorktree(_ worktree: ManagedWorktree, expectedRepositoryID: String? = nil) async -> Bool {
+        guard !isMutating, let repositoryId = selection.repositoryId,
+              expectedRepositoryID == nil || repositoryId == expectedRepositoryID else { return false }
         operationNotice = nil
         isMutating = true
         defer { isMutating = false }
@@ -327,8 +328,9 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
-    func cleanupMergedWorktrees(_ worktrees: [ManagedWorktree]) async {
-        guard let repositoryId = selection.repositoryId,
+    func cleanupMergedWorktrees(_ worktrees: [ManagedWorktree], expectedRepositoryID: String? = nil) async {
+        guard !isMutating, let repositoryId = selection.repositoryId,
+              expectedRepositoryID == nil || repositoryId == expectedRepositoryID,
               let project = detail?.project,
               !worktrees.isEmpty else { return }
         cleanupResult = nil
