@@ -808,39 +808,17 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func expandedWorkOutlineUsesIndentedChildrenInsideGroupedCards() throws {
-        #expect(ConsoleWorkOutlineMetrics.childIndent == 24)
-        #expect(ConsoleWorkOutlineMetrics.groupCornerRadius == 8)
-        #expect(ConsoleWorkOutlineMetrics.groupHorizontalInset == 6)
-
+    func workOutlineUsesNativeSidebarDisclosureWithoutCustomAnimationLayout() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let surface = try self.source(named: "../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkDiscussionButton.swift")
-        #expect(!surface.contains("Color.primary.opacity(0.065)"))
-        #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
-        #expect(source.contains("outlineGroupEmptyRow"))
-        #expect(source.contains("outlineChildSelectionBackground"))
-        #expect(try sharedSource(named: "WorkActivity.swift").contains("static let disclosureAnimation = Animation.easeInOut(duration: 0.16)"))
-        #expect(source.contains("struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle"))
-        #expect(source.contains("private typealias ConsoleWorkOutlineGroupCardModifier = WorkGroupCardSurface"))
-        #expect(source.contains("return ScrollView {"))
-        #expect(source.contains("LazyVStack(alignment: .leading, spacing: 8)"))
-        #expect(source.contains("DisclosureGroup(isExpanded: outlineAssistantExpandedBinding)"))
-        #expect(source.contains("DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id))"))
-        #expect(source.contains(".disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())"))
-        #expect(surface.contains(".modifier(ConversationContentSurface(cornerRadius: 8))"))
-        #expect(source.contains(".transition(.opacity.combined(with: .offset(y: -4)))"))
-        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
-        #expect(!source.contains("ConsoleWorkOutlineCardRowModifier"))
-        #expect(!source.contains("UnevenRoundedRectangle"))
-        #expect(!source.contains("ConsoleAnimatedDisclosureContent"))
-        #expect(!source.contains("ConsoleDisclosureHeightPreferenceKey"))
-        #expect(source.components(
-            separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
-        ).count - 1 == 3)
-        #expect(source.contains("Text(L10n(\"Chat\"))"))
-        #expect(source.contains("navigationModeOption(.workOutline, title: \"分组\")"))
-        #expect(!source.contains("Text(L10n(\"Work & Tasks\"))"))
-        #expect(!source.contains("Text(L10n(\"Assistant\"))"))
+        #expect(source.contains("return List {"))
+        #expect(source.contains(".listStyle(.sidebar)"))
+        #expect(source.contains("DisclosureGroup(isExpanded: outlineAssistantExpandedBinding.animation())"))
+        #expect(source.contains("DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id).animation())"))
+        #expect(!source.contains("ConsoleWorkOutlineDisclosureStyle"))
+        #expect(!source.contains("ConsoleDisclosureRevealLayout"))
+        #expect(!source.contains("ConsoleWorkOutlineRows"))
+        #expect(!source.contains("consoleWorkOutlineGroupCard"))
+        #expect(source.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
     }
 
     @Test
@@ -848,7 +826,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let desktop = try source(named: "UnifiedConsoleView.swift")
         #expect(desktop.contains("WorkOutlineTaskDisclosurePolicy.visibleCount("))
         #expect(desktop.contains("ForEach(visibleTasks)"))
-        #expect(desktop.contains("totalCount: roots.count"))
+        #expect(desktop.contains("totalCount: workRows.rootCount"))
         #expect(desktop.contains("outlineShowAllTasksButton("))
         #expect(desktop.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
         #expect(desktop.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
@@ -858,7 +836,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(mobile.contains("ForEach(visibleTasks)"))
         #expect(mobile.contains("totalCount: roots.count"))
         #expect(mobile.contains("visibleRootIDs.contains($0.parentTaskId ?? $0.id)"))
-        #expect(mobile.contains("task.parentTaskId == nil ? 0 : 24"))
+        #expect(mobile.contains(".padding(.leading, task.parentTaskId == nil ? 0 :"))
         #expect(mobile.contains("showAllTasksButton(workID:"))
         #expect(mobile.contains("fullyExpandedWorkIDs.remove(id)"))
         #expect(mobile.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
@@ -908,8 +886,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!source.contains("workOutlineContextMenu(for work: Work)"))
         #expect(!source.contains("ConsoleWorkOutlineContextTarget"))
         #expect(!source.contains("ConsoleRightClickMenuHitTarget"))
-        #expect(outline.contains("return ScrollView"))
-        #expect(outline.contains("LazyVStack"))
+        #expect(outline.contains("return List"))
+        #expect(outline.contains(".listStyle(.sidebar)"))
         #expect(outline.contains("DisclosureGroup(isExpanded:"))
         #expect(!outline.contains("Section(isExpanded:"))
     }
