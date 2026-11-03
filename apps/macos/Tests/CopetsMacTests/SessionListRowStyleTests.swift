@@ -36,6 +36,11 @@ final class SessionListRowStyleTests: XCTestCase {
                     // This is the exact painted rectangle, including its 8pt inset.
                     XCTAssertTrue(surface.insetBy(dx: 8, dy: 0).contains(button),
                         "Title/button and status must fit inside the background: \(button) in \(surface)")
+                    let background = surface.insetBy(dx: 8, dy: 0)
+                    XCTAssertGreaterThanOrEqual(button.minX - background.minX, 7.5,
+                        "The title needs visible breathing room inside the left edge")
+                    XCTAssertGreaterThanOrEqual(background.maxX - button.maxX, 7.5,
+                        "The status needs matching breathing room inside the right edge")
                 }
             }
         }

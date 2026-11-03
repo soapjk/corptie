@@ -42,9 +42,9 @@ struct ConsoleOutlineRowSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // Native List disclosure supplies hierarchy indentation. Reserve only
-            // the painted surface inset here to keep the button inside it.
-            .padding(.leading, 8)
+            // Native List supplies hierarchy indentation. Leave 8pt of content
+            // padding inside each edge of the surface's 8pt outer inset.
+            .padding(.leading, 16)
             .padding(.trailing, 16)
             .frame(maxWidth: .infinity, minHeight: 30,
                    maxHeight: 30, alignment: .leading)

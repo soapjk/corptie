@@ -95,13 +95,13 @@ final class ComposerShellPolicyTests: XCTestCase {
         XCTAssertEqual(original.text, "A edited"); XCTAssertEqual(other.text, "B")
     }
 
-    func testStopAndSendShareVisualSizeButRetainTouchTarget() throws {
+    func testStopAndSendRetainTheirCurrentTouchTargets() throws {
         let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")
         let stop = try String(contentsOf: sources.appendingPathComponent("SessionComposerStopButton.swift"), encoding: .utf8)
         let send = try String(contentsOf: sources.appendingPathComponent("Conversation/Composer/MessageComposer.swift"), encoding: .utf8)
         XCTAssertTrue(stop.contains("ComposerShellMetrics.actionVisualEdge"))
-        XCTAssertTrue(send.contains("sendControlEdge = ComposerShellMetrics.actionVisualEdge"))
+        XCTAssertTrue(send.contains(".frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)"))
         XCTAssertTrue(stop.contains("compact ? ComposerShellMetrics.actionHitEdge : 44"))
         XCTAssertEqual(ComposerShellMetrics.actionVisualEdge, 22)
     }
