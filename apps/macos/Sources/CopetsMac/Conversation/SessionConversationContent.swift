@@ -88,8 +88,14 @@ struct SessionConversationSurface: View {
     @State private var expandedProcessTurnIds: Set<String> = []
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
-    @State private var headerClearance: CGFloat = 0
-    @State private var composerClearance: CGFloat = 0
+    @State private var quickMessagePresentation = ComposerQuickMessagePresentation()
+    private var quickMessageClearance: CGFloat {
+        showsFloatingQuickMessages ? ConversationQuickMessages.rowHeight + 10 : 0
+    }
+    private var showsFloatingQuickMessages: Bool {
+        usesComposerJumpToLatest && !showsWelcome
+            && (quickMessagePresentation.showsMessages || composerJumpToLatestAction != nil)
+    }
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
@@ -295,7 +301,7 @@ struct SessionConversationSurface: View {
                     activityStatus: (selectedSession?.activityStatus ?? displayedDetail?.activityStatus).map { L10n($0) },
                     onSubmissionStarted: { if acceptsPresentationUpdates { hasSubmittedMessage = true } },
                     onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow,
-                    renderInputs: renderInputs)
+                    quickMessagePresentation: quickMessagePresentation, renderInputs: renderInputs)
                 .id(sessionId)
             } else {
             MessageComposer(
@@ -309,7 +315,8 @@ struct SessionConversationSurface: View {
                 notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
                 activityStatus: (selectedSession?.activityStatus ?? displayedDetail?.activityStatus).map { L10n($0) },
                 onSubmissionStarted: { hasSubmittedMessage = true },
-                onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow
+                onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow,
+                quickMessagePresentation: quickMessagePresentation
             )
             .id(sessionId)
             }
@@ -451,10 +458,10 @@ struct SessionConversationSurface: View {
     }
 
     private var conversationLayout: some View {
-        VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
-            // The native viewport fills the conversation. Its document reserves
-            // the actual top and bottom chrome intersections, so messages pass
-            // behind glass while both scroll endpoints remain unobscured.
+        VStack(alignment: .leading, spacing: 0) {
+            conversationTopChrome
+            // The editor participates in normal layout. Only the fixed-height
+            // quick actions float over the clipped message viewport.
             Group {
                 switch contentPhase {
                 case .live:
@@ -507,30 +514,16 @@ struct SessionConversationSurface: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-            .background {
-                conversationChromeFrame(.viewport)
-            }
-            .safeAreaInset(edge: .top, spacing: showsHeader ? 8 : 0) {
-                VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
-                    if showsHeader {
-                        conversationHeader
-                    }
-                    backendConnectionBanner
-                    if let recovery = pageWorkspaceRecovery,
-                       recovery.orphaned {
-                        OrphanedWorkspaceRecoveryView(status: recovery)
-                    }
-                }
-                .background { conversationChromeFrame(.header) }
-            }
+            .frame(height: showsWelcome ? 0 : nil)
+            .clipped()
             .overlay(alignment: .leading) {
                 if !compactComposer, !showsWelcome, displayedDetail != nil {
                     UserMessageNavigationRail(baseURL: backendClient.baseURL, sessionID: sessionId,
                         active: acceptsPresentationUpdates, navigate: navigateToUserMessage)
                         .id(sessionId + ":" + (displayedDetail?.id ?? ""))
                         .padding(.leading, 2)
-                        .padding(.top, max(headerClearance, topChromeClearance))
-                        .padding(.bottom, composerClearance)
+                        .padding(.top, topChromeClearance)
+                        .padding(.bottom, quickMessageClearance)
                         .alert("无法定位消息", isPresented: Binding(get: { navigationError != nil },
                             set: { if !$0 { navigationError = nil } })) {
                             Button("好", role: .cancel) { navigationError = nil }
@@ -540,48 +533,72 @@ struct SessionConversationSurface: View {
             .overlay(alignment: .bottom) {
                 if !usesComposerJumpToLatest {
                     jumpToLatestButton
-                        .padding(.bottom, max(0, composerClearance - 6))
+                        .padding(.bottom, max(0, quickMessageClearance - 6))
                 }
             }
             .overlay(alignment: .bottom) {
-                // One editor at one structural position: placement changes must
-                // not recreate the native text view, attachments or draft owner.
-                VStack(spacing: 24) {
-                    if showsWelcome {
-                        ConversationWelcomeView(
-                            isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
-                        )
-                    }
-                    VStack(spacing: 6) {
-                        if let session = selectedSession {
-                            if let page = renderInputs { SessionSendFailureSurface(message: page.sendFailure) }
-                            else { SessionSendFailureView(sessionID: session.id) }
-                        }
-                        sessionReadinessNotice
-                        sessionComposer
-                    }
-                    .padding(.bottom, compactComposer ? 4 : 16)
-                    .background { conversationChromeFrame(.composer) }
-                }
-                .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
-                .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
-                .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)
-                .padding(.top, showsWelcome ? headerClearance : 0)
-            }
-            .coordinateSpace(name: ConversationChromeFramePreferenceKey.coordinateSpace)
-            .onPreferenceChange(ConversationChromeFramePreferenceKey.self) { frames in
-                guard let clearances = ConversationChromeClearances(frames: frames) else { return }
-                if abs(headerClearance - clearances.top) >= 0.5 {
-                    headerClearance = clearances.top
-                }
-                if abs(composerClearance - clearances.bottom) >= 0.5 {
-                    composerClearance = clearances.bottom
+                if showsFloatingQuickMessages {
+                    floatingQuickMessages
+                        .frame(maxWidth: WorkbenchStyle.readingWidth)
+                        .padding(.horizontal, WorkbenchStyle.readingInset)
+                        .padding(.bottom, 4)
+                        .frame(maxWidth: .infinity)
                 }
             }
-            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            // One editor at one structural position: placement changes must
+            // not recreate the native text view, attachments or draft owner.
+            VStack(spacing: 24) {
+                if showsWelcome {
+                    ConversationWelcomeView(
+                        isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
+                    )
+                }
+                VStack(spacing: 6) {
+                    if let session = selectedSession {
+                        if let page = renderInputs { SessionSendFailureSurface(message: page.sendFailure) }
+                        else { SessionSendFailureView(sessionID: session.id) }
+                    }
+                    sessionReadinessNotice
+                    sessionComposer
+                }
+                .padding(.bottom, compactComposer ? 4 : 16)
+            }
+            .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
+            .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
+            .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)
         }
         .padding(1)
         .background(Color.white.opacity(0.001))
+    }
+
+    private var conversationTopChrome: some View {
+        VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
+            if showsHeader { conversationHeader }
+            backendConnectionBanner
+            if let recovery = pageWorkspaceRecovery, recovery.orphaned {
+                OrphanedWorkspaceRecoveryView(status: recovery)
+            }
+        }
+    }
+
+    private var floatingQuickMessages: some View {
+        ComposerQuickMessagesBar(backendClient: backendClient, sessionId: sessionId,
+            taskID: selectedSession?.taskId, online: displayedOnline,
+            refreshRevision: renderInputs?.quickMessageRevision ?? quickMessagePresentation.refreshRevision,
+            enabled: ComposerSendPolicy.canSend(session: selectedSession, sessionId: sessionId,
+                backendClient: backendClient, renderInputs: renderInputs)
+                && !(renderInputs?.sendingMessage ?? backendClient.isSendingMessage) && selectedSession?.archived != true,
+            activity: renderInputs?.activity, showsMessages: quickMessagePresentation.showsMessages,
+            onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow) { text in
+            guard ComposerSendPolicy.canSend(session: selectedSession, sessionId: sessionId,
+                backendClient: backendClient, renderInputs: renderInputs),
+                !(renderInputs?.sendingMessage ?? backendClient.isSendingMessage),
+                let session = selectedSession, session.archived != true else { return }
+            if backendClient.sendMessage(text, to: session, onSuccess: {
+                if let renderInputs { renderInputs.didSendMessage() }
+                else { quickMessagePresentation.refreshRevision &+= 1 }
+            }), acceptsPresentationUpdates { hasSubmittedMessage = true }
+        }
     }
 
     private func appKitCachedDetailMessages() -> some View {
@@ -650,8 +667,8 @@ struct SessionConversationSurface: View {
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
-                topClearance: max(headerClearance, topChromeClearance),
-                bottomClearance: composerClearance,
+                topClearance: topChromeClearance,
+                bottomClearance: quickMessageClearance,
                 reservesVerticalScrollerGutter: !compactComposer,
                 trailingScrollerExtension: scrollerExtension
             )
@@ -1447,46 +1464,4 @@ struct SessionConversationSurface: View {
     }
 
 
-}
-
-enum ConversationChromeElement: Hashable {
-    case viewport
-    case header
-    case composer
-}
-
-struct ConversationChromeFramePreferenceKey: PreferenceKey {
-    static let coordinateSpace = "conversation.chrome"
-    static let defaultValue: [ConversationChromeElement: CGRect] = [:]
-
-    static func reduce(
-        value: inout [ConversationChromeElement: CGRect],
-        nextValue: () -> [ConversationChromeElement: CGRect]
-    ) {
-        value.merge(nextValue()) { _, next in next }
-    }
-}
-
-struct ConversationChromeClearances {
-    let top: CGFloat
-    let bottom: CGFloat
-
-    init?(frames: [ConversationChromeElement: CGRect]) {
-        guard let viewport = frames[.viewport] else { return nil }
-        let headerOverlap = frames[.header].map { max(0, $0.maxY - viewport.minY) } ?? 0
-        let composerOverlap = frames[.composer].map { max(0, viewport.maxY - $0.minY) } ?? 0
-        top = headerOverlap > 0 ? headerOverlap + 10 : 0
-        bottom = composerOverlap > 0 ? composerOverlap + 10 : 0
-    }
-}
-
-private extension SessionConversationSurface {
-    func conversationChromeFrame(_ element: ConversationChromeElement) -> some View {
-        GeometryReader { geometry in
-            Color.clear.preference(
-                key: ConversationChromeFramePreferenceKey.self,
-                value: [element: geometry.frame(in: .named(ConversationChromeFramePreferenceKey.coordinateSpace))]
-            )
-        }
-    }
 }
