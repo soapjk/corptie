@@ -113,6 +113,87 @@ test("mode defaults off, root user update persists without revising the definiti
   assert.match(buildTaskCoordinationContext(f.store.getTask(f.parent.id), null), /END this turn/);
 });
 
+test("creation recovers an execution-only parent update between async preflight and persistence", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
+    const f = await fixture(t, provider);
+    const original = f.store.assertParentForCreate.bind(f.store);
+    let injected = false;
+    f.store.assertParentForCreate = input => {
+      const result = original(input);
+      if (!injected) {
+        injected = true;
+        queueMicrotask(() => f.store.updateTask(f.parent.id, { executionStatus: "running" }));
+      }
+      return result;
+    };
+    const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("race")] });
+    const id = receipt.dispatches[0].dispatchId;
+    await f.coordinator.runDispatch(id);
+    assert.equal(f.coordinator.get(id).status, "queued");
+    assert.equal(f.starts.length, 1);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 1);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages").n, 1);
+  });
+});
+
+test("creation does not rebase a changed parent definition", async t => {
+  const f = await fixture(t);
+  const original = f.store.assertParentForCreate.bind(f.store);
+  let injected = false;
+  f.store.assertParentForCreate = input => {
+    const result = original(input);
+    if (!injected) {
+      injected = true;
+      queueMicrotask(() => f.workService.updateTask(f.parent.id, { description: "Changed plan" }));
+    }
+    return result;
+  };
+  const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("changed")] });
+  await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
+  assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).error_code, "TASK_PARENT_VERSION_CONFLICT");
+  assert.equal(f.starts.length, 0);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 0);
+});
+
+test("parent CAS recovery is bounded and rejects unrelated or unchanged conflicts", async t => {
+  for (const mode of ["continuous-status", "unchanged", "hierarchy", "other-error"]) await t.test(mode, async t => {
+    const f = await fixture(t);
+    let attempts = 0;
+    f.collaboration.createTaskAndSession = async () => {
+      attempts++;
+      if (mode !== "unchanged") f.store.updateTask(f.parent.id, { executionStatus: attempts % 2 ? "running" : "completed" });
+      if (mode === "hierarchy") f.store.bumpHierarchyRevision(f.parent.id);
+      throw Object.assign(new Error("preflight rejected"), {
+        code: mode === "other-error" ? "TASK_DELIVERY_BINDING_CHANGED" : "TASK_PARENT_VERSION_CONFLICT"
+      });
+    };
+    const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item(mode)] });
+    await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
+    assert.equal(attempts, mode === "continuous-status" ? 3 : 1);
+    assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).status, "failed");
+    assert.equal(f.starts.length, 0);
+  });
+});
+
+test("parent CAS after Task persistence never restarts or delivers an instruction", async t => {
+  const f = await fixture(t);
+  const create = f.collaboration.createTaskAndSession.bind(f.collaboration);
+  let attempts = 0;
+  f.collaboration.createTaskAndSession = async (...args) => {
+    attempts++;
+    await create(...args);
+    f.store.updateTask(f.parent.id, { executionStatus: "running" });
+    throw Object.assign(new Error("late conflict"), { code: "TASK_PARENT_VERSION_CONFLICT" });
+  };
+  const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("persisted")] });
+  await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
+  assert.equal(attempts, 1);
+  assert.equal(f.starts.length, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages").n, 0);
+  assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).status, "failed");
+});
+
 test("admission returns before startup, freezes defaults, and mailbox owns one instruction on every Provider", async t => {
   for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(providerId, async t => {
     const f = await fixture(t, providerId);
