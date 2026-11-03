@@ -481,9 +481,15 @@ struct FirstRunProviderCard: View {
                 }
             }
             if let message = error ?? (resultMatchesSelection ? result.message : nil) {
-                Label(L10n(message), systemImage: "exclamationmark.circle")
-                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.red)
-                    .textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
+                    Text(verbatim: L10n(message))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(WorkbenchTypography.font(for: .help))
+                .foregroundStyle(.red)
+                .textSelection(.disabled)
+                .accessibilityElement(children: .combine)
             }
         }
         .padding(20)
