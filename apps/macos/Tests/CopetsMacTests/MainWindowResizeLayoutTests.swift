@@ -7,95 +7,59 @@ import XCTest
 struct MainWindowResizeLayoutTests {
     @MainActor
     @Test
-    func rapidLiveResizeCoalescesLayoutAndFinishesAtExactSize() {
-        let resizeState = MainWindowResizeState()
-        let view = LiveResizeHostingView(
-            rootView: Text("Undistorted"),
-            resizeState: resizeState
-        )
-        view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
-        view.layoutSubtreeIfNeeded()
-        let eventsBeforeResize = view.layoutStatistics.sizeChangeEvents
-        let exactLayoutsBeforeResize = view.layoutStatistics.exactLayouts
-
+    func liveResizeFollowsEveryNativeSizeWithoutWaitingForAFrameScheduler() {
+        let state = MainWindowResizeState()
+        let view = MainWindowSurfaceContainer(rootView: Text("Native layout"), resizeState: state)
+        view.frame.size = NSSize(width: 980, height: 620)
         view.viewWillStartLiveResize()
-        #expect(resizeState.isLiveResize)
-        var observedCoalescedLayout = false
+        #expect(state.isLiveResize)
         for index in 0..<180 {
-            let direction: CGFloat = index.isMultiple(of: 2) ? 1 : -1
-            view.frame.size = NSSize(
-                width: 1_100 + direction * CGFloat(index % 90),
-                height: 700 + direction * CGFloat(index % 50)
-            )
-            view.layoutSubtreeIfNeeded()
-            #expect(abs(view.presentedContentFrame.minX - view.bounds.minX) < 0.01)
-            #expect(abs(view.presentedContentFrame.minY - view.bounds.minY) < 0.01)
-            #expect(view.presentedContentFrame.size == view.renderedContentSize)
-            if view.renderedContentSize != view.bounds.size {
-                observedCoalescedLayout = true
-                #expect(view.contentUsesIdentityTransform)
-            }
+            view.frame.size = NSSize(width: 1_100 + index, height: 700 + index % 50)
+            // No RunLoop wait, display-link tick or forced recursive layout.
+            #expect(view.renderedContentSize == view.bounds.size)
+            #expect(view.presentedContentFrame == view.bounds)
+            #expect(view.contentUsesIdentityTransform)
         }
-        #expect(observedCoalescedLayout)
+        let finalSize = view.renderedContentSize
         view.viewDidEndLiveResize()
-
-        #expect(view.layoutStatistics.sizeChangeEvents - eventsBeforeResize == 180)
-        #expect(view.layoutStatistics.layoutCommits < 180)
-        #expect(view.layoutStatistics.coalescedEvents > 0)
-        #expect(view.layoutStatistics.exactLayouts == exactLayoutsBeforeResize + 1)
-        #expect(view.renderedContentSize == view.bounds.size)
-        #expect(view.contentUsesIdentityTransform)
-        #expect(!resizeState.isLiveResize)
+        #expect(!state.isLiveResize)
+        #expect(view.renderedContentSize == finalSize)
     }
 
     @MainActor
     @Test
-    func programmaticResizeStabilityDebouncePerformsExactLayout() async throws {
-        let resizeState = MainWindowResizeState()
-        let view = LiveResizeHostingView(
-            rootView: Image(systemName: "rectangle"),
-            resizeState: resizeState
-        )
-        view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
-        view.layoutSubtreeIfNeeded()
-        view.frame.size = NSSize(width: 1_240, height: 760)
-        view.layoutSubtreeIfNeeded()
-        let exactLayoutsBeforeStability = view.layoutStatistics.exactLayouts
-
-        // Wait for the coalesced layout, not for a fixed scheduler interval.
-        for _ in 0..<60 {
-            if view.layoutStatistics.exactLayouts > exactLayoutsBeforeStability { break }
-            try await Task.sleep(for: .milliseconds(25))
+    func programmaticResizeUsesTheSameImmediateNativeLayout() {
+        let state = MainWindowResizeState()
+        let view = MainWindowSurfaceContainer(rootView: Image(systemName: "rectangle"), resizeState: state)
+        for size in [NSSize(width: 980, height: 620), NSSize(width: 1240, height: 760),
+                     NSSize(width: 1000, height: 700)] {
+            view.frame.size = size
+            #expect(view.renderedContentSize == size)
+            #expect(view.contentUsesIdentityTransform)
+            #expect(!state.isLiveResize)
         }
-
-        #expect(view.layoutStatistics.exactLayouts == exactLayoutsBeforeStability + 1)
-        #expect(view.renderedContentSize == view.bounds.size)
-        #expect(view.contentUsesIdentityTransform)
     }
 
     @MainActor
     @Test
-    func nativeLiveResizeDefersExactLayoutUntilDragEnds() async throws {
-        let resizeState = MainWindowResizeState()
-        let view = LiveResizeHostingView(
-            rootView: Text("Latest size only"),
-            resizeState: resizeState
-        )
-        view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
-        view.layoutSubtreeIfNeeded()
-
+    func overlappingNativeResizeNotificationsOnlyControlAnimationSuppression() {
+        _ = NSApplication.shared
+        let state = MainWindowResizeState()
+        let view = MainWindowSurfaceContainer(rootView: Text("Native transitions"), resizeState: state)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        NotificationCenter.default.post(name: NSWindow.willEnterFullScreenNotification, object: window)
+        #expect(state.isLiveResize)
         view.viewWillStartLiveResize()
-        view.frame.size = NSSize(width: 1_240, height: 760)
-        view.layoutSubtreeIfNeeded()
-        let exactLayoutsDuringResize = view.layoutStatistics.exactLayouts
-
-        try await Task.sleep(for: .milliseconds(180))
-
-        #expect(view.layoutStatistics.exactLayouts == exactLayoutsDuringResize)
-        view.viewDidEndLiveResize()
-        #expect(view.layoutStatistics.exactLayouts == exactLayoutsDuringResize + 1)
+        NotificationCenter.default.post(name: NSWindow.didEnterFullScreenNotification, object: window)
+        #expect(state.isLiveResize)
+        view.frame.size = NSSize(width: 1400, height: 800)
         #expect(view.renderedContentSize == view.bounds.size)
-        #expect(!resizeState.isLiveResize)
+        view.viewDidEndLiveResize()
+        #expect(!state.isLiveResize)
+        window.contentView = nil
     }
 
     @Test
