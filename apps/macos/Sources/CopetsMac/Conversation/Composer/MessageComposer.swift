@@ -57,13 +57,16 @@ struct MessageComposer: View {
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
     var onSubmissionStarted: () -> Void = {}
+    var onJumpToLatest: (() -> Void)? = nil
+    var hasUnreadMessagesBelow = false
     @State private var revision: UInt64 = 0
     var body: some View {
         SessionMessageComposerSurface(sessionId: sessionId, draftRepository: draftRepository,
             modelCatalog: modelCatalog, backendClient: backendClient,
             allowsModelSwitch: allowsModelSwitch, compact: compact, status: status,
             isReady: isReady, notReadyReason: notReadyReason, activityStatus: activityStatus,
-            onSubmissionStarted: onSubmissionStarted, legacyRevision: revision)
+            onSubmissionStarted: onSubmissionStarted, onJumpToLatest: onJumpToLatest,
+            hasUnreadMessagesBelow: hasUnreadMessagesBelow, legacyRevision: revision)
         .onReceive(Publishers.MergeMany([
             backendClient.objectWillChange.eraseToAnyPublisher(),
             backendClient.appState.objectWillChange.eraseToAnyPublisher(),
@@ -98,6 +101,8 @@ struct SessionMessageComposerSurface: View {
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
     let onSubmissionStarted: () -> Void
+    let onJumpToLatest: (() -> Void)?
+    let hasUnreadMessagesBelow: Bool
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
     @State private var inputHeight = ComposerInputLayout.minimumHeight
@@ -129,6 +134,7 @@ struct SessionMessageComposerSurface: View {
         notReadyReason: SessionNotReadyReason?,
         activityStatus: String?,
         onSubmissionStarted: @escaping () -> Void = {},
+        onJumpToLatest: (() -> Void)? = nil, hasUnreadMessagesBelow: Bool = false,
         renderInputs: SessionPageRenderInputs? = nil, legacyRevision: UInt64 = 0
     ) {
         self.sessionId = sessionId
@@ -143,6 +149,8 @@ struct SessionMessageComposerSurface: View {
         self.notReadyReason = notReadyReason
         self.activityStatus = activityStatus
         self.onSubmissionStarted = onSubmissionStarted
+        self.onJumpToLatest = onJumpToLatest
+        self.hasUnreadMessagesBelow = hasUnreadMessagesBelow
         let draft = draftRepository.draft(for: sessionId)
         draft.sessionId = sessionId
         _attachedImages = State(initialValue: draft.images)
@@ -160,16 +168,33 @@ struct SessionMessageComposerSurface: View {
 
     private var composerLayout: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !compact && showsQuickMessages {
-                MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
-                    taskID: session?.taskId, online: online, refreshRevision: renderInputs?.quickMessageRevision ?? quickMessageRefresh,
-                    enabled: canSend && !sendingMessage && session?.archived != true,
-                    activity: renderInputs?.activity,
-                    load: { try await backendClient.quickMessages(for: sessionId) }) { text in
-                    guard canSend, !sendingMessage, let session, session.archived != true else { return }
-                    // Independent send: never clear or attach the editor's draft.
-                    if backendClient.sendMessage(text, to: session, onSuccess: didSendMessage) {
-                        onSubmissionStarted()
+            if !compact && (showsQuickMessages || onJumpToLatest != nil) {
+                HStack(spacing: 8) {
+                    if showsQuickMessages {
+                        MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
+                            taskID: session?.taskId, online: online, refreshRevision: renderInputs?.quickMessageRevision ?? quickMessageRefresh,
+                            enabled: canSend && !sendingMessage && session?.archived != true,
+                            activity: renderInputs?.activity,
+                            load: { try await backendClient.quickMessages(for: sessionId) }) { text in
+                            guard canSend, !sendingMessage, let session, session.archived != true else { return }
+                            // Independent send: never clear or attach the editor's draft.
+                            if backendClient.sendMessage(text, to: session, onSuccess: didSendMessage) {
+                                onSubmissionStarted()
+                            }
+                        }
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+                    if let onJumpToLatest {
+                        Button(action: onJumpToLatest) {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 12, weight: .bold))
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow))
+                        .help(L10n("Jump to latest message"))
+                        .accessibilityLabel(L10n("Jump to latest message"))
+                        .accessibilityIdentifier("conversation-jump-to-latest")
                     }
                 }
             }

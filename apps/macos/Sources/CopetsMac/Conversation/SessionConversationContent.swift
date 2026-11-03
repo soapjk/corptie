@@ -294,6 +294,7 @@ struct SessionConversationSurface: View {
                     notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
                     activityStatus: (selectedSession?.activityStatus ?? displayedDetail?.activityStatus).map { L10n($0) },
                     onSubmissionStarted: { if acceptsPresentationUpdates { hasSubmittedMessage = true } },
+                    onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow,
                     renderInputs: renderInputs)
                 .id(sessionId)
             } else {
@@ -307,7 +308,8 @@ struct SessionConversationSurface: View {
                 isReady: selectedSession?.isReady ?? displayedDetail?.isReady ?? true,
                 notReadyReason: selectedSession?.notReadyReason ?? displayedDetail?.notReadyReason,
                 activityStatus: (selectedSession?.activityStatus ?? displayedDetail?.activityStatus).map { L10n($0) },
-                onSubmissionStarted: { hasSubmittedMessage = true }
+                onSubmissionStarted: { hasSubmittedMessage = true },
+                onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow
             )
             .id(sessionId)
             }
@@ -536,8 +538,10 @@ struct SessionConversationSurface: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                jumpToLatestButton
-                    .padding(.bottom, composerClearance + 8)
+                if !usesComposerJumpToLatest {
+                    jumpToLatestButton
+                        .padding(.bottom, max(0, composerClearance - 6))
+                }
             }
             .overlay(alignment: .bottom) {
                 // One editor at one structural position: placement changes must
@@ -722,17 +726,27 @@ struct SessionConversationSurface: View {
         }
     }
 
+    private var usesComposerJumpToLatest: Bool {
+        !compactComposer && displayedOnline && pageWorkspaceRecovery?.blocksSessionInput != true
+    }
+
+    private var composerJumpToLatestAction: (() -> Void)? {
+        usesComposerJumpToLatest && viewportState.showsJumpToLatest ? { jumpToLatest() } : nil
+    }
+
+    private func jumpToLatest() {
+        timelineRestorationIntent.clearAnchor()
+        viewportState.jumpToLatest()
+        if let currentDetail = displayedDetail {
+            updateCachedDisplayEntries(for: currentDetail)
+        }
+        appKitScrollToBottomRevision &+= 1
+    }
+
     @ViewBuilder
     private var jumpToLatestButton: some View {
         if viewportState.showsJumpToLatest {
-            Button {
-                timelineRestorationIntent.clearAnchor()
-                viewportState.jumpToLatest()
-                if let currentDetail = displayedDetail {
-                    updateCachedDisplayEntries(for: currentDetail)
-                }
-                appKitScrollToBottomRevision &+= 1
-            } label: {
+            Button(action: jumpToLatest) {
                 Image(systemName: "arrow.down")
                     .font(.system(size: 12, weight: .bold))
                     .frame(width: 30, height: 30)
