@@ -133,3 +133,82 @@ import CorptieClientCore
         XCTAssertEqual(try empty.validated().olderCursor, "scan-next")
     }
 }
+
+@MainActor final class UserMessageNavigationHoverTests: XCTestCase {
+    private actor DwellGate {
+        var delays: [Duration] = []
+        var pending: [CheckedContinuation<Void, Never>] = []
+        func wait(_ delay: Duration) async {
+            delays.append(delay)
+            await withCheckedContinuation { pending.append($0) }
+        }
+        func count() -> Int { delays.count }
+        func firstDelay() -> Duration? { delays.first }
+        func release() { if !pending.isEmpty { pending.removeFirst().resume() } }
+    }
+    private func group(_ id: String, ordinal: Int = 0) -> UserMessageNavigationGroup {
+        .init(items: [.init(id: id, createdAt: "", preview: "Question")], ordinal: ordinal)
+    }
+    private func queued(_ gate: DwellGate, _ count: Int) async {
+        for _ in 0..<1000 {
+            if await gate.count() >= count { return }
+            await Task.yield()
+        }
+        XCTFail("Dwell task was not queued")
+    }
+    private func settle() async { for _ in 0..<20 { await Task.yield() } }
+
+    func testDwellIs600MillisecondsAndPassingPointerCannotOpenLater() async {
+        let gate = DwellGate()
+        let hover = UserMessageNavigationHover { await gate.wait($0) }
+        let item = group("a")
+        hover.enter(item)
+        await queued(gate, 1)
+        let delay = await gate.firstDelay()
+        XCTAssertEqual(delay, .milliseconds(600))
+        XCTAssertNil(hover.preview)
+        hover.leave(item); hover.leaveRail()
+        await gate.release(); await settle()
+        XCTAssertNil(hover.preview, "A cancelled dwell must not reopen after pointer exit")
+    }
+    func testCompletedDwellShowsPreviewAndExitClearsAllEmphasis() async {
+        let gate = DwellGate()
+        let hover = UserMessageNavigationHover { await gate.wait($0) }
+        let item = group("a", ordinal: 3)
+        hover.enter(item); await queued(gate, 1)
+        await gate.release(); await settle()
+        XCTAssertEqual(hover.preview?.ordinal, 3)
+        hover.leave(item); hover.leaveRail(); await settle()
+        XCTAssertNil(hover.preview, "Idle markers derive no emphasized index after exit")
+    }
+    func testMovingBetweenMarkersRestartsDwellAndDiscardsOldCompletion() async {
+        let gate = DwellGate()
+        let hover = UserMessageNavigationHover { await gate.wait($0) }
+        let a = group("a"), b = group("b", ordinal: 1)
+        hover.enter(a); await queued(gate, 1)
+        hover.leave(a); hover.enter(b); await queued(gate, 2)
+        await gate.release(); await settle()
+        XCTAssertNil(hover.preview)
+        await gate.release(); await settle()
+        XCTAssertEqual(hover.preview?.id, "b")
+        hover.close()
+        XCTAssertNil(hover.preview)
+    }
+    func testSourceToPreviewTransferAndImmediatePanelExit() async {
+        let hover = UserMessageNavigationHover()
+        let item = group("a")
+        hover.showImmediately(item)
+        hover.leaveRail()
+        hover.panelHover(true)
+        await settle()
+        XCTAssertEqual(hover.preview?.id, "a")
+        hover.panelHover(false); await settle()
+        XCTAssertNil(hover.preview)
+    }
+    func testExplicitClickDoesNotWaitForDwell() {
+        let hover = UserMessageNavigationHover()
+        hover.showImmediately(group("clicked"))
+        XCTAssertEqual(hover.preview?.id, "clicked")
+        hover.close()
+    }
+}
