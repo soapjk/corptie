@@ -114,7 +114,7 @@ enum NativeTextKitLayout {
             containerSize: NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
         )
         textContainer.lineFragmentPadding = 0
-        textContainer.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byCharWrapping
+        textContainer.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
         textContainer.maximumNumberOfLines = maximumLines
         textContainer.widthTracksTextView = false
         textContainer.heightTracksTextView = false
