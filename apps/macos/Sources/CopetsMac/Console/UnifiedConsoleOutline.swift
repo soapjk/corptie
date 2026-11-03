@@ -51,12 +51,7 @@ extension UnifiedConsoleView {
                         } else {
                             ForEach(assistantSessionRows) { row in
                                 sessionRow(row, showsHoverFeedback: false)
-                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                    .padding(.trailing, 16)
-                                    .consoleHoverFeedback(isSelected:
-                                        selectionController.presentationSessionID == row.session.id, horizontalInset: 8
-                                    )
-                                    .frame(height: ConsoleWorkOutlineRowMetrics.height)
+                                    .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
                             }
                         }
                     }
@@ -96,10 +91,7 @@ extension UnifiedConsoleView {
                             ConsoleWorkOutlineRows(rowCount: max(1, orderedTasks.count + rows.count)) {
                                 ForEach(orderedTasks) { task in
                                     hierarchyTaskRow(task, showsHoverFeedback: false)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .padding(.trailing, 16)
-                                        .consoleHoverFeedback(isSelected: selectedTaskId == task.id, horizontalInset: 8)
-                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
+                                        .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
                                 }
                                 if rows.isEmpty && orderedTasks.isEmpty {
                                     outlineGroupEmptyRow(L10n("No Archived Sessions"))
@@ -107,12 +99,7 @@ extension UnifiedConsoleView {
                                 } else {
                                     ForEach(rows) { row in
                                         sessionRow(row, showsHoverFeedback: false)
-                                            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                            .padding(.trailing, 16)
-                                            .consoleHoverFeedback(isSelected:
-                                                selectionController.presentationSessionID == row.session.id, horizontalInset: 8
-                                            )
-                                            .frame(height: ConsoleWorkOutlineRowMetrics.height)
+                                            .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
                                     }
                                 }
                             }
@@ -120,12 +107,7 @@ extension UnifiedConsoleView {
                             ConsoleWorkOutlineRows(rowCount: visibleTasks.count + (hiddenTaskCount > 0 ? 1 : 0)) {
                                 ForEach(visibleTasks) { task in
                                     hierarchyTaskRow(task, showsHoverFeedback: false)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .padding(.trailing, 16)
-                                        .consoleHoverFeedback(isSelected:
-                                            selectedTaskId == task.id, horizontalInset: 8
-                                        )
-                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
+                                        .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
                                 }
                                 if hiddenTaskCount > 0 {
                                     outlineShowAllTasksButton(
