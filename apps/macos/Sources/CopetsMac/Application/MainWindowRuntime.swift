@@ -80,7 +80,13 @@ final class MainWindowPresentationState: ObservableObject {
 /// title bar, so NSWindow's default empty-title-bar handler never sees it.
 @MainActor
 final class MainWindow: NSWindow {
+    weak var compactWindowControls: CompactWindowControlsView?
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, attachedSheet == nil,
+           let button = compactWindowControls?.button(at: event.locationInWindow) {
+            button.mouseDown(with: event)
+            return
+        }
         if event.type == .leftMouseDown,
            let contentView,
            MainWindowTitlebarZoomPolicy.shouldToggleZoom(

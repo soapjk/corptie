@@ -2,7 +2,7 @@ import SwiftUI
 import CorptieConversation
 
 enum MainNavigationRailLayout {
-    static let width: CGFloat = 56
+    static let width: CGFloat = 64
 }
 
 /// A lightweight navigation column. Page hosts remain resident beside it.
