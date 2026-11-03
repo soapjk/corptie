@@ -55,15 +55,13 @@ test("unverified collaboration and channel deliveries remain diagnostic system e
   const { api } = fixture();
   const base = { taskId: "work", kind: "collaboration", status: "queued", text: "untrusted" };
   const channel = api.agentWorkTimelineItem({ ...base, source: { type: "session_channel" } }, "recipient");
-  assert.equal(channel.title, "System Event");
-  assert.equal(channel.sourceType, "system");
-  assert.equal(channel.systemEventReason, "CHANNEL_DELIVERY_ENVELOPE_MISSING");
+  assert.equal(channel, null);
   const legacy = api.agentWorkTimelineItem({ ...base, source: { type: "collaboration" } }, "recipient");
   assert.equal(legacy.systemEventReason, "missing_task_id");
   assert.equal(JSON.parse(legacy.rawEventEnvelope).eventType, "AgentTask");
 });
 
-test("channel inbound presentation uses verified envelope and current logical titles", () => {
+test("channel inbound input stays in the mailbox instead of becoming a user message", () => {
   const { api, deliveries, logical } = fixture();
   deliveries.set("delivery", {
     channel: { channelId: "channel" },
@@ -77,14 +75,7 @@ test("channel inbound presentation uses verified envelope and current logical ti
     taskId: "work", kind: "collaboration", status: "running", deliveryId: "delivery",
     source: { type: "session_channel" }
   }, "recipient");
-  assert.equal(item.id, "work:work");
-  assert.equal(item.collaborationDirection, "inbound");
-  assert.equal(item.presentationText, "verified");
-  assert.equal(item.collaborationInitiatorSessionTitle, "Updated");
-  assert.equal(item.collaborationSourceWorkName, "work-s");
-  assert.equal(item.collaborationSourceTaskId, "task-s");
-  assert.equal(item.userMessageStatus, "preparing");
-  assert.equal(item.collaborationChannelId, "channel");
+  assert.equal(item, null);
 });
 
 test("legacy collaboration preserves send-time names and resource route", () => {

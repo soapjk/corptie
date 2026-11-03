@@ -1,6 +1,7 @@
 import { createdAtFromOrNow } from "../../utils/timestamps.mjs";
 import { parseJson } from "../storedJson.mjs";
 import { quickMessageContribution } from "../../application/quickMessageRecommendations.mjs";
+import { isMailboxTimelineInput } from "../../application/mailboxTimelinePolicy.mjs";
 
 export class TimelineMutationRepository {
   constructor({ getDatabase, normalizedSessionIdFilter, selectOne, selectAll, getSession, getSessionItem, scheduleSave, notifyTimelineDirty }) {
@@ -19,6 +20,7 @@ export class TimelineMutationRepository {
   }
 
   upsertTimelineItemProjection(sessionId, item) {
+    if (isMailboxTimelineInput({ ...item, sessionId }, this.selectOne)) return false;
     if (this.selectOne("SELECT 1 FROM deleted_user_messages WHERE session_id=? AND message_id=?", [sessionId, item.id])) return false;
     const createdAt = createdAtFromOrNow(item);
     const rawMetadataJSON = typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null;

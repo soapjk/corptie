@@ -3,10 +3,12 @@ import { collaborationWorkPresentation } from "./collaborationWorkPresentation.m
 import { collaborationEnvelopeFailure } from "../utils/sessionEventPresentation.mjs";
 import { userMessageStatusForAgentWork } from "../utils/agentWorkQueue.mjs";
 import { userMessageDeletionEligibility } from "../application/userMessageDeletion.mjs";
+import { isMailboxOperation } from "../application/mailboxTimelinePolicy.mjs";
 
 // Read-only presentation: event publishing and delivery execution stay with their owners.
 export function createCollaborationTimelinePresentation({ store, collaborationCore, sessionChannelService }) {
   function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
+    if (isMailboxOperation(task)) return null;
     if (!task?.taskId || task.source?.deleted === true || task.source?.batchedInto || task.source?.mailboxDisposition) return null;
     const presentation = collaborationPresentationForTask(task, sessionId);
     const userMessageStatus = userMessageStatusForAgentWork(task.status, task.targetTurnId ?? null);

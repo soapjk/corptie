@@ -75,6 +75,8 @@ export class SessionMailboxService {
       COALESCE(m.sender_session_id,json_extract(mm.authorization_json,'$.sourceSessionId')) AS sender_session_id,m.message_id AS original_message_id,m.created_at AS sent_at,
       d.status AS delivery_status,d.target_turn_id,b.batch_id,b.status AS batch_status,
       COALESCE(adopted.execution_status,external_turn.execution_status,op.status,cop.status) AS execution_status,
+      COALESCE(mm.adopted_provider_session_id,external_delivery.session_id,op.session_id,cop.session_id) AS execution_session_id,
+      COALESCE(mm.adopted_binding_id,external_delivery.binding_id) AS execution_binding_id,
       COALESCE(op.target_turn_id,cop.target_turn_id,external_delivery.provider_turn_id) AS execution_turn_id,
       json_extract(op.source_json,'$.mailboxDispatchAttempted') AS dispatch_attempted,
       (SELECT COUNT(*) FROM session_collaboration_batch_items bi WHERE bi.batch_id=b.batch_id) AS batch_count
@@ -111,7 +113,15 @@ export class SessionMailboxService {
     const id = this.logical(sessionId).logicalSessionId;
     const row = this.store.selectOne(`${this.selectSql(true)} WHERE mm.message_id=? AND mm.recipient_session_id=?`, [messageId, id]);
     if (!row) fail("MAILBOX_MESSAGE_NOT_FOUND", 404);
-    return this.present(row, true);
+    const message = this.present(row, true);
+    // Detail-only indexed lookup. Listing the mailbox never loads Turn items.
+    const processingItem = message.turnId && row.execution_session_id
+      ? this.store.selectOne(`SELECT id FROM session_items WHERE session_id=? AND turn_id=?
+        AND (? IS NULL OR binding_id=?) AND type NOT IN ('userMessage','automationEvent')
+        ORDER BY created_at,id LIMIT 1`, [row.execution_session_id, message.turnId,
+          row.execution_binding_id, row.execution_binding_id]) : null;
+    return { ...message, processingSessionId: processingItem ? row.execution_session_id : null,
+      processingItemId: processingItem?.id ?? null };
   }
 
   raw(sessionId, messageId) {
