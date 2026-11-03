@@ -1770,6 +1770,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
 typealias UserMessageProcessingState = CorptieClientCore.UserMessageProcessingState
 
 extension CodexThreadItem: CorptieClientCore.ConversationExecutionItem {
+    var timelineLegacyMessageStatus: String? { status }
     var timelineHasImages: Bool { !(images ?? []).isEmpty }
     var timelineMessageOrigin: String? { messageOrigin }
     var executionTitle: String { title }

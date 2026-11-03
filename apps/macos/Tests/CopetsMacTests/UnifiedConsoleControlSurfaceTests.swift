@@ -478,32 +478,22 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestStaysAboveTheGlassWhileHistoryScrollsBehindIt() throws {
+    func jumpToLatestIsAdjacentToTheComposerInsteadOfOffsetAboveItsWholeRegion() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
-        let bodyStart = try #require(source.range(of: "    var body: some View"))
-        let timelineStart = try #require(source.range(of: "    private func appKitDetailMessages("))
-        let jumpButtonStart = try #require(source.range(of: "    private var jumpToLatestButton: some View"))
-        let body = source[bodyStart.lowerBound..<timelineStart.lowerBound]
-        let timeline = source[timelineStart.lowerBound..<jumpButtonStart.lowerBound]
-
-        let jumpOverlay = try #require(body.range(of: ".overlay(alignment: .bottomTrailing) {\n                jumpToLatestButton"))
-        let headerOverlay = try #require(body.range(of: ".overlay(alignment: .top) {"))
-        let composerOverlay = try #require(body.range(of: ".overlay(alignment: .bottom) {"))
-        #expect(headerOverlay.lowerBound < jumpOverlay.lowerBound)
-        #expect(jumpOverlay.lowerBound < composerOverlay.lowerBound)
-        #expect(body.contains(".padding(.bottom, composerClearance + 10)"))
-        #expect(body.contains("ConversationChromeFramePreferenceKey.self"))
-        #expect(body.contains("headerClearance = clearances.top"))
-        #expect(timeline.contains("topClearance: max(headerClearance, topChromeClearance)"))
-        #expect(timeline.contains("bottomClearance: composerClearance"))
-        #expect(!body.contains(".safeAreaInset(edge: .bottom"))
-        let nativeTimeline = try self.source(named: "AppKitChatTimelineView.swift")
-        let coordinator = try self.source(named: "Conversation/Timeline/AppKitChatTimelineCoordinator.swift")
-        #expect(nativeTimeline.contains("scrollView.automaticallyAdjustsContentInsets = false"))
-        #expect(coordinator.contains("let documentHeight = topClearance + rowsHeight + bottomClearance"))
-        #expect(!coordinator.contains("scrollView.contentInsets = insets"))
-        #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
-        #expect(source.contains("if viewportState.showsJumpToLatest"))
+        let composer = try self.source(named: "Conversation/Composer/MessageComposer.swift")
+        #expect(source.contains("onJumpToLatest: composerJumpToLatestAction"))
+        #expect(source.contains("if !usesComposerJumpToLatest"))
+        #expect(!source.contains("composerClearance + 8"))
+        #expect(composer.contains("VStack(alignment: .leading, spacing: 4)"))
+        #expect(composer.contains("HStack(spacing: 8)"))
+        let quickMessages = try #require(composer.range(of: "MacComposerQuickMessages("))
+        let jump = try #require(composer.range(of: "Button(action: onJumpToLatest)"))
+        let editor = try #require(composer.range(of: "ConversationComposerChrome(verticalPadding:"))
+        #expect(quickMessages.lowerBound < jump.lowerBound)
+        #expect(jump.lowerBound < editor.lowerBound)
+        #expect(composer.contains("JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow)"))
+        #expect(source.contains("bottomClearance: composerClearance"))
+        #expect(source.contains("appKitScrollToBottomRevision &+= 1"))
     }
 
     @Test
