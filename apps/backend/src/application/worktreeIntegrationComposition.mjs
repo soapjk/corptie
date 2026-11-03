@@ -211,11 +211,14 @@ export function createWorktreeIntegrationServices({
     prepareConflictResolution: (input) => gitWorkspaces.prepareIntegrationConflictResolutionForProject({
       repositoryId: input.repositoryId,
       workingDirectory: input.mainPath,
+      targetPath: input.mainPath,
+      targetWorktreeId: input.targetWorktreeId,
       sourceHead: input.sourceHead,
       expectedMainHead: input.expectedMainHead,
       jobId: input.jobId
     }),
     inspectConflictResolution: (input) => gitWorkspaces.inspectIntegrationConflictResolutionForProject(input),
+    inspectMainIntegrationCompletion: (input) => gitWorkspaces.inspectMainIntegrationCompletion(input),
     launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
       const planIdentity = job.id.replace(/^worktree_integration:/, "");
       const planLabel = planIdentity.slice(0, 8);
@@ -289,7 +292,7 @@ export function createWorktreeIntegrationServices({
         `计划级专用 Integration Worktree：${workspace.path}`
       ].join("\n");
       const acceptanceCriteria = [
-        "- 合并计划内所有来源分支的有效修改均已完整进入 main",
+        "- 本轮结果包含当前目标基线与当前来源提交；最终合入 main 由原集成任务继续执行并验证",
         "- 计划内所有冲突均按双方语义逐个解决，且不存在未合并文件或冲突标记",
         "- 相关测试通过，Development App 与后端重建及健康检查成功",
         "- 每轮解决结果均已提交，计划级 Integration Worktree 保持干净",
@@ -299,7 +302,9 @@ export function createWorktreeIntegrationServices({
         `继续处理合并计划 ${job.id} 的下一个冲突。`,
         `当前来源 Worktree：${branchLabel}`,
         `当前来源提交：${sourceHead}`,
-        `当前 main 基线：${expectedMainHead}`,
+        `本轮目标分支：${job.plan.targetBranchName ?? job.plan.items.find(entry => entry.isMain)?.branchName ?? "集成目标"}`,
+        `本轮目标 Worktree：${job.plan.executionPath ?? job.plan.mainPath}`,
+        `当前目标基线：${expectedMainHead}`,
         `冲突文件：${conflictFiles}`,
         `计划级专用 Integration Worktree：${workspace.path}`,
         "",
@@ -310,7 +315,7 @@ export function createWorktreeIntegrationServices({
         "4. 运行相关测试，并按 AGENTS.md 重建、启动 Development App 与后端并检查健康状态。",
         `5. 验证来源提交 ${sourceHead} 已成为当前 Integration HEAD 的祖先，并确认 Integration Worktree 干净。`,
         "6. 不得切换、提交、清理或合并 main；不得推送远端，不得删除来源分支或 Worktree。",
-        "7. 完成本轮后正常结束当前执行；Corptie 会校验结果并在同一个 Task 和 Session 中投递下一个冲突，直至整个计划完成。"
+        "7. 完成本轮后正常结束当前执行，报告‘本轮冲突处理提交已生成，交回原集成任务继续验证并合入 main’。只有原任务验证目标代码进入 main 后，才能报告整个合并计划完成。"
       ].join("\n");
       if (recoverableStartup) {
         const recoveredSession = await startPreparedWorkSession({

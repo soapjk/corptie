@@ -122,6 +122,7 @@ export class ClientDeviceGateway {
   }
 
   async handle(request, response) {
+    let worktreeDiagnosticAllowed = false;
     try {
       this.limit(request);
       if (request.headers.origin || request.headers["x-corptie-agent-id"]) {
@@ -446,6 +447,7 @@ export class ClientDeviceGateway {
       if (this.worktreeAPI && (worktreeLocalState || worktreeRepository || worktreePushStatus || worktreeDelete
           || worktreeWorkspaceAction || worktreeService || worktreeServiceAction || worktreePlan
           || worktreeCandidate || worktreeRepositoryJobs || worktreeJob || worktreeJobAction)) {
+        worktreeDiagnosticAllowed = true;
         let result;
         if (worktreeLocalState && ["GET", "POST"].includes(request.method)) {
           const input = request.method === "POST" ? await body(request, 1024) : null;
@@ -683,9 +685,16 @@ export class ClientDeviceGateway {
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) {
       const status = error.status ?? error.statusCode ?? 500;
+      let worktreeMessage;
+      if (worktreeDiagnosticAllowed) {
+        try {
+          this.authenticateRequest(request);
+          worktreeMessage = worktreeErrorBody(error).error;
+        } catch { /* Revoked devices cannot receive operation diagnostics. */ }
+      }
       reply(response, status, {
         code: error.code ?? "DEVICE_SERVICE_ERROR",
-        ...(status < 500 ? { error: error.message } : {}),
+        ...(status < 500 || worktreeMessage ? { error: worktreeMessage ?? error.message } : {}),
         ...(status < 500 && error.busyContext ? {busyContext:worktreeErrorBody(error).busyContext} : {}),
         ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
         ...(status < 500 && error.commitPolicyBlocker ? {commitPolicyBlocker:error.commitPolicyBlocker,commitReviewId:error.commitReviewId} : {}),

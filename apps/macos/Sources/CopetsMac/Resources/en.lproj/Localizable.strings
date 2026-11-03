@@ -1841,3 +1841,15 @@
 "Create Task, Work, or chat" = "Create Task, Work, or chat";
 
 "Create" = "Create";
+
+"复制完整诊断" = "Copy Full Diagnostics";
+
+"完整错误详情" = "Full Error Details";
+
+"目标代码已合并到主分支。" = "The target code has been merged into the main branch.";
+
+"任务状态已变化，请刷新并使用当前可用操作。" = "The task state changed. Refresh and use the currently available action.";
+
+"已展开" = "Expanded";
+
+"已折叠" = "Collapsed";

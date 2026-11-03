@@ -462,6 +462,9 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let stagedTreeBlocker: WorktreeStagedTreeBlocker?
     let integrationPostconditionBlocker: WorktreeIntegrationPostconditionBlocker?
     let availableActions: [String]?
+    var diagnosticText: String? = nil
+    var errorSummary: String? = nil
+    var completionEvidence: ClientWorktreeCompletionEvidence? = nil
     let recovery: WorktreeIntegrationRecovery?
 
     func supports(_ action: String) -> Bool {
@@ -482,17 +485,16 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
             && hasMergeConflict
     }
     var shouldPoll: Bool {
-        isActive || isStartingConflictAgent || currentConflictResolution?.status == "running"
+        if ["completed", "canceled"].contains(status) { return false }
+        return isActive || isStartingConflictAgent || currentConflictResolution?.status == "running"
     }
     var requiresPlanRegeneration: Bool {
-        if plan.orchestration != nil, supports("repreflight") { return true }
+        if supports("repreflight") { return true }
         let code = audit.last(where: { $0.code != nil })?.code
         return WorktreeIntegrationRecoveryPolicy.requiresRepreflight(status: status, phase: phase, auditCode: code)
     }
     var canCancel: Bool {
-        availableActions?.contains("cancel")
-            ?? (["awaiting_confirmation", "queued", "running", "paused"].contains(status)
-                && currentConflictResolution?.status != "running")
+        supports("cancel")
     }
     var hasMergeConflict: Bool {
         status == "paused" && plan.operationType != "sync"

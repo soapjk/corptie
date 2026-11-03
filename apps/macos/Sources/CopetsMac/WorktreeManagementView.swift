@@ -512,10 +512,7 @@ struct WorktreeManagementView: View {
                     }
                     Text(L10n("读取或操作未完成。刷新只检查当前状态，不会重复执行合并、推送或删除。"))
                         .font(.callout).foregroundStyle(.secondary)
-                    DisclosureGroup(L10n("技术详情")) {
-                        Text(error).font(.caption).textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    WorktreeErrorDetailsView(error, localize: L10n)
                 }.padding(14).background(.regularMaterial)
             }
         }
@@ -1053,6 +1050,22 @@ struct WorktreeManagementView: View {
                             openConflictSession(sessionId: sessionId, taskId: state.steps[state.index].rootTaskId)
                         }.controlSize(.small)
                     }
+                } else if job.supports("repreflight") {
+                    Button(L10n("Generate New Merge Plan")) {
+                        Task {
+                            let sources = client.job?.plan.orchestration?.requestedWorktreeIds
+                            guard await client.finishJobForFreshPreflight() else { return }
+                            showingPlan = true
+                            if let sources {
+                                await client.prepareMainIntegration(sourceWorktreeIds: sources)
+                            } else {
+                                await client.prepareFreshPlan()
+                            }
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.repreflight")
                 } else if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
@@ -1061,12 +1074,12 @@ struct WorktreeManagementView: View {
                     }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.open-conflict-agent")
-                    if job.phase == "failed", resolution.status == "ready" {
+                    if job.supports("retry"), resolution.status == "ready" {
                         Button(L10n("Revalidate and Continue")) { Task { await client.retryJob() } }
                             .controlSize(.small)
                             .disabled(client.isMutating)
                             .accessibilityIdentifier("worktree.integrate.revalidate")
-                    } else if resolution.status == "failed" {
+                    } else if resolution.status == "failed", job.supports("resolve_conflict_with_agent") {
                         agentConflictRetryButton()
                         manualConflictRetryButton()
                     }
@@ -1088,7 +1101,7 @@ struct WorktreeManagementView: View {
                     .controlSize(.small)
                     .disabled(client.isMutating)
                     .accessibilityIdentifier("worktree.integrate.handle-markdown-policy")
-                } else if job.hasMergeConflict {
+                } else if job.hasMergeConflict, job.supports("resolve_conflict_with_agent") {
                     if let sessionId = job.conflictAutomation?.sessionId {
                         Button(L10n("View Resolution Session")) {
                             openConflictSession(sessionId: sessionId, taskId: job.conflictAutomation?.taskId)
@@ -1107,28 +1120,18 @@ struct WorktreeManagementView: View {
                     .disabled(client.isMutating || job.isStartingConflictAgent)
                     .accessibilityIdentifier("worktree.integrate.resolve-with-agent")
                     manualConflictRetryButton()
-                } else if job.supports("repreflight") {
-                    Button(L10n("Generate New Merge Plan")) {
-                        Task {
-                            let sources = client.job?.plan.orchestration?.requestedWorktreeIds
-                            guard await client.finishJobForFreshPreflight() else { return }
-                            showingPlan = true
-                            if let sources {
-                                await client.prepareMainIntegration(sourceWorktreeIds: sources)
-                            } else {
-                                await client.prepareFreshPlan()
-                            }
-                        }
-                    }
-                    .controlSize(.small)
-                    .disabled(client.isMutating)
-                    .accessibilityIdentifier("worktree.integrate.repreflight")
                 } else if job.supports("retry") {
                     Button(job.stagedTreeBlocker == nil ? L10n("Retry") : L10n("Revalidate and Continue")) {
                         Task { await client.retryJob() }
                     }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.retry")
+                }
+                if job.supports("repreflight"), let resolution = job.currentConflictResolution,
+                   let sessionId = resolution.sessionId {
+                    Button(L10n("View Resolution Session")) {
+                        openConflictSession(sessionId: sessionId, taskId: resolution.taskId)
+                    }.controlSize(.small)
                 }
                 if job.canCancel {
                     Button(L10n("Cancel"), role: .destructive) {
@@ -1238,8 +1241,15 @@ struct WorktreeManagementView: View {
             } else if let error = job.error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
+            if let diagnostic = job.diagnosticText ?? job.error {
+                WorktreeErrorDetailsView(diagnostic, summary: job.errorSummary, localize: L10n)
+            }
             if job.status == "completed" {
-                Text(L10n("Integration plan completed. All planned Worktrees reached a final state."))
+                if let evidence = job.completionEvidence {
+                    Text("\(evidence.branchName ?? "main") @ \(evidence.mainHead)\n\(evidence.verifiedAt)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                }
+                Text(job.plan.orchestration != nil ? L10n("目标代码已合并到主分支。") : L10n("Integration plan completed. All planned Worktrees reached a final state."))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.green)
                 Text(finalWorktreeStatuses(job))
@@ -1267,7 +1277,7 @@ struct WorktreeManagementView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if let error = item.error {
-                        Text(error).lineLimit(2).textSelection(.enabled)
+                        WorktreeErrorDetailsView(error, localize: L10n)
                     }
                 }
                 .font(.caption)

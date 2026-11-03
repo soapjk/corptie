@@ -50,7 +50,8 @@ function fixture(overrides = {}) {
 
 function conflictInput() {
   return {
-    job: { id: "worktree_integration:plan", conflictAutomation: { taskId: "task", sessionId: "session", agentId: "agent" } },
+    job: { id: "worktree_integration:plan", plan: { targetBranchName: "parent", mainPath: "/parent", items: [] },
+      conflictAutomation: { taskId: "task", sessionId: "session", agentId: "agent" } },
     item: { worktreeId: "source", conflictFiles: ["source.swift"] },
     workspace: { path: "/integration" }, sourceHead: "source-head", expectedMainHead: "main-head"
   };
