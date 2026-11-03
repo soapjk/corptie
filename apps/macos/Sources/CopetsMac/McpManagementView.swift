@@ -2,6 +2,7 @@ import CorptieClientCore
 import Foundation
 import CryptoKit
 import SwiftUI
+import CorptieConversation
 
 private struct ManagedMcpServer: Decodable, Identifiable {
     let serverId: String
@@ -274,13 +275,13 @@ private final class McpManagementModel: ObservableObject {
                 loadedAssignments = []
                 loadedDetails = [:]
             }
-            guard loadGeneration == generation else { return }
+            guard loadGeneration == generation, !Task.isCancelled else { return }
             servers = loadedServers
             assignedIDs = loadedAssignments
             assignmentDetails = loadedDetails
             errorMessage = nil
         } catch {
-            if loadGeneration == generation { errorMessage = error.localizedDescription }
+            if loadGeneration == generation, !Task.isCancelled { errorMessage = error.localizedDescription }
         }
     }
 
@@ -408,9 +409,11 @@ private final class McpManagementModel: ObservableObject {
                 throw EntityLaunchError(message: envelope?.displayMessage ?? "Session 诊断失败。",
                                         code: envelope?.code)
             }
+            guard !Task.isCancelled else { return nil }
             errorMessage = nil
             return try decoder.decode(McpSessionAvailabilityEnvelope.self, from: data).availability
         } catch {
+            guard !Task.isCancelled else { return nil }
             errorMessage = error.localizedDescription
             return nil
         }
@@ -617,193 +620,67 @@ struct McpManagementView: View {
 
     private var selectedAgent: Role? { roles.first(where: { $0.roleId == selectedRoleId }) }
 
+    var preferredSize = CGSize(width: 760, height: 620)
+    @State private var showsDiagnostics = false
+    @State private var diagnosticTask: Task<Void, Never>?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("MCP Servers").font(.title2.bold())
-                Spacer()
-                Button("添加 MCP", systemImage: "plus") { isAdding = true }
-                    .accessibilityLabel("添加 MCP Server")
-                Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
-            }
-            .padding(20)
+            HStack(spacing: 12) {
+                Text(L10n("Independent MCP Servers")).font(
+                    WorkbenchTypography.font(for: .pageTitle))
+                Spacer(minLength: 0)
+                Button(L10n("Add MCP"), systemImage: "plus") { isAdding = true }
+                    .buttonStyle(.borderedProminent).accessibilityIdentifier("mcp-add")
+                Button(L10n("Close")) { dismiss() }.keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("mcp-close")
+            }.padding(16)
             Divider()
-            HStack {
-                Text("分配给角色")
-                Picker("Role", selection: Binding(
-                    get: { selectedRoleId },
-                    set: { value in
-                        selectedRoleId = value
-                        Task { await model.load(roleId: value.isEmpty ? nil : value) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    assignmentContext
+                    DisclosureGroup(L10n("Check Session tools"), isExpanded: $showsDiagnostics) {
+                        diagnostics.padding(.top, 8)
                     }
-                )) {
-                    Text("选择角色").tag("")
-                    ForEach(roles.filter { !$0.isPlatformAssistant }, id: \.roleId) { agent in
-                        Text(agent.name).tag(agent.roleId)
+                    if let error = model.errorMessage {
+                        Text(error).font(WorkbenchTypography.font(for: .help)).foregroundStyle(.red)
+                            .textSelection(.enabled).accessibilityLabel(
+                                L10nFormat("Error: %@", error))
                     }
-                }
-                .frame(maxWidth: 240)
-                Spacer()
-                if model.isLoading {
-                    ProgressView().controlSize(.small).accessibilityLabel("正在加载 MCP Server")
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-            HStack {
-                TextField("Session 名称或 logical ID", text: $diagnosticSessionName)
-                    .accessibilityLabel("要检查 MCP 工具的 Session 名称或 logical ID")
-                Button("检查会话工具") {
-                    let requested = diagnosticSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task {
-                        let result = await model.diagnoseSession(requested)
-                        guard diagnosticSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
-                            == requested else { return }
-                        sessionAvailability = result
-                    }
-                }
-                .disabled(model.isDiagnosing || diagnosticSessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if model.isDiagnosing {
-                    ProgressView().controlSize(.small).accessibilityLabel("正在检查会话工具")
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
-            if let sessionAvailability {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(sessionAvailability.sessionName)：\(mcpAvailabilityLabel(sessionAvailability.status))")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Tool Host：\(sessionAvailability.toolHostStatus)")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Role：\(sessionAvailability.roleId ?? "未绑定") · Binding：\(sessionAvailability.bindingId ?? "未绑定")")
-                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    if let errorCode = sessionAvailability.errorCode {
-                        Text(errorCode).font(.caption).foregroundStyle(.red)
-                    }
-                    if sessionAvailability.status == "assigned_mcp_unresolved" {
-                        Text("已分配 Skill：\((sessionAvailability.declaredSkills ?? []).map(\.name).joined(separator: "、"))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(sessionAvailability.servers.prefix(4))) { server in
-                        Text("\(server.serverLabel)：\(mcpServerAvailabilityLabel(server)) · \(server.toolNames.count) 个工具")
-                            .font(.caption)
-                            .foregroundStyle(server.available ? Color.secondary : Color.red)
-                    }
-                    ForEach(Array((sessionAvailability.standaloneAssignments ?? []).prefix(4))) { assignment in
-                        Text("\(assignment.name)：tools/list \(assignment.lastToolsList?.status ?? "无回执")；本会话调用 \(assignment.lastSessionCall?.status ?? "无回执")\(assignment.lastSessionCall.map { "（\($0.createdAt)）" } ?? "")")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
-                .accessibilityElement(children: .combine)
-            }
-            if let error = model.errorMessage {
-                Text(error).foregroundStyle(.red).padding(.horizontal, 20)
-                    .accessibilityLabel("错误：\(error)")
-            }
-            if model.servers.isEmpty && !model.isLoading {
-                ContentUnavailableView("暂无 MCP Server", systemImage: "point.3.connected.trianglepath.dotted",
-                                       description: Text("添加独立 MCP Server 后，可分配给角色使用。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(model.servers) { server in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(server.name).font(.headline)
-                            if server.sourceKind == "local_package" || server.sourceKind == "git_package" {
-                                Text(server.sourceKind == "git_package" ? "Git 包" : "本地包")
-                                    .font(.caption).foregroundStyle(.secondary)
+                    if model.servers.isEmpty {
+                        if model.isLoading {
+                            ProgressView(L10n("Loading MCP Servers")).frame(maxWidth: .infinity)
+                                .padding(24)
+                        } else if model.errorMessage != nil {
+                            Button(L10n("Retry")) {
+                                Task { await model.load(roleId: selectedAgent?.roleId) }
                             }
-                            Text("\(server.toolCount) 个工具").font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            if let selectedAgent, !selectedAgent.isPlatformAssistant {
-                                Toggle("分配给 \(selectedAgent.name)", isOn: Binding(
-                                    get: { model.assignedIDs.contains(server.serverId) },
-                                    set: { value in Task { await model.assign(server, to: selectedAgent.roleId, enabled: value) } }
-                                ))
-                                .toggleStyle(.checkbox)
-                                .disabled(model.isWorking)
-                                if model.assignedIDs.contains(server.serverId) {
-                                    Menu("分配设置") {
-                                        Button("角色凭据") {
-                                            credentialTarget = McpAssignmentCredentialTarget(
-                                                server: server, roleId: selectedAgent.roleId,
-                                                agentName: selectedAgent.name,
-                                                detail: model.assignmentDetails[server.serverId])
-                                        }
-                                        Button("工具权限") {
-                                            toolTarget = McpAssignmentToolTarget(
-                                                server: server, roleId: selectedAgent.roleId,
-                                                agentName: selectedAgent.name,
-                                                toolAllowlist: model.assignmentDetails[server.serverId]?.toolAllowlist)
-                                        }
-                                    }
-                                    .disabled(model.isWorking)
-                                }
-                            }
+                        } else {
+                            ContentUnavailableView(
+                                L10n("No MCP Servers"),
+                                systemImage: "point.3.connected.trianglepath.dotted",
+                                description: Text(
+                                    L10n("Register a Server, then assign it to a role.")))
                         }
-                        Text(server.transport == "stdio"
-                             ? "\(server.command ?? "") \(server.args.joined(separator: " "))"
-                             : server.url).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                        HStack {
-                            Text(server.enabled ? "已启用" : "已禁用")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Text(server.lastCheckedAt == nil ? "安装时已验证"
-                                 : server.lastCheckStatus == "available" ? "最近检测成功" : "最近检测失败")
-                                .font(.caption)
-                                .foregroundStyle(server.lastCheckStatus == "available" ? Color.green : Color.red)
-                                .help(server.lastCheckedAt ?? server.verifiedAt)
-                            if let errorCode = server.lastErrorCode {
-                                Text(errorCode).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text("\(server.assignmentCount) 个角色已分配")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            Button("重新检测") {
-                                Task { await model.check(server, roleId: selectedAgent?.roleId) }
-                            }
-                            .disabled(model.isWorking)
-                            Button("运行记录") { eventServer = server }
-                                .disabled(model.isWorking)
-                            if server.sourceKind == nil || server.sourceKind == "direct" {
-                                Button("编辑配置") { editingServer = server }
-                                    .disabled(model.isWorking)
-                            } else {
-                                Button("版本管理") { versionedServer = server }
-                                    .disabled(model.isWorking)
-                            }
-                            Button(server.enabled ? "禁用" : "启用") {
-                                Task { await model.setEnabled(server, enabled: !server.enabled,
-                                                             roleId: selectedAgent?.roleId) }
-                            }
-                            .disabled(model.isWorking)
-                            Button("删除", role: .destructive) {
-                                Task {
-                                    guard let impact = await model.deletionImpact(server) else { return }
-                                    removingServer = server
-                                    removalImpact = impact
-                                    showRemovalConfirmation = true
-                                }
-                            }
-                                .disabled(model.isWorking)
-                                .help("查看删除影响")
-                        }
-                        if !server.observedToolNames.isEmpty {
-                            Text("已观察工具：\(server.observedToolNames.prefix(3).joined(separator: "、"))")
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    } else {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(model.servers) { server in serverRow(server) }
                         }
                     }
-                    .padding(.vertical, 6)
-                }
-            }
+                }.padding(16)
+            }.accessibilityIdentifier("mcp-server-list")
         }
-        .frame(width: 760, height: 620)
-        .task {
-            selectedRoleId = roles.first(where: { !$0.isPlatformAssistant })?.roleId ?? ""
-            await model.load(roleId: selectedAgent?.roleId)
+        .frame(width: preferredSize.width, height: preferredSize.height)
+        .background(Color(nsColor: .textBackgroundColor))
+        .task(id: selectedRoleId) { await model.load(roleId: selectedAgent?.roleId) }
+        .onChange(of: diagnosticSessionName) { _, _ in
+            diagnosticTask?.cancel()
+            sessionAvailability = nil
         }
+        .onChange(of: showsDiagnostics) { _, expanded in
+            if !expanded { diagnosticTask?.cancel() }
+        }
+        .onDisappear { diagnosticTask?.cancel() }
         .sheet(isPresented: $isAdding) {
             McpInstallView(model: model, roleId: selectedAgent?.roleId)
         }
@@ -830,12 +707,225 @@ struct McpManagementView: View {
             }
         } message: {
             if let impact = removalImpact, !impact.canRemove {
-                Text("无法删除：仍分配给 \(impact.assignedAgents.map(\.name).joined(separator: "、"))。请先解除这些角色的分配。")
+                Text(
+                    "无法删除：仍分配给 \(impact.assignedAgents.map(\.name).joined(separator: "、"))。请先解除这些角色的分配。"
+                )
             } else if let impact = removalImpact {
-                Text("将移除登记及 \(impact.managedPackageCopies) 份受控包副本，并清理 \(impact.credentialReferences) 个凭据引用。不会删除原始来源或外部服务。")
+                Text(
+                    "将移除登记及 \(impact.managedPackageCopies) 份受控包副本，并清理 \(impact.credentialReferences) 个凭据引用。不会删除原始来源或外部服务。"
+                )
             }
         }
     }
+
+    private var assignmentContext: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                assignmentPicker
+                Spacer(minLength: 0)
+                loadingIndicator
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                assignmentPicker
+                loadingIndicator
+            }
+        }
+    }
+
+    private var assignmentPicker: some View {
+        Picker(L10n("Assign to role"), selection: $selectedRoleId) {
+            Text(L10n("Choose a role")).tag("")
+            ForEach(roles.filter { !$0.isPlatformAssistant }, id: \.roleId) { role in
+                Text(role.name).tag(role.roleId)
+            }
+        }
+        .frame(maxWidth: 320).disabled(model.isWorking)
+        .accessibilityIdentifier("mcp-role-picker")
+    }
+
+    @ViewBuilder private var loadingIndicator: some View {
+        if model.isLoading {
+            ProgressView().controlSize(.small).accessibilityLabel(L10n("Loading MCP Servers"))
+        }
+    }
+
+    private var diagnostics: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(L10n("Session name or logical ID"), text: $diagnosticSessionName)
+                .textFieldStyle(.roundedBorder).accessibilityLabel(
+                    L10n("Session name or logical ID"))
+            HStack {
+                Button(L10n("Check Session tools")) {
+                    let requested = diagnosticSessionName.trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    diagnosticTask?.cancel()
+                    diagnosticTask = Task {
+                        let result = await model.diagnoseSession(requested)
+                        guard !Task.isCancelled,
+                            diagnosticSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                == requested
+                        else { return }
+                        sessionAvailability = result
+                    }
+                }
+                .disabled(
+                    model.isDiagnosing
+                        || diagnosticSessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty
+                )
+                if model.isDiagnosing { ProgressView().controlSize(.small) }
+            }
+            if let availability = sessionAvailability {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(availability.sessionName)：\(mcpAvailabilityLabel(availability.status))")
+                        .font(WorkbenchTypography.font(for: .cardTitle))
+                    Text("Tool Host：\(availability.toolHostStatus)")
+                    Text(
+                        "Role：\(availability.roleId ?? "—") · Binding：\(availability.bindingId ?? "—")"
+                    )
+                    .textSelection(.enabled)
+                    if let code = availability.errorCode { Text(code).foregroundStyle(.red) }
+                    if availability.status == "assigned_mcp_unresolved" {
+                        Text(
+                            "已分配 Skill：\((availability.declaredSkills ?? []).map(\.name).joined(separator: "、"))"
+                        )
+                    }
+                    ForEach(Array(availability.servers.prefix(4))) { server in
+                        Text(
+                            "\(server.serverLabel)：\(mcpServerAvailabilityLabel(server)) · \(server.toolNames.count) 个工具"
+                        )
+                    }
+                    ForEach(Array((availability.standaloneAssignments ?? []).prefix(4))) {
+                        assignment in
+                        Text(
+                            "\(assignment.name)：tools/list \(assignment.lastToolsList?.status ?? "无回执")；本会话调用 \(assignment.lastSessionCall?.status ?? "无回执")\(assignment.lastSessionCall.map { "（\($0.createdAt)）" } ?? "")"
+                        )
+                    }
+                }
+                .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true).accessibilityElement(
+                    children: .combine)
+            }
+        }
+    }
+
+    private func serverRow(_ server: ManagedMcpServer) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(server.name).font(WorkbenchTypography.font(for: .cardTitle)).lineLimit(2)
+                .textSelection(
+                    .enabled)
+            Text(
+                server.transport == "stdio"
+                    ? "\(server.command ?? "") \(server.args.joined(separator: " "))" : server.url
+            )
+            .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.middle)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    serverStatus(server)
+                    serverAssignment(server)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    serverStatus(server)
+                    serverAssignment(server)
+                }
+            }
+            if !server.observedToolNames.isEmpty {
+                Text("已观察工具：\(server.observedToolNames.prefix(3).joined(separator: "、"))")
+                    .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            HStack(spacing: 8) {
+                Text("\(server.toolCount) 个工具 · \(server.assignmentCount) 个角色已分配")
+                    .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("重新检测") { Task { await model.check(server, roleId: selectedAgent?.roleId) } }
+                    .disabled(model.isWorking || model.isLoading)
+                Menu {
+                    Button("运行记录") { eventServer = server }
+                    if server.sourceKind == nil || server.sourceKind == "direct" {
+                        Button("编辑配置") { editingServer = server }
+                    } else {
+                        Button("版本管理") { versionedServer = server }
+                    }
+                    Button(server.enabled ? "禁用" : "启用") {
+                        Task {
+                            await model.setEnabled(
+                                server, enabled: !server.enabled, roleId: selectedAgent?.roleId)
+                        }
+                    }
+                    Divider()
+                    Button("删除", role: .destructive) {
+                        Task {
+                            guard let impact = await model.deletionImpact(server) else { return }
+                            removingServer = server
+                            removalImpact = impact
+                            showRemovalConfirmation = true
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .menuStyle(.borderlessButton).fixedSize().frame(minWidth: 28, minHeight: 28)
+                .disabled(model.isWorking || model.isLoading)
+                .accessibilityLabel(L10nFormat("Actions for %@", server.name))
+            }
+        }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary, lineWidth: 1)
+                .allowsHitTesting(
+                    false)
+        }
+    }
+
+    private func serverStatus(_ server: ManagedMcpServer) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(server.enabled ? "已启用" : "已禁用")
+            Text(
+                server.lastCheckedAt == nil
+                    ? "安装时已验证" : server.lastCheckStatus == "available" ? "最近检测成功" : "最近检测失败"
+            )
+            .help(server.lastCheckedAt ?? server.verifiedAt)
+            if let code = server.lastErrorCode { Text(code).foregroundStyle(.red) }
+            if server.sourceKind == "git_package" || server.sourceKind == "local_package" {
+                Text(server.sourceKind == "git_package" ? "Git 包" : "本地包")
+            }
+        }.font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private func serverAssignment(_ server: ManagedMcpServer) -> some View {
+        if let role = selectedAgent, !role.isPlatformAssistant {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "分配给 \(role.name)",
+                    isOn: Binding(
+                        get: { model.assignedIDs.contains(server.serverId) },
+                        set: { value in
+                            Task { await model.assign(server, to: role.roleId, enabled: value) }
+                        }
+                    )
+                ).toggleStyle(.checkbox).disabled(model.isWorking || model.isLoading)
+                if model.assignedIDs.contains(server.serverId) {
+                    Menu("分配设置") {
+                        Button("角色凭据") {
+                            credentialTarget = McpAssignmentCredentialTarget(
+                                server: server, roleId: role.roleId, agentName: role.name,
+                                detail: model.assignmentDetails[server.serverId])
+                        }
+                        Button("工具权限") {
+                            toolTarget = McpAssignmentToolTarget(
+                                server: server, roleId: role.roleId, agentName: role.name,
+                                toolAllowlist: model.assignmentDetails[server.serverId]?
+                                    .toolAllowlist)
+                        }
+                    }.disabled(model.isWorking || model.isLoading)
+                }
+            }
+        }
+    }
+
 }
 
 private struct McpRuntimeEventsView: View {
