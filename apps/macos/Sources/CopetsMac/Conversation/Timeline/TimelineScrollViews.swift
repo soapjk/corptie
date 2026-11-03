@@ -77,7 +77,12 @@ final class TimelineIntentScroller: ConsoleThinScroller {
     }
     override var knobTrailingInset: CGFloat? { 0 }
     /// Own the complete capsule instead of drawing into AppKit's 6pt thumb layer.
-    private(set) var visibleKnobLayer = CALayer()
+    private(set) var visibleKnobLayer: CALayer = {
+        let layer = CALayer()
+        layer.opacity = 0
+        return layer
+    }()
+    private var pendingHide: Task<Void, Never>?
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() {
@@ -102,7 +107,8 @@ final class TimelineIntentScroller: ConsoleThinScroller {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         // The transparent leading part of the 12pt control belongs to the card.
-        guard !isHidden, alphaValue > 0, knobDrawingRect.contains(local) else { return nil }
+        guard !isHidden, alphaValue > 0, visibleKnobLayer.opacity > 0,
+              knobDrawingRect.contains(local) else { return nil }
         return super.hitTest(point)
     }
     override var doubleValue: Double {
@@ -141,10 +147,47 @@ final class TimelineIntentScroller: ConsoleThinScroller {
         wantsLayer = true
     }
 
-    // NSScrollView owns overlay visibility. A second alpha/timer state machine
-    // can leave the custom thumb transparent even when AppKit reveals it.
-    func beginScrollInteraction() { enclosingScrollView?.flashScrollers() }
-    func endScrollInteraction() {}
+    // AppKit fades its private knob layer, which updateLayer replaces to avoid
+    // clipping. Fade our capsule explicitly without changing native control alpha.
+    func beginScrollInteraction() {
+        pendingHide?.cancel()
+        pendingHide = nil
+        visibleKnobLayer.removeAnimation(forKey: "idleFade")
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        visibleKnobLayer.opacity = 1
+        CATransaction.commit()
+        enclosingScrollView?.flashScrollers()
+    }
+
+    func endScrollInteraction() {
+        pendingHide?.cancel()
+        pendingHide = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(800)) }
+            catch { return }
+            guard let self else { return }
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 1
+            fade.toValue = 0
+            fade.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.2
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.visibleKnobLayer.opacity = 0
+            self.visibleKnobLayer.add(fade, forKey: "idleFade")
+            CATransaction.commit()
+            self.pendingHide = nil
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            pendingHide?.cancel()
+            pendingHide = nil
+            visibleKnobLayer.removeAnimation(forKey: "idleFade")
+            visibleKnobLayer.opacity = 0
+        }
+    }
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
 

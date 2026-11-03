@@ -115,7 +115,7 @@ struct SessionMessageComposerSurface: View {
     @State private var mentionSelectionIndex = 0
     @State private var selectedMentions: [ConversationMention] = []
     @State private var quickMessageRefresh = 0
-    @State private var showsQuickMessages = false
+    @State private var showsQuickMessages = true
 
     init(
         sessionId: String,
