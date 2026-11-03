@@ -244,13 +244,24 @@ struct ConsoleOverlayScrollerTests {
         #expect(maximumAlpha <= 0.46)
     }
 
-    @Test func timelineThumbDoesNotHideItselfOutsideNativeVisibilityManagement() async {
+    @Test func customTimelineThumbHidesAfterIdleAndNewInteractionCancelsOldDeadline() async throws {
         let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 12, height: 240))
+        #expect(scroller.visibleKnobLayer.opacity == 0)
         #expect(scroller.alphaValue == 1)
         scroller.beginScrollInteraction()
+        #expect(scroller.visibleKnobLayer.opacity == 1)
         scroller.endScrollInteraction()
-        try? await Task.sleep(for: .milliseconds(1000))
+        try await Task.sleep(for: .milliseconds(500))
+        scroller.beginScrollInteraction()
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(scroller.visibleKnobLayer.opacity == 1)
+        scroller.endScrollInteraction()
+        try await Task.sleep(for: .milliseconds(1100))
+        #expect(scroller.visibleKnobLayer.opacity == 0)
         #expect(scroller.alphaValue == 1)
+        scroller.beginScrollInteraction()
+        #expect(scroller.visibleKnobLayer.opacity == 1)
+        #expect(scroller.visibleKnobLayer.animation(forKey: "idleFade") == nil)
     }
 
     @Test func contentProbeConfiguresOnlyItsEnclosingScrollView() {
