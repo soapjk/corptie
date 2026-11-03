@@ -45,6 +45,53 @@ import CorptieClientCore
         let pending = await gate.has("a")
         XCTAssertFalse(pending)
     }
+    private actor SparseLoader {
+        private var count = 0
+        let produceAt: Int?
+        init(produceAt: Int?) { self.produceAt = produceAt }
+        func read() -> ClientUserMessageNavigationPage {
+            count += 1
+            let items: [ClientUserMessageNavigationPage.Item] = count == produceAt
+                ? [.init(id: "real-user-message", createdAt: "2026-11-03", preview: "Real message")] : []
+            return .init(items: items, olderCursor: "range-\(count)", newerCursor: nil, scannedCount: 1024)
+        }
+        func calls() -> Int { count }
+    }
+    func testSparseRangesAdvanceBeforePublishingRealMarkers() async {
+        let loader = SparseLoader(produceAt: 3)
+        let state = UserMessageNavigationState { _, _, _, _ in await loader.read() }
+        state.activate(baseURL: URL(string: "http://127.0.0.1:49989")!, sessionID: "sparse")
+        await state.refresh()
+        let calls = await loader.calls()
+        XCTAssertEqual(calls, 3)
+        XCTAssertEqual(state.groups.first?.items.first?.id, "real-user-message")
+    }
+    func testSparseScanBatchRemainsBoundedAndCreatesNoFakeMarkers() async {
+        let loader = SparseLoader(produceAt: nil)
+        let state = UserMessageNavigationState { _, _, _, _ in await loader.read() }
+        state.activate(baseURL: URL(string: "http://127.0.0.1:49989")!, sessionID: "sparse")
+        await state.refresh()
+        let firstBatch = await loader.calls()
+        XCTAssertEqual(firstBatch, 8)
+        XCTAssertTrue(state.groups.isEmpty)
+        await state.refresh()
+        let secondBatch = await loader.calls()
+        XCTAssertEqual(secondBatch, 16)
+        XCTAssertFalse(state.loading)
+    }
+
+    func testReplyPreviewIsAdditiveAndBounded() throws {
+        let legacy = try JSONDecoder().decode(ClientUserMessageNavigationPage.Item.self,
+            from: Data(#"{"id":"user","createdAt":"2026-11-03","preview":"Question"}"#.utf8))
+        XCTAssertNil(legacy.replyPreview)
+        let modern = try JSONDecoder().decode(ClientUserMessageNavigationPage.Item.self,
+            from: Data(#"{"id":"user","createdAt":"2026-11-03","preview":"Question","replyPreview":"Answer"}"#.utf8))
+        XCTAssertEqual(modern.replyPreview, "Answer")
+        let oversized = ClientUserMessageNavigationPage(items: [.init(id: "u", createdAt: "", preview: "Q",
+            replyPreview: String(repeating: "a", count: 181))], olderCursor: nil, newerCursor: nil, scannedCount: 1)
+        XCTAssertThrowsError(try oversized.validated())
+    }
+
     func testPageContractBoundsAndEmptySparsePages() throws {
         XCTAssertNoThrow(try page("a").validated())
         XCTAssertThrowsError(try page("a", count: 129).validated())

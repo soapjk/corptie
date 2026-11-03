@@ -7,8 +7,9 @@ public struct ClientUserMessageNavigationPage: Codable, Equatable, Sendable {
         public let id: String
         public let createdAt: String
         public let preview: String
-        public init(id: String, createdAt: String, preview: String) {
-            self.id = id; self.createdAt = createdAt; self.preview = preview
+        public let replyPreview: String?
+        public init(id: String, createdAt: String, preview: String, replyPreview: String? = nil) {
+            self.id = id; self.createdAt = createdAt; self.preview = preview; self.replyPreview = replyPreview
         }
     }
     public let schemaVersion: Int
@@ -23,7 +24,7 @@ public struct ClientUserMessageNavigationPage: Codable, Equatable, Sendable {
     public func validated() throws -> Self {
         guard schemaVersion == 1, items.count <= 128, (0...1024).contains(scannedCount),
               Set(items.map(\.id)).count == items.count,
-              items.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 2048 && $0.preview.count <= 180 }),
+              items.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 2048 && $0.preview.count <= 180 && ($0.replyPreview?.count ?? 0) <= 180 }),
               [olderCursor, newerCursor].allSatisfy({ ($0?.utf8.count ?? 0) <= 4096 }) else {
             throw ClientConnectionError.invalidResponse
         }
