@@ -251,6 +251,7 @@ public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
     public var geometry: MessageImageGeometry? { .init(pixelWidth: pixelWidth, pixelHeight: pixelHeight) }
 }
 extension ClientMessage: ConversationExecutionItem {
+    public var timelineLegacyMessageStatus: String? { status }
     public var timelineHasImages: Bool { !images.isEmpty }
     public var timelineMessageOrigin: String? { messageOrigin }
     public var executionTitle: String { title ?? "" }
