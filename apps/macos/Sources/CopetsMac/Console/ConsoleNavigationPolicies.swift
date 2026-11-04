@@ -230,23 +230,15 @@ struct HoverRevealHeaderAction<Header: View>: View {
     }
 }
 
-/// Collapsed groups summarize the same activity shown by their child rows.
+/// A running collapsed group uses its title treatment instead of another badge.
 struct ConsoleGroupStatusIndicators: View {
     let isExpanded: Bool
     let isProcessing: Bool
     let hasUnread: Bool
-    var isActive = true
 
     var body: some View {
-        if !isExpanded {
-            HStack(spacing: 4) {
-                if isProcessing {
-                    TaskActivityIndicator(activity: .processing, label: L10n("Processing"), isActive: isActive)
-                }
-                if hasUnread {
-                    UnreadSessionDot(label: L10n("Unread Session"))
-                }
-            }
+        if !isExpanded && !isProcessing && hasUnread {
+            UnreadSessionDot(label: L10n("Unread Session"))
         }
     }
 }
@@ -286,7 +278,7 @@ struct ConsoleWorkOutlineHeader: View {
                     WorkOutlineFolderIcon(isExpanded: isExpanded)
                         .stroke(.secondary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
                         .frame(width: 18, height: 14)
-                    Text(work.name)
+                    ConsoleWorkTitle(title: work.name, isWorking: isWorking && !isExpanded, isActive: isActive)
                         .font(WorkbenchTypography.font(for: .navigation))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -317,7 +309,7 @@ struct ConsoleWorkOutlineHeader: View {
 
         } actions: {
             ConsoleGroupStatusIndicators(isExpanded: isExpanded, isProcessing: isWorking,
-                hasUnread: hasUnread, isActive: isActive)
+                hasUnread: hasUnread)
 
             Button(action: createTask) {
                 Image(systemName: "plus")

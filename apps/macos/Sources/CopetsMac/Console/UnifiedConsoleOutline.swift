@@ -127,13 +127,14 @@ extension UnifiedConsoleView {
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                         .frame(width: 18)
-                    Text(L10n("Chat"))
+                    ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing && !isExpanded,
+                        isActive: sidebarState.isSelected)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
                     ConsoleGroupStatusIndicators(isExpanded: isExpanded, isProcessing: isProcessing,
-                        hasUnread: hasUnread, isActive: sidebarState.isSelected)
+                        hasUnread: hasUnread)
                 }
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
