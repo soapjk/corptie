@@ -7,23 +7,55 @@ import SwiftUI
 /// Pointer feedback stays in this small wrapper, outside list projections and
 /// row content. It changes only paint: no animation, layout or data work.
 private struct ConsoleHoverFeedback: ViewModifier {
+    var enabled = true
+    var isSelected = false
+    var horizontalInset: CGFloat = 0
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func body(content: Content) -> some View {
         content
             .background {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.primary.opacity(isEnabled && isHovering ? 0.065 : 0))
-                    .allowsHitTesting(false)
+                if enabled {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(isSelected ? 0.055 : isEnabled && isHovering ? 0.065 : 0))
+                        .padding(.horizontal, horizontalInset)
+                        .allowsHitTesting(false)
+                }
             }
-            .onHover { isHovering = $0 }
+            .onHover { if enabled { isHovering = $0 } }
             .onDisappear { isHovering = false }
     }
 }
 
 extension View {
-    func consoleHoverFeedback() -> some View { modifier(ConsoleHoverFeedback()) }
+    func consoleHoverFeedback(enabled: Bool = true, isSelected: Bool = false,
+                              horizontalInset: CGFloat = 0) -> some View {
+        modifier(ConsoleHoverFeedback(enabled: enabled, isSelected: isSelected, horizontalInset: horizontalInset))
+    }
+}
+
+/// Establish the complete row bounds before painting either interaction state.
+/// Padding belongs inside that surface so text and indicators cannot overhang it.
+struct ConsoleOutlineRowSurface: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content
+            // Native List supplies hierarchy indentation. Leave 8pt of content
+            // padding inside each edge of the surface's 8pt outer inset.
+            .padding(.leading, 16)
+            .padding(.trailing, 16)
+            .frame(maxWidth: .infinity, minHeight: 30,
+                   maxHeight: 30, alignment: .leading)
+            .consoleHoverFeedback(isSelected: isSelected, horizontalInset: 8)
+    }
+}
+
+extension View {
+    func consoleOutlineRowSurface(isSelected: Bool) -> some View {
+        modifier(ConsoleOutlineRowSurface(isSelected: isSelected))
+    }
 }
 
 enum ConsoleNavigationCardWidthPolicy {
@@ -160,199 +192,6 @@ struct ConsoleScheduledWakeIcon: View {
     }
 }
 
-enum ConsoleWorkOutlineRowMetrics {
-    static let height: CGFloat = 30
-    static let spacing: CGFloat = 2
-
-    static func contentHeight(count: Int) -> CGFloat {
-        guard count > 0 else { return 0 }
-        return CGFloat(count) * height + CGFloat(count - 1) * spacing
-    }
-}
-
-/// The outline rows are single-line controls. Supply their exact extent without
-/// measuring every row, while the lazy stack mounts only the viewport's rows.
-struct ConsoleWorkOutlineRows<Content: View>: View {
-    let rowCount: Int
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        LazyVStack(alignment: .leading, spacing: ConsoleWorkOutlineRowMetrics.spacing) {
-            content
-        }
-        .frame(height: ConsoleWorkOutlineRowMetrics.contentHeight(count: rowCount), alignment: .top)
-    }
-}
-
-/// Measure the full child stack once for a width, then reveal its height.
-/// Children remain in normal layout until the reveal animation completes.
-private struct ConsoleDisclosureRevealLayout: Layout {
-    nonisolated var fraction: CGFloat
-    nonisolated var animatableData: CGFloat {
-        get { fraction }
-        set { fraction = newValue }
-    }
-    struct Cache {
-        // SwiftUI alternates unconstrained and constrained width proposals in
-        // one layout pass. Retain a bounded set instead of evicting each other.
-        var measurements: [(width: CGFloat?, size: CGSize)] = []
-    }
-    func makeCache(subviews: Subviews) -> Cache { Cache() }
-    func updateCache(_ cache: inout Cache, subviews: Subviews) {
-        cache.measurements.removeAll(keepingCapacity: true)
-    }
-    private func fullSize(width: CGFloat?, subviews: Subviews, cache: inout Cache) -> CGSize {
-        if let measured = cache.measurements.first(where: { $0.width == width }) { return measured.size }
-        let size = subviews.first?.sizeThatFits(.init(width: width, height: nil)) ?? .zero
-        if cache.measurements.count == 8 { cache.measurements.removeFirst() }
-        cache.measurements.append((width, size))
-        return size
-    }
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        let size = fullSize(width: proposal.width, subviews: subviews, cache: &cache)
-        return .init(width: size.width, height: size.height * min(1, max(0, fraction)))
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        // Keep rows at their natural size and position; only the enclosing
-        // layout height changes, as in the mobile Work card.
-        let size = fullSize(width: bounds.width, subviews: subviews, cache: &cache)
-        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
-            proposal: .init(width: bounds.width, height: size.height))
-    }
-
-}
-
-/// Keep the reveal container alive across both directions. Removal transitions
-/// let LazyVStack reclaim the row before the departing children finish drawing.
-private struct ConsoleWorkDisclosureBody<Label: View, Content: View>: View {
-    @Binding var isExpanded: Bool
-    let label: Label
-    let content: Content
-    let reduceMotion: Bool
-    let onCollapseCompleted: (() -> Void)?
-    @State private var collapseNotified = false
-    @State private var contentMounted: Bool
-    @State private var fraction: CGFloat
-    @State private var animationGeneration = 0
-
-    init(isExpanded: Binding<Bool>, label: Label, content: Content, reduceMotion: Bool,
-         onCollapseCompleted: (() -> Void)?) {
-        _isExpanded = isExpanded
-        self.label = label
-        self.content = content
-        self.reduceMotion = reduceMotion
-        self.onCollapseCompleted = onCollapseCompleted
-        _contentMounted = State(initialValue: isExpanded.wrappedValue)
-        _fraction = State(initialValue: isExpanded.wrappedValue ? 1 : 0)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Button { isExpanded.toggle() } label: {
-                    Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(90 * min(1, max(0, fraction))))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(SessionSelectionPressStyle())
-                .accessibilityLabel(L10n(isExpanded ? "Collapse group" : "Expand group"))
-                label.frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .consoleHoverFeedback()
-
-            ConsoleDisclosureRevealLayout(fraction: fraction) {
-                if contentMounted {
-                    // Reuse the layout at a constant fraction for full-size
-                    // measurement. Its cache survives reveal interpolation,
-                    // while SwiftUI invalidates it when the content changes.
-                    ConsoleDisclosureRevealLayout(fraction: 1) { content }
-                        .transition(.identity)
-                }
-            }
-            .clipped()
-            .contentShape(Rectangle())
-            .padding(.top, 2 * min(1, max(0, fraction)))
-            .allowsHitTesting(isExpanded)
-            .accessibilityHidden(!isExpanded)
-        }
-        .clipped()
-        .onAppear { reveal(isExpanded, animated: false) }
-        .onDisappear {
-            animationGeneration &+= 1
-            finishCollapse(generation: animationGeneration)
-        }
-        .onChange(of: isExpanded) { _, expanded in reveal(expanded, animated: !reduceMotion) }
-        .onChange(of: reduceMotion) { _, reduced in
-            if reduced { reveal(isExpanded, animated: false) }
-        }
-    }
-
-    private func reveal(_ expanded: Bool, animated: Bool) {
-        animationGeneration &+= 1
-        let generation = animationGeneration
-        var immediate = Transaction(animation: nil)
-        immediate.disablesAnimations = true
-        withTransaction(immediate) {
-            if expanded {
-                contentMounted = true
-                collapseNotified = false
-            }
-            if !animated { fraction = expanded ? 1 : 0 }
-        }
-        guard animated else {
-            finishCollapse(generation: generation)
-            return
-        }
-        withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation, completionCriteria: .removed) {
-            fraction = expanded ? 1 : 0
-        } completion: {
-            finishCollapse(generation: generation)
-        }
-    }
-
-    private func finishCollapse(generation: Int) {
-        guard generation == animationGeneration, !isExpanded, !collapseNotified else { return }
-        var immediate = Transaction(animation: nil)
-        immediate.disablesAnimations = true
-        withTransaction(immediate) {
-            contentMounted = false
-            collapseNotified = true
-            onCollapseCompleted?()
-        }
-    }
-
-}
-
-struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var reduceMotionOverride: Bool? = nil
-    var onCollapseCompleted: (() -> Void)? = nil
-
-    func makeBody(configuration: Configuration) -> some View {
-        ConsoleWorkDisclosureBody(isExpanded: configuration.$isExpanded,
-                                  label: configuration.label, content: configuration.content,
-                                  reduceMotion: reduceMotionOverride ?? reduceMotion,
-                                  onCollapseCompleted: onCollapseCompleted)
-    }
-}
-
-private struct ConsoleWorkOutlineGroupCardModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content.padding(.horizontal, 6).padding(.vertical, 1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(ConversationContentSurface(cornerRadius: 8, isPanel: true, role: .project))
-    }
-}
-
-extension View {
-    func consoleWorkOutlineGroupCard() -> some View {
-        modifier(ConsoleWorkOutlineGroupCardModifier())
-    }
-}
-
 struct HoverRevealHeaderAction<Header: View>: View {
     let accessibilityLabel: String
     let header: Header
@@ -422,10 +261,9 @@ struct ConsoleWorkOutlineHeader: View {
         WorkOutlineHeaderRow(toggleExpanded: toggleExpanded) {
             Button(action: toggleExpanded) {
                 HStack(spacing: 7) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18)
+                    WorkOutlineFolderIcon(isExpanded: isExpanded)
+                        .stroke(.secondary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+                        .frame(width: 18, height: 14)
                     Text(work.name)
                         .font(WorkbenchTypography.font(for: .navigation))
                         .foregroundStyle(.primary)
@@ -560,3 +398,31 @@ enum ConsoleSelectionRefreshPolicy {
 //     没有收起/折叠按钮——只有 <48rem 移动端才 display:none（靠顶部 SlidersHorizontal 打开 Sheet）。
 //   - 字段区标题用 11px uppercase + tracking 的小字「Properties」标签，下面竖向排列字段。
 //   - 窄列固定像素宽度，主工作区吃掉剩余空间。
+
+/// The front flap opens without changing the header's icon or row geometry.
+struct WorkOutlineFolderIcon: Shape {
+    let isExpanded: Bool
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 1, y: 12.5))
+        path.addLine(to: CGPoint(x: 1, y: 2.5))
+        path.addQuadCurve(to: CGPoint(x: 2, y: 1.5), control: CGPoint(x: 1, y: 1.5))
+        path.addLine(to: CGPoint(x: 6, y: 1.5))
+        path.addLine(to: CGPoint(x: 8, y: 3.5))
+        path.addLine(to: CGPoint(x: 15, y: 3.5))
+        path.addQuadCurve(to: CGPoint(x: 16, y: 4.5), control: CGPoint(x: 16, y: 3.5))
+        if isExpanded {
+            path.addLine(to: CGPoint(x: 16, y: 6.5))
+            path.move(to: CGPoint(x: 1, y: 12.5))
+            path.addLine(to: CGPoint(x: 4, y: 6.5))
+            path.addLine(to: CGPoint(x: 17, y: 6.5))
+            path.addLine(to: CGPoint(x: 14, y: 12.5))
+        } else {
+            path.addLine(to: CGPoint(x: 16, y: 11.5))
+            path.addQuadCurve(to: CGPoint(x: 15, y: 12.5), control: CGPoint(x: 16, y: 12.5))
+        }
+        path.addLine(to: CGPoint(x: 1, y: 12.5))
+        return path.applying(CGAffineTransform(a: rect.width / 18, b: 0, c: 0,
+            d: rect.height / 14, tx: rect.minX, ty: rect.minY))
+    }
+}

@@ -10,6 +10,13 @@ private struct WorkCanvasEntryRequest: Equatable {
     let size: CGSize
 }
 
+private struct WorkCanvasDataRebuildInput: Equatable {
+    let active: Bool
+    let works: [Work]
+    let tasks: [CorptieTask]
+    let sessions: [CardSessionKey]
+}
+
 /// No transcript reads or per-card observers. Index on collection changes,
 /// derive attention membership without changing the selected conversation.
 struct ConsoleCardWorkspace<TaskMenu: View>: View {
@@ -117,6 +124,10 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     var body: some View {
+        // Keep this workspace's State alive across mode changes, without
+        // laying out its offscreen cards in the outline's animation frames.
+        ZStack(alignment: .topLeading) {
+        if isActive {
         VStack(spacing: 8) {
             if !reachable || syncError != nil {
                 Text("同步尚未就绪，状态和数量可能不是最新").font(.caption).foregroundStyle(.orange)
@@ -184,6 +195,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                             }
                     }
         }
+        }
+        }
         .onAppear { if isActive { rebuild() } }
         .onChange(of: displayPreferences.taskIDs) { _, fixedIDs in
             // Fixing a Task supersedes a prior local dismissal of the same issue.
@@ -198,7 +211,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         }
         .onDisappear { canvasDrag.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in canvasDrag.cancel() }
-        .onChange(of: Set(orderedWorks.map(\.id))) { _, _ in canvasDrag.cancel() }
+        .onChange(of: isActive ? Set(orderedWorks.map(\.id)) : []) { _, _ in canvasDrag.cancel() }
         .onChange(of: showsArchive) { _, _ in if isActive { rebuild() } }
         .onChange(of: query) { _, _ in filteredCanvasPositions = nil }
         .onChange(of: showsArchive) { _, _ in filteredCanvasPositions = nil }
@@ -211,10 +224,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         }
         .onReceive(AppStateStore.shared.$isReachable.removeDuplicates()) { reachable = $0 }
         .onReceive(AppStateStore.shared.$syncError.removeDuplicates()) { syncError = $0 }
-        .onChange(of: tasks) { _, _ in if isActive { rebuild() } }
-        .onChange(of: sessions.map(CardSessionKey.init)) { _, _ in if isActive { rebuild() } }
+        // Activation is handled above. Coalesce data changes into one rebuild,
+        // and do not map or compare the hidden canvas's entire inventories.
+        .onChange(of: WorkCanvasDataRebuildInput(active: isActive,
+            works: isActive ? works : [], tasks: isActive ? tasks : [],
+            sessions: isActive ? sessions.map(CardSessionKey.init) : [])) { previous, next in
+            if previous.active && next.active { rebuild() }
+        }
         .onChange(of: selectedTaskID) { _, _ in if isActive { rebuild() } }
-        .onChange(of: works) { _, _ in if isActive { rebuild() } }
     }
 
     private var canvasOrigin: CGPoint {

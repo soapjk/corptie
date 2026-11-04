@@ -47,6 +47,13 @@ final class BackendEventRouter {
     init(ports: Ports) { self.ports = ports }
 
     func handle(_ eventName: String, data: String) async {
+        if eventName == "ExecutionChecklistChanged" {
+            if let bytes = data.data(using: .utf8),
+               let event = try? JSONDecoder().decode(ExecutionChecklistChangedEnvelope.self, from: bytes) {
+                NotificationCenter.default.post(name: .executionChecklistChanged, object: event.payload.taskId)
+            }
+            return
+        }
         if eventName == "WorktreeIntegrationJobChanged" {
             OperationNotificationManager.shared.observe(data: data)
             return
@@ -174,4 +181,9 @@ final class BackendEventRouter {
             return
         }
     }
+}
+
+private struct ExecutionChecklistChangedEnvelope: Decodable {
+    let payload: Payload
+    struct Payload: Decodable { let taskId: String }
 }

@@ -13,6 +13,8 @@ import {
 import { stageValidatedIntegrationTree } from "./integrationStagedTreeValidator.mjs";
 import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
 import { ensureProjectLocalState } from "./projectLocalStateDirectory.mjs";
+import { withWorktreeOperationLock } from "./worktreeOperationLock.mjs";
+import { mergeWorkspaceSnapshot, synchronizeWorkspaceSnapshot, prepareSnapshotConflictWorkspace, snapshotBaseForWorktree } from "./workspaceSnapshotIntegration.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -233,7 +235,9 @@ export class GitWorkspaceManager {
       throw deletionSafetyError("TASK_DELIVERY_BINDING_CHANGED", "无法确认子分支与父分支的交付关系，请先修复绑定。");
     }
     const parentHead = (await this.gitOutput(parentTree.path, ["rev-parse", "--verify", "HEAD"])).trim();
-    const inheritedOnly = Boolean(binding.base_commit_oid && worktree.headOid === binding.base_commit_oid);
+    const snapshotBase=snapshotBaseForWorktree(this.store,worktree.worktreeId);
+    const inheritedOnly = Boolean(binding.base_commit_oid && (worktree.headOid === binding.base_commit_oid
+      || snapshotBase && (await this.gitOutput(parentTree.path,["rev-parse",`${worktree.headOid}^{tree}`])).trim()===snapshotBase.baseTreeOid));
     const delivered = inheritedOnly || await this.gitSucceeds(parentTree.path, ["merge-base", "--is-ancestor", worktree.headOid, parentHead]);
     const commitCount = delivered ? 0 : Number((await this.gitOutput(parentTree.path, ["rev-list", "--count", `${parentHead}..${worktree.headOid}`])).trim());
     return { target: "parent", parentTaskId: task.parent_task_id, parentHeadOid: parentHead, delivered, commitCount };
@@ -995,7 +999,12 @@ export class GitWorkspaceManager {
   }
 
   async mergeIntegrationSource(input) {
+    return withWorktreeOperationLock(input.mainPath, () => this.mergeIntegrationSourceLocked(input));
+  }
+
+  async mergeIntegrationSourceLocked(input) {
     this.store.assertStandaloneWorktreeMutation?.({paths:[input.mainPath],readPaths:[input.sourcePath],jobId:input.jobId});
+    if (input.snapshotBase) return mergeWorkspaceSnapshot(this,input);
     if (input.strictExpectedMain) {
       const head = (await this.gitOutput(input.mainPath, ["rev-parse", "HEAD"])).trim();
       if (head !== input.expectedMainHead) {
@@ -1161,7 +1170,12 @@ export class GitWorkspaceManager {
   }
 
   async rebaseIntegrationSource(input) {
+    return withWorktreeOperationLock(input.path, () => this.rebaseIntegrationSourceLocked(input));
+  }
+
+  async rebaseIntegrationSourceLocked(input) {
     this.store.assertStandaloneWorktreeMutation?.({paths:[input.path],jobId:input.jobId});
+    if (input.snapshotBase) return synchronizeWorkspaceSnapshot(this,input);
     if(input.syncStrategy==="merge") {
       try {
         const result=await this.mergeIntegrationSource({mainPath:input.path,sourceHead:input.targetHead,
@@ -1576,7 +1590,7 @@ export class GitWorkspaceManager {
       [taskId,repositoryId,JSON.stringify(baseContext)]);
       const binding = this.store.getTaskDeliveryBinding(baseContext.parentTaskId);
       const task = this.store.getTask(taskId);
-      if (!frozen || baseContext.kind !== "parent" || !binding || task?.parent_task_id !== baseContext.parentTaskId
+      if (!frozen || !["parent","parent_workspace_snapshot"].includes(baseContext.kind) || !binding || task?.parent_task_id !== baseContext.parentTaskId
         || binding.worktree_id !== baseContext.parentWorktreeId || binding.repository_id !== repositoryId
         || binding.binding_revision !== baseContext.parentBindingRevision
         || !/^[a-f0-9]{40,64}$/i.test(baseContext.baseCommitOid ?? "")) {
@@ -1745,12 +1759,13 @@ export class GitWorkspaceManager {
       }
       if (mainHead !== input.expectedMainHead) throw integrationGitError("MAIN_HEAD_CHANGED",
         `Integration target ${main.branchName} changed.\nExpected HEAD: ${input.expectedMainHead}\nActual HEAD: ${mainHead}`);
-      return this.createIntegrationWorktreeForProject({
+      const workspace = await this.createIntegrationWorktreeForProject({
         repositoryId: input.repositoryId,
         workingDirectory: main.path,
         targetWorktreeId: main.worktreeId, targetPath: main.path, expectedTargetHead: input.expectedMainHead,
         runId: input.jobId
       });
+      return input.snapshotBase ? prepareSnapshotConflictWorkspace(this,input,workspace) : workspace;
     }
     const mergeHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "MERGE_HEAD"])).trim();
     if (mergeHead !== input.sourceHead) {
@@ -2206,6 +2221,16 @@ export class GitWorkspaceManager {
       await this.runGit(main.path, ["branch", target ? "-D" : merged ? "-d" : "-D", currentSource.branchName]);
       branchDeleted = true;
     }
+    if (branchDeleted && this.store.selectAll) {
+      const operations=this.store.selectAll("SELECT startup_operation_id,worktree_base_context_json FROM work_session_startup_operations WHERE worktree_id=?",[sourceWorktreeId]);
+      for (const startup of operations) {
+        const base=startup.worktree_base_context_json && JSON.parse(startup.worktree_base_context_json);
+        const expectedRef=`refs/corptie/workspace-snapshots/${Buffer.from(startup.startup_operation_id).toString("hex")}`;
+        if(base?.snapshotRef===expectedRef && await this.gitOptionalOutput(main.path,["rev-parse","--verify",expectedRef])) {
+          await this.runGit(main.path,["update-ref","-d",expectedRef,base.baseCommitOid]);
+        }
+      }
+    }
     const updated = await createGitWorkspaceSnapshot(main.path);
     this.store.upsertGitWorkspaceSnapshot(updated);
     return {
@@ -2429,6 +2454,11 @@ export class GitWorkspaceManager {
   }
 
   async runGit(cwd, arguments_) {
+    if (gitArgumentsMutateWorkspace(arguments_)) return withWorktreeOperationLock(cwd,()=>this.runGitLocked(cwd,arguments_));
+    return this.runGitLocked(cwd,arguments_);
+  }
+
+  async runGitLocked(cwd, arguments_) {
     if (["commit", "merge", "cherry-pick", "rebase", "am"].includes(arguments_?.[0])) {
       await this.ensureCommitGate?.(cwd);
     }

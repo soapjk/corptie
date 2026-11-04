@@ -16,7 +16,7 @@ export function createSessionInteractionCommands({
       ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
       ?? null;
     let session;
-    if (activeTurnId) onInterruptRequested({ ...reference, turnId: activeTurnId });
+    onInterruptRequested({ ...reference, turnId: activeTurnId });
     let timeout;
     console.info(`[session-interrupt] requested session=${reference.sessionId} binding=${reference.bindingId} turn=${activeTurnId}`);
     try {

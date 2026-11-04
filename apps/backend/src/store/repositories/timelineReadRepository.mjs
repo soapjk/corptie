@@ -9,6 +9,65 @@ export class TimelineReadRepository {
     this.getSession = getSession;
   }
 
+  // Bounded keyset scan using the existing latest index. No schema changes,
+  // provider history, raw metadata, or unbounded COUNT/OFFSET query.
+  readUserMessageNavigationPage(sessionId, { cursor = null, direction = "older" } = {}) {
+    let anchor = null;
+    if (cursor !== null) {
+      try {
+        if (typeof cursor !== "string" || cursor.length > 4096) throw new Error();
+        anchor = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+        if (anchor.s !== sessionId || typeof anchor.t !== "string" || anchor.t.length > 128
+          || typeof anchor.i !== "string" || !anchor.i || anchor.i.length > 2048) throw new Error();
+      } catch { throw Object.assign(new Error("Invalid navigation cursor."), { statusCode: 400, code: "INVALID_NAVIGATION_CURSOR" }); }
+    }
+    if (!["older", "newer"].includes(direction) || (!anchor && direction === "newer")) {
+      throw Object.assign(new Error("Invalid navigation direction."), { statusCode: 400, code: "INVALID_NAVIGATION_DIRECTION" });
+    }
+    const ascending = direction === "newer";
+    const rows = this.selectAll(`SELECT id, created_at, type, turn_id, presentation_role,
+        CASE WHEN type IN ('userMessage', 'agentMessage') AND COALESCE(presentation_role, '') NOT IN ('commentary', 'reasoning')
+          THEN substr(COALESCE(presentation_text, text, ''), 1, 180) ELSE '' END AS preview
+      FROM session_items WHERE session_id = ?
+        ${anchor ? `AND (created_at, id) ${ascending ? ">" : "<"} (?, ?)` : ""}
+      ORDER BY created_at ${ascending ? "ASC" : "DESC"}, id ${ascending ? "ASC" : "DESC"} LIMIT 1024`,
+      [sessionId, ...(anchor ? [anchor.t, anchor.i] : [])]);
+    // Resolve reply excerpts only from this bounded read, by Session-owned turn
+    // identity. Never issue one extra query per marker or scan a full transcript.
+    const replies = new Map();
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[ascending ? rows.length - index - 1 : index];
+      if (row.type === "agentMessage" && row.turn_id && row.preview && !replies.has(row.turn_id)) {
+        replies.set(row.turn_id, { index, text: row.preview.replace(/\s+/gu, " ").trim() });
+      }
+    }
+    const entries = [];
+    let scanned = 0, bytes = 0;
+    for (const [index, row] of rows.entries()) {
+      const reply = replies.get(row.turn_id);
+      const position = ascending ? rows.length - index - 1 : index;
+      const item = row.type === "userMessage" ? { id: row.id, createdAt: row.created_at,
+        preview: row.preview.replace(/\s+/gu, " ").trim(),
+        replyPreview: reply && reply.index < position ? reply.text : null } : null;
+      if (item && Buffer.byteLength(item.id) > 2048) throw Object.assign(new Error("Message identity exceeds navigation limits."), { statusCode: 503, code: "NAVIGATION_ITEM_TOO_LARGE" });
+      const size = item ? Buffer.byteLength(JSON.stringify(item)) : 0;
+      if (item && entries.length && bytes + size > 100000) break;
+      scanned += 1;
+      if (item) { entries.push(item); bytes += size; }
+      if (entries.length === 128) break;
+    }
+    const used = rows.slice(0, scanned);
+    const newest = ascending ? used.at(-1) : used[0];
+    const oldest = ascending ? used[0] : used.at(-1);
+    const encode = row => row ? Buffer.from(JSON.stringify({ s: sessionId, t: row.created_at, i: row.id })).toString("base64url") : null;
+    const exists = (row, comparator) => row && this.selectOne(
+      `SELECT 1 AS found FROM session_items WHERE session_id = ? AND (created_at, id) ${comparator} (?, ?) LIMIT 1`,
+      [sessionId, row.created_at, row.id]);
+    return { schemaVersion: 1, items: ascending ? entries.reverse() : entries,
+      olderCursor: exists(oldest, "<") ? encode(oldest) : null,
+      newerCursor: exists(newest, ">") ? encode(newest) : null, scannedCount: scanned };
+  }
+
   getItems(sessionId, limit = 240, provider = "") {
     const pageLimit = Math.max(1, Math.min(500, Number.isFinite(limit) && Number(limit) > 0
       ? Math.floor(Number(limit))

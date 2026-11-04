@@ -295,7 +295,11 @@ struct MacSharedMessageTextCard: View {
     }
 
     private func executionPlanCard(_ plan: ConversationExecutionPlan) -> some View {
-        ExecutionPlanChecklist(plan: plan)
+        Group {
+            if let taskID = plan.taskId {
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: layout.cardWidth - 28)
+            } else { ExecutionPlanChecklist(plan: plan) }
+        }
             .accessibilityActions {
                 Button(L10n("Copy Message"), action: copy)
             }
@@ -880,7 +884,7 @@ private struct MeasuredMessageText: NSViewRepresentable {
         view.linkBaseDirectory = baseDirectory
         view.cardContextMenu = contextMenu
         view.textContainer?.maximumNumberOfLines = maximumLines
-        view.textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byCharWrapping
+        view.textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
         if context.coordinator.text !== text {
             let selection = view.selectedRanges
             let sameText = view.string == text.string

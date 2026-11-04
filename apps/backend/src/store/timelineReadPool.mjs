@@ -38,6 +38,10 @@ export class TimelineReadPool {
     return this.#singleFlight("unifiedSearch", input);
   }
 
+  readUserMessageNavigation(input) {
+    return this.#singleFlight("userMessageNavigation", input);
+  }
+
   readQuickMessages(input) {
     return this.#singleFlight("quickMessages", input);
   }

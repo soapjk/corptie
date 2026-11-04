@@ -34,126 +34,67 @@ extension UnifiedConsoleView {
     }
 
     var workOutlineList: some View {
-        let unreadSummary = sessionIndexStore.workUnreadSummary
-        let workRowsByWorkID = outlineProjection.workRowsByWorkID
-        let archivedRowsByWorkID = outlineProjection.archivedRowsByWorkID
-        let processingWorkIDs = sessionIndexStore.processingWorkIDs
-
-        return ScrollView {
-            // Keep group extents exact even when a header is offscreen. The
-            // rows inside each group provide the viewport virtualization.
-            VStack(alignment: .leading, spacing: 4) {
-                DisclosureGroup(isExpanded: outlineAssistantExpandedBinding) {
-                    ConsoleWorkOutlineRows(rowCount: max(1, assistantSessionRows.count)) {
-                        if assistantSessionRows.isEmpty {
-                            outlineGroupEmptyRow(L10n("No Assistant Sessions"))
-                                .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                        } else {
-                            ForEach(assistantSessionRows) { row in
-                                sessionRow(row)
-                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                    .background(outlineChildSelectionBackground(
-                                        selectionController.presentationSessionID == row.session.id
-                                    ))
-                                    .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                            }
-                        }
-                    }
-                } label: {
-                    outlineChatHeader(
-                        hasUnread: unreadSummary.hasUnreadAssistantSessions
-                    )
-                }
-                .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())
-                .consoleWorkOutlineGroupCard()
-
-                Text(L10n("Projects"))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 20)
-                    .padding(.bottom, 4)
-                    .accessibilityAddTraits(.isHeader)
-
-                ForEach(orderedOutlineWorks, id: \.id) { (work: Work) in
-                    let workRows = workRowsByWorkID[work.id] ?? .empty
-                    let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    let showsAll = outlineFullyExpandedWorkIDs.contains(work.id)
-                    let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
-                        totalCount: workRows.rootCount,
-                        showsAll: showsAll,
-                        isSearching: queryIsActive,
-                        isShowingArchive: isShowingWorkerArchive
-                    )
-                    let hiddenTaskCount = workRows.rootCount - visibleTaskCount
-                    let visibleTasks = workRows.rows(showsAll: showsAll || queryIsActive || isShowingWorkerArchive)
-
-                    DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
-                        if isShowingWorkerArchive {
-                            let orderedTasks: [CorptieTask] = outlineProjection.archivedTasksByWorkID[work.id] ?? []
-                            let rows: [SessionRowModel] = archivedRowsByWorkID[work.id] ?? []
-                            ConsoleWorkOutlineRows(rowCount: max(1, orderedTasks.count + rows.count)) {
-                                ForEach(orderedTasks) { task in
-                                    hierarchyTaskRow(task)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(selectedTaskId == task.id))
-                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                                }
-                                if rows.isEmpty && orderedTasks.isEmpty {
-                                    outlineGroupEmptyRow(L10n("No Archived Sessions"))
-                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                                } else {
-                                    ForEach(rows) { row in
-                                        sessionRow(row)
-                                            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                            .background(outlineChildSelectionBackground(
-                                                selectionController.presentationSessionID == row.session.id
-                                            ))
-                                            .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                                    }
-                                }
-                            }
-                        } else {
-                            ConsoleWorkOutlineRows(rowCount: visibleTasks.count + (hiddenTaskCount > 0 ? 1 : 0)) {
-                                ForEach(visibleTasks) { task in
-                                    hierarchyTaskRow(task)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(
-                                            selectedTaskId == task.id
-                                        ))
-                                        .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                                }
-                                if hiddenTaskCount > 0 {
-                                    outlineShowAllTasksButton(
-                                        workID: work.id,
-                                        hiddenCount: hiddenTaskCount
-                                    )
-                                    .frame(height: ConsoleWorkOutlineRowMetrics.height)
-                                }
-                            }
-                        }
-                    } label: {
-                        outlineWorkHeader(
-                            work,
-                            hasUnread: unreadSummary.workIDs.contains(work.id),
-                            isWorking: processingWorkIDs.contains(work.id)
-                        )
-                            .contextMenu {
-                                workContextMenuContent(for: work)
-                            }
-                    }
-                    .disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle(onCollapseCompleted: {
-                        if outlineFullyExpandedWorkIDs.contains(work.id) {
-                            outlineFullyExpandedWorkIDs.remove(work.id)
-                        }
-                    }))
-                    .consoleWorkOutlineGroupCard()
-                }
+        ConsoleNativeOutline(groups: { nativeOutlineGroups }) { entry in
+            switch entry {
+            case .session(let row):
+                sessionRow(row, showsHoverFeedback: false)
+                    .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
+            case .task(let task):
+                hierarchyTaskRow(task, showsHoverFeedback: false)
+                    .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
+            case .empty(_, let title):
+                outlineGroupEmptyRow(title)
+            case .more(let workID, let count):
+                outlineShowAllTasksButton(workID: workID, hiddenCount: count)
             }
-            .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
-            .padding(.vertical, 4)
-            .background(ConsoleOverlayScroller())
         }
+    }
+
+    var nativeOutlineGroups: [ConsoleNativeOutlineGroup<ConsoleNativeOutlineEntry>] {
+        let unreadSummary = sessionIndexStore.workUnreadSummary
+        let processingWorkIDs = sessionIndexStore.processingWorkIDs
+        let assistantRows = assistantSessionRows
+        let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var groups = [ConsoleNativeOutlineGroup(
+            id: "assistant",
+            header: AnyView(outlineChatHeader(hasUnread: unreadSummary.hasUnreadAssistantSessions)),
+            rows: assistantRows.isEmpty
+                ? [ConsoleNativeOutlineEntry.empty("assistant-empty", L10n("No Assistant Sessions"))]
+                : assistantRows.map { .session($0) },
+            isExpanded: outlineAssistantExpandedBinding.wrappedValue,
+            allowsCollapse: !queryIsActive,
+            showsDisclosureIndicator: false,
+            expansionChanged: { outlineAssistantExpandedBinding.wrappedValue = $0 }
+        )]
+        groups.append(.init(id: "projects-heading", header: AnyView(Text(L10n("Projects"))
+            .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)), isSection: true))
+        for work in orderedOutlineWorks {
+            let workRows = outlineProjection.workRowsByWorkID[work.id] ?? .empty
+            let showsAll = outlineFullyExpandedWorkIDs.contains(work.id)
+            let visibleTaskCount = WorkOutlineTaskDisclosurePolicy.visibleCount(
+                totalCount: workRows.rootCount, showsAll: showsAll,
+                isSearching: queryIsActive, isShowingArchive: isShowingWorkerArchive)
+            let hiddenTaskCount = workRows.rootCount - visibleTaskCount
+            var rows: [ConsoleNativeOutlineEntry]
+            if isShowingWorkerArchive {
+                rows = (outlineProjection.archivedTasksByWorkID[work.id] ?? []).map { .task($0) }
+                    + (outlineProjection.archivedRowsByWorkID[work.id] ?? []).map { .session($0) }
+                if rows.isEmpty { rows = [.empty("archive-empty", L10n("No Archived Sessions"))] }
+            } else {
+                rows = workRows.rows(showsAll: showsAll || queryIsActive).map { .task($0) }
+                if hiddenTaskCount > 0 { rows.append(.more(work.id, hiddenTaskCount)) }
+            }
+            groups.append(.init(id: work.id,
+                header: AnyView(outlineWorkHeader(work,
+                    hasUnread: unreadSummary.workIDs.contains(work.id),
+                    isWorking: processingWorkIDs.contains(work.id))
+                    .contextMenu { workContextMenuContent(for: work) }),
+                rows: rows, isExpanded: outlineWorkIsExpanded(work.id),
+                allowsCollapse: !queryIsActive,
+                showsDisclosureIndicator: false,
+                expansionChanged: { outlineWorkExpandedBinding(work.id).wrappedValue = $0 }))
+        }
+        return groups
     }
 
     func outlineChatHeader(hasUnread: Bool) -> some View {
@@ -164,6 +105,10 @@ extension UnifiedConsoleView {
                 expanded.wrappedValue = !expanded.wrappedValue
             } label: {
                 HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
                     Text(L10n("Chat"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -189,7 +134,6 @@ extension UnifiedConsoleView {
         Text(title)
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
-            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
             .padding(.vertical, 4)
     }
 
@@ -205,14 +149,7 @@ extension UnifiedConsoleView {
         }
         .buttonStyle(.plain)
         .consoleHoverFeedback()
-        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
         .accessibilityLabel("展开全部 Task，还剩 \(hiddenCount) 个")
-    }
-
-    func outlineChildSelectionBackground(_ isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)
-            .padding(.horizontal, 8)
     }
 
     func outlineWorkIsExpanded(_ workID: String) -> Bool {
@@ -238,6 +175,9 @@ extension UnifiedConsoleView {
                     return
                 }
                 outlineExpansionPreferences.setWorkExpanded(isExpanded, workID: workID)
+                if !isExpanded {
+                    outlineFullyExpandedWorkIDs.remove(workID)
+                }
             }
         )
     }
@@ -414,5 +354,23 @@ extension UnifiedConsoleView {
                 if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
                 return lhs.id < rhs.id
             }
+    }
+}
+
+/// Stable resource identities cross the AppKit row boundary; existing SwiftUI
+/// controls continue to own task/session selection and context menus.
+enum ConsoleNativeOutlineEntry: Identifiable {
+    case session(SessionRowModel)
+    case task(CorptieTask)
+    case empty(String, String)
+    case more(String, Int)
+
+    var id: String {
+        switch self {
+        case .session(let row): "session:" + row.id
+        case .task(let task): "task:" + task.id
+        case .empty(let id, _): "empty:" + id
+        case .more(let workID, _): "more:" + workID
+        }
     }
 }

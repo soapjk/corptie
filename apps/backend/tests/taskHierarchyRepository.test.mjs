@@ -62,10 +62,9 @@ async function fixture(t) {
   return {store,service,work,root,child};
 }
 
-test("child creation is atomic, one-level, same-Work, and CAS protected", async t => {
+test("child creation is atomic, one-level and same-Work without a parent version", async t => {
   const f=await fixture(t);
-  assert.throws(()=>f.store.createTask({workId:f.work.id,title:"MissingCAS",parentTaskId:f.root.id}),{code:"TASK_PARENT_VERSION_CONFLICT"});
-  const child=f.child();
+  const child=f.store.createTask({workId:f.work.id,title:"No_version",parentTaskId:f.root.id});
   assert.equal(child.parent_task_id,f.root.id);
   assert.equal(f.store.getTask(f.root.id).hierarchy_revision,2);
   assert.equal(f.store.getTask(f.root.id).resource_version,f.root.resource_version);
@@ -92,7 +91,7 @@ test("invalid parent state and any reparenting are rejected, including direct SQ
   assert.throws(()=>f.store.deleteTask(child.id),/TASK_HIERARCHY_DEPENDENCY/);
   assert.throws(()=>f.store.finalizeTaskDeletion(f.root.id),/TASK_HIERARCHY_DEPENDENCY/);
   f.store.updateTask(f.root.id,{description:"Version_changed"});
-  assert.throws(()=>f.store.createTask({workId:f.work.id,title:"Stale",parentTaskId:f.root.id},{},{expectedParentResourceVersion:1}),{code:"TASK_PARENT_VERSION_CONFLICT"});
+  assert.equal(f.store.createTask({workId:f.work.id,title:"Stale_legacy",parentTaskId:f.root.id},{},{expectedParentResourceVersion:1}).parent_task_id,f.root.id);
 });
 
 test("hierarchy pages preserve root/child/search scope and return hidden ancestors",async t=>{

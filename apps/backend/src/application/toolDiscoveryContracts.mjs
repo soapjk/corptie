@@ -36,6 +36,7 @@ const DOMAIN_PROFILES = Object.freeze({
     ["skill", "skills", "agent skill", "技能", "能力包"],
     "corptie_skill_search"
   ),
+  "execution-checklist": profile(["execution checklist", "todo", "清单", "执行清单", "待办"], "corptie_execution_checklist_manage"),
   "scheduled-tasks": profile(
     [
       "scheduled-tasks", "scheduled task", "scheduled tasks", "automation", "automations",
@@ -77,7 +78,7 @@ const EXAMPLE_OVERRIDES = Object.freeze({
   corptie_task_dispatch: Object.freeze({ items: [{ action: "create", text: "Implement the scoped change and report the result.", idempotency_key: "dispatch:example", creation: { title: "Child_task", agent_id: "agent:example" } }] }),
   corptie_collaboration_tasks_create: Object.freeze({
     title:"Child_task",agent_id:"agent:example",parent_task_id:"task:example",
-    expected_parent_resource_version:1,idempotency_key:"child:example"
+    idempotency_key:"child:example"
   }),
   corptie_artifact_materialize: Object.freeze({
     artifact_id: "artifact:example", version: 1, content_hash: "0".repeat(64), path: "artifacts/example.md"

@@ -50,6 +50,7 @@ export function startClientDeviceGateway({
       searchPage: query => getTimelineReadPool().readUnifiedSearch({ query: query.toString() }), readWindow: readSessionTimelineWindow,
       cancelQueuedMessage: cancelQueuedUserMessage,
       deleteUserMessage,
+      userMessageNavigation: input => getTimelineReadPool().readUserMessageNavigation(input),
       quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
       inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
         references: sessionContextReferenceService, artifacts: artifactService,
@@ -128,11 +129,11 @@ export function startClientDeviceGateway({
             throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
           }
         },
-        create: (id, { taskInput, providerId, model, reasoningLevel, expectedParentResourceVersion, operationID }) => {
+        create: (id, { taskInput, providerId, model, reasoningLevel, operationID }) => {
           const sourceSessionId = requireSessionReference(id).logicalSessionId;
           return createTaskAndSession({ workService,
             startWorkSession: input => workSessionStartApplicationService.start(input),
-            taskInput, sourceSessionId, providerId, model, reasoningLevel, expectedParentResourceVersion, idempotencyKey: operationID,
+            taskInput, sourceSessionId, providerId, model, reasoningLevel, idempotencyKey: operationID,
             creationOrigin: { originType: "session", creatorSessionId: sourceSessionId, operationId: operationID } });
         }
       },

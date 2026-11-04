@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -74,6 +74,58 @@ async function childFixture(t) {
     deliveryIntent: "response_required", messageKind: "update", idempotencyKey: "child-first" };
   return f;
 }
+
+test("saved first-contact preference auto-authorizes exactly once, survives reload and preserves existing Channels", async t => {
+  const f = await fixture();
+  t.after(async () => { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); });
+  const input = { requestingSessionId: "session:a", recipientSessionId: "session:b", body: "协作消息", idempotencyKey: "preference" };
+  const pending = f.service.requestChannel(input);
+  assert.equal(pending.status, "pending");
+  await f.store.updateSettings({ collaboration: { requireFirstMessageConfirmation: false } });
+  // Saving the preference alone must not dispatch an earlier pending message.
+  assert.equal(f.service.getRequest(pending.requestId).status, "pending");
+  const sent = f.service.requestChannel(input);
+  assert.equal(sent.status, "sent");
+  assert.equal(sent.routeAuthorization, "first_message_confirmation_disabled");
+  const retried = f.service.requestChannel(input);
+  assert.equal(retried.message.messageId, sent.message.messageId);
+  const proof = f.store.selectOne("SELECT evidence_json FROM session_collaboration_channel_authorizations WHERE request_id=?", [pending.requestId]);
+  assert.equal(JSON.parse(proof.evidence_json).type, "first_message_confirmation_disabled");
+  const reloaded = new CorptieStore({ dbPath: ":memory:", configPath: join(f.directory, "config.json"), manageProcessEnvironment: false });
+  // Explicit-path test Stores receive their configuration separately from DB initialization.
+  reloaded.config = JSON.parse(await readFile(join(f.directory, "config.json"), "utf8"));
+  assert.equal(reloaded.collaborationSettings().requireFirstMessageConfirmation, false);
+  await f.store.updateSettings({ collaboration: { requireFirstMessageConfirmation: true } });
+  assert.equal(f.service.requestChannel({ ...input, requestingSessionId: "session:b", recipientSessionId: "session:a", idempotencyKey: "reply" }).status, "sent");
+});
+
+test("disabled first-contact confirmation sends a fresh message but never reverses revocation or creates a missing target", async t => {
+  const f = await fixture();
+  t.after(async () => { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); });
+  await f.store.updateSettings({ collaboration: { requireFirstMessageConfirmation: false } });
+  const input = { requestingSessionId: "session:a", recipientSessionId: "session:b", body: "first", idempotencyKey: "fresh" };
+  const sent = f.service.requestChannel(input);
+  assert.equal(sent.status, "sent");
+  f.service.revokeChannel(sent.channel.channelId, "session:a", "stop");
+  assert.equal(f.service.requestChannel({ ...input, idempotencyKey: "after-revoke" }).status, "pending");
+  const missing = f.service.requestChannel({ ...input, recipientSessionId: null, title: "new target", idempotencyKey: "missing" });
+  assert.equal(missing.status, "pending");
+  assert.equal(missing.requestedRecipientSessionId, null);
+  assert.throws(() => f.service.requestChannel({ ...input, recipientSessionId: "session:absent", idempotencyKey: "absent" }));
+  assert.throws(() => f.service.requestChannel({ ...input, recipientSessionId: "session:a", idempotencyKey: "self" }), { code: "CHANNEL_SELF_TARGET_FORBIDDEN" });
+});
+
+test("automatic confirmation proof cannot bypass an enabled preference or a rejected request", async t => {
+  const f = await fixture();
+  t.after(async () => { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); });
+  const input = { requestingSessionId: "session:a", recipientSessionId: "session:b", body: "first", idempotencyKey: "rejected" };
+  const pending = f.service.requestChannel(input);
+  assert.throws(() => f.service.confirmRequest(pending.requestId, {}, { type: "first_message_confirmation_disabled",
+    sourceSessionId: "session:a", recipientSessionId: "session:b" }), { code: "CHANNEL_CONFIRMATION_POLICY_CHANGED" });
+  f.service.rejectRequest(pending.requestId);
+  await f.store.updateSettings({ collaboration: { requireFirstMessageConfirmation: false } });
+  assert.equal(f.service.requestChannel(input).status, "rejected");
+});
 
 test("either current parent or child can initiate a fresh cross-Provider Channel without user confirmation", async t => {
   for (const reverse of [false, true]) for (const intent of ["action_required", "response_required", "notification", "acknowledgement"]) {
@@ -181,11 +233,13 @@ test("unrelated, sibling, stale and cross-Work endpoints do not inherit parent-c
   assert.throws(() => f.service.requestChannel({ ...f.input, idempotencyKey: "archived" }), { code: "SESSION_UNAVAILABLE" });
 });
 
-test("child-first HTTP and dynamic tool flow resolves an old card without asking for approval or re-sending", async t => {
+test("automatic HTTP and dynamic tool flow resolves an old card without asking for approval or re-sending", async t => {
+  for (const policy of ["parent_child_policy", "first_message_confirmation_disabled"]) await t.test(policy, async t => {
   const f = await childFixture(t), events = [], projected = [];
   f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:child'");
   const pending = f.service.requestChannel(f.input);
-  f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+  if (policy === "parent_child_policy") f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
+  else await f.store.updateSettings({ collaboration: { requireFirstMessageConfirmation: false } });
   const scoped = new SessionCollaborationService({ store: f.store, workService: new WorkApplicationService({ store: f.store }),
     collaborationCore: f.service.collaborationCore, defaultProviderId: "test-provider",
     workSessionStartApplicationService: { start: async () => assert.fail("must not create a Task") } });
@@ -216,12 +270,13 @@ test("child-first HTTP and dynamic tool flow resolves an old card without asking
   assert.equal(events.some(event => event.type === "SessionChannelAuthorizationRequested"), false);
   assert.equal(events[0].type, "SessionChannelRequestResolved");
   assert.equal(events[0].payload.request.status, "confirmed");
-  assert.equal(events[0].options.source.type, "parent_child_policy");
+  assert.equal(events[0].options.source.type, policy);
   const replay = await callCollaborationDynamicTool(client, "corptie_collaboration_channel_open", input);
   assert.equal(replay.request.message.messageId, result.request.message.messageId);
   assert.equal(events[0].options.eventId, events[1].options.eventId);
   assert.equal(scheduled, 2); assert.equal(new Set(projected).size, 1);
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_collaboration_deliveries").n, 1);
+  });
 });
 
 test("current parent to direct child auto-authorizes one durable channel; siblings, stale bindings and revocation do not",async()=>{
@@ -925,4 +980,32 @@ test("mailbox summaries keep Emoji valid and show uncertain external dispatch wi
     assert.equal(message.state, "unknown"); assert.equal(message.canHandle, false);
     assert.equal(f.unified.rows("session:b", { filter: "abnormal" }).messages.length, 1);
   } finally { await f.close(); }
+});
+
+test('cancelling a prior run does not disable new mailbox instructions; pause and archive still apply',async()=>{
+ const f=await unifiedMailboxFixture();
+ try{
+  const work=f.enqueue();f.store.db.run("UPDATE sessions SET status='cancelled' WHERE id='provider:b'");
+  assert.equal(f.unified.dispatchDecision(work).allowed,true);
+  f.unified.setPaused('session:b',true);
+  assert.equal(f.unified.dispatchDecision(work).code,'MAILBOX_PAUSED');
+  f.unified.mutate('session:b',f.mailboxId,'process');assert.equal(f.unified.dispatchDecision(work).allowed,true);
+  f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:b'");
+  assert.equal(f.unified.dispatchDecision(work).code,'RECIPIENT_SESSION_ARCHIVED');
+  const missing={...work,source:{...work.source,mailboxMessageId:'mailbox:missing'}};
+  assert.equal(f.unified.dispatchDecision(missing).code,'MAILBOX_MESSAGE_NOT_FOUND');
+ }finally{await f.close();}
+});
+
+test('restart registers paused mailbox work so it can report reasons, and pages past 500 blocked rows',async()=>{
+ const f=await unifiedMailboxFixture();
+ try{
+  f.unified.setPaused('session:b',true);
+  for(let i=0;i<505;i++) f.unified.receiveEvent({recipientSessionId:'session:b',sourceType:'background',sourceId:`source:${i}`,
+   body:'Instruction',intent:'action_required',idempotencyKey:`key:${i}`,authorization:{ownerLogicalSessionId:'session:b',sourceId:`source:${i}`}});
+  const ids=new Set(),register=(_session,id)=>ids.add(id);
+  f.unified.syncQueuedOperations(register);assert.equal(ids.size,500);
+  f.unified.syncQueuedOperations(register);assert.equal(ids.size,505);
+  const first=f.store.getAgentTask([...ids][0]);assert.equal(f.unified.dispatchDecision(first).code,'MAILBOX_PAUSED');
+ }finally{await f.close();}
 });

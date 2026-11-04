@@ -80,7 +80,7 @@ struct UnifiedConsoleView: View {
     @EnvironmentObject var router: AppTabRouter
     private static let usesResidentDetailHosts = CorptieAppEnvironment.isDevelopment
         && ProcessInfo.processInfo.environment["CORPTIE_DETAIL_RESIDENT_HOSTS"] == "1"
-    static let usesResidentPages = SessionSwitchingPreferences.launchEnabled
+    static let usesResidentPages = true
     static let usesPageGateProof = CorptieAppEnvironment.isDevelopment
         && ProcessInfo.processInfo.environment["CORPTIE_SESSION_FRAME_GATE"] == "1"
     @EnvironmentObject var sidebarState: TabSidebarState
@@ -142,7 +142,8 @@ struct UnifiedConsoleView: View {
     var body: some View {
         ConsoleWindowSplitView(mode: navigationMode, isActive: sidebarState.isSelected) {
             consoleNavigationContent
-                .background(WorkbenchStyle.sidebarColor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(WorkbenchStyle.workColumnColor)
                 .ignoresSafeArea(.container, edges: .top)
                 .environmentObject(router)
                 .environmentObject(sidebarState)
@@ -397,8 +398,6 @@ struct UnifiedConsoleView: View {
     private var consoleSidebarHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
-                Text("Corptie")
-                    .font(.system(size: 16, weight: .semibold))
                 Spacer(minLength: 8)
                 searchToggleButton
                     .consoleHoverFeedback()
@@ -417,7 +416,7 @@ struct UnifiedConsoleView: View {
         }
         .platformWorkOutlineToolbarDensity(.titlebar)
         .padding(.horizontal, 16)
-        .padding(.top, MainWindowLayoutMetrics.titlebarHeight + 10)
+        .padding(.top, 2)
         .padding(.bottom, 14)
     }
 
@@ -1066,9 +1065,10 @@ struct UnifiedConsoleView: View {
         .modifier(SessionSidebarFunctionBarGlassModifier())
     }
 
-    func sessionRow(_ row: SessionRowModel) -> some View {
+    func sessionRow(_ row: SessionRowModel, showsHoverFeedback: Bool = true) -> some View {
         let isSelected = selectionController.presentationSessionID == row.session.id
         return ConsoleSessionRow(
+            showsHoverFeedback: showsHoverFeedback,
             row: row,
             selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) }
         )

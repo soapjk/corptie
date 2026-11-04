@@ -1770,6 +1770,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
 typealias UserMessageProcessingState = CorptieClientCore.UserMessageProcessingState
 
 extension CodexThreadItem: CorptieClientCore.ConversationExecutionItem {
+    var timelineLegacyMessageStatus: String? { status }
     var timelineHasImages: Bool { !(images ?? []).isEmpty }
     var timelineMessageOrigin: String? { messageOrigin }
     var executionTitle: String { title }
@@ -1837,11 +1838,12 @@ struct BackendSettings: Decodable, Equatable {
     let agentProxy: AgentProxySettings?
     let newSessionDefaults: NewSessionDefaults?
     let gateway: GatewaySettings?
+    let collaboration: CollaborationSettings?
     let dataRootMigration: DataRootMigrationOperation?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case developmentPreview, environment, dataRoot, choiceParser, codexBackend, codeDiff, agentProxy
-        case newSessionDefaults, gateway, dataRootMigration
+        case newSessionDefaults, gateway, collaboration, dataRootMigration
     }
 
     init(from decoder: Decoder) throws {
@@ -1864,6 +1866,7 @@ struct BackendSettings: Decodable, Equatable {
         agentProxy = try container.decodeIfPresent(AgentProxySettings.self, forKey: .agentProxy)
         newSessionDefaults = try container.decodeIfPresent(NewSessionDefaults.self, forKey: .newSessionDefaults)
         gateway = try container.decodeIfPresent(GatewaySettings.self, forKey: .gateway)
+        collaboration = try container.decodeIfPresent(CollaborationSettings.self, forKey: .collaboration)
         dataRootMigration = try container.decodeIfPresent(DataRootMigrationOperation.self, forKey: .dataRootMigration)
     }
 }
@@ -1944,6 +1947,22 @@ enum DataRootMigrationPresentation {
         case "completed": 1.0
         default: 0.0
         }
+    }
+}
+
+struct CollaborationSettings: Codable, Equatable {
+    var requireFirstMessageConfirmation = true
+    static let defaults = CollaborationSettings()
+
+    init(requireFirstMessageConfirmation: Bool = true) {
+        self.requireFirstMessageConfirmation = requireFirstMessageConfirmation
+    }
+
+    private enum CodingKeys: String, CodingKey { case requireFirstMessageConfirmation }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        requireFirstMessageConfirmation = try container.decodeIfPresent(Bool.self, forKey: .requireFirstMessageConfirmation) ?? true
     }
 }
 

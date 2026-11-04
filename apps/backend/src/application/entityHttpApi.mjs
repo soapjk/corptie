@@ -866,13 +866,12 @@ export function handleEntityHttpRequest({
           ?? workService.store.settings?.().newSessionDefaults?.taskCreation?.providerId ?? defaultSessionProviderId;
         const idempotencyKey = input.idempotencyKey ?? input.id;
         const { providerId: _providerId, sourceSessionId: _sourceSessionId,
-          model, reasoningLevel, expectedParentResourceVersion,
+          model, reasoningLevel, expectedParentResourceVersion: _legacyParentVersion,
           idempotencyKey: _idempotencyKey, ...taskInput } = input;
         const created = await createTaskAndSession({
           workService,
           startWorkSession,
           taskInput,
-          expectedParentResourceVersion,
           creationOrigin: {
             originType: "session",
             creatorSessionId: sourceSessionId,

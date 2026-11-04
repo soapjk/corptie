@@ -78,6 +78,14 @@ test("host coordination results use the durable product timeline and outbox", ()
   assert.ok(f.calls.find(([kind]) => kind === "outbox"));
 });
 
+test("tool preparation warnings use the ordinary system timeline without failing a Turn", () => {
+  const f = fixture();
+  const item = { id: "warning:binding:turn", type: "system", text: "部分工具暂不可用", status: "completed" };
+  createProductEventPublisher(f.options).emitEvent("SessionToolPreparationWarning", { item }, { sessionId: "session:1" });
+  assert.equal(f.calls.find(([kind]) => kind === "timeline")[2].type, "system");
+  assert.ok(f.calls.find(([kind]) => kind === "outbox"));
+});
+
 test("a failed persistence transaction never enters replay or client publication", () => {
   const f = fixture();
   f.store.enqueueEventOutbox = () => { throw new Error("storage unavailable"); };

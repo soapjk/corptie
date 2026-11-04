@@ -154,7 +154,7 @@ export class ClientDeviceGateway {
       const worktreeRepositoryJobs = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-jobs$/.exec(path);
       const worktreeJob = /^\/client\/v1\/worktrees\/jobs\/([^/]+)$/.exec(path);
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|stop|capabilities|composer|conversation-commands|tasks|task-startup|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|user-message-navigation|stop|capabilities|composer|conversation-commands|tasks|task-startup|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
           && !/^\/client\/v1\/tasks\/[^/]+\/child-deliveries$/.test(path)
@@ -588,6 +588,11 @@ export class ClientDeviceGateway {
         if (conversation[2] === "composer" && ["GET", "POST"].includes(request.method)) {
           const input = request.method === "POST" ? await body(request, 4096) : null;
           const result = await this.sessionAPI.configuration(this.authenticateRequest(request), sessionId, input);
+          this.authenticateRequest(request);
+          return reply(response, 200, result);
+        }
+        if (request.method === "GET" && conversation[2] === "user-message-navigation") {
+          const result = await this.sessionAPI.userMessageNavigation(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);
           return reply(response, 200, result);
         }

@@ -1,3 +1,4 @@
+import { handleExecutionChecklistHttp } from "./executionChecklistHttpApi.mjs";
 import { handleSessionMailboxHttp } from "./sessionMailboxHttpApi.mjs";
 import { handleDesktopDetail, handleDesktopDetailSync } from "./detailDocumentService.mjs";
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
@@ -5,7 +6,7 @@ import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 export function routeBackendHttpRequest(request, response, ports) {
   const {
     clientDeviceGateway, sendJson, developmentPreview, clientCapabilities, backendStoreReady,
-    store, sessionMailbox, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
+    executionChecklistService, store, sessionMailbox, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
     agentProviderRegistry, backgroundAgentService, taskSummaryService, readJson, rejectUnavailableStoreRequest,
     dataRootMigrationCoordinator, handleSceneHttpRequest, sceneService, handleBackendRestartHttpRequest, shutdown,
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
@@ -75,6 +76,8 @@ export function routeBackendHttpRequest(request, response, ports) {
   if (rejectUnavailableStoreRequest({
     request, response, url, backendStoreReady, store, dataRootMigrationCoordinator, sendJson
   })) return;
+
+  if (executionChecklistService && handleExecutionChecklistHttp({ request, response, url, service: executionChecklistService, sendJson, readJson, preview: developmentPreview })) return;
 
   if (sessionMailbox && handleSessionMailboxHttp({ request, response, url, service: sessionMailbox, sendJson, readJson, preview: developmentPreview })) return;
 

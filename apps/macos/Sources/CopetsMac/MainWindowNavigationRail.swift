@@ -2,7 +2,7 @@ import SwiftUI
 import CorptieConversation
 
 enum MainNavigationRailLayout {
-    static let width: CGFloat = 44
+    static let width: CGFloat = 64
 }
 
 /// A lightweight navigation column. Page hosts remain resident beside it.
@@ -23,6 +23,10 @@ struct MainWindowNavigationRail: View {
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchStyle.navigationColor)
+        .overlay(alignment: .topLeading) {
+            CompactWindowControls()
+                .frame(width: MainNavigationRailLayout.width, height: MainWindowLayoutMetrics.titlebarHeight)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("navigation-rail")
         .contextMenu {
