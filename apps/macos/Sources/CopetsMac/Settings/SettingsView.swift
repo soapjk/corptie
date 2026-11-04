@@ -100,20 +100,23 @@ struct SettingsView: View {
             let wide = geometry.size.width >= 800
             HSplitView {
                 settingsCategories
-                    .modifier(SettingsSurface(sidebar: true))
+                    .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
+                    .modifier(SettingsColumnSurface(sidebar: true))
                     .frame(minWidth: wide ? SettingsPageLayout.sidebarMinimum : 0,
                            idealWidth: wide ? SettingsPageLayout.sidebarIdeal : 0,
                            maxWidth: wide ? SettingsPageLayout.sidebarMaximum : 0, maxHeight: .infinity)
                     .clipped()
                     .accessibilityHidden(!wide)
-                    .padding(.trailing, wide ? MainWindowPageLayoutMetrics.halfColumnSpacing : 0)
                 settingsDetail(compact: !wide, inset: geometry.size.width < 480 ? 16 : 20)
-                    .modifier(SettingsSurface())
-                    .padding(.leading, wide ? MainWindowPageLayoutMetrics.halfColumnSpacing : 0)
+                    .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
+                    .modifier(SettingsColumnSurface())
             }
-            .padding(MainWindowPageLayoutMetrics.outerPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(WorkbenchStyle.canvas)
+        // Match the console: column canvases reach the window edges while
+        // each column's controls reserve their own titlebar clearance.
+        .ignoresSafeArea(.container, edges: .top)
+        .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
         .accessibilityIdentifier("settings.page")
         .environmentObject(backendClient)
         .task { if loadsSettings { await loadSettings() } }

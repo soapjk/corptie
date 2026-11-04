@@ -14,7 +14,7 @@ struct SettingsWindowLayoutTests {
     }
 
     @Test
-    func actualSplitPaneCapsTheOuterCardWhenTheWindowGrows() throws {
+    func columnsFillTheViewportAndSidebarStaysBoundedWhenTheWindowGrows() throws {
         let host = NSHostingView(rootView: SettingsView())
         func split(in view: NSView) -> NSSplitView? {
             if let view = view as? NSSplitView { return view }
@@ -27,10 +27,22 @@ struct SettingsWindowLayoutTests {
             splitView.layoutSubtreeIfNeeded()
             let sidebar = try #require(splitView.arrangedSubviews.first)
             let detail = try #require(splitView.arrangedSubviews.last)
-            let gap = MainWindowPageLayoutMetrics.halfColumnSpacing
-            #expect(sidebar.frame.width >= SettingsPageLayout.sidebarMinimum + gap - 1)
-            #expect(sidebar.frame.width <= SettingsPageLayout.sidebarMaximum + gap + 1)
+            #expect(sidebar.frame.width >= SettingsPageLayout.sidebarMinimum - 1)
+            #expect(sidebar.frame.width <= SettingsPageLayout.sidebarMaximum + 1)
             #expect(detail.frame.width > sidebar.frame.width)
+            // Regresses the previous 6pt outer card gutter: both panes must
+            // reach the top and bottom, regardless of their form content.
+            let viewport = splitView.convert(splitView.bounds, to: host)
+            #expect(abs(viewport.minX) <= 1)
+            #expect(abs(viewport.minY) <= 1)
+            #expect(abs(viewport.width - host.bounds.width) <= 1)
+            #expect(abs(viewport.height - host.bounds.height) <= 1)
+            for pane in [sidebar, detail] {
+                #expect(abs(pane.frame.minY) <= 1)
+                #expect(abs(pane.frame.height - splitView.bounds.height) <= 1)
+            }
+            #expect(abs(sidebar.frame.minX) <= 1)
+            #expect(abs(detail.frame.maxX - splitView.bounds.width) <= 1)
             print("settings split: host=\(width) sidebar=\(sidebar.frame.width) detail=\(detail.frame.width)")
         }
     }
