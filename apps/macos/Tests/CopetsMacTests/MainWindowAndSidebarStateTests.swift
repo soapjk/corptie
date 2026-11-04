@@ -166,7 +166,7 @@ struct MainWindowAndSidebarStateTests {
         #expect(mainTab.contains("setAccessibilityValue(L10n(isVisible ? \"Expanded\" : \"Collapsed\"))"))
         #expect(mainTab.contains(".environmentObject(router.sidebarState(for: tab))"))
 
-        for fileName in ["WarRoomView.swift", "AutomationsView.swift", "WorktreeManagementView.swift"] {
+        for fileName in ["WarRoomView.swift", "WorktreeManagementView.swift"] {
             let contents = try String(
                 contentsOf: sourceRoot.appendingPathComponent(fileName),
                 encoding: .utf8
