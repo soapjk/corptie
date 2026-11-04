@@ -8,6 +8,27 @@ import { promisify } from "node:util";
 import { GitCommitProtection, parseStatusPaths } from "../src/runtime/gitCommitProtection.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("protection and push status probes leave the live index untouched", async () => {
+  const { GitHubPushManager } = await import("../src/runtime/gitHubPushManager.mjs");
+  const fixture = await createRepository();
+  try {
+    const tracked = join(fixture.path, "tracked.js");
+    await writeFile(tracked, "export const value = 1;\n");
+    await execFileAsync("git", ["-C", fixture.path, "add", "tracked.js"]);
+    const indexPath = join(fixture.path, ".git", "index");
+    const before = await readFile(indexPath);
+    // Dirty the stat cache without changing the staged blob.
+    await writeFile(tracked, "export const value = 1;\n");
+    const protection = new GitCommitProtection({ rules: [] });
+    const push = new GitHubPushManager();
+    await Promise.all([
+      protection.runGit(fixture.path, ["status", "--porcelain"]),
+      push.runGit(fixture.path, ["status", "--porcelain"])
+    ]);
+    assert.deepEqual(await readFile(indexPath), before);
+  } finally { await fixture.close(); }
+});
 const rules = [
   { path: ".corptie", kind: "directory" },
   { path: "AGENTS.md", kind: "file", onlyWhenSymlink: true }
