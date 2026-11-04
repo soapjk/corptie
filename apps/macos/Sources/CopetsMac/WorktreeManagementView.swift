@@ -299,7 +299,7 @@ struct WorktreeManagementView: View {
     @State private var showingCommitPolicyResolution = false
     @State private var showingCommitPolicyResidueResolution = false
     @State private var pendingGitOperationAction: PendingGitOperationAction?
-    @State private var showingIntegrationCancellation = false
+    @State private var pendingIntegrationCancellationJobID: String?
     @State private var showingIntegrationSelection = false
     @State private var integrationSources: [String]?
 
@@ -494,18 +494,9 @@ struct WorktreeManagementView: View {
                     request.worktree.branchName ?? request.worktree.path
                 ))
         }
-        .confirmationDialog(
-            L10n("Cancel this Work merge?"),
-            isPresented: $showingIntegrationCancellation,
-            titleVisibility: .visible
-        ) {
-            Button(L10n("Cancel Work Merge"), role: .destructive) {
-                Task { await client.cancelIntegration() }
-            }
-            Button(L10n("Keep Running"), role: .cancel) {}
-        } message: {
-            Text(L10n("Corptie will stop at a safe boundary and preserve completed commits and unresolved repository state. You can refresh and start a new merge plan afterward."))
-        }
+        .modifier(WorktreeIntegrationCancellationDialog(jobID: $pendingIntegrationCancellationJobID) { jobID in
+            Task { await client.cancelIntegration(expectedJobID: jobID) }
+        })
         .sheet(item: $pendingDeletion) { review in
             WorktreeDeletionConfirmation(review: review) {
                 Task { _ = await client.deleteWorktree(review.tree, expectedRepositoryID: review.repositoryID) }
@@ -1290,7 +1281,7 @@ struct WorktreeManagementView: View {
                 }
                 if job.canCancel {
                     Button(L10n("Cancel"), role: .destructive) {
-                        showingIntegrationCancellation = true
+                        pendingIntegrationCancellationJobID = job.id
                     }
                     .controlSize(.small)
                     .disabled(client.isMutating)
@@ -3102,6 +3093,31 @@ private struct WorktreeIntegrationPlanReview: View {
             if await client.confirmPlan(commitProtectionDecisions: decisions) {
                 isPresented = false
             }
+        }
+    }
+}
+
+private struct WorktreeIntegrationCancellationDialog: ViewModifier {
+    @Binding var jobID: String?
+    let confirm: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            L10n("Cancel this Work merge?"),
+            isPresented: Binding(
+                get: { jobID != nil },
+                set: { if !$0 { jobID = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: jobID
+        ) { selectedJobID in
+            Button(L10n("Cancel Work Merge"), role: .destructive) {
+                jobID = nil
+                confirm(selectedJobID)
+            }
+            Button(L10n("Keep Running"), role: .cancel) {}
+        } message: { _ in
+            Text(L10n("Corptie will stop at a safe boundary and preserve completed commits and unresolved repository state. You can refresh and start a new merge plan afterward."))
         }
     }
 }

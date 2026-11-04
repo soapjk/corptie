@@ -967,6 +967,9 @@ export class WorktreeIntegrationJobService {
   async cancel(jobId, input = {}) {
     let job = this.#requireJob(jobId);
     const replan = input.replan === true || job.details.replanAfterCancel === true;
+    // A confirmation can outlive completion. Return the authoritative result
+    // without rewriting a completed Job as canceled or touching Git.
+    if (job.status === "completed" && input.replan !== true) return presentJob(job);
     if (job.status === "canceled") {
       return presentJob(await this.#replacementPlan(job, replan));
     }
