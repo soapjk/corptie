@@ -439,12 +439,13 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(automation.components(separatedBy: ".mainWindowPageCard()").count - 1 == 2)
         #expect(automation.contains("MainWindowPageLayoutMetrics.halfColumnSpacing"))
 
-        #expect(worktree.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(!worktree.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
         #expect(!worktree.contains(".mainWindowPageCard(.lightweight)"))
         #expect(worktree.contains("WorktreePanel(sidebar: true)"))
-        #expect(worktree.contains(".background(WorkbenchStyle.canvas)"))
+        #expect(worktree.contains(".background(WorkbenchStyle.canvas.ignoresSafeArea"))
         let panel = try source(named: "WorktreePresentation.swift")
-        #expect(panel.contains("MainWindowPageLayoutMetrics.cardCornerRadius"))
+        #expect(!panel.contains(".clipShape("))
+        #expect(panel.contains(".ignoresSafeArea(.container, edges: .vertical)"))
         #expect(panel.contains("WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas"))
     }
 
