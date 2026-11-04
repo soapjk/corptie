@@ -199,10 +199,8 @@ export class ProviderTurnResponseWatchdog {
     return true;
   }
 
-  // A Provider retry is evidence that the model request is not healthy. It
-  // must never be treated as a heartbeat: doing so lets SDK-local retries keep
-  // a Turn looking active while the model network is unavailable. Keep the
-  // first retry deadline stable so a retry loop cannot extend it forever.
+  // A retry indicates a connection failure, not progress. Keep the first
+  // retry deadline stable, including when it only triggers a status check.
   #recordRetryFailure(key, current, event) {
     if (current.warningTimer) {
       this.cancel(current.warningTimer);
@@ -235,6 +233,14 @@ export class ProviderTurnResponseWatchdog {
           ...(!current.turnLiveness.supportsStatusProbe ? { probeReasonCode: "PROBE_UNSUPPORTED" } : {})
         });
         this.#invoke(this.onCheckRequested, current);
+        return;
+      }
+      if (timeoutKind === "provider_retry" && current.turnLiveness.managesConnectionRetries) {
+        // A local deadline cannot determine the outcome of native recovery.
+        // Keep observing the same Turn through fallback or native completion.
+        current.timeoutTimer = null;
+        this.#invoke(this.onDelayed, current, { warningKind: "connection_retry" });
+        if (current.turnLiveness.supportsStatusProbe) this.#invoke(this.onCheckRequested, current);
         return;
       }
       this.pending.delete(key);
@@ -321,6 +327,7 @@ function normalizedTurnLiveness(input) {
     heartbeat: ["reliable", "best_effort", "unavailable"].includes(heartbeat)
       ? heartbeat
       : "unavailable",
-    supportsStatusProbe: input?.supportsStatusProbe === true
+    supportsStatusProbe: input?.supportsStatusProbe === true,
+    managesConnectionRetries: input?.managesConnectionRetries === true
   };
 }

@@ -70,7 +70,8 @@ export function createOpenClackyProvider(manager, options = {}) {
       bindingReadiness: { version: 1, reconciliation: "unsupported", runtimeEpoch: true },
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.BEST_EFFORT,
-        supportsStatusProbe: false
+        supportsStatusProbe: false,
+        managesConnectionRetries: false
       },
       toolSchemaCapabilities: openClackyToolSchemaCapabilities(manager),
       sessionRecovery: {

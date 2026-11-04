@@ -61,7 +61,9 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       backgroundExecutionPolicies: ["no-tools"],
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.BEST_EFFORT,
-        supportsStatusProbe: false
+        supportsStatusProbe: false,
+        // The SDK announces planned retries and returns the terminal result.
+        managesConnectionRetries: true
       },
       toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {
