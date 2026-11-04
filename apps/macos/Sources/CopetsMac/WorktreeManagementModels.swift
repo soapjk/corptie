@@ -626,7 +626,8 @@ struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {
     let currentWorktreeId: String?
     let blockedWorktreeId: String?
     let conflictFiles: [String]
-    let failureCode: String?
+    private let rawFailureCode: ClientWorktreeFailureCode?
+    var failureCode: String? { rawFailureCode?.value }
     let failureReason: String?
     let startedAt: String?
     let completedAt: String?
@@ -645,7 +646,7 @@ struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {
         case currentWorktreeId
         case blockedWorktreeId
         case conflictFiles
-        case failureCode
+        case rawFailureCode = "failureCode"
         case failureReason
         case startedAt
         case completedAt
