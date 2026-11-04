@@ -5,6 +5,28 @@ import CorptieConversation
 
 @MainActor
 final class NativeMarkdownAttributedTextTests: XCTestCase {
+    func testReusedTextMeasurementMatchesFreshLayoutAcrossWidthsLineLimitsAndMutation() {
+        let source = NSMutableAttributedString(string: String(repeating: "长正文 Mixed words 😀\n", count: 100),
+            attributes: [.font: NSFont.systemFont(ofSize: 16)])
+        func fresh(_ width: CGFloat, _ lines: Int) -> CGFloat {
+            let storage = NSTextStorage(attributedString: source), manager = NSLayoutManager()
+            let container = NSTextContainer(containerSize: .init(width: width, height: .greatestFiniteMagnitude))
+            container.lineFragmentPadding = 0
+            container.maximumNumberOfLines = lines
+            container.lineBreakMode = lines > 0 ? .byTruncatingTail : .byWordWrapping
+            manager.addTextContainer(container); storage.addLayoutManager(manager)
+            manager.ensureLayout(for: container)
+            return ceil(manager.usedRect(for: container).height)
+        }
+        for lines in [0, 3, 1, 0] {
+            for width: CGFloat in [240, 480, 241, 640, 240] {
+                XCTAssertEqual(NativeTextKitLayout.height(of: source, width: width, maximumLines: lines), fresh(width, lines))
+            }
+        }
+        source.append(NSAttributedString(string: "追加一段文字", attributes: [.font: NSFont.systemFont(ofSize: 24)]))
+        XCTAssertEqual(NativeTextKitLayout.height(of: source, width: 240), fresh(240, 0))
+    }
+
     func testChineseFullStopStaysWithProseAcrossWindowWidths() throws {
         let source = "消息已经收到，但在开始执行前失败了：平台准备会话工具时，没有收到匹配的确认回执，所以模型尚未开始回答。我会继续核对工具配置与运行时状态，先确认能否恢复。"
         for typography in [ConversationTypography.classic, .codexReading] {

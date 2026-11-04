@@ -145,15 +145,13 @@ struct UnifiedConsoleControlSurfaceTests {
     func workHeaderBlankAreaClicksOnlyToggleDisclosure() throws {
         _ = NSApplication.shared
         var toggles = 0
-        var chatOpens = 0
         var taskCreates = 0
         let work = Work(id: "work:hit-test", workspaceId: "workspace:test", name: "Work",
             description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
             createdAt: "", updatedAt: "")
         let host = NSHostingView(rootView: ConsoleWorkOutlineHeader(work: work,
             isExpanded: false, isSelected: false, isWorking: false, hasUnread: false,
-            isChatSelected: false, isChatRunning: false, hasUnreadChat: false,
-            toggleExpanded: { toggles += 1 }, openChat: { chatOpens += 1 },
+            toggleExpanded: { toggles += 1 },
             createTask: { taskCreates += 1 }))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 28),
             styleMask: [.borderless], backing: .buffered, defer: false)
@@ -177,7 +175,6 @@ struct UnifiedConsoleControlSurfaceTests {
             RunLoop.main.run(until: Date().addingTimeInterval(0.03))
         }
         #expect(toggles == 3)
-        #expect(chatOpens == 0)
         #expect(taskCreates == 0)
     }
 

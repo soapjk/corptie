@@ -425,6 +425,34 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(LiveResizeWidthPolicy.requiresReflow(previous: nil, next: 400))
     }
 
+    func testContinuousLongReplyResizePreservesContentConfigurationAndSelection() {
+        let cell = AppKitChatNativeTextCell(identifier: .init("long-reply-resize"))
+        let text = String(repeating: "### 长正文\n\n窗口缩放保持原来的文本和选择。Mixed English words for wrapping.\n\n", count: 80)
+        let tableText = "| 项目 | 说明 |\n| --- | --- |\n"
+            + (0..<30).map { "| 行 \($0) | 中文和 English 描述需要随宽度换行 |\n" }.joined()
+        let item = row(id: "long-reply-resize", text: text, showsHeader: false)
+        let tableItem = row(id: "table-resize", text: tableText, showsHeader: false)
+        cell.setContent(item, availableWidth: 560, baseDirectory: nil, onToggleExpansion: { _ in }, onAction: { _ in })
+        let configurations = cell.contentConfigurationCount
+        let body = textView(in: cell, identifier: "chat.timeline.body")
+        let selected = NSRange(location: 3, length: 5)
+        body?.setSelectedRange(selected)
+        var costs: [Double] = []
+        for index in 0..<120 {
+            let width = LiveResizeWidthPolicy.measurementWidth(CGFloat(480 + index * 2), isLiveResize: true)
+            let started = ProcessInfo.processInfo.systemUptime
+            XCTAssertTrue(cell.updateLayoutIfContentUnchanged(item, availableWidth: width))
+            _ = NativeTimelineLayoutCache.shared.layout(for: tableItem, columnWidth: width)
+            costs.append((ProcessInfo.processInfo.systemUptime - started) * 1_000)
+        }
+        XCTAssertEqual(cell.contentConfigurationCount, configurations)
+        XCTAssertEqual(cell.widthLayoutUpdateCount, 120)
+        XCTAssertNotNil(body)
+        XCTAssertEqual(body?.selectedRange(), selected)
+        costs.sort()
+        print("Long reply resize CPU layout: median=\(costs[60])ms P95=\(costs[114])ms; excludes screen presentation")
+    }
+
     func testWidthOnlyCellUpdateDoesNotRepeatContentConfiguration() {
         let cell = AppKitChatNativeTextCell(
             identifier: NSUserInterfaceItemIdentifier("width-update-test")

@@ -100,8 +100,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
             createdAt: "", updatedAt: "")
         func header(_ scope: AnyObject?) -> ConsoleWorkOutlineHeader {
             ConsoleWorkOutlineHeader(work: work, isExpanded: false, isSelected: false,
-                isWorking: false, hasUnread: false, isChatSelected: false, isChatRunning: false,
-                hasUnreadChat: false, toggleExpanded: {}, openChat: {}, createTask: {}, actionOwner: scope ?? NSObject())
+                isWorking: false, hasUnread: false, toggleExpanded: {}, createTask: {}, actionOwner: scope ?? NSObject())
         }
         let baseline = header(owner)
         XCTAssertEqual(baseline, header(owner))
@@ -115,8 +114,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
         XCTAssertNotEqual(baseline, changed { $0.isActive = false })
         var renamedWork = work; renamedWork.name = "Renamed"
         let renamed = ConsoleWorkOutlineHeader(work: renamedWork, isExpanded: false, isSelected: false,
-            isWorking: false, hasUnread: false, isChatSelected: false, isChatRunning: false,
-            hasUnreadChat: false, toggleExpanded: {}, openChat: {}, createTask: {}, actionOwner: owner)
+            isWorking: false, hasUnread: false, toggleExpanded: {}, createTask: {}, actionOwner: owner)
         XCTAssertNotEqual(baseline, renamed)
     }
 
@@ -132,12 +130,9 @@ final class SessionSwitchOptimizationTests: XCTestCase {
             description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
             createdAt: "", updatedAt: "")
         func header(expanded: Bool = false, selected: Bool = false, working: Bool = false,
-                    unread: Bool = false, chatSelected: Bool = false, chatRunning: Bool = false,
-                    unreadChat: Bool = false) -> ConsoleWorkOutlineHeader {
+                    unread: Bool = false) -> ConsoleWorkOutlineHeader {
             ConsoleWorkOutlineHeader(work: work, isExpanded: expanded, isSelected: selected,
-                isWorking: working, hasUnread: unread, isChatSelected: chatSelected,
-                isChatRunning: chatRunning, hasUnreadChat: unreadChat,
-                toggleExpanded: {}, openChat: {}, createTask: {}, actionOwner: owner)
+                isWorking: working, hasUnread: unread, toggleExpanded: {}, createTask: {}, actionOwner: owner)
         }
         let host = NSHostingView(rootView: header().equatable())
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 400, height: 40),
@@ -155,8 +150,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
         host.rootView = header().equatable(); pump()
         XCTAssertEqual(trace.snapshot?.workHeaders[work.id]?.count, before)
         let changed = [header(expanded: true), header(selected: true), header(working: true),
-                       header(unread: true), header(chatSelected: true), header(chatRunning: true),
-                       header(unreadChat: true)]
+                       header(unread: true)]
         for value in changed {
             let previous = trace.snapshot?.workHeaders[work.id]?.count ?? 0
             host.rootView = value.equatable(); pump()

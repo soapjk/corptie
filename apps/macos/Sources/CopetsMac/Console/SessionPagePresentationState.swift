@@ -78,6 +78,7 @@ final class SessionPageRenderInputs {
     private(set) var verifyingBinding = false
     private(set) var tasks: [CorptieTask] = []
     private(set) var works: [Work] = []
+    private(set) var workName: String?
     private(set) var roles: [Role] = []
     private(set) var mentionSessions: [TaskSession] = []
     private(set) var searchTarget: UnifiedSearchNavigation.Target?
@@ -300,6 +301,9 @@ final class SessionPageRenderInputs {
         if changes.contains(.entities) {
             tasks = entities.tasks; works = entities.works; roles = entities.roles
             mentionSessions = backend.sessions
+        }
+        if changes.contains(.entities) || changes.contains(.metadata) {
+            workName = session.workId.flatMap { sourceState.work($0)?.name }
         }
         if changes.contains(.search) {
             searchTarget = search.target?.sessionID == scope.sessionID ? search.target : nil
