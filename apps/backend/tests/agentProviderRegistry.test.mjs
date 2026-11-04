@@ -106,7 +106,8 @@ test("Provider descriptors validate turn-liveness heartbeat reliability", () => 
   });
   assert.deepEqual(descriptor.metadata.turnLiveness, {
     heartbeat: "reliable",
-    supportsStatusProbe: false
+    supportsStatusProbe: false,
+    managesConnectionRetries: false
   });
   assert.throws(() => normalizeAgentProviderDescriptor({
     id: "provider.invalid",
@@ -115,6 +116,11 @@ test("Provider descriptors validate turn-liveness heartbeat reliability", () => 
     metadata: { turnLiveness: { heartbeat: "sometimes" } }
   }), (error) => error instanceof AgentProviderContractError
     && error.details.field === "descriptor.metadata.turnLiveness.heartbeat");
+  assert.throws(() => normalizeAgentProviderDescriptor({
+    ...descriptor,
+    metadata: { turnLiveness: { managesConnectionRetries: "true" } }
+  }), (error) => error instanceof AgentProviderContractError
+    && error.details.field === "descriptor.metadata.turnLiveness.managesConnectionRetries");
 });
 
 test("registry invokes declared capabilities through the common contract", async () => {

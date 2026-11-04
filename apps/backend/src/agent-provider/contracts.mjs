@@ -229,9 +229,16 @@ export function normalizeTurnLivenessDescriptor(input) {
       { field: "descriptor.metadata.turnLiveness.supportsStatusProbe" }
     );
   }
+  if (input.managesConnectionRetries != null && typeof input.managesConnectionRetries !== "boolean") {
+    throw new AgentProviderContractError(
+      "descriptor.metadata.turnLiveness.managesConnectionRetries must be a boolean.",
+      { field: "descriptor.metadata.turnLiveness.managesConnectionRetries" }
+    );
+  }
   return Object.freeze({
     heartbeat,
-    supportsStatusProbe: input.supportsStatusProbe === true
+    supportsStatusProbe: input.supportsStatusProbe === true,
+    managesConnectionRetries: input.managesConnectionRetries === true
   });
 }
 
