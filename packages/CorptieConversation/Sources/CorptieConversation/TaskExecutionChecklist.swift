@@ -7,6 +7,8 @@ public struct TaskExecutionChecklist: View {
     public let plan: ConversationExecutionPlan
     public let width: CGFloat
     public var canEdit: Bool
+    public var isExpanded: Bool?
+    public var onToggleExpansion: (() -> Void)?
     public var submit: (ExecutionChecklistCommand) async throws -> Void
     @State private var showsAll = false
     @State private var editor: Editor?
@@ -21,20 +23,40 @@ public struct TaskExecutionChecklist: View {
         var condition: String
     }
     public init(plan: ConversationExecutionPlan, width: CGFloat, canEdit: Bool = true,
-                submit: @escaping (ExecutionChecklistCommand) async throws -> Void) {
+                isExpanded: Bool? = nil, onToggleExpansion: (() -> Void)? = nil, submit: @escaping (ExecutionChecklistCommand) async throws -> Void) {
         self.plan = plan; self.width = width; self.canEdit = canEdit; self.submit = submit
+        self.isExpanded = isExpanded; self.onToggleExpansion = onToggleExpansion
     }
     public static func columns(for width: CGFloat) -> Int { max(1, min(3, Int((width + 12) / 252))) }
     public static func previewHeight(plan: ConversationExecutionPlan, width: CGFloat) -> CGFloat {
-        let columns = columns(for: width)
-        let rows = max(1, min(2, (plan.steps.count + columns - 1) / columns))
-        return 28 + CGFloat(rows) * 44 + (plan.steps.count > columns * 2 ? 28 : 0) + 24
+        heights(plan: plan, width: width).collapsed
     }
+    /// Prepare both extents when the plan/width changes, before a disclosure
+    /// click. No text measurement or full-list rendering is needed to expand.
+    public static func heights(plan: ConversationExecutionPlan, width: CGFloat) -> (collapsed: CGFloat, expanded: CGFloat) {
+        let columns = columns(for: width)
+        var full: CGFloat = 0, preview: CGFloat = 0, row = 0
+        for first in stride(from: 0, to: plan.steps.count, by: columns) {
+            var height: CGFloat = 20
+            for index in first..<min(first + columns, plan.steps.count) {
+                height = max(height, itemHeight(plan.steps[index]))
+            }
+            full += height + (row > 0 ? 4 : 0)
+            if row < 2 { preview += height + (row > 0 ? 4 : 0) }
+            row += 1
+        }
+        let chrome: CGFloat = 20 + 16 + 12 + (plan.steps.count > columns * 2 ? 24 : 0)
+        return (chrome + max(20, preview), chrome + max(20, full))
+    }
+    private static func itemHeight(_ item: ConversationExecutionPlan.Step) -> CGFloat {
+        item.reason?.isEmpty == false ? 34 : 20
+    }
+    private var expanded: Bool { isExpanded ?? showsAll }
     private var columns: Int { Self.columns(for: width) }
     private var grid: [GridItem] { Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: columns) }
     private var completed: Int { plan.completedCount ?? 0 }
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Label("执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
                 Spacer(minLength: 0)
@@ -50,42 +72,34 @@ public struct TaskExecutionChecklist: View {
                     .menuStyle(.automatic).fixedSize().accessibilityLabel("执行清单操作")
                 }
             }
-            .frame(height: 24)
+            .frame(height: 20)
             if plan.steps.isEmpty {
-                Text("暂无事项").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("暂无事项").font(.system(size: 12)).foregroundStyle(.secondary).frame(height: 20)
             } else {
                 LazyVGrid(columns: grid, alignment: .leading, spacing: 4) {
-                    // Only the prepared visible prefix is instantiated. Full content
-                    // lives in a virtualized popover without resizing the message row.
-                    ForEach(plan.steps.prefix(columns * 2)) { item in itemRow(item) }
+                    // Collapsed cards instantiate only their visible prefix;
+                    // expansion reveals the remaining items inside this card.
+                    ForEach(plan.steps.prefix(expanded ? plan.steps.count : columns * 2)) { item in itemRow(item) }
                 }
             }
             if plan.steps.count > columns * 2 {
-                Button("展开全部 \(plan.steps.count) 项") { showsAll = true }
-                    .font(.system(size: 11)).frame(height: 24)
+                Button(expanded ? "收起" : "展开全部 \(plan.steps.count) 项") {
+                    if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
+                }
+                .font(.system(size: 11)).frame(height: 18)
+                .accessibilityIdentifier("task-execution-checklist.disclosure")
+                .accessibilityValue(expanded ? "已展开" : "已收起")
             }
             HStack(spacing: 6) {
-                Text(stateLabel).foregroundStyle(.secondary)
+                if let error {
+                    Text("保存失败：\(error)").foregroundStyle(.red).help(error)
+                } else { Text(stateLabel).foregroundStyle(.secondary) }
                 if busy { Text("正在保存…").foregroundStyle(.secondary) }
-                if error != nil {
-                    Button("保存失败，查看原因") { showsAll = true }.foregroundStyle(.red)
-                }
-            }.font(.system(size: 10)).lineLimit(1).frame(height: 20)
+            }.font(.system(size: 10)).lineLimit(1).frame(height: 16)
         }
         .font(.system(size: 12))
         .buttonStyle(.plain)
         .disabled(busy)
-        .popover(isPresented: $showsAll) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("执行清单 · 已完成 \(completed)/\(plan.steps.count)").font(.system(size: 12, weight: .semibold))
-                if let error { Text(error).font(.system(size: 11)).foregroundStyle(.red).textSelection(.enabled) }
-                ScrollView {
-                    LazyVGrid(columns: grid, alignment: .leading, spacing: 8) {
-                        ForEach(plan.steps) { item in itemRow(item) }
-                    }
-                }.frame(maxHeight: 360)
-            }.padding(14).frame(width: max(260, min(width, 760)))
-        }
         .sheet(item: $editor) { entry in
             ChecklistEditor(entryText: entry.text, entryCondition: entry.condition) { title, condition in
                 send(.init(action: entry.itemID == nil ? "add" : "edit", revision: plan.revision,
@@ -127,27 +141,27 @@ public struct TaskExecutionChecklist: View {
         }
     }
     private func itemRow(_ item: ConversationExecutionPlan.Step) -> some View {
-        HStack(alignment: .top, spacing: 7) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Button {
                 send(.init(action: "status", revision: plan.revision, itemID: item.stepId,
                            status: item.status == "completed" ? "pending" : "completed"))
             } label: {
-                Image(systemName: symbol(item.status)).font(.system(size: 12))
+                Text(Image(systemName: symbol(item.status))).font(.system(size: 12))
                     .foregroundStyle(item.status == "completed" ? Color.green : item.status == "blocked" ? .orange : .secondary)
-                    .frame(width: 24, height: 28).contentShape(Rectangle())
+                    .frame(width: 16, height: 20).contentShape(Rectangle())
             }
             .disabled(!canEdit).accessibilityLabel(item.status == "completed" ? "撤销完成：\(item.text)" : "标记完成：\(item.text)")
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(item.ordinal + 1). \(item.text)")
-                    .font(.system(size: 12)).lineLimit(item.reason == nil ? 2 : 1)
+                    .font(.system(size: 12)).lineLimit(1)
                     .foregroundStyle(item.status == "completed" ? .secondary : .primary)
-                if let reason = item.reason {
+                if let reason = item.reason, !reason.isEmpty {
                     Text(reason).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .frame(height: 40, alignment: .topLeading)
+        .frame(height: Self.itemHeight(item), alignment: .topLeading)
         .help([item.text, item.condition, item.reason].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"))
         .contextMenu {
             if canEdit {

@@ -75,8 +75,19 @@ struct SessionConversationSurface: View {
     @State private var cachedSourceTailItem: CodexThreadItem?
     @State private var cachedDisplayEntries: [ChatDisplayEntry] = []
     @State private var cachedRowsRevision: UInt64 = 0
+    @State private var updatingDisclosureRow = false
+    @State private var cachedDisclosureRowIndices: [String: Int] = [:]
+    @State private var cachedChecklistDock = ConversationChecklistDockProjection(rows: [])
     @State private var cachedAppKitRows: [AppKitChatTimelineRow] = [] {
-        didSet { cachedRowsRevision &+= 1 }
+        didSet {
+            cachedRowsRevision &+= 1
+            if !updatingDisclosureRow {
+                cachedChecklistDock = ConversationChecklistDockProjection(rows: cachedAppKitRows)
+                cachedDisclosureRowIndices = Dictionary(cachedAppKitRows.enumerated().compactMap { index, row in
+                    row.expandableTurnId.map { ($0, index) }
+                }, uniquingKeysWith: { first, _ in first })
+            }
+        }
     }
     @State private var cachedTotalDisplayEntryCount = 0
     @State private var cachedVisibleMessageLimit = 0
@@ -547,6 +558,12 @@ struct SessionConversationSurface: View {
             }
             // One editor at one structural position: placement changes must
             // not recreate the native text view, attachments or draft owner.
+            if !showsWelcome, cachedSessionId == sessionId, let plan = cachedChecklistDock.checklist {
+                PinnedExecutionChecklistCard(plan: plan)
+                    .id(sessionId + ":" + plan.planId)
+                    .padding(.horizontal, WorkbenchStyle.readingInset)
+                    .padding(.bottom, 6)
+            }
             VStack(spacing: 24) {
                 if showsWelcome {
                     ConversationWelcomeView(
@@ -628,8 +645,8 @@ struct SessionConversationSurface: View {
         displayEntries: [ChatDisplayEntry]
     ) -> some View {
         let rows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
-            ? cachedAppKitRows
-            : preparedAppKitRows(displayEntries, cache: cachedDisplayProjection)
+            ? cachedChecklistDock.timelineRows
+            : ConversationChecklistDockProjection(rows: preparedAppKitRows(displayEntries, cache: cachedDisplayProjection)).timelineRows
         // Standard pages have 1pt surface padding and a 6pt page/Detail gap.
         // Borrow that space without changing the message column's width.
         let scrollerExtension: CGFloat = presentation == .standard && !compactComposer
@@ -976,6 +993,19 @@ struct SessionConversationSurface: View {
             nextExpandedTurnIds.remove(turnId)
         }
         expandedProcessTurnIds = nextExpandedTurnIds
+
+        if let index = cachedDisclosureRowIndices[turnId], cachedAppKitRows.indices.contains(index),
+           cachedAppKitRows[index].executionPlan?.taskId != nil {
+            // The index and both heights were prepared with the data. Expanding
+            // a checklist never reprojects the other messages or reads storage.
+            var row = cachedAppKitRows[index]
+            row.isExpanded = isExpanded
+            row.contentRevision &+= 1
+            updatingDisclosureRow = true
+            cachedAppKitRows[index] = row
+            updatingDisclosureRow = false
+            return
+        }
 
         // Rebuild the immutable native row projection with a new content
         // revision so NSTableView remeasures only the expanded process row.
