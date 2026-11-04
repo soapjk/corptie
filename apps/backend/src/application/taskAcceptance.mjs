@@ -31,6 +31,7 @@ export function acceptanceCriteriaList(value) {
 export function taskExecutionPrompt(task) {
   return [
     `请完成工作项「${task?.title ?? "未命名"}」。`,
+    "先调用 corptie_execution_checklist_manage 读取并建立有限执行清单；逐项更新状态，支持编辑及撤销完成。清单不扩大任务授权，全部完成即停止。开发项连续推进，最后集中验证。",
     task?.acceptance_criteria
       ? "\n请依据已注入的 Task 上下文执行与验证；只有在每条验收标准均有可复现证据时，才调用 corptie_task_report_acceptance。"
       : ""

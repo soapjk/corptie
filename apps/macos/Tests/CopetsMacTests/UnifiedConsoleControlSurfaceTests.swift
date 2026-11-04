@@ -46,7 +46,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let desktop = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
         // iPad uses 44pt touch geometry and a separate pagination footer.
         for (text, rowCall, childIndent, completionLabel, collapseLabel) in [
-            (desktop, "taskRow(task)", 24, "子任务完成进度", "收起子任务"),
+            (desktop, "taskRow(task, showsHoverFeedback: showsHoverFeedback)", 24, "子任务完成进度", "收起子任务"),
             (mobile, "taskRow(task, sessionID: sessionID)", 44, "子任务已完成", "的子任务")
         ] {
             let start = try #require(text.range(of: "func hierarchyTaskRow("))
@@ -69,14 +69,14 @@ struct UnifiedConsoleControlSurfaceTests {
         let rows = try source(named: "Console/UnifiedConsoleWorkTaskList.swift")
         #expect(outline.contains("let workRows = workRowsByWorkID[work.id] ?? .empty"))
         #expect(outline.contains("ForEach(visibleTasks)"))
-        #expect(outline.contains("hierarchyTaskRow(task)"))
+        #expect(outline.contains("hierarchyTaskRow(task, showsHoverFeedback: false)"))
         #expect(outline.contains("ForEach(orderedTasks)"))
         // Limit root groups, not flattened rows: expanding a parent must never
         // truncate its children at the Work's initial Task limit.
         #expect(outline.contains("totalCount: workRows.rootCount"))
         #expect(outline.contains("workRows.rows(showsAll:"))
         #expect(!outline.contains("ForEach(tasks.prefix(visibleTaskCount))"))
-        #expect(rows.contains("func hierarchyTaskRow(_ task: CorptieTask)"))
+        #expect(rows.contains("func hierarchyTaskRow(_ task: CorptieTask, showsHoverFeedback: Bool = true)"))
         #expect(rows.contains("task.parentTaskId == nil ? 0 : 24"))
         #expect(rows.contains("收起子任务"))
     }
@@ -89,11 +89,10 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!console.contains("刷新重点 Task"))
         #expect(!workspace.contains("refreshRevision"))
         #expect(!workspace.contains("rebuild(reset:"))
-        for observer in [".onChange(of: tasks)", ".onChange(of: works)", ".onChange(of: sessions.map(CardSessionKey.init))"] {
-            #expect(workspace.contains(observer))
-        }
-        #expect(workspace.contains("WorkTaskCardGrid(itemCount: visibleTasks.count, availableWidth: availableWidth)"))
-        #expect(workspace.contains("ForEach(visibleTasks)"))
+        #expect(workspace.contains(".onChange(of: WorkCanvasDataRebuildInput("))
+        #expect(workspace.contains("if previous.active && next.active { rebuild() }"))
+        #expect(workspace.contains("WorkTaskCardGrid(itemCount: roots.count, availableWidth: availableWidth)"))
+        #expect(workspace.contains("ForEach(roots)"))
         #expect(workspace.contains("groupInteraction(for: work.id, availableWidth: availableWidth)"))
         #expect(!workspace.contains("ContentSizedTaskCardLayout { card(task) }"))
     }
@@ -267,7 +266,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func navigationControlsReserveAnIndependentMobileStyleToolbar() throws {
+    func navigationControlsUseTopRowWithoutTrafficLightClearance() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let controlsStart = try #require(source.range(of: ".safeAreaInset(edge: .top, spacing: 0) {"))
         let controlsEnd = try #require(source.range(of: "var navigationMode:", range: controlsStart.upperBound..<source.endIndex))
@@ -279,13 +278,15 @@ struct UnifiedConsoleControlSurfaceTests {
         let archivePosition = try #require(controls.range(of: "taskArchiveToggle"))
         let createPosition = try #require(controls.range(of: "outlineCreationMenu"))
         #expect(sortPosition.lowerBound < togglePosition.lowerBound)
-        #expect(togglePosition.lowerBound < searchPosition.lowerBound)
-        #expect(searchPosition.lowerBound < archivePosition.lowerBound)
+        #expect(searchPosition.lowerBound < sortPosition.lowerBound)
+        #expect(togglePosition.lowerBound < archivePosition.lowerBound)
         #expect(archivePosition.lowerBound < createPosition.lowerBound)
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
-        #expect(controls.contains("PlatformWorkOutlineToolbar(density: .titlebar) {"))
+        #expect(controls.contains(".platformWorkOutlineToolbarDensity(.titlebar)"))
+        #expect(controls.contains(".padding(.top, 2)"))
+        #expect(!controls.contains("MainWindowLayoutMetrics.titlebarHeight + 10"))
         #expect(!controls.contains(".padding(.top, 3)"))
         #expect(PlatformWorkOutlineLayout.controlSize == 44)
         #expect(PlatformWorkOutlineLayout.controlSurfaceDiameter == 36)
@@ -390,9 +391,10 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workOutlineMatchesIPadLeadingEdgeAndScrollerPlacement() throws {
+    func workOutlineUsesNativeSidebarScrollerPlacement() throws {
         let source = try source(named: "Console/UnifiedConsoleOutline.swift")
-        #expect(source.contains(".background(ConsoleOverlayScroller())"))
+        #expect(source.contains(".listStyle(.sidebar)"))
+        #expect(!source.contains(".background(ConsoleOverlayScroller())"))
         #expect(!source.contains("ConsoleOverlayScroller(placeOnLeadingEdge: true)"))
         #expect(!source.contains(".contentMargins(.leading"))
     }
@@ -479,32 +481,24 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestStaysAboveTheGlassWhileHistoryScrollsBehindIt() throws {
+    func jumpToLatestIsAdjacentToTheComposerInsteadOfOffsetAboveItsWholeRegion() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
-        let bodyStart = try #require(source.range(of: "    var body: some View"))
-        let timelineStart = try #require(source.range(of: "    private func appKitDetailMessages("))
-        let jumpButtonStart = try #require(source.range(of: "    private var jumpToLatestButton: some View"))
-        let body = source[bodyStart.lowerBound..<timelineStart.lowerBound]
-        let timeline = source[timelineStart.lowerBound..<jumpButtonStart.lowerBound]
-
-        let jumpOverlay = try #require(body.range(of: ".overlay(alignment: .bottomTrailing) {\n                jumpToLatestButton"))
-        let headerOverlay = try #require(body.range(of: ".overlay(alignment: .top) {"))
-        let composerOverlay = try #require(body.range(of: ".overlay(alignment: .bottom) {"))
-        #expect(headerOverlay.lowerBound < jumpOverlay.lowerBound)
-        #expect(jumpOverlay.lowerBound < composerOverlay.lowerBound)
-        #expect(body.contains(".padding(.bottom, composerClearance + 10)"))
-        #expect(body.contains("ConversationChromeFramePreferenceKey.self"))
-        #expect(body.contains("headerClearance = clearances.top"))
-        #expect(timeline.contains("topClearance: max(headerClearance, topChromeClearance)"))
-        #expect(timeline.contains("bottomClearance: composerClearance"))
-        #expect(!body.contains(".safeAreaInset(edge: .bottom"))
-        let nativeTimeline = try self.source(named: "AppKitChatTimelineView.swift")
-        let coordinator = try self.source(named: "Conversation/Timeline/AppKitChatTimelineCoordinator.swift")
-        #expect(nativeTimeline.contains("scrollView.automaticallyAdjustsContentInsets = false"))
-        #expect(coordinator.contains("let documentHeight = topClearance + rowsHeight + bottomClearance"))
-        #expect(!coordinator.contains("scrollView.contentInsets = insets"))
-        #expect(!timeline.contains(".overlay(alignment: .bottomTrailing)"))
-        #expect(source.contains("if viewportState.showsJumpToLatest"))
+        let composer = try self.source(named: "Conversation/Composer/MessageComposer.swift")
+        #expect(source.contains("onJumpToLatest: composerJumpToLatestAction"))
+        #expect(source.contains("if !usesComposerJumpToLatest"))
+        #expect(!source.contains("composerClearance + 8"))
+        #expect(composer.contains("VStack(alignment: .leading, spacing: 4)"))
+        #expect(composer.contains("HStack(spacing: 8)"))
+        #expect(composer.contains("quickMessagePresentation == nil"))
+        #expect(composer.contains("struct ComposerQuickMessagesBar: View"))
+        #expect(composer.contains("Button(action: onJumpToLatest)"))
+        #expect(composer.contains("JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow)"))
+        #expect(source.contains("bottomClearance: quickMessageClearance"))
+        #expect(!source.contains(".onPreferenceChange(ConversationChromeFramePreferenceKey.self)"))
+        #expect(!source.contains("conversationChromeFrame(.composer)"))
+        #expect(source.contains("ConversationQuickMessages.rowHeight + 10"))
+        #expect(source.contains("quickMessagePresentation: quickMessagePresentation"))
+        #expect(source.contains("appKitScrollToBottomRevision &+= 1"))
     }
 
     @Test
@@ -810,47 +804,34 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func expandedWorkOutlineUsesIndentedChildrenInsideGroupedCards() throws {
-        #expect(ConsoleWorkOutlineMetrics.childIndent == 24)
-        #expect(ConsoleWorkOutlineMetrics.groupCornerRadius == 8)
-        #expect(ConsoleWorkOutlineMetrics.groupHorizontalInset == 6)
-
+    func workOutlineUsesNativeSidebarDisclosureWithoutCustomAnimationLayout() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let surface = try self.source(named: "../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkDiscussionButton.swift")
         #expect(!surface.contains("Color.primary.opacity(0.065)"))
-        #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
+        #expect(surface.contains(".modifier(ConversationContentSurface(cornerRadius: 8, isPanel: true, role: .project))"))
         #expect(source.contains("outlineGroupEmptyRow"))
-        #expect(source.contains("outlineChildSelectionBackground"))
-        #expect(try sharedSource(named: "WorkActivity.swift").contains("static let disclosureAnimation = Animation.easeInOut(duration: 0.16)"))
-        #expect(source.contains("struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle"))
-        #expect(source.contains("private typealias ConsoleWorkOutlineGroupCardModifier = WorkGroupCardSurface"))
-        #expect(source.contains("return ScrollView {"))
-        #expect(source.contains("LazyVStack(alignment: .leading, spacing: 8)"))
-        #expect(source.contains("DisclosureGroup(isExpanded: outlineAssistantExpandedBinding)"))
-        #expect(source.contains("DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id))"))
-        #expect(source.contains(".disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())"))
-        #expect(surface.contains(".modifier(ConversationContentSurface(cornerRadius: 8))"))
-        #expect(source.contains(".transition(.opacity.combined(with: .offset(y: -4)))"))
-        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
-        #expect(!source.contains("ConsoleWorkOutlineCardRowModifier"))
-        #expect(!source.contains("UnevenRoundedRectangle"))
-        #expect(!source.contains("ConsoleAnimatedDisclosureContent"))
-        #expect(!source.contains("ConsoleDisclosureHeightPreferenceKey"))
-        #expect(source.components(
-            separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
-        ).count - 1 == 3)
-        #expect(source.contains("Text(L10n(\"Chat\"))"))
-        #expect(source.contains("navigationModeOption(.workOutline, title: \"分组\")"))
-        #expect(!source.contains("Text(L10n(\"Work & Tasks\"))"))
-        #expect(!source.contains("Text(L10n(\"Assistant\"))"))
+        #expect(source.contains(".consoleOutlineRowSurface(isSelected:"))
+        #expect(source.contains("horizontalInset: 8"))
+        #expect(source.contains(".padding(.trailing, 16)"))
+        #expect(source.contains("hierarchyTaskRow(task, showsHoverFeedback: false)"))
+        #expect(!source.contains("outlineChildSelectionBackground"))
+        #expect(source.contains("ConsoleNativeOutline(groups: { nativeOutlineGroups })"))
+        #expect(source.contains("outline.animator()"))
+        #expect(source.contains("target.expandItem(node)"))
+        #expect(source.contains("target.collapseItem(node)"))
+        #expect(!source.contains("ConsoleWorkOutlineDisclosureStyle"))
+        #expect(!source.contains("ConsoleDisclosureRevealLayout"))
+        #expect(!source.contains("ConsoleWorkOutlineRows"))
+        #expect(!source.contains("consoleWorkOutlineGroupCard"))
+        #expect(source.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
     }
 
     @Test
     func activeWorkGroupsLimitTasksUntilExplicitRevealOnBothClients() throws {
         let desktop = try source(named: "UnifiedConsoleView.swift")
         #expect(desktop.contains("WorkOutlineTaskDisclosurePolicy.visibleCount("))
-        #expect(desktop.contains("ForEach(visibleTasks)"))
-        #expect(desktop.contains("totalCount: roots.count"))
+        #expect(desktop.contains("workRows.rows(showsAll: showsAll || queryIsActive)"))
+        #expect(desktop.contains("totalCount: workRows.rootCount"))
         #expect(desktop.contains("outlineShowAllTasksButton("))
         #expect(desktop.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
         #expect(desktop.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
@@ -860,7 +841,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(mobile.contains("ForEach(visibleTasks)"))
         #expect(mobile.contains("totalCount: roots.count"))
         #expect(mobile.contains("visibleRootIDs.contains($0.parentTaskId ?? $0.id)"))
-        #expect(mobile.contains("task.parentTaskId == nil ? 0 : 24"))
+        #expect(mobile.contains(".padding(.leading, task.parentTaskId == nil ? 0 :"))
         #expect(mobile.contains("showAllTasksButton(workID:"))
         #expect(mobile.contains("fullyExpandedWorkIDs.remove(id)"))
         #expect(mobile.contains("accessibilityLabel(\"展开全部 Task，还剩 \\(hiddenCount) 个\")"))
@@ -900,19 +881,19 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let outline = source[outlineStart.lowerBound..<outlineEnd.lowerBound]
 
-        #expect(outline.contains("hierarchyTaskRow(task)"))
+        #expect(outline.contains("hierarchyTaskRow(task, showsHoverFeedback: false)"))
         let taskRows = try self.source(named: "Console/UnifiedConsoleWorkTaskList.swift")
-        #expect(taskRows.contains("taskRow(task)"))
+        #expect(taskRows.contains("taskRow(task, showsHoverFeedback: showsHoverFeedback)"))
         #expect(!outline.contains("workChatRow(row)"))
         #expect(!outline.contains("Start Work Chat"))
-        #expect(outline.contains("sessionRow(row)"))
+        #expect(outline.contains("sessionRow(row, showsHoverFeedback: false)"))
         #expect(outline.contains("workContextMenuContent(for: work)"))
         #expect(!source.contains("workOutlineContextMenu(for work: Work)"))
         #expect(!source.contains("ConsoleWorkOutlineContextTarget"))
         #expect(!source.contains("ConsoleRightClickMenuHitTarget"))
-        #expect(outline.contains("return ScrollView"))
-        #expect(outline.contains("LazyVStack"))
-        #expect(outline.contains("DisclosureGroup(isExpanded:"))
+        #expect(outline.contains("ConsoleNativeOutline(groups:"))
+        #expect(outline.contains("nativeOutlineGroups"))
+        #expect(outline.contains("expansionChanged:"))
         #expect(!outline.contains("Section(isExpanded:"))
     }
 

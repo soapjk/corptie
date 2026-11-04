@@ -28,6 +28,8 @@ import { CoordinationTurnService } from "../src/application/coordinationTurnServ
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { eventHasAgentMessage } from "../src/store/sessionEventSemantics.mjs";
+import { createProductEventPublisher } from "../src/application/productEventPublisher.mjs";
+import { createCollaborationTimelinePresentation } from "../src/collaboration/collaborationTimelinePresentation.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 async function restrictedFixture(t, providerId = "codex-app-server", supported = true) {
@@ -113,7 +115,7 @@ test("mode defaults off, root user update persists without revising the definiti
   assert.match(buildTaskCoordinationContext(f.store.getTask(f.parent.id), null), /END this turn/);
 });
 
-test("creation recovers an execution-only parent update between async preflight and persistence", async t => {
+test("creation accepts execution projection updates between async preflight and persistence", async t => {
   for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
     const f = await fixture(t, provider);
     const original = f.store.assertParentForCreate.bind(f.store);
@@ -136,7 +138,7 @@ test("creation recovers an execution-only parent update between async preflight 
   });
 });
 
-test("creation does not rebase a changed parent definition", async t => {
+test("creation does not fence parent description changes", async t => {
   const f = await fixture(t);
   const original = f.store.assertParentForCreate.bind(f.store);
   let injected = false;
@@ -150,12 +152,12 @@ test("creation does not rebase a changed parent definition", async t => {
   };
   const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("changed")] });
   await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
-  assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).error_code, "TASK_PARENT_VERSION_CONFLICT");
-  assert.equal(f.starts.length, 0);
-  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 0);
+  assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).status, "queued");
+  assert.equal(f.starts.length, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?", [f.parent.id]).n, 1);
 });
 
-test("parent CAS recovery is bounded and rejects unrelated or unchanged conflicts", async t => {
+test("dispatch never polls or loops on an unexpected downstream conflict", async t => {
   for (const mode of ["continuous-status", "unchanged", "hierarchy", "other-error"]) await t.test(mode, async t => {
     const f = await fixture(t);
     let attempts = 0;
@@ -169,7 +171,7 @@ test("parent CAS recovery is bounded and rejects unrelated or unchanged conflict
     };
     const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item(mode)] });
     await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
-    assert.equal(attempts, mode === "continuous-status" ? 3 : 1);
+    assert.equal(attempts, 1);
     assert.equal(f.coordinator.get(receipt.dispatches[0].dispatchId).status, "failed");
     assert.equal(f.starts.length, 0);
   });
@@ -527,6 +529,51 @@ test("paired mobile HTTP toggle uses the injected shared Detail service, persist
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM client_command_receipts WHERE device_id=? AND status='completed'", [credentials.deviceId]).n, 2);
 });
 
+test("coordination publishes processing before its planner returns on both supported Providers", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
+    const f = await restrictedFixture(t, provider);
+    const reference = f.reference();
+    const binding = f.store.getAgentSessionBinding(reference.bindingId);
+    const create = id => f.store.createUserMessageDelivery({ deliveryId: id, messageId: `message:${id}`,
+      sessionId: reference.sessionId, binding, agentId: f.role.agentId, text: "请协调处理" });
+    const admitted = create("delivery:coordination-feedback");
+    create("delivery:still-queued");
+    f.store.updateMessageDelivery(admitted.delivery.deliveryId, { status: "dispatching", attemptCount: 1 });
+    f.store.updateAgentTask(admitted.task.taskId, { status: "running" });
+    const revision = f.store.sessionTimelineRevision(reference.sessionId);
+    let entered, release;
+    const planning = new Promise(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    f.run(async () => {
+      entered();
+      await held;
+      return { text: JSON.stringify({ kind: "discussion", reply: "协调答复", items: [] }) };
+    });
+    const operation = f.application.sendMessage(reference.sessionId, "请协调处理", {
+      idempotencyKey: admitted.delivery.deliveryId,
+      source: { type: "desktop", deliveryId: admitted.delivery.deliveryId }, options: { agentTask: admitted.task }
+    });
+    try {
+      await planning;
+      const delivery = f.store.getMessageDelivery(admitted.delivery.deliveryId);
+      assert.equal(delivery.status, "processing");
+      assert.equal(delivery.providerTurnId, `coordination:${admitted.delivery.deliveryId}`);
+      assert.equal(f.store.getSessionTurn(reference.sessionId, reference.bindingId, delivery.providerTurnId).execution_status, "running");
+      const message = f.store.getSessionItem(reference.sessionId, admitted.delivery.messageId);
+      assert.equal(message.status, "processing");
+      assert.equal(message.turnId, delivery.providerTurnId);
+      assert.ok(f.store.sessionTimelineRevision(reference.sessionId) > revision);
+      assert.equal(f.store.getMessageDelivery("delivery:still-queued").status, "queued");
+      assert.equal(f.store.getMessageDelivery("delivery:still-queued").providerTurnId, null);
+      assert.ok(f.events.some(event => event.type === "SessionCoordinationStarted"));
+    } finally {
+      release();
+      await operation;
+    }
+    assert.equal(f.store.settleMessageDeliveryFromTurn(admitted.delivery.deliveryId).status, "completed");
+  });
+});
+
 test("restricted coordination bypasses all native tools and sends on both no-tools Providers", async t => {
   for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
     const f = await restrictedFixture(t, provider);
@@ -546,6 +593,56 @@ test("restricted coordination bypasses all native tools and sends on both no-too
     await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "instruction-one" });
     assert.equal(f.requests.length, 1);
     assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
+  });
+});
+
+test("queued coordination publishes processing before the planner finishes on every supported Provider", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk"]) await t.test(provider, async t => {
+    const f = await restrictedFixture(t, provider);
+    const presentation = createCollaborationTimelinePresentation({ store: f.store, collaborationCore: f.core });
+    const noop = () => {};
+    const publisher = createProductEventPublisher({
+      store: f.store, eventLog: { append: event => ({ id: 1, ...event }) }, sseClients: new Set(),
+      now: () => new Date().toISOString(), getClientDeviceGateway: () => null,
+      scheduleStateSyncPublish: noop, requestTaskSummary: noop, notifySessionEventListeners: noop,
+      publishDshSessionEvent: noop, handleScheduledWorkEvent: noop,
+      reconcileCompletedCollaborationWork: noop, reconcileConflictResolutionSession: noop,
+      ...presentation
+    });
+    const record = f.turns.emitEvent;
+    f.turns.emitEvent = (type, payload, options) => {
+      record(type, payload);
+      return publisher.emitEvent(type, payload, options);
+    };
+    const taskId = "message:coordination-progress", messageId = "user:coordination-progress";
+    f.store.enqueueAgentTask({ taskId, agentId: f.role.agentId, sessionId: f.source.sessionId,
+      kind: "user", priority: 10, text: "先讨论方案", source: { type: "desktop", messageId } });
+    const task = f.store.claimAgentTask(taskId);
+    publisher.emitEvent("AgentWorkPreparing", { task }, { sessionId: f.source.sessionId });
+    const messageState = () => JSON.parse(f.store.getSessionItem(f.source.sessionId, messageId).rawMetadataJSON).userMessageStatus;
+    assert.equal(messageState(), "preparing");
+    let release, entered;
+    const held = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    f.run(async () => { entered(); await held; return { text: JSON.stringify({ kind: "discussion", reply: "答复", items: [] }) }; });
+    const pending = f.application.sendMessage(f.source.sessionId, "先讨论方案", {
+      idempotencyKey: "progress", options: { agentTask: task }, source: task.source
+    });
+    await started;
+    try {
+      assert.equal(messageState(), "processing");
+      const event = f.events.find(event => event.type === "AgentWorkStarted");
+      assert.equal(event.payload.task.targetTurnId, "coordination:progress");
+      assert.equal(event.payload.task.source.messageId, messageId);
+      assert.equal(f.store.getSessionTurn(f.source.sessionId, f.source.providerBindingId, "coordination:progress").execution_status, "running");
+      assert.equal(f.events.some(event => event.type === "SessionCoordinationCompleted"), false);
+    } finally {
+      release();
+      await pending;
+    }
+    assert.equal(f.terminals[0].status, "completed");
+    await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "progress" });
+    assert.equal(f.events.filter(event => event.type === "AgentWorkStarted").length, 1);
   });
 });
 
@@ -691,4 +788,92 @@ test("cosmetic title updates do not cancel dispatch but off-on toggles invalidat
     assert.equal(f.terminals[0].status, toggle ? "failed" : "completed");
     assert.equal(f.coordinator.listForParent(f.parent.id).length, toggle ? 0 : 1);
   });
+});
+
+for (const providerId of ["codex-app-server", "claude-code"]) test(`workspace contention waits for a job event before creating a child (${providerId})`,async t=>{
+  const f=await fixture(t,providerId), original=f.collaboration.createTaskAndSession.bind(f.collaboration);
+  let busy=true,calls=0;
+  f.collaboration.createTaskAndSession=async(...args)=>{calls++;if(busy)throw Object.assign(new Error('Parent workspace busy'),{code:'TASK_HIERARCHY_BUSY'});return original(...args);};
+  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('workspace')]});
+  const id=accepted.dispatches[0].dispatchId;
+  await nextTick();await f.coordinator.running.get(id);
+  assert.equal(f.coordinator.get(id).status,'waiting_workspace');assert.equal(f.coordinator.get(id).target_task_id,null);
+  assert.equal(calls,1);busy=false;f.coordinator.onRuntimeEvent('WorktreeIntegrationJobChanged',{job:{status:'completed'}});
+  await nextTick();await f.coordinator.running.get(id);
+  assert.equal(f.coordinator.get(id).status,'queued');assert.ok(f.coordinator.get(id).target_task_id);assert.equal(calls,2);assert.equal(f.starts.length,1);
+});
+
+test("generated summary projection changes cannot reject an otherwise unchanged parent creation",async t=>{
+ for(const provider of ["codex-app-server","claude-sdk","openclacky"]) await t.test(provider,async t=>{
+  const f=await fixture(t,provider),original=f.store.assertParentForCreate.bind(f.store);let injected=false;
+  f.store.assertParentForCreate=input=>{
+   const result=original(input);
+   if(!injected){injected=true;queueMicrotask(()=>f.store.db.run(
+    "UPDATE tasks SET user_summary_json=?,resource_version=resource_version+1 WHERE id=?",
+    [JSON.stringify({state:'stale',content:{focus:'Projection changed'}}),f.parent.id]));}
+   return result;
+  };
+  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('summary')]});
+  await f.coordinator.runDispatch(accepted.dispatches[0].dispatchId);
+  assert.equal(f.coordinator.get(accepted.dispatches[0].dispatchId).status,'queued');assert.equal(f.starts.length,1);
+  assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?',[f.parent.id]).n,1);
+ });
+});
+
+for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`dispatch blockage reaches the parent once and a cancelled child can receive new instructions (${provider})`,async t=>{
+ const {createRuntimeAgentWorkQueue}=await import('../src/runtime/runtimeAgentWorkQueue.mjs');
+ const f=await fixture(t,provider);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('blocked-report')]});
+ const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+ const dispatch=f.coordinator.get(id),child=f.store.getTask(dispatch.target_task_id),childSession=child.current_session_id;
+ const logical=f.store.getLogicalSessionByLegacySessionId(childSession).logicalSessionId;
+ f.store.db.run("UPDATE sessions SET status='cancelled' WHERE id=?",[childSession]);
+ f.store.db.run("UPDATE sessions SET status='complete' WHERE id=?",[f.source.sessionId]);
+ let sends=0;
+ const queue=createRuntimeAgentWorkQueue({store:f.store,collaborationCore:f.core,sessionMailbox:f.mailbox,
+  sessionChannelService:{},collaborationDispatcher:{},workspaceContinuationCoordinator:{recordWorkStarted(){},recordWorkSettled(){},recordWorkRequeued(){},assertWorkTarget(){}},
+  inspectCollaborationSession:async()=> 'idle',resolveCollaborationDeliveryRoute:async()=>{},scheduleAgentWorkDrain(){},dispatchSessionChannelDelivery:async()=>{},
+  sendUnifiedSessionMessage:async()=>{sends++;return {result:{turnId:'turn:new'}};},
+  emitEvent:(type,payload)=>f.coordinator.onRuntimeEvent(type,payload),
+  syncSessionChannelDeliveriesIntoAgentWorkQueue:async()=>{},syncCollaborationDeliveriesIntoAgentWorkQueue:async()=>{}});
+ f.mailbox.setPaused(logical,true);queue.registerRuntimeQueuedWork(childSession,dispatch.operation_id);
+ for(let i=0;i<3;i++)await queue.drainAgentWork(childSession);
+ assert.equal(sends,0);assert.equal(f.coordinator.get(id).status,'blocked');assert.equal(f.coordinator.get(id).error_code,'MAILBOX_PAUSED');
+ assert.equal(f.mailbox.get(logical,dispatch.mailbox_message_id).dispatchBlock.code,'MAILBOX_PAUSED');
+ f.coordinator.flushReports();
+ let reports=f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
+ assert.equal(reports.length,1);assert.match(reports[0].body,/MAILBOX_PAUSED/);assert.equal(reports[0].intent,'response_required');
+ assert.equal(f.store.listTaskCoordinationDispatches(f.parent.id)[0].errorMessage,'接收会话的邮箱已暂停自动处理。');
+ f.coordinator.flushReports();assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+ f.mailbox.setPaused(logical,false);await queue.drainAgentWork(childSession);
+ assert.equal(sends,1);assert.equal(f.coordinator.get(id).status,'running');assert.equal(f.coordinator.get(id).error_code,null);
+ assert.equal(f.store.getAgentTask(dispatch.operation_id).source.dispatchBlock,undefined);
+ // A delayed status notice is historical telemetry, not an executable command;
+ // it remains readable after the child resumes, and tells the parent to query state.
+ assert.doesNotThrow(()=>f.mailbox.validate(reports[0]));
+ assert.throws(()=>f.coordinator.validateMailbox({...reports[0],recipient_session_id:'logical:wrong'},JSON.parse(reports[0].authorization_json)),{code:'COORDINATION_REPORT_SCOPE_INVALID'});
+});
+
+test('ordinary child mailbox failures notify the exact parent without a coordination dispatch and do not repeat',async t=>{
+ const f=await fixture(t);
+ const admitted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('ordinary-report')]});
+ await f.coordinator.runDispatch(admitted.dispatches[0].dispatchId);
+ const child=f.store.getTask(f.coordinator.get(admitted.dispatches[0].dispatchId).target_task_id);
+ const logical=f.store.getLogicalSessionByLegacySessionId(child.current_session_id).logicalSessionId;
+ const message=f.mailbox.receiveEvent({recipientSessionId:logical,sourceType:'background',sourceId:'direct-parent-message',intent:'action_required',
+  body:'New instruction',idempotencyKey:'direct-parent-message',authorization:{ownerLogicalSessionId:logical,sourceId:'direct-parent-message',sourceSessionId:'logical:parent'}});
+ const raw=f.mailbox.raw(logical,message.messageId),work=f.store.getAgentTask(raw.operation_id);
+ const blocked=f.store.updateAgentTask(work.taskId,{lastError:'工作区有冲突',source:{...work.source,
+  dispatchBlock:{code:'WORKTREE_CONFLICT_OR_RECOVERY',message:'工作区有冲突',kind:'waiting'}}});
+ f.mailbox.reportDispatchBlock(blocked);f.mailbox.reportDispatchBlock(blocked);
+ const reports=f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
+ assert.equal(reports.length,1);assert.equal(reports[0].intent,'response_required');assert.match(reports[0].body,/WORKTREE_CONFLICT_OR_RECOVERY/);
+ assert.equal(f.store.getAgentTask(work.taskId).source.dispatchBlock.reportMessageId,reports[0].message_id);
+ const other=f.store.createTask({workId:f.work.id,title:'Unrelated_parent',mainAgentId:f.role.agentId});f.open('unrelated-origin',other.id);
+ const wrong=f.mailbox.receiveEvent({recipientSessionId:logical,sourceType:'background',sourceId:'wrong-origin',intent:'action_required',body:'Another instruction',
+  idempotencyKey:'wrong-origin',authorization:{ownerLogicalSessionId:logical,sourceId:'wrong-origin',sourceSessionId:'logical:unrelated-origin'}});
+ const wrongWork=f.store.getAgentTask(f.mailbox.raw(logical,wrong.messageId).operation_id);
+ f.mailbox.reportDispatchBlock(f.store.updateAgentTask(wrongWork.taskId,{source:{...wrongWork.source,dispatchBlock:{code:'MAILBOX_PAUSED',message:'Paused',kind:'paused'}}}));
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:unrelated-origin'").n,0);
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
 });

@@ -7,9 +7,9 @@ import UniformTypeIdentifiers
 /// per-chip observation, layout animation, or full-width material layer.
 public struct ConversationQuickMessages: View {
     #if os(iOS)
-    private static let rowHeight: CGFloat = 50
+    public static let rowHeight: CGFloat = 50
     #else
-    private static let rowHeight: CGFloat = 30
+    public static let rowHeight: CGFloat = 30
     #endif
     let items: [ClientQuickMessage]
     let enabled: Bool

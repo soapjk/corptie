@@ -35,13 +35,13 @@ export function createCollaborationHttpRoutes({
       },
       onChannelRequestResolved: resolveSessionChannelRequest,
       onChannelMessageCreated: async (result) => {
-        if (result.routeAuthorization === "parent_child_policy" && result.requestId) {
+        if (["parent_child_policy", "first_message_confirmation_disabled"].includes(result.routeAuthorization) && result.requestId) {
           const resolved = sessionChannelService.getRequest(result.requestId);
           if (resolved?.status === "confirmed") emitEvent("SessionChannelRequestResolved", {
             sessionId: resolved.requestingSessionId, request: resolved
           }, { sessionId: resolved.requestingSessionId,
             eventId: `session-channel-policy-resolved:${resolved.requestId}`,
-            source: { type: "parent_child_policy" } });
+            source: { type: result.routeAuthorization } });
         }
         projectSessionChannelMessageForSender(result);
         await syncSessionChannelDeliveriesIntoAgentWorkQueue();

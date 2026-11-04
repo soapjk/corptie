@@ -27,14 +27,16 @@ enum SessionHistoryPageMerger {
     /// stable item identity without manufacturing intermediate history.
     static func mergeAnchorWindow(
         _ windowItems: [CodexThreadItem],
-        with currentItems: [CodexThreadItem]
+        with currentItems: [CodexThreadItem],
+        retainedTailLimit: Int? = nil
     ) -> [CodexThreadItem] {
         var positions: [String: Int] = [:]
-        positions.reserveCapacity(windowItems.count + currentItems.count)
+        let tail = retainedTailLimit.map { Array(currentItems.suffix(max(0, $0))) } ?? currentItems
+        positions.reserveCapacity(windowItems.count + tail.count)
         var merged: [CodexThreadItem] = []
-        merged.reserveCapacity(windowItems.count + currentItems.count)
+        merged.reserveCapacity(windowItems.count + tail.count)
         for item in windowItems { append(item, to: &merged, positions: &positions) }
-        for item in currentItems { append(item, to: &merged, positions: &positions) }
+        for item in tail { append(item, to: &merged, positions: &positions) }
         return merged
     }
 

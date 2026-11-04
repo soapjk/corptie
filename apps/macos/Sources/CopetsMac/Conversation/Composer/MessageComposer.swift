@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import CorptieClientCore
 import CorptieConversation
+import Observation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -57,13 +58,17 @@ struct MessageComposer: View {
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
     var onSubmissionStarted: () -> Void = {}
+    var onJumpToLatest: (() -> Void)? = nil
+    var hasUnreadMessagesBelow = false
+    var quickMessagePresentation: ComposerQuickMessagePresentation? = nil
     @State private var revision: UInt64 = 0
     var body: some View {
         SessionMessageComposerSurface(sessionId: sessionId, draftRepository: draftRepository,
             modelCatalog: modelCatalog, backendClient: backendClient,
             allowsModelSwitch: allowsModelSwitch, compact: compact, status: status,
             isReady: isReady, notReadyReason: notReadyReason, activityStatus: activityStatus,
-            onSubmissionStarted: onSubmissionStarted, legacyRevision: revision)
+            onSubmissionStarted: onSubmissionStarted, onJumpToLatest: onJumpToLatest,
+            hasUnreadMessagesBelow: hasUnreadMessagesBelow, quickMessagePresentation: quickMessagePresentation, legacyRevision: revision)
         .onReceive(Publishers.MergeMany([
             backendClient.objectWillChange.eraseToAnyPublisher(),
             backendClient.appState.objectWillChange.eraseToAnyPublisher(),
@@ -75,6 +80,7 @@ struct MessageComposer: View {
 }
 
 struct SessionMessageComposerSurface: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let modelCatalog: ProviderCatalogStore
     private let backendClient: BackendClient
@@ -98,6 +104,8 @@ struct SessionMessageComposerSurface: View {
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
     let onSubmissionStarted: () -> Void
+    let onJumpToLatest: (() -> Void)?
+    let hasUnreadMessagesBelow: Bool
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
     @State private var inputHeight = ComposerInputLayout.minimumHeight
@@ -115,7 +123,15 @@ struct SessionMessageComposerSurface: View {
     @State private var mentionSelectionIndex = 0
     @State private var selectedMentions: [ConversationMention] = []
     @State private var quickMessageRefresh = 0
-    @State private var showsQuickMessages = false
+    @State private var localShowsQuickMessages = true
+    let quickMessagePresentation: ComposerQuickMessagePresentation?
+    private var showsQuickMessages: Bool {
+        get { quickMessagePresentation?.showsMessages ?? localShowsQuickMessages }
+        nonmutating set {
+            if let quickMessagePresentation { quickMessagePresentation.showsMessages = newValue }
+            else { localShowsQuickMessages = newValue }
+        }
+    }
 
     init(
         sessionId: String,
@@ -129,8 +145,11 @@ struct SessionMessageComposerSurface: View {
         notReadyReason: SessionNotReadyReason?,
         activityStatus: String?,
         onSubmissionStarted: @escaping () -> Void = {},
+        onJumpToLatest: (() -> Void)? = nil, hasUnreadMessagesBelow: Bool = false,
+        quickMessagePresentation: ComposerQuickMessagePresentation? = nil,
         renderInputs: SessionPageRenderInputs? = nil, legacyRevision: UInt64 = 0
     ) {
+        self.quickMessagePresentation = quickMessagePresentation
         self.sessionId = sessionId
         self.modelCatalog = modelCatalog
         self.backendClient = backendClient
@@ -143,6 +162,8 @@ struct SessionMessageComposerSurface: View {
         self.notReadyReason = notReadyReason
         self.activityStatus = activityStatus
         self.onSubmissionStarted = onSubmissionStarted
+        self.onJumpToLatest = onJumpToLatest
+        self.hasUnreadMessagesBelow = hasUnreadMessagesBelow
         let draft = draftRepository.draft(for: sessionId)
         draft.sessionId = sessionId
         _attachedImages = State(initialValue: draft.images)
@@ -160,17 +181,15 @@ struct SessionMessageComposerSurface: View {
 
     private var composerLayout: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !compact && showsQuickMessages {
-                MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
-                    taskID: session?.taskId, online: online, refreshRevision: renderInputs?.quickMessageRevision ?? quickMessageRefresh,
+            if !compact && quickMessagePresentation == nil && (showsQuickMessages || onJumpToLatest != nil) {
+                ComposerQuickMessagesBar(backendClient: backendClient, sessionId: sessionId,
+                    taskID: session?.taskId, online: online,
+                    refreshRevision: renderInputs?.quickMessageRevision ?? quickMessageRefresh,
                     enabled: canSend && !sendingMessage && session?.archived != true,
-                    activity: renderInputs?.activity,
-                    load: { try await backendClient.quickMessages(for: sessionId) }) { text in
+                    activity: renderInputs?.activity, showsMessages: showsQuickMessages,
+                    onJumpToLatest: onJumpToLatest, hasUnreadMessagesBelow: hasUnreadMessagesBelow) { text in
                     guard canSend, !sendingMessage, let session, session.archived != true else { return }
-                    // Independent send: never clear or attach the editor's draft.
-                    if backendClient.sendMessage(text, to: session, onSuccess: didSendMessage) {
-                        onSubmissionStarted()
-                    }
+                    if backendClient.sendMessage(text, to: session, onSuccess: didSendMessage) { onSubmissionStarted() }
                 }
             }
             if compact {
@@ -269,7 +288,7 @@ struct SessionMessageComposerSurface: View {
 
     private func didSendMessage() {
         if let renderInputs { renderInputs.didSendMessage() }
-        else { quickMessageRefresh &+= 1 }
+        else { quickMessageRefresh &+= 1; quickMessagePresentation?.refreshRevision &+= 1 }
     }
 
     @ViewBuilder private var modelMenu: some View {
@@ -327,10 +346,18 @@ struct SessionMessageComposerSurface: View {
             }
             HStack(spacing: 6) {
                 if allowsModelSwitch && canSwitchModel { modelMenu }
-                stopButton(compact: false)
+                if showsStopControl {
+                    stopButton(compact: false)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
                 sendButton
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showsStopControl)
         }
+    }
+
+    private var showsStopControl: Bool {
+        session?.executionTaskStatus == .running && session?.canInterruptNow == true
     }
 
     private var compactEditorRow: some View {
@@ -403,7 +430,7 @@ struct SessionMessageComposerSurface: View {
     private var moreMenu: some View {
         Menu {
             if !compact {
-                Toggle(L10n("显示快捷指令"), isOn: $showsQuickMessages)
+                Toggle(L10n("显示快捷指令"), isOn: Binding(get: { showsQuickMessages }, set: { showsQuickMessages = $0 }))
                 Divider()
             }
             Button {
@@ -808,14 +835,8 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var canSend: Bool {
-        guard allowsActions, online, let session, session.isReady else { return false }
-        if let renderInputs {
-            guard !renderInputs.verifyingBinding, renderInputs.historicalThreadID == nil else { return false }
-        } else {
-            guard !backendClient.bindingVerificationSessionIDs.contains(sessionId),
-                  backendClient.selectedSession?.id != sessionId || backendClient.viewingHistoricalThreadId == nil else { return false }
-        }
-        return session.actions?.send.available ?? true
+        ComposerSendPolicy.canSend(session: session, sessionId: sessionId,
+            backendClient: backendClient, renderInputs: renderInputs)
     }
 
     private var modelMenuMaxWidth: CGFloat {
@@ -920,5 +941,70 @@ private struct ComposerWidthPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// Shared only by the editor and its floating actions; no geometry or transcript state.
+@MainActor @Observable
+final class ComposerQuickMessagePresentation {
+    var showsMessages = true
+    var refreshRevision = 0
+}
+
+@MainActor
+enum ComposerSendPolicy {
+    static func canSend(session: TaskSession?, sessionId: String, backendClient: BackendClient,
+                        renderInputs: SessionPageRenderInputs?) -> Bool {
+        let online = renderInputs?.online ?? backendClient.isOnline
+        if let renderInputs, renderInputs.actionSession(generation: renderInputs.activity.generation) == nil { return false }
+        guard online, let session, session.isReady else { return false }
+        if let renderInputs {
+            guard !renderInputs.verifyingBinding, renderInputs.historicalThreadID == nil else { return false }
+        } else {
+            guard !backendClient.bindingVerificationSessionIDs.contains(sessionId),
+                  backendClient.selectedSession?.id != sessionId || backendClient.viewingHistoricalThreadId == nil else { return false }
+        }
+        return session.actions?.send.available ?? true
+    }
+}
+
+struct ComposerQuickMessagesBar: View {
+    let backendClient: BackendClient
+    let sessionId: String
+    let taskID: String?
+    let online: Bool
+    let refreshRevision: Int
+    let enabled: Bool
+    let activity: ConversationDetailPresentationActivity?
+    let showsMessages: Bool
+    let onJumpToLatest: (() -> Void)?
+    let hasUnreadMessagesBelow: Bool
+    let send: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if showsMessages {
+                MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
+                    taskID: taskID, online: online, refreshRevision: refreshRevision,
+                    enabled: enabled,
+                    activity: activity,
+                    load: { try await backendClient.quickMessages(for: sessionId) }) { text in
+                    send(text)
+                }
+            } else {
+                Spacer(minLength: 0)
+            }
+            if let onJumpToLatest {
+                Button(action: onJumpToLatest) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow))
+                .help(L10n("Jump to latest message"))
+                .accessibilityLabel(L10n("Jump to latest message"))
+                .accessibilityIdentifier("conversation-jump-to-latest")
+            }
+        }
     }
 }

@@ -93,9 +93,9 @@ extension UnifiedConsoleView {
         .contentMargins(.top, 40, for: .scrollContent)
     }
 
-    func hierarchyTaskRow(_ task: CorptieTask) -> some View {
+    func hierarchyTaskRow(_ task: CorptieTask, showsHoverFeedback: Bool = true) -> some View {
         HStack(spacing: 4) {
-            taskRow(task)
+            taskRow(task, showsHoverFeedback: showsHoverFeedback)
             if let hierarchy = task.hierarchy, hierarchy.childCount > 0 {
                 Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
@@ -166,11 +166,12 @@ extension UnifiedConsoleView {
     }
 
     @ViewBuilder
-    func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View {
+    func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true, showsHoverFeedback: Bool = true) -> some View {
         let session = workerSession(for: task)
             ?? archivedSessionIndexStore.taskSessionLookup.firstSession(for: task.id)
         let sessionActivity = sessionIndexStore.taskSessionLookup.activity(for: task)
         let rowView = ConsoleTaskRowContent(
+            showsHoverFeedback: showsHoverFeedback,
             task: task,
             sessionActivity: sessionActivity,
             session: session,

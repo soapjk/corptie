@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Testing
 @testable import CorptieMac
 
@@ -49,18 +50,19 @@ struct MainTabNotificationIsolationTests {
     }
 
     @Test
-    func navigationRailIsAlwaysIconOnlyWithoutExpansionStateOrGestures() throws {
+    func navigationRailFitsCompactTrafficLightsAndRetainsTheLabelToggle() throws {
+        _ = NSApplication.shared
         #expect(MainNavigationRailLayout.width == 64)
         let source = try mainTabSource()
         #expect(!source.contains("navigationRailExpanded"))
-        #expect(source.contains(".frame(width: MainNavigationRailLayout.width)"))
+        #expect(source.contains(".frame(width: showsNavigationLabels ? 168 : MainNavigationRailLayout.width)"))
         let railURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/MainWindowNavigationRail.swift")
         let rail = try String(contentsOf: railURL, encoding: .utf8)
-        #expect(rail.contains("expanded: false"))
+        #expect(rail.contains("Toggle(L10n(\"显示导航文字\"), isOn: $showsLabels)"))
         #expect(!rail.contains("isExpanded"))
         #expect(!rail.contains("DragGesture"))
         #expect(!rail.contains("accessibilityAdjustableAction"))

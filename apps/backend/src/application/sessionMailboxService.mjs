@@ -1,6 +1,9 @@
+import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { randomUUID } from "node:crypto";
+import { dispatchReady, dispatchBlocked } from "../utils/dispatchDecision.mjs";
 import { formatTrustedChannelMessage } from "../collaboration/trustedCollaborationEvent.mjs";
+import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
 
 const actionable = intent => ["action_required", "response_required"].includes(intent);
 const fail = (code, statusCode = 409) => { throw Object.assign(new Error(code), { code, statusCode }); };
@@ -79,6 +82,7 @@ export class SessionMailboxService {
       COALESCE(mm.adopted_binding_id,external_delivery.binding_id) AS execution_binding_id,
       COALESCE(op.target_turn_id,cop.target_turn_id,external_delivery.provider_turn_id) AS execution_turn_id,
       json_extract(op.source_json,'$.mailboxDispatchAttempted') AS dispatch_attempted,
+      json_extract(op.source_json,'$.dispatchBlock') AS dispatch_block,op.last_error AS last_error,
       (SELECT COUNT(*) FROM session_collaboration_batch_items bi WHERE bi.batch_id=b.batch_id) AS batch_count
       FROM session_mailbox_messages mm
       LEFT JOIN session_collaboration_deliveries d ON d.delivery_id=mm.channel_delivery_id
@@ -103,6 +107,9 @@ export class SessionMailboxService {
       senderSessionId: row.sender_session_id ?? null, intent: row.intent, priority: row.priority,
       preview: boundedUnicodeText(row.content ?? "", 240), ...(full ? { body: row.content ?? "" } : {}),
       state, executionStatus: row.execution_status ?? null, read: Boolean(row.read_at),
+      dispatchBlock: !injected && row.dispatch_block ? decode(row.dispatch_block)
+        : !injected && !row.manual_requested && !actionable(row.intent) ? dispatchBlocked("MAILBOX_PASSIVE_MESSAGE","passive") : null,
+      errorMessage: row.last_error && (!injected || row.execution_status === "failed") ? redactInlineSecrets(row.last_error) : null,
       manualRequested: Boolean(row.manual_requested), batchId: row.batch_id ?? null,
       batchCount: Number(row.batch_count ?? 0), turnId: row.adopted_turn_id ?? row.target_turn_id ?? row.execution_turn_id ?? null,
       canHandle: row.disposition === "pending" && !injected && !row.batch_id && (!row.execution_status || row.execution_status === "queued"),
@@ -237,14 +244,51 @@ export class SessionMailboxService {
   }
 
   canDispatchOperation(operation) {
+    return this.dispatchDecision(operation).allowed;
+  }
+
+  reportDispatchBlock(operation) {
+    const block=operation.source?.dispatchBlock;
+    // Coordination has its own durable, grouped status outbox.
+    if(!block || block.reportMessageId || operation.source?.coordinationDispatchId) return;
+    if(this.store.getAgentTask(operation.taskId)?.source?.dispatchBlock?.reportMessageId) return;
+    const recipient=this.store.getSession(operation.sessionId), child=recipient?.taskId && this.store.getTask(recipient.taskId);
+    const parent=child?.parent_task_id && this.store.getTask(child.parent_task_id);
+    if(!parent || parent.work_id!==child.work_id) return;
+    const row=operation.source?.mailboxMessageId && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[operation.source.mailboxMessageId]);
+    const envelope=row?.channel_delivery_id && this.channelService?.getDeliveryEnvelope(row.channel_delivery_id);
+    const origin=envelope?.message?.senderSessionId ?? decode(row?.authorization_json).sourceSessionId ?? parent.current_session_id;
+    if(!origin) return;
+    const logical=this.store.getLogicalSession(origin) ?? this.store.getLogicalSessionByLegacySessionId(origin);
+    const session=logical && this.store.getSession(logical.legacySessionId);
+    if(!logical || session?.taskId!==parent.id || session.workId!==child.work_id || session.archived || session.deletedAt) return;
+    const sourceId=`mailbox-dispatch:${operation.taskId}`;
+    this.store.runInTransaction(()=>{
+      const message=this.receiveEvent({recipientSessionId:logical.logicalSessionId,sourceType:"system",sourceId,
+        body:`${CHILD_TASK_RESULT_NOTICE_PREFIX}子会话的消息尚未派发，请向用户说明具体原因并读取最新状态；这不是新的执行指令。\n${JSON.stringify({childTaskId:child.id,childSessionId:operation.sessionId,operationId:operation.taskId,code:block.code,message:block.message,kind:block.kind})}`,
+        intent:"response_required",priority:5,idempotencyKey:JSON.stringify([operation.taskId,operation.updatedAt,block.code,block.message]),
+        authorization:{ownerLogicalSessionId:logical.logicalSessionId,sourceId,purpose:"dispatch_status"}});
+      this.store.updateAgentTask(operation.taskId,{source:{...operation.source,dispatchBlock:{...block,reportMessageId:message.messageId}}});
+    });
+  }
+
+  dispatchDecision(operation) {
     const row = operation.source?.mailboxMessageId ? this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [operation.source.mailboxMessageId])
       : operation.source?.type === "session_channel" ? this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE channel_delivery_id=?", [operation.deliveryId]) : null;
-    if (!row) return true;
-    if (row.disposition !== "pending") return false;
-    const logical = this.logical(row.recipient_session_id), session = this.store.getSession(logical.legacySessionId);
-    if (!session || session.deletedAt || logical.activeBinding?.state !== "active" || session.archived
-      || (session.status === "cancelled" && !row.manual_requested)) return false;
-    return Boolean(row.manual_requested) || (!this.settings(logical.logicalSessionId).paused && actionable(row.intent));
+    if (!row) return operation.source?.mailboxMessageId ? dispatchBlocked("MAILBOX_MESSAGE_NOT_FOUND","rejected") : dispatchReady();
+    if (row.disposition !== "pending") return dispatchBlocked(row.disposition === "ignored" ? "MAILBOX_MESSAGE_IGNORED" : "MAILBOX_MESSAGE_ADOPTED","settled");
+    let logical;
+    try { logical=this.logical(row.recipient_session_id); }
+    catch { return dispatchBlocked("RECIPIENT_SESSION_NOT_FOUND","blocked"); }
+    const session = this.store.getSession(logical.legacySessionId);
+    if (!session) return dispatchBlocked("RECIPIENT_SESSION_NOT_FOUND","blocked");
+    if (session.deletedAt || logical.deletedAt) return dispatchBlocked("RECIPIENT_SESSION_DELETED","blocked");
+    if (session.archived || logical.archived) return dispatchBlocked("RECIPIENT_SESSION_ARCHIVED","blocked");
+    if (logical.activeBinding?.state !== "active") return dispatchBlocked("MAILBOX_ROUTE_UNAVAILABLE","blocked");
+    // Cancelled describes a previous run, never the disposition of new mail.
+    if (row.manual_requested) return dispatchReady();
+    if (this.settings(logical.logicalSessionId).paused) return dispatchBlocked("MAILBOX_PAUSED","paused");
+    return actionable(row.intent) ? dispatchReady() : dispatchBlocked("MAILBOX_PASSIVE_MESSAGE","passive");
   }
 
   validateOperation(operation) {
@@ -317,13 +361,16 @@ export class SessionMailboxService {
   }
 
   syncQueuedOperations(register) {
-    for (const row of this.store.selectAll(`SELECT mm.operation_id,mm.recipient_session_id FROM session_mailbox_messages mm
+    const rows=this.store.selectAll(`SELECT mm.sequence,mm.operation_id,mm.recipient_session_id FROM session_mailbox_messages mm
       JOIN agent_operations op ON op.task_id=mm.operation_id WHERE mm.disposition='pending' AND op.status='queued'
-      AND (mm.manual_requested=1 OR (mm.intent IN ('action_required','response_required') AND NOT EXISTS(
-        SELECT 1 FROM session_mailbox_settings ms WHERE ms.recipient_session_id=mm.recipient_session_id AND ms.paused=1)))
-      ORDER BY mm.manual_requested DESC,mm.sequence LIMIT 500`)) {
-      const logical = this.logical(row.recipient_session_id);
+      AND (mm.manual_requested=1 OR mm.intent IN ('action_required','response_required'))
+      AND mm.sequence > ? ORDER BY mm.sequence LIMIT 500`,[this.queueSyncCursor ?? 0]);
+    this.queueSyncCursor=rows.length===500 ? rows.at(-1).sequence : 0;
+    for (const row of rows) {
       const operation = this.store.getAgentTask(row.operation_id);
+      let logical;
+      try { logical=this.logical(row.recipient_session_id); }
+      catch { register(operation.sessionId,operation.taskId); continue; }
       if (operation.sessionId !== logical.legacySessionId) this.store.updateAgentTask(operation.taskId, { sessionId: logical.legacySessionId });
       register(logical.legacySessionId, operation.taskId);
     }

@@ -1,3 +1,4 @@
+import { integrationBlocksWorkspaceCapture } from "../../domain/worktreeCreationScope.mjs";
 import { createHash } from "node:crypto";
 
 const active = "COALESCE(deletion_status,'') <> 'deleted' AND creation_state='ready'";
@@ -37,22 +38,22 @@ export class TaskHierarchyRepository {
   constructor(ports) { Object.assign(this, ports); }
   get db() { return this.getDatabase(); }
 
-  assertParentForCreate({ workId, parentTaskId, expectedParentResourceVersion }) {
+  assertParentForCreate({ workId, parentTaskId }) {
     if (!parentTaskId) return null;
     const parent = this.getTask(parentTaskId);
     if (!parent || parent.work_id !== workId) throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
-    if (!Number.isSafeInteger(expectedParentResourceVersion) || expectedParentResourceVersion < 1
-      || parent.resource_version !== expectedParentResourceVersion) {
-      throw taskHierarchyError("TASK_PARENT_VERSION_CONFLICT");
-    }
     if (parent.parent_task_id) throw taskHierarchyError("TASK_MAX_DEPTH_EXCEEDED");
     if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status || parent.creation_state !== "ready") {
       throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
     }
     const context = this.getTaskWorkspaceContext(parent);
-    if (context?.repository && this.selectOne(`SELECT 1 FROM worktree_integration_jobs
-      WHERE repository_id=? AND status IN ('queued','running','paused','cancellation_requested','replanning') LIMIT 1`,
-    [context.repository.id])) throw taskHierarchyError("TASK_HIERARCHY_BUSY");
+    if (context?.repository) {
+      const binding = this.getTaskDeliveryBinding(parent.id);
+      const jobs = this.selectAll(`SELECT id,phase,status,details_json FROM worktree_integration_jobs
+        WHERE repository_id=? AND status IN ('queued','running','paused','cancellation_requested','replanning')`, [context.repository.id]);
+      if (binding && jobs.some(job=>integrationBlocksWorkspaceCapture(job,binding.worktree_id,
+        this.listGitWorktrees?.(context.repository.id) ?? []))) throw taskHierarchyError('TASK_HIERARCHY_BUSY');
+    }
     return parent;
   }
 

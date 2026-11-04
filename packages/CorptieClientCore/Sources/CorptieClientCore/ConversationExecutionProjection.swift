@@ -7,6 +7,8 @@ public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
         public let ordinal: Int
         public let text: String
         public let status: String
+        public let condition: String?
+        public let reason: String?
         public var id: String { stepId }
 
         public var marker: String {
@@ -20,6 +22,10 @@ public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
         }
     }
 
+    public var taskId: String? = nil
+    public var stopReason: String? = nil
+    public var completedCount: Int? = nil
+    public var executionAvailable: Bool? = nil
     public let schemaVersion: Int
     public let planId: String
     public let revision: Int

@@ -72,8 +72,6 @@ struct SettingsView: View {
     @ObservedObject private var settingsState = BackendClient.shared.settingsController
     @ObservedObject private var feishuStore = BackendClient.shared.feishuStore
     @ObservedObject private var appLanguage = AppLanguageController.shared
-    @AppStorage(SessionSwitchingPreferences.preferenceKey, store: CorptieAppEnvironment.userDefaults)
-    private var acceleratedSessionSwitching = SessionSwitchingPreferences.launchEnabled
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
     @State private var draft = SettingsDraftState()
@@ -528,22 +526,18 @@ struct SettingsView: View {
 
                 Divider()
 
-                SettingsSectionHeading(title: L10n("性能"), mode: L10n("Saved locally; restart the app to apply."))
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle(L10n("加速会话切换"), isOn: $acceleratedSessionSwitching)
-                            .accessibilityIdentifier("settings.sessionSwitchingAcceleration")
-                        Text(L10n("保留最近访问的会话页面，减少重复排版和输入区重建。最多保留 8 个页面，会增加内存占用。更改后重新启动 App 生效。"))
-                            .font(WorkbenchTypography.font(for: .help))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                        if acceleratedSessionSwitching != SessionSwitchingPreferences.launchEnabled {
-                            Text(L10n("需要重新启动 App 才能应用此更改。"))
-                                .font(WorkbenchTypography.font(for: .help))
-                                .foregroundStyle(CorptiePalette.amber)
-                                .accessibilityIdentifier("settings.sessionSwitchingRestartRequired")
-                        }
-                    }.padding(8)
+                SettingsSectionHeading(title: L10n("Session collaboration"), mode: L10n("Requires Save Settings"))
+                SettingsOptionRow(title: L10n("Confirm the first collaboration message"),
+                                  explanation: L10n("Ask before two sessions first communicate. Turn off to send directly; existing channels and parent-child collaboration keep their current permissions.")) {
+                    Toggle(L10n("Confirm the first collaboration message"), isOn: $draft.collaboration.requireFirstMessageConfirmation)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .disabled(draft.isReadOnly)
+                        .accessibilityIdentifier("settings.collaboration.requireFirstMessageConfirmation")
                 }
+
+                Divider()
+
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         SettingsSectionHeading(title: L10n("Storage"), mode: L10n("Requires Save Settings"))
@@ -779,7 +773,8 @@ struct SettingsView: View {
                 codeDiff: submitted.codeDiff,
                 agentProxy: submitted.agentProxy,
                 gateway: submitted.gateway,
-                sessionCreationDefaults: draft.dirtyTabs.contains(.provider) ? submitted.taskCreation : nil
+                sessionCreationDefaults: draft.dirtyTabs.contains(.provider) ? submitted.taskCreation : nil,
+                collaboration: submitted.collaboration
             )
             guard updated, let settings = settingsState.settings else {
                 throw BackendError.message(backendClient.lastError ?? L10n("Save failed"))

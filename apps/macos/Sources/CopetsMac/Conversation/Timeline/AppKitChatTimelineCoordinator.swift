@@ -1324,10 +1324,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 // to remeasure every offscreen message for every drag tick.
                 needsExactWidthReflow = true
                 if requiresReflow, !rowsToReflow.isEmpty {
-                    tableView.noteHeightOfRows(withIndexesChanged: rowsToReflow)
+                    updateWidthReflowHeights(rowsToReflow, in: tableView)
                 }
             } else if requiresReflow {
-                tableView.noteHeightOfRows(withIndexesChanged: rowsToReflow)
+                updateWidthReflowHeights(rowsToReflow, in: tableView)
                 synchronizeDocumentHeight(in: tableView)
             }
             if requiresReflow {
@@ -1371,12 +1371,20 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             }
         }
         lastReflowMeasurementWidth = exactWidth
-        tableView.noteHeightOfRows(
-            withIndexesChanged: IndexSet(integersIn: 0..<rows.count)
-        )
+        updateWidthReflowHeights(IndexSet(integersIn: 0..<rows.count), in: tableView)
         synchronizeDocumentHeight(in: tableView)
         if followsLatest { enqueueCorrection(.bottom) }
         else if let anchor { _ = restore(anchor: anchor, in: tableView) }
+    }
+
+    private func updateWidthReflowHeights(_ indexes: IndexSet, in tableView: NSTableView) {
+        // View-based tables animate noteHeightOfRows by default. Width reflow
+        // must follow the native resize immediately, without queuing row motion.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            tableView.noteHeightOfRows(withIndexesChanged: indexes)
+        }
     }
 
     private func visibleAnchor(in tableView: NSTableView) -> (id: String, offset: CGFloat)? {
@@ -1441,6 +1449,21 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             tableView?.deselectAll(nil)
             tableView?.selectionHighlightStyle = .none
         }
+    }
+
+    private var navigationSessionID: String?
+    private var lastNavigationRevision = -1
+    private var pendingNavigationRowID: String?
+    func applyMessageNavigation(rowID: String?, revision: Int) {
+        if navigationSessionID != representedSessionID || lastNavigationRevision != revision {
+            navigationSessionID = representedSessionID
+            lastNavigationRevision = revision
+            pendingNavigationRowID = rowID
+        }
+        guard let id = pendingNavigationRowID,
+              let row = rows.firstIndex(where: { $0.id == id }), tableView != nil else { return }
+        pendingNavigationRowID = nil
+        scrollToRow(row)
     }
 
     func scrollToTurn(_ turnID: String) {

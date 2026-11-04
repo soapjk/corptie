@@ -1,9 +1,11 @@
+import { integrationBlocksWorkspaceCapture } from "../domain/worktreeCreationScope.mjs";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { realpath } from "node:fs/promises";
 import { taskHierarchyError as error } from "../store/repositories/taskHierarchyRepository.mjs";
 import { TaskIntegrationAcceptanceService, hierarchyDigest } from "./taskIntegrationAcceptanceService.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
+import { ProjectWorkspaceSnapshotService } from "./projectWorkspaceSnapshotService.mjs";
 import { gitScalarOutput } from "../utils/gitScalarOutput.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -263,25 +265,30 @@ export class TaskWorktreeHierarchyService {
     return { task, binding, inventory };
   }
 
-  async validateCreate(taskInput, constraints = {}) {
+  async validateCreate(taskInput) {
     if (!taskInput?.parentTaskId) return;
-    this.store.assertParentForCreate({ ...taskInput, ...constraints });
+    this.store.assertParentForCreate(taskInput);
     const context = this.store.getTaskWorkspaceContext(taskInput.parentTaskId);
     if (context?.repository) {
       const { inventory } = this.resolveTaskDelivery(taskInput.parentTaskId);
-      await this.assertClean(inventory);
+      await this.assertSnapshotSource(inventory);
     }
   }
 
   async assertClean(inventory) {
+    await this.assertSnapshotSource(inventory);
+    if (await this.git(inventory.canonicalPath || inventory.path, ["status", "--porcelain=v1", "--untracked-files=normal"])) {
+      throw error("PARENT_WORKTREE_DIRTY", "Commit or handle Worktree changes before integration.");
+    }
+  }
+
+  async assertSnapshotSource(inventory) {
     const path = inventory.canonicalPath || inventory.path;
     const repository = this.store.getGitRepository(inventory.repositoryId);
     const common = await this.scalar(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     if (!repository || await realpath(common) !== await realpath(repository.commonGitDirCanonicalPath)) {
       throw error("TASK_DELIVERY_BINDING_CHANGED");
     }
-    const status = await this.git(path, ["status", "--porcelain=v1", "--untracked-files=normal"]);
-    if (status) throw error("PARENT_WORKTREE_DIRTY", "Commit or handle parent Worktree changes before creating a child.");
     for (const ref of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"]) {
       const result = await this.scalar(path, ["rev-parse", "--verify", "--quiet", ref]).catch(cause => {
         if (cause.code === 1 || cause.code === 128) return "";
@@ -291,7 +298,7 @@ export class TaskWorktreeHierarchyService {
     }
   }
 
-  async freezeBaseForStartup({ startupOperationId, taskId, repositoryId }) {
+  async freezeBaseForStartup({ startupOperationId, taskId, repositoryId, startupTiming = null }) {
     const task = this.store.getTask(taskId);
     if (!task?.parent_task_id) return null;
     const operation = this.store.selectOne("SELECT * FROM work_session_startup_operations WHERE startup_operation_id=?", [startupOperationId]);
@@ -304,16 +311,19 @@ export class TaskWorktreeHierarchyService {
     const { task:parent, binding, inventory } = this.resolveTaskDelivery(task.parent_task_id);
     if (parent.parent_task_id || parent.work_id !== task.work_id || binding.repository_id !== repositoryId) throw error("TASK_PARENT_INVALID");
     if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status) throw error("TASK_PARENT_UNAVAILABLE");
-    await this.assertClean(inventory);
     const path = inventory.canonicalPath || inventory.path;
-    const baseCommitOid = await this.scalar(path, ["rev-parse", "HEAD"]);
-    const baseTreeOid = await this.scalar(path, ["rev-parse", `${baseCommitOid}^{tree}`]);
-    if (!/^[a-f0-9]{40,64}$/i.test(baseCommitOid) || !/^[a-f0-9]{40,64}$/i.test(baseTreeOid)) throw error("START_SOURCE_IDENTITY_UNAVAILABLE");
-    await this.assertClean(inventory);
-    if (await this.scalar(path, ["rev-parse", "HEAD"]) !== baseCommitOid) throw error("TASK_HIERARCHY_CHANGED");
-    const base = {version:1,kind:"parent",rootTaskId:parent.id,parentTaskId:parent.id,
+    const snapshot = await new ProjectWorkspaceSnapshotService().captureParentWorkspace({path,operationId:startupOperationId,
+      bindingContext:{parentTaskId:parent.id,parentWorktreeId:binding.worktree_id,parentBindingRevision:binding.binding_revision},
+      startupTiming,
+      validate:async()=>{
+        const jobs=this.store.selectAll(`SELECT * FROM worktree_integration_jobs WHERE repository_id=?
+          AND status IN ('queued','running','paused','cancellation_requested','replanning')`,[repositoryId]);
+        if(jobs.some(job=>integrationBlocksWorkspaceCapture(job,inventory.worktreeId,this.store.listGitWorktrees(repositoryId)))) throw error("TASK_HIERARCHY_BUSY");
+        await this.assertSnapshotSource(inventory);
+      }});
+    const base = {...snapshot,rootTaskId:parent.id,parentTaskId:parent.id,
       parentWorktreeId:binding.worktree_id,parentBindingRevision:binding.binding_revision,
-      hierarchyRevision:parent.hierarchy_revision,baseCommitOid,baseTreeOid};
+      hierarchyRevision:parent.hierarchy_revision};
     return this.store.runInTransaction(() => {
       this.assertBaseBinding(this.store.getTask(taskId), base);
       this.store.db.run(`UPDATE work_session_startup_operations SET worktree_base_context_json=?

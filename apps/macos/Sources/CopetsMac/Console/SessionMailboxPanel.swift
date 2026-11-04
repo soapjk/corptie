@@ -18,6 +18,13 @@ struct SessionMailboxMessage: Decodable, Identifiable, Equatable {
     let body: String?
     let state: String
     let executionStatus: String?
+    struct DispatchBlock: Decodable, Equatable {
+        let code: String
+        let message: String
+        let kind: String
+    }
+    let dispatchBlock: DispatchBlock?
+    let errorMessage: String?
     let read: Bool
     let manualRequested: Bool
     let batchId: String?
@@ -236,6 +243,7 @@ struct SessionMailboxPanel: View {
         default: ["notification", "acknowledgement"].contains(message.intent) && !message.manualRequested ? "已保存 · 不单独唤醒" : "等待处理"
         }
         var parts = [label]
+        if let reason = message.dispatchBlock?.message ?? message.errorMessage, !reason.isEmpty { parts.append(reason) }
         if message.batchCount > 1 { parts.append("本批 \(message.batchCount) 条") }
         if let status = message.executionStatus {
             let execution = switch status {

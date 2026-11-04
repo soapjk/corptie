@@ -2,7 +2,7 @@ import SwiftUI
 import CorptieConversation
 
 /// Targets the displayed Session, including workspace cards and detached chats.
-/// The reserved slot keeps usage and status text stable as execution starts/stops.
+/// Hidden controls occupy no space in the composer toolbar.
 struct SessionComposerStopButton: View {
     @EnvironmentObject private var backendClient: BackendClient
     let session: TaskSession?
@@ -30,16 +30,10 @@ struct SessionComposerStopSurface: View {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.red)
-                        .frame(width: ComposerShellMetrics.actionVisualEdge,
-                               height: ComposerShellMetrics.actionVisualEdge)
-                        .conversationGlassControl(tint: .red)
-                        .overlay {
-                            Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
-                                .allowsHitTesting(false)
-                        }
-                        .frame(width: compact ? ComposerShellMetrics.actionHitEdge : 44,
-                               height: compact ? ComposerShellMetrics.actionHitEdge : 32)
-                        .contentShape(Rectangle())
+                        .frame(width: ComposerShellMetrics.actionHitEdge,
+                               height: ComposerShellMetrics.actionHitEdge)
+                        .background(Color.red.opacity(0.12), in: Circle())
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!online)
@@ -48,7 +42,5 @@ struct SessionComposerStopSurface: View {
                 .accessibilityIdentifier("conversation-stop")
             }
         }
-        .frame(width: compact ? ComposerShellMetrics.actionHitEdge : 44,
-               height: compact ? ComposerShellMetrics.actionHitEdge : 32)
     }
 }

@@ -142,10 +142,31 @@ export class CoordinationTurnService {
           lastSettledTurnId: status === "running" ? current.external?.lastSettledTurnId : turnId,
           activityStatus: status === "running" ? "协调规划" : null } });
     };
-    saveTurn("running");
-    if (context.options?.agentTask?.taskId) this.store.updateAgentTask(context.options.agentTask.taskId, { targetTurnId: turnId });
-    this.emitEvent("SessionCoordinationStarted", { turnId }, { sessionId: reference.sessionId });
     try {
+      this.store.runInTransaction(() => {
+        saveTurn("running");
+        if (context.options?.agentTask?.taskId) this.store.updateAgentTask(context.options.agentTask.taskId, { targetTurnId: turnId });
+        // The no-tools planner does not emit ordinary Provider turn events.
+        // Correlate this exact Delivery at host Turn admission, rather than
+        // leaving its visible message dispatching until the planner returns.
+        const deliveryId = context.source?.deliveryId ?? context.options?.agentTask?.source?.deliveryId ?? context.idempotencyKey;
+        const delivery = deliveryId ? this.store.getMessageDelivery(deliveryId) : null;
+        if (delivery?.status === "dispatching" && delivery.sessionId === reference.sessionId
+          && delivery.bindingId === reference.bindingId && delivery.routingVersion === reference.routingVersion
+          && (!delivery.providerTurnId || delivery.providerTurnId === turnId)) {
+          this.store.updateMessageDelivery(deliveryId, {
+            status: "processing", providerTurnId: turnId, providerAcknowledgedAt: startedAt, lastError: null
+          });
+        }
+      });
+      if (context.options?.agentTask?.taskId) {
+        // Publish only after Turn, Task and Delivery admission have committed.
+        // Queued collaboration messages also need the ordinary running projection.
+        this.emitEvent("AgentWorkStarted", {
+          sessionId: reference.sessionId, task: this.store.getAgentTask(context.options.agentTask.taskId)
+        }, { sessionId: reference.sessionId, source: context.source });
+      }
+      this.emitEvent("SessionCoordinationStarted", { turnId }, { sessionId: reference.sessionId });
       const session = this.store.getSession(reference.sessionId);
       const work = this.store.getWork(task.work_id);
       const contributors = (work?.contributorAgentIds ?? []).map(id => this.store.getAgent(id)).filter(Boolean)
@@ -196,7 +217,7 @@ export class CoordinationTurnService {
               creation: { title: item.title, description: item.text, agentId: item.agentId }
             })
           })) });
-        answer = `已受理 ${admitted.dispatches.length} 项子任务指令，后台将继续执行。受理不代表已完成。\n`
+        answer = `已受理 ${admitted.dispatches.length} 项子任务指令，指令正在准备派发；实际启动或阻塞原因会另行回报。\n`
           + admitted.dispatches.map(row => `${row.dispatchId}：${row.status}`).join("\n");
       }
       const item = { id: `${turnId}:result`, turnId, bindingId: reference.bindingId, type: "agentMessage",

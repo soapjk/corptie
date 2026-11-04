@@ -214,6 +214,7 @@ export function createWorktreeIntegrationServices({
       targetPath: input.mainPath,
       targetWorktreeId: input.targetWorktreeId,
       sourceHead: input.sourceHead,
+      snapshotBase: input.snapshotBase,
       expectedMainHead: input.expectedMainHead,
       jobId: input.jobId
     }),

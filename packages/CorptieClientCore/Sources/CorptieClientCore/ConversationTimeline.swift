@@ -7,6 +7,7 @@ public protocol ConversationTimelineItem: Sendable {
     var timelineTurnID: String { get }
     var timelineTurnStatus: String { get }
     var userMessageStatus: String? { get }
+    var timelineLegacyMessageStatus: String? { get }
     var type: String { get }
     var text: String { get }
     var createdAt: String? { get }
@@ -20,6 +21,7 @@ public protocol ConversationTimelineItem: Sendable {
 
 public extension ConversationTimelineItem {
     var userMessageStatus: String? { nil }
+    var timelineLegacyMessageStatus: String? { nil }
     var collaborationDirection: String? { nil }
     var timelineHasImages: Bool { false }
     var timelineMessageOrigin: String? { nil }
@@ -387,7 +389,9 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         ))
     }
 
+    let taskChecklists = items.filter { $0.type == "executionChecklist" }
     for (index, item) in items.enumerated() {
+        if item.type == "executionChecklist" { continue }
         if isProcessItem(item) {
             processBuffer.append(item)
         } else if item.type == "agentMessage" {
@@ -411,7 +415,8 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     // inventing a source message, tool step or persisted placeholder.
     if lastProcessIndex == nil, !isTerminalTurn, !baseTurnId.isEmpty,
        let input = items.last(where: { item in
-           guard item.userMessageStatus?.lowercased() == "processing" else { return false }
+           guard UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
+               legacyStatus: item.timelineLegacyMessageStatus) == .processing else { return false }
            let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
            return kind == .userMessage || kind == .systemEvent || kind == .automationEvent
                || (kind == .collaborationMessage && item.collaborationDirection?.lowercased() == "inbound")
@@ -422,6 +427,14 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         }).map { $0 + 1 } ?? 0
         entries.insert(.init(kind: .process(turnId: baseTurnId, items: []),
                              processReplyState: .running), at: insertion)
+    }
+    if !taskChecklists.isEmpty {
+        let insertion = entries.lastIndex(where: { $0.isProcessGroup }).map { $0 + 1 }
+            ?? entries.firstIndex(where: { entry in
+                if case .message(let item) = entry.kind { return item.type == "agentMessage" }
+                return false
+            }) ?? entries.count
+        entries.insert(contentsOf: taskChecklists.map { ConversationEntry<Item>(kind: .message($0)) }, at: insertion)
     }
     return entries
 }

@@ -1,17 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
-import { isDeepStrictEqual } from "node:util";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 import { createStartupTiming } from "../utils/startupTiming.mjs";
 
 const terminal = new Set(["completed", "failed", "cancelled", "unknown"]);
 const fail = (code, message = code, statusCode = 409) => { throw Object.assign(new Error(message), { code, statusCode }); };
-
-function parentCreationGuard({ resource_version, execution_status, updated_at, ...guard }) {
-  // Only execution projection writes may be rebased. Keep every definition,
-  // lifecycle, policy and hierarchy field fenced, including future fields.
-  return guard;
-}
 
 // Durable admission/outbox metadata. Message ownership, delivery and execution
 // remain in SessionMailboxService and the existing runtime queue.
@@ -28,7 +21,7 @@ export class TaskCoordinationService {
   }
   update(id, fields) {
     const previous = this.get(id);
-    if (previous?.report_message_id && fields.status && previous.status !== fields.status) {
+    if (previous?.report_message_id && ["status","error_code","error_message"].some(key=>Object.hasOwn(fields,key) && previous[key]!==fields[key])) {
       this.store.db.run("UPDATE task_coordination_dispatches SET report_generation=report_generation+1 WHERE dispatch_id=?", [id]);
       fields = { ...fields, report_message_id: null };
     }
@@ -88,7 +81,9 @@ export class TaskCoordinationService {
   runDispatch(id) {
     if (this.running.has(id)) return this.running.get(id);
     const promise = this.execute(id).catch(error => {
-      this.update(id, { status: "failed", error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
+      const row=this.get(id);
+      const waiting=error.code === "TASK_HIERARCHY_BUSY" && !row?.target_task_id && !error.creationRecovery?.taskId;
+      this.update(id, { status: waiting ? "waiting_workspace" : "failed", error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
       this.scheduleReports();
     }).finally(() => this.running.delete(id));
     this.running.set(id, promise);
@@ -97,30 +92,15 @@ export class TaskCoordinationService {
   async createDispatchTask(row, request) {
     const idempotencyKey = `coordination:${row.dispatch_id}`;
     const runtime = JSON.parse(row.runtime_json);
-    for (let attempt = 0; ; attempt++) {
-      const current = this.sourceContext(row);
-      const before = current.scope.parent;
-      try {
-        return await this.collaboration.createTaskAndSession(current.metadata, row.source_role_id, {
-          ...request.creation, parentTaskId: row.parent_task_id, expectedParentResourceVersion: before.resource_version,
-          providerId: runtime.providerId, idempotencyKey
-        }, { runtimeConfiguration: runtime });
-      } catch (error) {
-        if (error.code !== "TASK_PARENT_VERSION_CONFLICT" || attempt >= 2 || error.creationRecovery?.taskId) throw error;
-        // Never replay a startup or allocation. A CAS rejected before the Task
-        // row exists is the only safe automatic retry boundary.
-        const persisted = this.store.selectOne("SELECT id FROM tasks WHERE created_by_session_id=? AND idempotency_key=?",
-          [row.source_session_id, idempotencyKey]);
-        if (persisted) throw error;
-        const after = this.sourceContext(row).scope.parent;
-        if (before.resource_version === after.resource_version
-          || !isDeepStrictEqual(parentCreationGuard(before), parentCreationGuard(after))) throw error;
-      }
-    }
+    const {metadata}=this.sourceContext(row);
+    return this.collaboration.createTaskAndSession(metadata,row.source_role_id,{
+      ...request.creation,parentTaskId:row.parent_task_id,providerId:runtime.providerId,idempotencyKey
+    },{runtimeConfiguration:runtime});
   }
+
   async execute(id) {
     let row = this.get(id);
-    if (!row || !["accepted", "preparing"].includes(row.status)) return;
+    if (!row || !["accepted", "preparing", "waiting_workspace"].includes(row.status)) return;
     const { metadata, scope } = this.sourceContext(row), request = JSON.parse(row.request_json);
     this.update(id, { status: "preparing", error_code: null, error_message: null });
     if (!row.target_task_id) {
@@ -160,8 +140,10 @@ export class TaskCoordinationService {
     if (!dispatch || dispatch.dispatch_id !== row.source_id) fail("COORDINATION_AUTHORIZATION_REVOKED");
     const { scope } = this.sourceContext(dispatch);
     if (authorization.purpose === "parent_report") {
-      if (row.recipient_session_id !== dispatch.source_session_id || !terminal.has(dispatch.status)
-        || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
+      if (authorization.statusNotice && (!Number.isSafeInteger(authorization.reportGeneration)
+        || authorization.reportGeneration < 0 || authorization.reportGeneration > dispatch.report_generation)) fail("COORDINATION_REPORT_SCOPE_INVALID");
+      if (row.recipient_session_id !== dispatch.source_session_id
+        || (!authorization.statusNotice && (!terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation))) fail("COORDINATION_REPORT_SCOPE_INVALID");
       return;
     }
     const child = this.store.getTask(dispatch.target_task_id);
@@ -178,6 +160,11 @@ export class TaskCoordinationService {
     return this.receipt(this.get(id));
   }
   onRuntimeEvent(type, payload) {
+    if (["WorktreeIntegrationJobChanged", "GitWorktreeChanged", "WorkspaceChanged"].includes(type)) {
+      for (const row of this.store.selectAll("SELECT dispatch_id FROM task_coordination_dispatches WHERE status='waiting_workspace'")) {
+        setImmediate(()=>this.runDispatch(row.dispatch_id));
+      }
+    }
     const deletion = payload?.operation;
     if (type === "TaskChanged" && deletion?.input?.actor?.type === "parent_session" && ["succeeded", "failed"].includes(deletion.state)) {
       const recipientSessionId = deletion.input.actor.id;
@@ -189,11 +176,22 @@ export class TaskCoordinationService {
       } catch (error) { console.warn(`[child-delete-report] ${error.code ?? error.message}`); }
     }
     const work = payload?.task;
+    if(work?.taskId && ["AgentWorkDispatchBlocked","AgentWorkDispatchReady"].includes(type)) {
+      const row=this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?",[work.taskId]);
+      if(row && !terminal.has(row.status)) {
+        const reason=payload.reason ?? work.source?.dispatchBlock;
+        this.update(row.dispatch_id,{status:type==="AgentWorkDispatchReady" ? "queued" : reason?.kind==="waiting" ? "waiting_dispatch" : "blocked",
+          error_code:type==="AgentWorkDispatchReady" ? null : reason?.code ?? "DISPATCH_BLOCKED",
+          error_message:type==="AgentWorkDispatchReady" ? null : reason?.message ?? work.lastError ?? "消息暂时无法派发。"});
+        this.scheduleReports();
+      }
+    }
     if (work?.taskId && ["AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
       const row = this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?", [work.taskId]);
       if (row) {
         const status = type === "AgentWorkStarted" ? "running" : type === "AgentWorkFailed" ? "failed" : work.status === "cancelled" ? "cancelled" : "completed";
-        this.update(row.dispatch_id, { status, error_message: work.lastError ?? null });
+        this.update(row.dispatch_id, { status, error_code:type === "AgentWorkStarted" ? null : work.source?.dispatchBlock?.code ?? null,
+          error_message: type === "AgentWorkStarted" ? null : work.lastError ?? null });
       }
     }
     if (["AgentWorkCompleted", "AgentWorkFailed", "SessionTurnCompleted", "SessionTurnFailed", "SessionRunCompleted", "SessionRunFailed", "SessionRunInterrupted", "TurnCompleted", "AgentTurnCompleted", "AgentTurnFailed", "MessageDeliveryChanged"].includes(type)) this.scheduleReports();
@@ -206,7 +204,7 @@ export class TaskCoordinationService {
   flushReports() {
     const rows = this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
       JOIN logical_sessions l ON l.logical_session_id=d.source_session_id JOIN sessions s ON s.id=l.legacy_session_id
-      WHERE d.status IN ('completed','failed','cancelled','unknown') AND d.report_message_id IS NULL
+      WHERE d.status IN ('completed','failed','cancelled','unknown','waiting_dispatch','blocked') AND d.report_message_id IS NULL
       AND s.archived=0 AND s.deleted_at IS NULL AND s.status NOT IN ('running','blocked')
       AND NOT EXISTS(SELECT 1 FROM agent_operations op WHERE op.session_id=s.id AND op.status='running')
       ORDER BY d.created_at LIMIT 100`);
@@ -231,20 +229,22 @@ export class TaskCoordinationService {
           finalMessageId: reply?.id ?? null, bindingId: reply?.binding_id ?? null,
           resultExcerpt: reply?.text ?? null, excerptTruncated: (reply?.fullLength ?? 0) > 1200 };
       });
-      const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}请读取对应会话的本次回复及权威状态，简洁汇报用户；完成不代表已验收，不自动合并或删除。不要把状态通知当作新的执行指令。\n${JSON.stringify(results)}`;
+      const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}以下是派发或执行状态通知，可能包含尚未启动的等待或阻塞原因。请读取权威状态，向用户说明具体原因；等待或阻塞不能当作已经执行；这不是新的执行指令。执行完成不代表已验收，不自动合并或删除。\n${JSON.stringify(results)}`;
       this.store.runInTransaction(() => {
         const message = this.mailbox.receiveEvent({ recipientSessionId, sourceType: "background", sourceId: first.dispatch_id,
           body, intent: "response_required", priority: 5, idempotencyKey: `report:${first.dispatch_id}:${first.report_generation}`,
           authorization: { ownerLogicalSessionId: recipientSessionId, sourceId: first.dispatch_id,
-            coordinationDispatchId: first.dispatch_id, purpose: "parent_report", reportGeneration: first.report_generation } });
+            coordinationDispatchId: first.dispatch_id, purpose: "parent_report", reportGeneration: first.report_generation,
+            statusNotice:group.some(row=>["waiting_dispatch","blocked"].includes(row.status)) } });
         for (const row of group) this.update(row.dispatch_id, { report_message_id: message.messageId });
       });
     }
   }
   recover() {
     for (const row of this.store.selectAll("SELECT * FROM task_coordination_dispatches WHERE status NOT IN ('completed','failed','cancelled','unknown')")) {
-      if (["accepted", "preparing"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
+      if (["accepted", "preparing", "waiting_workspace"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
       const work = this.store.getAgentTask(row.operation_id);
+      if(["waiting_dispatch","blocked"].includes(row.status) && work?.status === "queued") continue;
       const adopted = row.mailbox_message_id && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=? AND disposition='adopted'", [row.mailbox_message_id]);
       if (adopted) {
         const turn = this.store.getSessionTurn(adopted.adopted_provider_session_id, adopted.adopted_binding_id, adopted.adopted_turn_id);

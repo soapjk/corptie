@@ -49,6 +49,13 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertFalse(waiting.isExpanded)
         XCTAssertTrue(waiting.processSummaryText(languageCode: "zh").contains("处理中"))
         XCTAssertTrue(MacSharedMessageTextCard.supportsProcess(waiting))
+        let snapshotUser = try item(["id": "early-user", "type": "userMessage", "presentationRole": NSNull(),
+            "turnId": "turn:early", "turnStatus": "inProgress", "status": "processing"])
+        let snapshotEntries = ConversationReplyProgressProjection.entries(makeChatDisplayEntries(from: [snapshotUser]))
+        let snapshotRow = builder().nativeAppKitRow(try XCTUnwrap(snapshotEntries.last), expandedTurnIds: [])
+        XCTAssertEqual(snapshotRow.id, waiting.id)
+        XCTAssertEqual(snapshotRow.processState, .running)
+        XCTAssertEqual(snapshotRow.processCount, 0)
         for skin in [ConversationSkin.classic, .codexFlat] {
             let layout = NativeTimelineLayoutCache.shared.layout(for: waiting, columnWidth: 600, skin: skin)
             XCTAssertGreaterThan(layout.rowHeight, 0)
@@ -83,7 +90,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         for width: CGFloat in [320, 1000, 2400] {
             let preview = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width)
             let full = NativeTimelineLayoutCache.shared.layout(for: expanded, columnWidth: width)
-            XCTAssertEqual(preview.cardWidth, min(480, width - 4))
+            XCTAssertEqual(preview.cardWidth, min(480, width - 14))
             XCTAssertTrue(preview.triggerCanExpand)
             XCTAssertEqual(preview.triggerTextHeight, NativeTextKitLayout.height(of: try XCTUnwrap(preview.triggerText),
                 width: preview.cardWidth - 20, maximumLines: 3))
@@ -122,9 +129,9 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let card = AppKitChatTimelineRow(id: "functional-card", contentRevision: 0, nativeText: text, copyText: text,
             nativeStyle: .agent, title: "Event", metadata: "", expandableTurnId: nil, isExpanded: false, showsHeader: true)
         for typography in [ConversationTypography.classic, .codexReading] {
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: document, columnWidth: 1600, typography: typography).cardWidth, 1596)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: document, columnWidth: 1600, typography: typography).cardWidth, 1586)
             XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 1600, typography: typography).cardWidth, 480)
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 320, typography: typography).cardWidth, 316)
+            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 320, typography: typography).cardWidth, 306)
         }
     }
 

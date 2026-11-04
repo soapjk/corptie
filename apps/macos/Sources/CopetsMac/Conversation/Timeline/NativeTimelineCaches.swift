@@ -114,7 +114,7 @@ enum NativeTextKitLayout {
             containerSize: NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
         )
         textContainer.lineFragmentPadding = 0
-        textContainer.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byCharWrapping
+        textContainer.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
         textContainer.maximumNumberOfLines = maximumLines
         textContainer.widthTracksTextView = false
         textContainer.heightTracksTextView = false
@@ -468,8 +468,10 @@ final class NativeTimelineLayoutCache {
 
         if let plan = row.executionPlan {
             let cardWidth = min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, normalizedWidth - 8))
-            let measured = NativePlanChecklistHeightCache.shared.height(of: plan, width: cardWidth - 28)
-            let height = min(300, measured) + 28
+            let measured = plan.taskId != nil
+                ? TaskExecutionChecklist.previewHeight(plan: plan, width: cardWidth - 28)
+                : NativePlanChecklistHeightCache.shared.height(of: plan, width: cardWidth - 28)
+            let height = (plan.taskId != nil ? measured : min(300, measured)) + 28
             let layout = Layout(attributedText: NSAttributedString(string: ""), richBlocks: [],
                 processBlocks: [], cardWidth: cardWidth, textHeight: 0, rawStatusHeight: 0,
                 rowHeight: height + row.timeSeparatorHeight)

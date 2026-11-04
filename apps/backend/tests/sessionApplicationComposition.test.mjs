@@ -279,6 +279,21 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
   assert.deepEqual(statuses, [["recall:one", "context_included"]]);
 });
 
+test("tool preparation warnings are presented as nonblocking system notices", () => {
+  const events = [];
+  const service = createSessionApplicationComposition({ store: {}, agentProviderRegistry: {},
+    sessionBindingRepository: { resolve: () => null }, emitEvent: (...args) => events.push(args) });
+  service.observeLifecycle({ type: "SessionToolPreparationWarning", sessionId: "session:one",
+    bindingId: "binding:one", turnId: "turn:one", errorCode: "TOOL_MATERIALIZATION_OUTCOME_UNKNOWN" });
+  const [type, payload, options] = events[0];
+  assert.equal(type, "SessionToolPreparationWarning");
+  assert.equal(payload.item.type, "system");
+  assert.equal(payload.item.status, "completed");
+  assert.match(payload.item.text, /本次对话已继续/);
+  assert.equal(options.sessionId, "session:one");
+  assert.equal(options.eventId, payload.item.id);
+});
+
 // Real common context assembly and dispatch, with the optional model intentionally never resolving.
 for (const providerId of ['codex-app-server', 'claude-code', 'openclacky']) {
   for (const sessionKind of ['assistantChat', 'workChat', 'worker']) {
@@ -305,7 +320,7 @@ for (const providerId of ['codex-app-server', 'claude-code', 'openclacky']) {
           assert.equal(message, 'Use the selected document');
           assert.match(context.sessionContext.prompt, /Required selected document/);
           if (sessionKind === 'worker') assert.match(context.sessionContext.prompt, /Required task/);
-          return { turnId: 'turn:accepted' };
+          return { turnId: 'turn:accepted', delivery: 'accepted' };
         }
       })]);
       const service = createSessionApplicationComposition({ store, agentProviderRegistry: registry,

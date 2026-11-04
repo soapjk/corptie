@@ -109,6 +109,9 @@
 "Rename" = "重命名";
 "Restart Session" = "重启会话";
 "Restarting session…" = "正在重启会话…";
+"Session collaboration" = "会话协作";
+"Confirm the first collaboration message" = "首次发送协作消息时需要确认";
+"Ask before two sessions first communicate. Turn off to send directly; existing channels and parent-child collaboration keep their current permissions." = "两个会话首次联系时请求确认。关闭后可直接发送；已有通道及父子会话沿用当前权限。";
 "Reconnecting Existing Session" = "正在重连现有会话";
 "Starting Provider Runtime" = "正在启动 Provider 运行时";
 "Session Recovery Required" = "需要会话恢复";
@@ -2319,3 +2322,20 @@
 "已展开" = "已展开";
 
 "已折叠" = "已折叠";
+
+"关闭窗口" = "关闭窗口";
+"最小化窗口" = "最小化窗口";
+"全屏与窗口布局" = "全屏与窗口布局";
+"移动与调整大小" = "移动与调整大小";
+"左半屏" = "左半屏";
+"右半屏" = "右半屏";
+"上半屏" = "上半屏";
+"下半屏" = "下半屏";
+"左上角" = "左上角";
+"右上角" = "右上角";
+"左下角" = "左下角";
+"右下角" = "右下角";
+"填满窗口" = "填满窗口";
+"还原大小" = "还原大小";
+"全屏幕" = "全屏幕";
+"移到其他屏幕" = "移到其他屏幕";
