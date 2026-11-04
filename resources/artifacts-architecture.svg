@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 440" width="100%" height="100%">
+  <defs>
+    <linearGradient id="artBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+    <linearGradient id="workArtGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="taskArtGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f2942"/>
+      <stop offset="100%" stop-color="#091827"/>
+    </linearGradient>
+    <linearGradient id="projectGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="100%" stop-color="#022c22"/>
+    </linearGradient>
+    <filter id="artShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <marker id="artArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="amberArtArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <style>
+    .a-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .a-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12.5px; fill: #94a3b8; }
+    .a-card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 14px; fill: #f1f5f9; }
+    .a-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    .a-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11.5px; fill: #94a3b8; }
+    .a-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; fill: #38bdf8; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="920" height="440" rx="14" fill="url(#artBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Header -->
+  <g transform="translate(36, 24)">
+    <rect x="0" y="0" width="180" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="90" y="15" text-anchor="middle" class="a-badge" fill="#38bdf8">Artifacts Architecture</text>
+    <text x="0" y="46" class="a-title" font-size="18">Artifacts 资料管理与分层架构</text>
+    <text x="0" y="66" class="a-sub">Work 级公共资料与 Task 级私有资料独立管控 · 绝不污染 Git 仓库 · 本地程序按需安全物化</text>
+  </g>
+
+  <!-- Left: Corptie Managed Artifact Storage (Outside Git) -->
+  <g transform="translate(36, 96)" filter="url(#artShadow)">
+    <rect x="0" y="0" width="490" height="314" rx="12" fill="#0b111c" stroke="#334155" stroke-width="1.2"/>
+
+    <!-- Header of Managed Storage -->
+    <g transform="translate(18, 14)">
+      <rect x="0" y="0" width="130" height="20" rx="4" fill="#1e293b"/>
+      <text x="65" y="14" text-anchor="middle" class="a-badge" fill="#38bdf8">Corptie 本地托管存储</text>
+      <text x="140" y="15" class="a-desc" fill="#94a3b8">（独立于代码仓库，包含多版本与哈希追踪）</text>
+    </g>
+
+    <!-- Work-Level Artifacts Box -->
+    <g transform="translate(18, 44)">
+      <rect x="0" y="0" width="454" height="114" rx="8" fill="url(#workArtGrad)" stroke="#4338ca" stroke-width="1"/>
+      <text x="14" y="24" class="a-card-title" fill="#a5b4fc">📁 Work 层级 Artifacts (项目全局资料)</text>
+      <text x="14" y="42" class="a-desc">· 作用域：<tspan fill="#c7d2fe">当前 Work 内所有任务与会话共享可见</tspan></text>
+      <text x="14" y="60" class="a-desc">· 典型内容：系统架构设计书、PRD 需求文档、全局接口规范、数据库字典</text>
+      <text x="14" y="78" class="a-desc">· 特性：支持全文检索、标签与别名检索，多轮迭代中为所有 Agent 提供统一认知</text>
+      <rect x="14" y="88" width="80" height="18" rx="4" fill="#312e81"/>
+      <text x="54" y="100" text-anchor="middle" font-size="9.5" fill="#e0e7ff" font-weight="600">全局只读引用</text>
+    </g>
+
+    <!-- Task-Level Artifacts Box -->
+    <g transform="translate(18, 172)">
+      <rect x="0" y="0" width="454" height="124" rx="8" fill="url(#taskArtGrad)" stroke="#0284c7" stroke-width="1"/>
+      <text x="14" y="24" class="a-card-title" fill="#7dd3fc">📄 Task / 会话层级 Artifacts (任务私有资料)</text>
+      <text x="14" y="42" class="a-desc">· 作用域：<tspan fill="#bae6fd">仅当前任务与对应执行会话独享，对其他任务隔离保密</tspan></text>
+      <text x="14" y="60" class="a-desc">· 典型内容：模块草稿、重构方案明细、单次测试报告、性能压测数据、调试日志</text>
+      <text x="14" y="78" class="a-desc">· 特性：自动绑定 Session 与 Task 上下文，保留版本演进历史，避免跨任务污染</text>
+      <rect x="14" y="94" width="88" height="18" rx="4" fill="#075985"/>
+      <text x="58" y="106" text-anchor="middle" font-size="9.5" fill="#e0f2fe" font-weight="600">任务私有生命周期</text>
+    </g>
+  </g>
+
+  <!-- Middle: Connective Arrows for Materialization -->
+  <g transform="translate(526, 210)">
+    <path d="M 0 0 L 40 0" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4,3" fill="none" marker-end="url(#amberArtArrow)"/>
+    <text x="20" y="-12" text-anchor="middle" font-size="10.5" fill="#f59e0b" font-weight="600">按需物化</text>
+    <text x="20" y="18" text-anchor="middle" font-size="9.5" fill="#94a3b8">Materialize</text>
+  </g>
+
+  <!-- Right: Project Local Workspace (Git Repo) -->
+  <g transform="translate(572, 96)" filter="url(#artShadow)">
+    <rect x="0" y="0" width="312" height="314" rx="12" fill="#09141f" stroke="#059669" stroke-width="1.2"/>
+
+    <!-- Header -->
+    <g transform="translate(16, 14)">
+      <rect x="0" y="0" width="130" height="20" rx="4" fill="#064e3b"/>
+      <text x="65" y="14" text-anchor="middle" class="a-badge" fill="#6ee7b7">本地项目 Git 仓库</text>
+      <text x="16" y="44" class="a-card-title" font-size="13.5">代码工作区 (Workspace)</text>
+      <text x="16" y="62" class="a-desc" font-size="11">保持代码库纯粹干净，坚决不提交垃圾</text>
+    </g>
+
+    <line x1="16" y1="78" x2="296" y2="78" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Inside Workspace: .corptie/artifacts -->
+    <g transform="translate(16, 92)">
+      <!-- Git Tracked files -->
+      <rect x="0" y="0" width="280" height="74" rx="6" fill="#0a1c18" stroke="#10b981" stroke-width="0.8"/>
+      <text x="12" y="20" class="a-card-title" font-size="12" fill="#34d399">📦 Git 追踪目录 (源码区)</text>
+      <text x="12" y="38" class="a-code" font-size="10.5">src/  apps/  package.json ...</text>
+      <text x="12" y="58" class="a-desc" font-size="10.5">只存放真实代码交付物，绝无中间文档污染</text>
+
+      <!-- Materialized Directory -->
+      <g transform="translate(0, 88)">
+        <rect x="0" y="0" width="280" height="106" rx="6" fill="#1b170a" stroke="#d97706" stroke-width="1"/>
+        <text x="12" y="20" class="a-card-title" font-size="12" fill="#fbbf24">📂 .corptie/artifacts/ (本地物化)</text>
+        <text x="12" y="38" class="a-code" font-size="10.5" fill="#fde68a">.gitignore 强制忽略 · 绝不入库</text>
+        <text x="12" y="58" class="a-desc" font-size="10.5">当本地测试程序/编译器必须读取时</text>
+        <text x="12" y="74" class="a-desc" font-size="10.5">才受控解压出特定版本的只读镜像</text>
+        <text x="12" y="92" class="a-desc" font-size="10.5" fill="#6ee7b7">任务结束后自动回收，保持仓库整洁</text>
+      </g>
+    </g>
+  </g>
+</svg>
