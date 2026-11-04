@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+import Darwin
 @testable import CorptieMac
 
 private final class MemoryCenterURLProtocol: URLProtocol, @unchecked Sendable {
@@ -21,7 +22,7 @@ private final class MemoryCenterURLProtocol: URLProtocol, @unchecked Sendable {
             let records: [[String: Any]] = (0..<50).map { index in
                 ["id": "stress-\(page * 50 + index)", "ownerType": "global", "ownerId": "user:local", "kind": "fact",
                  "sourceType": "user", "promotionStatus": "active", "trustLevel": "trusted",
-                 "content": String(repeating: "合成记忆正文与很长的无空格关键词。", count: index == 49 ? 2000 : 10), "createdAt": "2026-11-02T00:00:00Z"]
+                 "content": "Stress \(page * 50 + index) " + String(repeating: "合成记忆正文与很长的无空格关键词。", count: index == 49 ? 2000 : 10), "createdAt": "2026-11-02T00:00:00Z"]
             }
             let payload: [String: Any] = ["memories": records, "hasMore": true, "nextCursor": String(page + 1)]
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
@@ -49,6 +50,7 @@ private final class MemoryCenterURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+@Suite(.serialized)
 @MainActor
 struct MemoryCenterTests {
     private func reader() -> MemoryCenterReader {
@@ -164,6 +166,114 @@ struct MemoryCenterTests {
             #expect(host.fittingSize.width <= width + 1)
             print("MEMORY_NATIVE_LAYOUT_AND_DRAW width=\(width) duration=\(start.duration(to: .now)); does not measure WindowServer presentation")
         }
+    }
+
+    private struct PaneProbe: NSViewRepresentable {
+        let name: String
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView()
+            view.identifier = .init(name)
+            return view
+        }
+        func updateNSView(_ view: NSView, context: Context) { }
+    }
+
+    @Test func columnsFillTheViewportEvenWhenTheirContentIsShort() throws {
+        func probe(_ view: NSView, _ name: String) -> NSView? {
+            if view.identifier?.rawValue == name { return view }
+            return view.subviews.lazy.compactMap { probe($0, name) }.first
+        }
+        for size in [CGSize(width: 1200, height: 900), CGSize(width: 1000, height: 400), CGSize(width: 480, height: 700)] {
+            let wide = MemoryCenterLayout.showsSidebar(size.width)
+            let host = NSHostingView(rootView: MemoryCenterColumns(showsScope: wide) {
+                VStack { Text("Scope"); Spacer(minLength: 0) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(PaneProbe(name: "scope"))
+            } content: {
+                Text("Short empty/loading/queue content")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(PaneProbe(name: "content"))
+            })
+            host.sizingOptions = []
+            host.frame = CGRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            let content = try #require(probe(host, "content"))
+            let frame = content.convert(content.bounds, to: host)
+            #expect(abs(frame.minY) < 1)
+            #expect(abs(frame.height - size.height) < 1)
+            #expect(abs(frame.maxX - size.width) < 1)
+            if wide {
+                let scope = try #require(probe(host, "scope"))
+                let scopeFrame = scope.convert(scope.bounds, to: host)
+                #expect(abs(scopeFrame.minY) < 1)
+                #expect(abs(scopeFrame.height - size.height) < 1)
+                #expect(abs(scopeFrame.width - 200) < 1)
+                #expect(frame.minX >= scopeFrame.maxX)
+            } else { #expect(abs(frame.minX) < 1) }
+        }
+    }
+
+    @Test func nativeLongListScrollPositionAndSelectionSurviveResizing() async throws {
+        _ = NSApplication.shared
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MemoryCenterURLProtocol.self]
+        let store = MemoryCenterStore(reader: MemoryCenterReader(baseURL: URL(string: "http://memory-stress.test")!, session: URLSession(configuration: configuration)))
+        let query = MemoryCenterQuery()
+        await store.load(query)
+        for _ in 0..<9 { await store.load(query, more: true) }
+        let host = NSHostingView(rootView: MemoryCenterView(store: store))
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 700), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; window.close() }
+        window.layoutIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        func tables(_ view: NSView) -> [NSTableView] {
+            (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap(tables)
+        }
+        let table = try #require(tables(host).first { $0.numberOfRows >= 500 })
+        let scroll = try #require(table.enclosingScrollView)
+        let initialOffset = scroll.contentView.bounds.minY
+        if let executable = ProcessInfo.processInfo.environment["CORPTIE_MEMORY_LAYOUT_PROBE"] {
+            NSApp.setActivationPolicy(.regular)
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+            try await Task.sleep(for: .milliseconds(300))
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = [String(Darwin.getpid())]
+            print("MEMORY_PROBE_TARGET_PID=\(Darwin.getpid()) PROCESS_INFO_PID=\(ProcessInfo.processInfo.processIdentifier)")
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            try process.run()
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while process.isRunning && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            if process.isRunning { process.terminate() }
+            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            print("MEMORY_SCREEN_PROBE_BEGIN\n\(output)MEMORY_SCREEN_PROBE_END")
+            #expect(process.terminationStatus == 0)
+        }
+        table.scrollRowToVisible(100)
+        try await Task.sleep(for: .milliseconds(80))
+        host.layoutSubtreeIfNeeded()
+        #expect(scroll.contentView.bounds.minY > initialOffset)
+        table.selectRowIndexes(IndexSet(integer: 20), byExtendingSelection: false)
+        for size in [CGSize(width: 1100, height: 400), CGSize(width: 1200, height: 900), CGSize(width: 1000, height: 700)] {
+            window.setContentSize(size)
+            window.layoutIfNeeded()
+            host.layoutSubtreeIfNeeded()
+            #expect(table.selectedRow == 20)
+            #expect(scroll.contentView.bounds.height > 0)
+            #expect(store.rows.count == 500)
+        }
+        print("MEMORY_NATIVE_SCROLL_OFFSET=\(scroll.contentView.bounds.minY) SELECTED_ROW=\(table.selectedRow); programmatic native scroll/selection, not WindowServer latency")
     }
 
     @Test func nativeWorkspaceFitsNarrowAndWideWindows() async {
