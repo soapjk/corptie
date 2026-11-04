@@ -318,8 +318,9 @@ final class MainTabPageContainer: NSView {
         for (tab, page) in pages {
             let participates = participatingTabs.contains(tab)
             page.isHidden = !participates
-            // The outgoing page disappears immediately, including hit testing
-            // and accessibility. Cached hosts remain attached for state reuse.
+            // Retain the host, but remove inactive pages from the window tree.
+            // isHidden alone leaves their SwiftUI hosts in AppKit layout traversal.
+            if !participates { page.removeFromSuperview() }
             page.setAccessibilityHidden(tab != selectedTab)
         }
     }
