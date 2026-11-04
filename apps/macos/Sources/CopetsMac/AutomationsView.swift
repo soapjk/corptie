@@ -79,48 +79,55 @@ struct AutomationsView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
-            List(AutomationCategory.allCases, selection: $category) { item in
-                ManagementCategoryRow(title: "\(item.title) · \(tasks(in: item).count)", systemImage: item.symbol,
-                                      isSelected: category == item)
-                    .padding(.vertical, 2)
-                    .tag(Optional(item))
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
+        GeometryReader { geometry in
+            let inlineSidebar = geometry.size.width >= 820 && sidebarState.isVisible
+            HStack(spacing: 0) {
+                if inlineSidebar {
+                    categoryList
+                        .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
+                        .frame(width: 284)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .background(WorkbenchStyle.sidebarColor)
+                    Divider()
+                }
+                VStack(spacing: 0) {
+                    header
+                    HStack(spacing: 12) {
+                        if !inlineSidebar {
+                            Picker(L10n("Automations"), selection: $category) {
+                                ForEach(AutomationCategory.allCases) { item in
+                                    Text(item.title).tag(Optional(item))
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 160)
+                            .accessibilityLabel(L10n("Automations"))
+                        }
+                        TextField(L10n("搜索自动化名称、消息或会话"), text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+                        Picker(L10n("视图"), selection: $showsCards) {
+                            Text(L10n("列表")).tag(false)
+                            Text(L10n("卡片")).tag(true)
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 120)
+                    }.padding(.horizontal, 16).padding(.bottom, 12)
+                    Divider()
+                    content
+                }
+                .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(WorkbenchStyle.canvas)
             }
-            .listStyle(.plain)
-            .environment(\.defaultMinListRowHeight, 36)
-            .padding(16)
-            .navigationSplitViewColumnWidth(min: SettingsPageLayout.sidebarMinimum,
-                                            ideal: SettingsPageLayout.sidebarIdeal,
-                                            max: SettingsPageLayout.sidebarMaximum)
-            .mainWindowPageCard()
-            .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
-        } detail: {
-            VStack(spacing: 0) {
-                header
-                HStack(spacing: 12) {
-                    TextField(L10n("搜索自动化名称、消息或会话"), text: $searchText).textFieldStyle(.roundedBorder)
-                    Picker(L10n("视图"), selection: $showsCards) {
-                        Text(L10n("列表")).tag(false)
-                        Text(L10n("卡片")).tag(true)
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 120)
-                }.padding(.horizontal, 20).padding(.bottom, 12)
-                Divider()
-                content
-            }
-            .mainWindowPageCard()
-            .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
+        .ignoresSafeArea(.container, edges: .top)
         .safeAreaInset(edge: .bottom) {
             if let error = scheduling.automationsError {
                 HStack {
                     Label(error, systemImage: "exclamationmark.triangle").textSelection(.enabled)
                     Spacer()
                     Button(L10n("Retry")) { Task { await scheduling.loadAutomations() } }
-                }.font(.callout).padding(12).background(.regularMaterial)
+                }.font(WorkbenchTypography.font(for: .help)).padding(12).background(WorkbenchStyle.canvas)
             }
         }
         .task { await scheduling.loadAutomations() }
@@ -136,6 +143,22 @@ struct AutomationsView: View {
                 .environmentObject(backendClient)
             }
         }
+    }
+
+    private var categoryList: some View {
+        List(AutomationCategory.allCases, selection: $category) { item in
+            ManagementCategoryRow(title: "\(item.title) · \(tasks(in: item).count)", systemImage: item.symbol,
+                                  isSelected: category == item)
+                .padding(.vertical, 2)
+                .tag(Optional(item))
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 36)
+        .padding(16)
     }
 
     private var header: some View {
@@ -159,6 +182,7 @@ struct AutomationsView: View {
                         }
                     }.padding(20).frame(width: 320)
                 }
+            .buttonStyle(.borderedProminent)
             if scheduling.isLoadingAutomations { ProgressView().controlSize(.small) }
             Button {
                 Task { await scheduling.loadAutomations() }
@@ -166,7 +190,8 @@ struct AutomationsView: View {
                 Label(L10n("Refresh"), systemImage: "arrow.clockwise")
             }
         }
-        .padding(20)
+        .padding(16)
+        .controlSize(.small)
     }
 
     @ViewBuilder
@@ -218,7 +243,7 @@ struct AutomationsView: View {
                             }
                         }
                     }
-                    .padding(20)
+                    .padding(16)
                 }
                 .onChange(of: focusRevision, initial: true) { _, _ in
                     guard let focusedAutomationID else { return }
@@ -375,8 +400,8 @@ private struct AutomationCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+        .overlay(alignment: .bottom) { Divider() }
+        .controlSize(.small)
     }
 
     private var listIdentity: some View {
@@ -385,7 +410,7 @@ private struct AutomationCard: View {
                 .lineLimit(2).help(automation.name)
             Button(action: openTarget) {
                 Label(targetName, systemImage: "bubble.left.and.bubble.right").lineLimit(1)
-            }.buttonStyle(.link).font(.callout)
+            }.buttonStyle(.link).font(WorkbenchTypography.font(for: .help))
         }
     }
 
@@ -397,7 +422,7 @@ private struct AutomationCard: View {
             } else if let last = optionalDateLabel(automation.lastRunAt) {
                 Text("\(L10n("最近执行"))：\(last)")
             }
-        }.font(.callout).foregroundStyle(.secondary)
+        }.font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
     }
 
     private var listActions: some View {
@@ -410,6 +435,7 @@ private struct AutomationCard: View {
                 Button(L10n("Run Now")) { perform(.runNow) }.disabled(!automation.status.permitsRunNow)
                 Button(L10n("Cancel"), role: .destructive) { perform(.cancel) }.disabled(!automation.status.permitsCancel)
             } label: { Image(systemName: "ellipsis").frame(width: 28, height: 24) }
+            .accessibilityLabel(L10n("更多"))
             if isMutating { ProgressView().controlSize(.small) }
         }.disabled(isMutating || automation.operationsDisabledReason != nil)
             .help(automation.operationsDisabledReason ?? "")
