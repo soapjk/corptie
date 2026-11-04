@@ -80,6 +80,9 @@ struct ConversationNativeBusinessDetail: View {
     }
     @ViewBuilder private func sharedCard(_ state: ClientDetailBusinessCardState) -> some View {
         switch state.card.payload {
+        case .coordinationProgress(let value):
+            CoordinationProgressCard(progress: value, api: { guard let api else { throw ClientConnectionError.invalidResponse }; return api },
+                openSession: { adapters.openSession?($0) }).disabled(!store.isCurrent)
         case .provider:
             ConversationDetailProviderCard(configuration: adapters.configuration, scope: handle.scope.sessionID,
                 select: adapters.selectConfiguration, reload: adapters.reloadConfiguration).disabled(!store.isCurrent)
@@ -246,6 +249,7 @@ private struct NativeBusinessCard: View {
     }
     @ViewBuilder private var content: some View {
         switch card.payload {
+        case .coordinationProgress: EmptyView()
         case .session(let value):
             NativeBusinessProperty(title: "Session", value: value.sessionId, technical: true)
             if !value.workName.isEmpty { NativeBusinessProperty(title: "Work", value: value.workName) }

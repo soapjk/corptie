@@ -257,6 +257,10 @@ struct ConversationNativeRowBuilder {
             messageStatus: messageStatus,
             images: images
         )
+        if case .message(let item) = entry.kind, let progress = item.coordinationProgress {
+            row.coordinationProgress = progress
+            row.contentRevision = progress.revision
+        }
         row.forkItemID = forkItemID(for: entry)
         row.scheduledTrigger = scheduledTrigger
         if case .message(let item) = entry.kind, item.messageOrigin == "scheduled_task" {

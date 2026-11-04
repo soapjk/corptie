@@ -181,7 +181,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
+        row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
@@ -212,7 +212,12 @@ struct MacSharedMessageTextCard: View {
                     .padding(.horizontal, ReplyLeadingLayout.contentLeading).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
-                if let trigger = row.scheduledTrigger { scheduledTaskCard(trigger) }
+                if let progress = row.coordinationProgress {
+                    CoordinationProgressCard(progress: progress, api: {
+                        ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
+                    }, openSession: { AppTabRouter.shared.openSession($0, source: .userSelection) })
+                }
+                else if let trigger = row.scheduledTrigger { scheduledTaskCard(trigger) }
                 else if let input = row.userInput { userInputCard(input) }
                 else if let plan = row.executionPlan { executionPlanCard(plan) }
                 else if row.nativeStyle == .process { processCard }
