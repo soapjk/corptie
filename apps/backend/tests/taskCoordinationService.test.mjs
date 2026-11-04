@@ -47,7 +47,7 @@ test("repository dispatch records remain valid in native Task detail on every Pr
     }
   });
 });
-async function restrictedFixture(t, providerId = "codex-app-server", supported = true) {
+async function restrictedFixture(t, providerId = "codex-app-server", supported = true, turnOptions = {}) {
   const f = await fixture(t, providerId);
   f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
   const route = () => f.store.getLogicalSessionByLegacySessionId(f.source.sessionId);
@@ -58,7 +58,7 @@ async function restrictedFixture(t, providerId = "codex-app-server", supported =
   const requests = [], terminals = [], events = [];
   const registry = { supports: () => supported, get: () => ({ descriptor: { metadata: { backgroundExecutionPolicies: supported ? ["no-tools"] : [] } } }),
     invoke: () => { throw new Error("Unrestricted Provider execution must never be invoked"); } };
-  const turns = new CoordinationTurnService({ store: f.store, registry, resolveReference: reference, dispatch: f.coordinator,
+  const turns = new CoordinationTurnService({ ...turnOptions, store: f.store, registry, resolveReference: reference, dispatch: f.coordinator,
     planner: { run: async input => { requests.push(input); if (run) return run(input); return { text: JSON.stringify(output) }; } },
     emitEvent: (type, payload) => events.push({ type, payload }), onTerminal: entry => terminals.push(entry) });
   const application = new SessionApplicationService({ registry, resolveSessionReference: reference, coordinationTurns: turns,
@@ -1001,4 +1001,115 @@ test('read rounds are bounded, invalid tools cannot execute and policy changes f
     assert.match(turn.failure_json, new RegExp(mode === 'exhaustion' ? 'COORDINATION_READ_LIMIT' : mode === 'invalid' ? 'COORDINATION_PLAN_INVALID' : 'COORDINATION_POLICY_CHANGED'));
     assert.equal(f.requests.length, mode === 'exhaustion' ? 3 : mode === 'invalid' ? 1 : 2);
   });
+});
+
+for (const provider of ['codex-app-server', 'claude-sdk']) test(`coordination gives each model round its own deadline (${provider})`, async t => {
+  let clock = 1000;
+  const f = await restrictedFixture(t, provider, true, { now: () => clock });
+  f.run(async input => {
+    const count = JSON.parse(input.prompt).readResults.length;
+    assert.equal(input.timeoutMs, 120000);
+    clock += count === 0 ? 9000 : 60000;
+    return { text: JSON.stringify(count === 0 ? { kind: 'read', reply: '', items: [], queries: [readQuery('read_task')] }
+      : { kind: 'discussion', reply: '查询完成', items: [], queries: [] }) };
+  });
+  await f.application.sendMessage(f.source.sessionId, '汇总', { idempotencyKey: 'round-budgets', source: { type: 'mailbox_event' } });
+  assert.equal(f.terminals[0].status, 'completed'); assert.equal(f.requests.length, 2);
+  assert.ok(f.events.some(e => e.payload.stage === 'reading'));
+});
+
+test('total deadline limits later calls and timeout text distinguishes successful reads from admission', async t => {
+  for (const mode of ['call', 'total']) await t.test(mode, async t => {
+    let clock = 0;
+    const f = await restrictedFixture(t, 'codex-app-server', true, { now: () => clock });
+    f.run(async input => {
+      const count = JSON.parse(input.prompt).readResults.length;
+      if (count < 2) {
+        assert.equal(input.timeoutMs, 120000); clock += 110000;
+        return { text: JSON.stringify({ kind: 'read', reply: '', items: [], queries: [readQuery('read_task')] }) };
+      }
+      assert.equal(input.timeoutMs, 80000);
+      if (mode === 'total') clock += 80000;
+      throw Object.assign(new Error('Timed out while waiting for the Codex ephemeral turn.'), { code: 'BACKGROUND_TIMEOUT' });
+    });
+    await f.application.sendMessage(f.source.sessionId, '查询后继续', { idempotencyKey: 'time-' + mode });
+    assert.equal(f.terminals[0].status, 'failed'); assert.equal(f.requests.length, 3);
+    const turn = f.store.getSessionTurn(f.source.sessionId, f.reference().bindingId, 'coordination:time-' + mode);
+    const failure = JSON.parse(turn.failure_json);
+    assert.equal(failure.code, mode === 'total' ? 'COORDINATION_TOTAL_TIMEOUT' : 'COORDINATION_MODEL_TIMEOUT');
+    assert.match(failure.message, /已成功完成 2 次只读查询/); assert.match(failure.message, /尚未受理新的派发/);
+    assert.doesNotMatch(failure.message, /ephemeral/); assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+  });
+});
+
+test('model waiting warning uses existing activity status and timer is cleared on settlement', async t => {
+  const timers = [], cleared = [];
+  const f = await restrictedFixture(t, 'codex-app-server', true, {
+    schedule: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer; },
+    cancelTimer: timer => cleared.push(timer)
+  });
+  f.run(async () => {
+    assert.equal(timers[0].ms, 20000); timers[0].callback();
+    assert.equal(f.store.getSession(f.source.sessionId).activityStatus, '正在等待模型返回，可停止');
+    return { text: JSON.stringify({ kind: 'discussion', reply: '好了', items: [] }) };
+  });
+  await f.application.sendMessage(f.source.sessionId, '讨论', { idempotencyKey: 'warning' });
+  assert.deepEqual(cleared, timers); assert.equal(f.store.getSession(f.source.sessionId).activityStatus, null);
+});
+
+test('interrupt after child queries prevents subsequent admission without retry', async t => {
+  const f = await restrictedFixture(t);
+  f.run(async input => {
+    if (!JSON.parse(input.prompt).readResults.length) return { text: JSON.stringify({ kind: 'read', reply: '', items: [], queries: [readQuery('read_task')] }) };
+    await f.turns.interrupt(f.reference());
+    return { text: JSON.stringify(f.instruction()) };
+  });
+  await f.application.sendMessage(f.source.sessionId, '查询后执行', { idempotencyKey: 'stop-after-read' });
+  assert.equal(f.terminals[0].status, 'cancelled'); assert.equal(f.requests.length, 2);
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+});
+
+for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`cross-turn creation reuses pending receipt and reports changed definition (${provider})`,async t=>{
+ const f=await fixture(t,provider);
+ const first=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('pending-slot')]});
+ const id=first.dispatches[0].dispatchId;
+ f.coordinator.update(id,{status:'waiting_workspace',error_code:'TASK_HIERARCHY_BUSY'});
+ const same={...f.item('pending-slot'),idempotencyKey:'another-turn'};
+ const repeated=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[same]});
+ assert.equal(repeated.dispatches[0].dispatchId,id);assert.equal(repeated.dispatches[0].reused,true);
+ const changed=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{...same,idempotencyKey:'third-turn',
+  creation:{...same.creation,description:'补充新的实现范围'}}]});
+ assert.equal(changed.dispatches[0].dispatchId,id);assert.equal(changed.dispatches[0].definitionChanged,true);
+ assert.match(changed.dispatches[0].reuseMessage,/未覆盖/);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM task_coordination_dispatches WHERE parent_task_id=?',[f.parent.id]).n,1);
+ assert.equal(f.coordinator.get(id).status,'waiting_workspace');
+});
+
+test('legacy pending duplicates restored concurrently create only one child and one mailbox instruction',async t=>{
+ const f=await fixture(t),first=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('legacy-duplicate')]});
+ const original=first.dispatches[0].dispatchId;
+ // Simulate records created by the old release, before cross-turn reuse existed.
+ f.store.db.run(`UPDATE task_coordination_dispatches SET status='waiting_workspace',created_at='2026-01-01T00:00:00Z' WHERE dispatch_id=?`,[original]);
+ f.store.db.run(`INSERT INTO task_coordination_dispatches
+  (dispatch_id,source_session_id,parent_task_id,source_role_id,idempotency_key,request_json,runtime_json,mode_at_admission,status,created_at,updated_at)
+  SELECT 'dispatch:legacy-duplicate',source_session_id,parent_task_id,source_role_id,'legacy-second-key',request_json,runtime_json,mode_at_admission,'waiting_workspace','2026-01-02T00:00:00Z',updated_at
+  FROM task_coordination_dispatches WHERE dispatch_id=?`,[original]);
+ await Promise.all([f.coordinator.runDispatch(original),f.coordinator.runDispatch('dispatch:legacy-duplicate')]);
+ assert.equal(f.starts.length,1);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM tasks WHERE parent_task_id=?',[f.parent.id]).n,1);
+ assert.equal(f.coordinator.get('dispatch:legacy-duplicate').status,'cancelled');
+ assert.equal(f.coordinator.get('dispatch:legacy-duplicate').error_code,'TASK_CREATION_DUPLICATE');
+ assert.match(f.coordinator.get('dispatch:legacy-duplicate').error_message,new RegExp(original));
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE json_extract(authorization_json,'$.purpose')='child_instruction'").n,1);
+ const canonical=f.coordinator.get(original);f.coordinator.update(original,{status:'completed'});
+ const repeated=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{...f.item('legacy-duplicate'),idempotencyKey:'retry-after-completion'}]});
+ assert.equal(repeated.dispatches[0].targetTaskId,canonical.target_task_id);assert.equal(repeated.dispatches[0].reused,true);
+ assert.equal(f.starts.length,1);
+});
+
+test('distinct creation slots and separate parents still create independently',async t=>{
+ const f=await fixture(t);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('independent-a'),f.item('independent-b')]});
+ await Promise.all(accepted.dispatches.map(row=>f.coordinator.runDispatch(row.dispatchId)));
+ assert.equal(f.starts.length,2);assert.notEqual(accepted.dispatches[0].dispatchId,accepted.dispatches[1].dispatchId);
 });

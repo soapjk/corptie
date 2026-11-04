@@ -21,7 +21,10 @@ export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, envi
     const forwardAbort = () => abortController.abort(input.signal.reason);
     input.signal?.throwIfAborted();
     input.signal?.addEventListener("abort", forwardAbort, { once: true });
-    const timeout = setTimeout(() => abortController.abort(), input.timeoutMs ?? 120_000);
+    const timeoutMs = input.timeoutMs ?? 120_000;
+    const timeout = setTimeout(() => abortController.abort(Object.assign(new Error("Background model call timed out."), {
+      code: "BACKGROUND_TIMEOUT", phase: "wait_completion", timeoutMs
+    })), timeoutMs);
     let latestText = "";
     let operation;
     try {
@@ -54,6 +57,8 @@ export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, envi
       abortController.signal.throwIfAborted();
       return { text: latestText };
     } catch (error) {
+      // Keep cancellation and the shared timeout contract distinct from upstream model errors.
+      if (abortController.signal.aborted) throw abortController.signal.reason;
       throw normalizeClaudeProviderError(error, {
         secretValues: [environment()?.ANTHROPIC_API_KEY].filter(Boolean)
       });

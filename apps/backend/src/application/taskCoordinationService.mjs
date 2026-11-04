@@ -39,6 +39,39 @@ export class TaskCoordinationService {
       deliveryId: row.operation_id, status: row.status === "running" && session?.status === "blocked" ? "blocked" : row.status,
       errorCode: row.error_code, errorMessage: row.error_message };
   }
+  pendingCreation(parentTaskId, actorId, request, runtime) {
+    if (request.action !== "create") return null;
+    // Pending creation identity is scoped to the parent, contributor Role,
+    // requested title, and Provider. A changed definition is explicitly reported,
+    // never overwritten or silently treated as a delivered amendment.
+    return this.store.selectAll(`SELECT * FROM task_coordination_dispatches
+      WHERE parent_task_id=? AND source_role_id=? AND json_extract(request_json,'$.action')='create'
+      AND json_extract(request_json,'$.creation.title')=? AND json_extract(request_json,'$.creation.agentId')=?
+      AND json_extract(runtime_json,'$.providerId')=?
+      AND (status IN ('accepted','preparing','waiting_workspace','queued','running','waiting_dispatch','blocked','unknown')
+        OR (target_task_id IS NOT NULL AND status IN ('completed','cancelled')))
+      ORDER BY created_at,dispatch_id`, [parentTaskId, actorId, request.creation.title, request.creation.agentId, runtime.providerId])
+      .find(row => !row.target_task_id || (() => {
+        const task = this.store.getTask(row.target_task_id);
+        return task && !task.archived && !task.deletion_status && task.lifecycle_state !== "done";
+      })()) ?? null;
+  }
+  reuseNotice(row, request) {
+    const original = JSON.parse(row.request_json);
+    const originalText = original.text ?? (row.mailbox_message_id
+      ? this.store.selectOne("SELECT body FROM session_mailbox_messages WHERE message_id=?", [row.mailbox_message_id])?.body : null);
+    const definitionChanged = JSON.stringify(original.creation) !== JSON.stringify(request.creation) || originalText !== request.text;
+    return { ...this.receipt(row), reused: true, definitionChanged,
+      reuseMessage: definitionChanged
+        ? "已有同名同角色的创建请求，本次未重复创建；新定义与原请求不同，未覆盖或投递新增要求，请核对原请求后补充指令。"
+        : "已有创建请求，复用原回执，未重复创建。" };
+  }
+  retireDuplicateCreation(row, canonical, request) {
+    const notice = this.reuseNotice(canonical, request);
+    this.update(row.dispatch_id, { status: "cancelled", error_code: "TASK_CREATION_DUPLICATE",
+      error_message: `${notice.reuseMessage}原请求：${canonical.dispatch_id}` });
+    this.scheduleReports();
+  }
   acceptDispatch(metadata, actorId, input) {
     const scope = this.collaboration.coordinationScope(metadata, actorId);
     if (!input || Object.keys(input).some(key => key !== "items")) fail("INVALID_DISPATCH", "Only items may be supplied.", 400);
@@ -47,7 +80,7 @@ export class TaskCoordinationService {
       replay: Boolean(this.store.selectOne("SELECT 1 FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, item?.idempotencyKey ?? null]))
     }));
     if (new Set(prepared.map(item => item.request.idempotencyKey)).size !== prepared.length) fail("DUPLICATE_TASK_BATCH_KEY");
-    const rows = [];
+    const rows = [], reused = new Map();
     this.store.runInTransaction(() => {
       for (const { request, runtime } of prepared) {
         const old = this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, request.idempotencyKey]);
@@ -57,6 +90,8 @@ export class TaskCoordinationService {
           if (JSON.stringify(saved) !== JSON.stringify(request)) fail("IDEMPOTENCY_CONFLICT", "Use the original dispatch key only for the same instruction.");
           rows.push(old); continue;
         }
+        const pending = this.pendingCreation(scope.parent.id, actorId, request, runtime);
+        if (pending) { rows.push(pending); reused.set(rows.length - 1, this.reuseNotice(pending, request)); continue; }
         const id = `dispatch:${randomUUID()}`, now = new Date().toISOString();
         this.store.db.run(`INSERT INTO task_coordination_dispatches
           (dispatch_id,source_session_id,parent_task_id,source_role_id,idempotency_key,request_json,runtime_json,mode_at_admission,target_task_id,created_at,updated_at)
@@ -68,7 +103,7 @@ export class TaskCoordinationService {
     this.store.scheduleSave();
     for (const row of rows) if (row.status === "accepted") setImmediate(() => this.runDispatch(row.dispatch_id));
     this.changed(scope.parent.id);
-    return { accepted: true, dispatches: rows.map(row => this.receipt(row)), instruction: "受理完成。立即将控制权交还用户，不要轮询等待子任务。" };
+    return { accepted: true, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "受理完成。立即将控制权交还用户，不要轮询等待子任务。" };
   }
   sourceContext(row) {
     const logical = this.store.getLogicalSession(row.source_session_id);
@@ -102,6 +137,9 @@ export class TaskCoordinationService {
     let row = this.get(id);
     if (!row || !["accepted", "preparing", "waiting_workspace"].includes(row.status)) return;
     const { metadata, scope } = this.sourceContext(row), request = JSON.parse(row.request_json);
+    const runtime = JSON.parse(row.runtime_json);
+    const canonical = !row.target_task_id && this.pendingCreation(row.parent_task_id, row.source_role_id, request, runtime);
+    if (canonical && canonical.dispatch_id !== id) { this.retireDuplicateCreation(row, canonical, request); return; }
     this.update(id, { status: "preparing", error_code: null, error_message: null });
     if (!row.target_task_id) {
       const prior = this.creationChains.get(row.parent_task_id) ?? Promise.resolve();
@@ -109,12 +147,19 @@ export class TaskCoordinationService {
         providerId: JSON.parse(row.runtime_json).providerId });
       const pending = timing.measure("dispatch.creation-chain", async span => {
         await span.measure("dispatch.wait-parent-startup", () => prior.catch(() => {}));
+        // Recheck after the parent startup chain: admission/recovery may have
+        // queued another equivalent request before this chain became available.
+        const live = this.get(id);
+        if (!live || live.status !== "preparing") return null;
+        const existing = this.pendingCreation(row.parent_task_id, row.source_role_id, request, runtime);
+        if (existing && existing.dispatch_id !== id) { this.retireDuplicateCreation(live, existing, request); return null; }
         return span.measure("dispatch.child-startup", () => this.createDispatchTask(row, request));
       });
       this.creationChains.set(row.parent_task_id, pending);
       const cleanup = () => { if (this.creationChains.get(row.parent_task_id) === pending) this.creationChains.delete(row.parent_task_id); };
       pending.then(cleanup, cleanup);
       const created = await pending;
+      if (!created) return;
       this.update(id, { target_task_id: created.task.id });
       row = this.get(id);
     }

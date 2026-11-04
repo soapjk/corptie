@@ -82,3 +82,11 @@ test("legacy prompt cleanup and choice parser early return retain their distinct
   assert.equal(result.text, "answer");
   assert.deepEqual(choice.calls.map(([name]) => name), ["startThread", "startTurn"]);
 });
+
+test('ephemeral timeout includes stage and the supplied call budget', async () => {
+  const { operations, calls } = fixture({ complete: false });
+  await assert.rejects(operations.runEphemeralPrompt({ executionPolicy: 'no-tools', timeoutMs: 0, cwd: '/workspace' }),
+    error => error.code === 'BACKGROUND_TIMEOUT' && error.phase === 'wait_completion' && error.timeoutMs === 0 && error.elapsedMs >= 0);
+  assert.equal(calls.filter(([name]) => name === 'startTurn').length, 1);
+  assert.equal(calls.at(-1)[0], 'unsubscribe');
+});
