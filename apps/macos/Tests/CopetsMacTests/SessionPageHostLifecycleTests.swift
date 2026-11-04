@@ -255,6 +255,46 @@ import CorptieConversation
         return view.subviews.lazy.compactMap { self.findEditor($0) }.first
     }
 
+    func testMissingResidentInputDoesNotConsumeSelectionAndNextClickCanRecover() throws {
+        _ = NSApplication.shared
+        let (inputs, source, client, _) = makeInputs()
+        let target = session("recovered-page", task: "recovered-task")
+        source.acceptCreatedSession(target)
+        var targetAvailable = false
+        let controller = ResidentSessionPageHostController(fallback: ConsolePaneContent { Text("Fallback") },
+            isVisible: { _ in true }, makeInputs: { id in
+                if id == inputs.scope.sessionID { return inputs }
+                guard targetAvailable, id == target.id else { return nil }
+                return SessionPageRenderInputs(session: target,
+                    scope: .init(serverID: client.baseURL.absoluteString, ownerID: client.detailBusinessOwnerID,
+                        principalID: "local-user", sessionID: target.id, taskID: target.taskId, workID: target.workId),
+                    backend: client, timeline: SessionTimelineState(sessionID: target.id),
+                    projection: SessionPresentationState(cache: nil), entities: EntityAPIClient(appState: source),
+                    search: UnifiedSearchNavigation(), sourceState: source)
+            }, root: { Text($0.session.title) })
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        let window = NSWindow(contentRect: controller.view.bounds, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = controller.view; window.orderBack(nil)
+        defer { controller.disposeAll(); window.contentView = nil; window.close() }
+        XCTAssertTrue(controller.presentOpeningPage(sessionID: inputs.scope.sessionID, title: "Original", activate: {}))
+        var selections: [String] = []
+        let presentation = SessionPagePresentationState()
+        presentation.presenter = controller
+        let handled = presentation.request(sessionID: target.id, title: target.title) { selections.append(target.id) }
+        XCTAssertFalse(handled, "A failed resident page must allow the caller's regular selection path")
+        if !handled { selections.append(target.id) }
+        XCTAssertEqual(selections, [target.id])
+        XCTAssertNil(controller.pendingSessionID)
+        XCTAssertTrue(inputs.acceptsPresentationUpdates, "The previous page must not remain frozen after a failed opening")
+        targetAvailable = true
+        XCTAssertTrue(presentation.request(sessionID: target.id, title: target.title) {
+            client.sessionSelectionController.select(target.id)
+        })
+        XCTAssertEqual(controller.settledSessionID, target.id)
+        XCTAssertEqual(client.sessionSelectionController.selectedSessionID, target.id)
+    }
+
     func testWholeNativePagesKeepEightAndEvictBeforeNinthAllocation() async throws {
         _ = NSApplication.shared
         let source = AppStateStore(), client = BackendClient()
