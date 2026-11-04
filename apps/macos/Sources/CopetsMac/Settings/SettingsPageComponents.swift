@@ -1,24 +1,17 @@
 import SwiftUI
 import CorptieConversation
 
-/// Settings-local surface. Other workbench cards retain their existing appearance.
-struct SettingsSurface: ViewModifier {
+/// Settings owns its flat column paint; shared workbench cards are unchanged.
+/// The viewport supplies geometry. Paint has no material, mask, or shadow pass.
+struct SettingsColumnSurface: ViewModifier {
     var sidebar = false
-    @Environment(\.colorSchemeContrast) private var contrast
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius)
         content
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(sidebar ? WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas, in: shape)
-            .clipShape(shape)
-            .overlay {
-                shape.strokeBorder(Color.primary.opacity(contrast == .increased
-                    ? MainWindowPageLayoutMetrics.increasedContrastCardBorderOpacity
-                    : MainWindowPageLayoutMetrics.cardBorderOpacity), lineWidth: contrast == .increased
-                    ? MainWindowPageLayoutMetrics.increasedContrastCardBorderWidth
-                    : MainWindowPageLayoutMetrics.cardBorderWidth)
-                    .allowsHitTesting(false)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                (sidebar ? WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas)
+                    .ignoresSafeArea(.container, edges: .vertical)
             }
     }
 }
