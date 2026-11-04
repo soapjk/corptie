@@ -3500,7 +3500,7 @@ function blockedConflictAutomation(job, item, error) {
     currentWorktreeId: item?.worktreeId ?? job.details.currentWorktreeId ?? null,
     blockedWorktreeId: item?.worktreeId ?? job.details.currentWorktreeId ?? null,
     conflictFiles: [...(item?.conflictFiles ?? [])],
-    failureCode: error?.code ?? "CONFLICT_AGENT_FAILED",
+    failureCode: normalizedErrorCode(error?.code, "CONFLICT_AGENT_FAILED"),
     failureReason: error?.message ?? "The conflict could not be resolved automatically."
   };
 }
@@ -3643,6 +3643,8 @@ export function presentJob(job) {
     ...(details.conflictResolution ? { conflictResolution: { ...details.conflictResolution,
       failureReason: safeMessage(details.conflictResolution.failureReason) } } : {}),
     ...(details.conflictAutomation ? { conflictAutomation: { ...details.conflictAutomation,
+      failureCode: details.conflictAutomation.failureCode == null ? null
+        : normalizedErrorCode(details.conflictAutomation.failureCode, "CONFLICT_AGENT_FAILED"),
       failureReason: safeMessage(details.conflictAutomation.failureReason) } } : {}) };
   const commitPolicyResidue = legacyCommitPolicyResidue(job);
   const availableActions = integrationJobAvailableActions({ ...presented, commitPolicyResidue });
