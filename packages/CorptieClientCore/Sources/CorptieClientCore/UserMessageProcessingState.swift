@@ -36,15 +36,15 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
 
     public init?(authoritativeStatus: String?, legacyStatus: String?,
                  localDeliveryState: String? = nil, queuePosition: Int? = nil,
-                 processingError: String? = nil) {
+                 processingError: String? = nil, showsPendingAsProcessing: Bool = false) {
         transferProgress = localDeliveryState?.hasPrefix("上传图片 ") == true
             ? String(localDeliveryState!.dropFirst("上传图片 ".count)) : nil
         if let state = UserMessageProcessingState(
             authoritativeValue: authoritativeStatus, legacyStatus: legacyStatus
         ) {
             switch state {
-            case .queued: kind = .queued
-            case .preparing: kind = .preparing
+            case .queued: kind = showsPendingAsProcessing ? .processing : .queued
+            case .preparing: kind = showsPendingAsProcessing ? .processing : .preparing
             case .processing: kind = .processing
             case .failed: kind = .processingFailed
             case .cancelled: kind = .cancelled
