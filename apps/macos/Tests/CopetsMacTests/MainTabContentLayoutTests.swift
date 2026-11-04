@@ -68,16 +68,16 @@ struct MainTabContentLayoutTests {
             from: .automations,
             to: .worktrees
         ))
-        #expect(container.attachedTabs == [.automations, .worktrees])
+        #expect(container.attachedTabs == [.worktrees])
         #expect(container.visibleTabs == [.worktrees])
-        #expect(container.attachedPageCount == 2)
+        #expect(container.attachedPageCount == 1)
         #expect(container.cachedPage(for: .automations)?.frame == container.bounds)
         #expect(container.cachedPage(for: .worktrees)?.frame == container.bounds)
         #expect(container.activePageLayoutCount == layoutCount + 1)
 
         container.finishActiveTransition()
         #expect(container.transition == nil)
-        #expect(container.attachedTabs == [.automations, .worktrees])
+        #expect(container.attachedTabs == [.worktrees])
         #expect(container.visibleTabs == [.worktrees])
         #expect(container.cachedPage(for: .automations)?.isHidden == true)
     }
@@ -168,7 +168,7 @@ struct MainTabContentLayoutTests {
         #expect(created[.console] === console)
         #expect(created[.console]?.marker == "scroll-and-selection-state")
         #expect(container.cachedPageCount == 2)
-        #expect(container.attachedTabs == [.console, .worktrees])
+        #expect(container.attachedTabs == [.console])
         #expect(container.visibleTabs == [.console])
     }
 
@@ -180,7 +180,7 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
-    func mainWindowCoalescesNativeLiveResizeAndEnforcesContentMinimum() throws {
+    func mainWindowUsesNativeLiveResizeAndEnforcesContentMinimum() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -198,15 +198,15 @@ struct MainTabContentLayoutTests {
         #expect(contents.contains("override func viewWillStartLiveResize()"))
         #expect(contents.contains("override func viewDidEndLiveResize()"))
         #expect(contents.contains("NSWindow.willEnterFullScreenNotification"))
-        #expect(contents.contains("scheduleExactLayoutAfterStability()"))
-        #expect(contents.contains("displayLink("))
-        #expect(contents.contains("link.add(to: .main, forMode: .common)"))
+        #expect(!contents.contains("scheduleExactLayoutAfterStability()"))
+        #expect(!contents.contains("displayLink("))
+        #expect(contents.contains("hostingView.autoresizingMask = [.width, .height]"))
         #expect(!contents.contains("private var layoutTimer"))
         #expect(!contents.contains("scaleAxesIndependently"))
         #expect(!contents.contains("contentContainer.layer?.setAffineTransform"))
         #expect(!contents.contains("applyPresentationTransform"))
         #expect(contents.contains("layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor"))
-        #expect(contents.contains("CATransaction.setDisableActions(true)"))
+        #expect(!contents.contains("pendingContentSize"))
         #expect(!contents.contains("bitmapImageRepForCachingDisplay"))
         #expect(contents.contains("window.preservesContentDuringLiveResize = true"))
         #expect(contents.contains("window.contentMinSize = MainWindowInitialLayout.minimumContentSize"))

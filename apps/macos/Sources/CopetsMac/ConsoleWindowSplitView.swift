@@ -60,13 +60,8 @@ extension EnvironmentValues {
     }
 }
 
-enum ConversationColumnLayoutPolicy {
-    // Width of the conversation pane, after the project sidebar and navigation.
-    static func usesInlineInspector(availableWidth: CGFloat) -> Bool { availableWidth >= 1040 }
-}
-
-/// The same mounted transcript survives an inspector toggle and window resize.
-/// A compact inspector overlays the conversation without taking reading width.
+/// The system inspector owns column presentation, sizing and transitions.
+/// The transcript stays at one structural position while visibility changes.
 struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
     @ViewBuilder let transcript: () -> Transcript
@@ -82,31 +77,22 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            let inline = ConversationColumnLayoutPolicy.usesInlineInspector(availableWidth: geometry.size.width)
-            HStack(spacing: 0) {
-                transcript().frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-                detail()
-                    .background(Color(nsColor: .windowBackgroundColor))
-                    .background(ConversationColumnBackground(.inspector))
-                    .modifier(ConsoleDetailColumnVisibility(isVisible: isVisible))
-                    .frame(width: inline ? nil : 0, alignment: .leading)
-                    .offset(x: inline ? 0 : -ConversationDetailWidgetMetrics.railWidth)
-                    .zIndex(2)
-            }
-            .overlay {
-                if isVisible && !inline {
-                    Button { isVisible = false } label: { Color.black.opacity(0.12) }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(L10n("Close details"))
-                        .padding(.trailing, ConversationDetailWidgetMetrics.railWidth)
+        VStack(spacing: 0) {
+            header()
+            transcript()
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .background(WorkbenchStyle.canvas)
+                .inspector(isPresented: $isVisible) {
+                    detail()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(WorkbenchStyle.canvas.ignoresSafeArea())
+                        .inspectorColumnWidth(ConversationDetailWidgetMetrics.railWidth)
                 }
-            }
-            .clipped()
+                // A closing system animation can write its old collapsed state
+                // after a rapid reopen. An immediate native transition avoids
+                // both that race and repeated transcript width reflow.
+                .transaction(value: isVisible) { $0.disablesAnimations = true }
         }
-        // The controls belong to the whole page, never the shrinking transcript.
-        // Both the inline rail and compact overlay start below this shared header.
-        .safeAreaInset(edge: .top, spacing: 0) { header() }
     }
 }
 
@@ -114,48 +100,6 @@ extension AdaptiveConversationColumns where Header == EmptyView {
     init(isVisible: Binding<Bool>, @ViewBuilder transcript: @escaping () -> Transcript,
          @ViewBuilder detail: @escaping () -> Detail) {
         self.init(isVisible: isVisible, transcript: transcript, detail: detail, header: { EmptyView() })
-    }
-}
-
-struct ConsoleDetailColumnVisibility: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let isVisible: Bool
-    @State private var reservesWidth: Bool
-    @State private var isPresented: Bool
-
-    init(isVisible: Bool) {
-        self.isVisible = isVisible
-        _reservesWidth = State(initialValue: isVisible)
-        _isPresented = State(initialValue: isVisible)
-    }
-
-    func body(content: Content) -> some View {
-        content.frame(width: ConversationDetailWidgetMetrics.railWidth)
-            .offset(x: isPresented ? 0 : ConversationDetailWidgetMetrics.railWidth)
-            .opacity(isPresented ? 1 : 0)
-            // Animate only the fixed-width rail. The chat viewport changes width
-            // once, outside this animation, so TextKit does not reflow every frame.
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isPresented)
-            .padding(.leading, MainWindowPageLayoutMetrics.columnSpacing)
-            .frame(width: reservesWidth
-                ? ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing : 0,
-                alignment: .leading)
-            .clipped().allowsHitTesting(isVisible).disabled(!isVisible).accessibilityHidden(!isVisible)
-            .task(id: isVisible) {
-                if reduceMotion {
-                    reservesWidth = isVisible
-                    isPresented = isVisible
-                } else if isVisible {
-                    reservesWidth = true
-                    isPresented = true
-                } else {
-                    isPresented = false
-                    do { try await Task.sleep(for: .milliseconds(180)) }
-                    catch { return }
-                    guard !Task.isCancelled else { return }
-                    reservesWidth = false
-                }
-            }
     }
 }
 

@@ -30,13 +30,11 @@ final class ConsoleDetailColumnTransitionTests: XCTestCase {
         let chat: WidthProbe
         let rail: WidthProbe
         var body: some View {
-            HStack(spacing: 0) {
+            AdaptiveConversationColumns(isVisible: $state.visible) {
                 Probe(view: chat).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } detail: {
                 Probe(view: rail).frame(maxHeight: .infinity)
-                    .modifier(ConsoleDetailColumnVisibility(isVisible: state.visible))
             }
-            .padding(MainWindowPageLayoutMetrics.outerPadding)
-            .modifier(ConsoleDetailColumnBackground(isVisible: state.visible))
             .environment(\.conversationSkin, .codexFlat)
         }
     }
@@ -48,43 +46,36 @@ final class ConsoleDetailColumnTransitionTests: XCTestCase {
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: Surface(state: state, chat: chat, rail: rail))
+        window.orderBack(nil)
         window.layoutIfNeeded()
         addTeardownBlock { @MainActor in window.close(); window.contentView = nil }
-        try await Task.sleep(for: .milliseconds(60))
+        try await Task.sleep(for: .milliseconds(350))
         window.layoutIfNeeded()
         chat.widths.removeAll()
         return (window, state, chat, rail)
     }
 
-    func testExitKeepsChatWidthUntilSlideEndsAndRetainsBothViews() async throws {
-        let (window, state, chat, rail) = try await harness()
-        let initial = chat.frame.width
-        state.visible = false
-        try await Task.sleep(for: .milliseconds(60))
-        window.layoutIfNeeded()
-        XCTAssertEqual(chat.frame.width, initial, accuracy: 1)
-        try await Task.sleep(for: .milliseconds(220))
-        window.layoutIfNeeded()
-        XCTAssertEqual(chat.frame.width, initial + ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing, accuracy: 1)
-        XCTAssertTrue(chat.widths.allSatisfy { abs($0 - initial - ConversationDetailWidgetMetrics.railWidth - MainWindowPageLayoutMetrics.columnSpacing) < 1 })
-        state.visible = true
-        try await Task.sleep(for: .milliseconds(60))
-        window.layoutIfNeeded()
-        XCTAssertEqual(chat.frame.width, initial, accuracy: 1)
-        XCTAssertEqual(chat.creations, 1)
-        XCTAssertEqual(rail.creations, 1)
+    func testSystemInspectorToggleKeepsTranscriptIdentity() async throws {
+        let (window, state, chat, _) = try await harness()
+        for visible in [false, true, false, true] {
+            state.visible = visible
+            try await Task.sleep(for: .milliseconds(300))
+            window.layoutIfNeeded()
+            XCTAssertTrue(chat.window === window)
+            XCTAssertGreaterThan(chat.frame.width, 0)
+            XCTAssertEqual(chat.creations, 1)
+        }
     }
 
-    func testRapidToggleCancelsOldCollapse() async throws {
-        let (window, state, chat, rail) = try await harness()
-        let initial = chat.frame.width
+    func testRapidToggleEndsInRequestedStateWithoutReplacingTranscript() async throws {
+        let (window, state, chat, _) = try await harness()
         state.visible = false
         try await Task.sleep(for: .milliseconds(50))
         state.visible = true
-        try await Task.sleep(for: .milliseconds(260))
+        try await Task.sleep(for: .milliseconds(300))
         window.layoutIfNeeded()
-        XCTAssertEqual(chat.frame.width, initial, accuracy: 1)
-        XCTAssertEqual(rail.creations, 1)
+        XCTAssertTrue(state.visible)
+        XCTAssertEqual(chat.creations, 1)
+        XCTAssertTrue(chat.window === window)
     }
-
 }

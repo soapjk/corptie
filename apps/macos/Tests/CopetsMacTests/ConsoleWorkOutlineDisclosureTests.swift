@@ -14,21 +14,30 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
     private final class State: ObservableObject {
         @Published var expanded = false
         @Published var showsAll = false
+        @Published var taskExpanded = false
         @Published var allowsCollapse = true
         var mounted: Set<String> = []
+        var childReads = 0
     }
 
     private struct NativeSurface: View {
         @ObservedObject var state: State
         let tasks: [CorptieTask]
         let session: TaskSession
+        var nested = false
 
         var body: some View {
             ConsoleNativeOutline(groups: {
                 [ConsoleNativeOutlineGroup(id: "work", header: AnyView(Text("Work")),
-                    rows: state.showsAll ? tasks : Array(tasks.prefix(5)),
-                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse,
-                    showsDisclosureIndicator: false, expansionChanged: { state.expanded = $0 }),
+                    rows: nested ? Array(tasks.prefix(1)) : (state.showsAll ? tasks : Array(tasks.prefix(5))),
+                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse, showsDisclosureIndicator: false, expansionChanged: { state.expanded = $0 },
+                    childRows: { task in
+                        state.childReads += 1
+                        return nested && task.id == tasks.first?.id ? Array(tasks.dropFirst()) : []
+                    },
+                    rowIsExpanded: { _ in state.taskExpanded },
+                    rowExpansionChanged: { _, expanded in state.taskExpanded = expanded },
+                    rowIsExpandable: { task in nested && task.id == tasks.first?.id }),
                  ConsoleNativeOutlineGroup(id: "next", header: AnyView(Text("Next Work")), isSection: true)]
             }) { task in
                 ConsoleTaskRowContent(task: task, sessionActivity: .idle,
@@ -36,6 +45,38 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
                     .onAppear { state.mounted.insert(task.id) }
             }
         }
+    }
+
+    func testNativeSubtaskDisclosureAnimatesAndKeepsLongChildrenVirtualized() throws {
+        _ = NSApplication.shared
+        let state = State(), session = try motionSession()
+        state.expanded = true
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: NativeSurface(state: state,
+            tasks: motionTasks(count: 1_001, session: session), session: session, nested: true))
+        window.contentView = host
+        window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.15)
+        let outline = try XCTUnwrap(findTable(in: host) as? NSOutlineView)
+        XCTAssertEqual(outline.numberOfRows, 3)
+        let next = try XCTUnwrap(outline.rowView(atRow: 2, makeIfNecessary: true))
+        let initialY = next.frame.minY
+        let parent = try XCTUnwrap(outline.item(atRow: 1))
+        outline.animator().expandItem(parent)
+        XCTAssertGreaterThan(motionPositions(next).count, 2)
+        XCTAssertTrue(state.taskExpanded)
+        XCTAssertEqual(outline.numberOfRows, 1_003)
+        let reads = state.childReads
+        XCTAssertLessThan(state.mounted.count, 100)
+        outline.animator().collapseItem(parent)
+        XCTAssertGreaterThan(motionPositions(next).count, 2)
+        XCTAssertFalse(state.taskExpanded)
+        XCTAssertEqual(state.childReads, reads, "Disclosure must reuse prepared children, not reread them")
+        XCTAssertEqual(next.frame.minY, initialY, accuracy: 1)
+        XCTAssertEqual(outline.numberOfRows, 3)
     }
 
     func testNativeListLimitsPreviewVirtualizesFullListAndRestoresAfterRapidToggles() throws {
@@ -171,9 +212,11 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         }
         await store.prepare(key: key(1), tasks: tasks, works: [], sessions: [])
         XCTAssertFalse(store.lastComputationUsedMainThread)
+        let structureRevision = store.prepared.workRowsByWorkID["work:motion"]?.structureRevision
         tasks[0].description = "An unrelated description patch"
         await store.prepare(key: key(2), tasks: tasks, works: [], sessions: [])
         XCTAssertTrue(store.rebuiltWorkIDs.isEmpty)
+        XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.structureRevision, structureRevision)
         XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.allRows.first?.description, tasks[0].description)
         await store.prepare(key: key(3, sort: .name), tasks: tasks, works: [], sessions: [])
         tasks[0].title = "ZZZ"
