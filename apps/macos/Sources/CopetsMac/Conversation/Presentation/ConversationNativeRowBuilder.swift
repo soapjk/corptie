@@ -153,8 +153,12 @@ struct ConversationNativeRowBuilder {
             messageDate = isOrdinaryMessage
                 ? item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
                 : nil
-            expandableTurnId = scheduledTrigger?.expansionID
-            isExpanded = false
+            // Reuse the existing per-message disclosure key and revision path;
+            // its historical helper name does not change checklist semantics.
+            let checklistDisclosureID = item.executionPlan?.taskId == nil ? nil
+                : ScheduledTriggerPresentation.expansionID(for: item.id)
+            expandableTurnId = scheduledTrigger?.expansionID ?? checklistDisclosureID
+            isExpanded = checklistDisclosureID.map { expandedTurnIds.contains($0) } ?? false
             processCount = nil
             processDuration = nil
             processStartedAt = nil
