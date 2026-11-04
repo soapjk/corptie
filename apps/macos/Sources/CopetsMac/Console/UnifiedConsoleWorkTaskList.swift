@@ -93,7 +93,7 @@ extension UnifiedConsoleView {
         .contentMargins(.top, 40, for: .scrollContent)
     }
 
-    func hierarchyTaskRow(_ task: CorptieTask, showsHoverFeedback: Bool = true) -> some View {
+    func hierarchyTaskRow(_ task: CorptieTask, showsHoverFeedback: Bool = true, nativeDisclosure: Bool = false) -> some View {
         HStack(spacing: 4) {
             taskRow(task, showsHoverFeedback: showsHoverFeedback)
             if let hierarchy = task.hierarchy, hierarchy.childCount > 0 {
@@ -101,30 +101,34 @@ extension UnifiedConsoleView {
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     .accessibilityLabel(L10n("子任务完成进度"))
             }
-            if (task.hierarchy?.childCount ?? 0) > 0 {
+            if !nativeDisclosure, (task.hierarchy?.childCount ?? 0) > 0 {
                 Button {
-                    if !expandedParentTaskIDs.insert(task.id).inserted {
-                        expandedParentTaskIDs.remove(task.id)
-                    } else {
+                    let wasExpanded = expandedParentTaskIDs.contains(task.id)
+                    withAnimation(reduceOutlineMotion ? nil : .default) {
+                        if wasExpanded { expandedParentTaskIDs.remove(task.id) }
+                        else { expandedParentTaskIDs.insert(task.id) }
+                    }
+                    if !wasExpanded {
                         Task { await entityClient.loadTaskChildren(task) }
                     }
                 } label: {
-                    Image(systemName: expandedParentTaskIDs.contains(task.id) ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
+                        .rotationEffect(.degrees(expandedParentTaskIDs.contains(task.id) ? 90 : 0))
                         .frame(width: 20, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .consoleHoverFeedback()
                 .accessibilityLabel(L10n(expandedParentTaskIDs.contains(task.id) ? "收起子任务" : "展开子任务"))
-                if expandedParentTaskIDs.contains(task.id), entityClient.taskChildrenCursors[task.id] != nil {
-                    Button { Task { await entityClient.loadTaskChildren(task, more: true) } } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .buttonStyle(.plain).consoleHoverFeedback().accessibilityLabel(L10n("加载更多子任务"))
+            }
+            if expandedParentTaskIDs.contains(task.id), entityClient.taskChildrenCursors[task.id] != nil {
+                Button { Task { await entityClient.loadTaskChildren(task, more: true) } } label: {
+                    Image(systemName: "ellipsis")
                 }
+                .buttonStyle(.plain).consoleHoverFeedback().accessibilityLabel(L10n("加载更多子任务"))
             }
         }
-        .padding(.leading, task.parentTaskId == nil ? 0 : 24)
+        .padding(.leading, nativeDisclosure || task.parentTaskId == nil ? 0 : 24)
     }
 
     func hierarchyTasks(_ tasks: [CorptieTask]) -> [CorptieTask] {

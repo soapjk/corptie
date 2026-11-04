@@ -246,6 +246,7 @@ struct ConsoleWorkOutlineHeader: View {
     // lifetime. Actions in that scope must resolve current state when invoked.
     var actionOwner: AnyObject = NSObject()
     var isActive = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.controlActiveState) private var controlActiveState
 
     @State private var isHovering = false

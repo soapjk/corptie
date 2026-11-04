@@ -17,12 +17,19 @@ struct ConsoleOutlineProjectionKey: Equatable, Sendable {
 /// Prepared when the inventory changes, never while toggling a Work card.
 struct ConsoleOutlineWorkRows {
     static let empty = Self(orderedTasks: [])
+    var structureRevision = 0
     let rootCount: Int
     let initialRows: [CorptieTask]
     let allRows: [CorptieTask]
+    let nativeRoots: [CorptieTask]
+    let nativePreviewRoots: [CorptieTask]
+    let nativeChildren: [String: [CorptieTask]]
 
     init(orderedTasks: [CorptieTask]) {
         let roots = orderedTasks.filter { $0.parentTaskId == nil }
+        nativeRoots = roots
+        nativePreviewRoots = Array(roots.prefix(WorkOutlineTaskDisclosurePolicy.defaultVisibleCount))
+        nativeChildren = Dictionary(grouping: orderedTasks.filter { $0.parentTaskId != nil }, by: { $0.parentTaskId! })
         rootCount = roots.count
         allRows = orderedTasks
         let initialRootIDs = Set(roots.prefix(WorkOutlineTaskDisclosurePolicy.defaultVisibleCount).map(\.id))
@@ -32,6 +39,11 @@ struct ConsoleOutlineWorkRows {
     func rows(showsAll: Bool) -> [CorptieTask] { showsAll ? allRows : initialRows }
 
     init(group: ConsoleOutlineComputedGroup, tasks: [String: CorptieTask]) {
+        let ordered = group.nativeIDs.compactMap { tasks[$0] }
+        let ids = Set(ordered.map(\.id))
+        nativeRoots = ordered.filter { $0.parentTaskId == nil || !ids.contains($0.parentTaskId!) }
+        nativePreviewRoots = Array(nativeRoots.prefix(WorkOutlineTaskDisclosurePolicy.defaultVisibleCount))
+        nativeChildren = Dictionary(grouping: ordered.filter { $0.parentTaskId.map(ids.contains) == true }, by: { $0.parentTaskId! })
         rootCount = group.rootCount
         initialRows = group.initialIDs.compactMap { tasks[$0] }
         allRows = group.allIDs.compactMap { tasks[$0] }
@@ -66,6 +78,7 @@ struct ConsoleOutlineComputedGroup: Sendable {
     let rootCount: Int
     let initialIDs: [String]
     let allIDs: [String]
+    let nativeIDs: [String]
 }
 
 struct ConsoleOutlineComputation: Sendable {
@@ -131,7 +144,7 @@ struct ConsoleOutlineSnapshot: Sendable {
                     ? Dictionary(records.compactMap { record in taskActivity[record.id].map { (record.id, $0) } },
                         uniquingKeysWith: { _, last in last }) : [:]
                 let source = ConsoleOutlineGroupSource(records: records, directIDs: direct.map(\.id),
-                    expanded: key.search.isEmpty ? key.expandedTaskIDs.intersection(recordIDs) : recordIDs,
+                    expanded: key.showsArchive && key.search.isEmpty ? key.expandedTaskIDs.intersection(recordIDs) : recordIDs,
                     sort: key.sort, activity: activity)
                 if let cached = old[workID], cached.source == source { result[workID] = cached; continue }
                 rebuilt.insert(workID)
@@ -143,7 +156,9 @@ struct ConsoleOutlineSnapshot: Sendable {
                 let roots = orderedIDs.filter { byID[$0]?.parentID == nil }
                 let initial = Set(roots.prefix(WorkOutlineTaskDisclosurePolicy.defaultVisibleCount))
                 result[workID] = ConsoleOutlineComputedGroup(source: source, rootCount: roots.count,
-                    initialIDs: orderedIDs.filter { initial.contains(byID[$0]?.parentID ?? $0) }, allIDs: orderedIDs)
+                    initialIDs: orderedIDs.filter { initial.contains(byID[$0]?.parentID ?? $0) }, allIDs: orderedIDs, nativeIDs: TaskHierarchyIndex.visibleOrder(nodes: ordered.map {
+                        .init(id: $0.id, workId: $0.workID, parentTaskId: $0.parentID)
+                    }, expanded: recordIDs))
             }
             return result
         }
@@ -201,7 +216,11 @@ final class ConsoleOutlineProjectionStore: ObservableObject {
         let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let worksByID = Dictionary(works.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let archivedByID = Dictionary(archivedRows.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        let rows = result.active.mapValues { ConsoleOutlineWorkRows(group: $0, tasks: tasksByID) }
+        var rows = result.active.mapValues { ConsoleOutlineWorkRows(group: $0, tasks: tasksByID) }
+        for id in rows.keys {
+            rows[id]?.structureRevision = result.rebuiltWorkIDs.contains(id)
+                ? computationCount + 1 : prepared.workRowsByWorkID[id]?.structureRevision ?? 0
+        }
         let projection = ConsoleOutlineProjection(tasksByWorkID: rows.mapValues(\.allRows),
             works: result.workIDs.compactMap { worksByID[$0] }, processingWorkIDs: [], workRowsByWorkID: rows,
             archivedTasksByWorkID: result.archived.mapValues { $0.allIDs.compactMap { tasksByID[$0] } },

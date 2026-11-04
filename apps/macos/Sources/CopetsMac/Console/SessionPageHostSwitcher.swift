@@ -63,7 +63,10 @@ struct ResidentSessionPageRoot: View {
         }
     }
     private var page: some View {
-        AdaptiveConversationColumns(isVisible: $showsDetailColumn) {
+        AdaptiveConversationColumns(isVisible: Binding(
+            get: { showsDetailColumn && inputs.activity.isActive },
+            set: { if inputs.activity.isActive { showsDetailColumn = $0 } }
+        )) {
             VStack(spacing: 6) {
                 SearchMessageNavigationSurface(sessionID: inputs.scope.sessionID,
                     target: inputs.searchTarget, matches: inputs.searchMatches) { delta in
