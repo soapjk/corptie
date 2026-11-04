@@ -6,6 +6,34 @@ import {
   WORKER_SESSION_CONTEXT_LIMITS
 } from "../src/application/workSessionContext.mjs";
 import { SessionContextDelivery } from "../src/application/sessionContextDelivery.mjs";
+import { EXECUTION_CHECKLIST_INSTRUCTIONS } from "../src/application/executionChecklistInstructions.mjs";
+import { taskExecutionPrompt } from "../src/application/taskAcceptance.mjs";
+
+test("checklist policy is required Worker context and the default startup uses the same policy", () => {
+  const base = workerContext();
+  assert.ok(base.corePrompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+  assert.ok(taskExecutionPrompt({ title: "Work" }).includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+  const merged = mergeWorkerSessionContexts({ baseContext: base,
+    memoryContext: { prompt: "Optional recall ".repeat(10_000) } });
+  assert.ok(merged.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+  assert.equal(merged.contextBudget.memoryContextOmitted, true);
+  assert.match(merged.prompt, /user does not need to explicitly request a checklist/);
+  assert.match(merged.prompt, /simple one-step read-only requests may be answered directly/);
+  assert.match(merged.prompt, /Never resume a user-paused or cancelled run/);
+  assert.match(merged.prompt, /a dispatch receipt does not prove implementation completed/);
+});
+
+test("an existing append-context Session receives the new checklist rule without replacing its custom message", () => {
+  const reference = { sessionId: "s", providerId: "p", providerSessionId: "native", bindingId: "b" };
+  const delivery = new SessionContextDelivery();
+  const next = mergeWorkerSessionContexts({ baseContext: workerContext() });
+  const oldCore = next.contextSections.find(section => section.id === "session-binding").prompt
+    .replace(EXECUTION_CHECKLIST_INSTRUCTIONS + "\n", "");
+  delivery.prepare(reference, { ...next, prompt: oldCore,
+    contextSections: [{ id: "session-binding", prompt: oldCore, reusable: true }] }, { mode: "append" }).commit();
+  const refreshed = delivery.prepare(reference, next, { mode: "append" });
+  assert.ok(refreshed.context.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+});
 
 test("Task and Artifact updates remain independently deliverable after validation", () => {
   const session = { id: "s", sessionKind: "worker", taskId: "t", workId: "w" };

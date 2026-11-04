@@ -238,6 +238,12 @@ final class NativeIncrementalPlanLayoutCache {
 /// same measured height, so their frequent updates do not remeasure text.
 @MainActor
 final class NativePlanChecklistHeightCache {
+    private struct TaskEntry {
+        let revision: Int
+        let collapsed: CGFloat
+        let expanded: CGFloat
+        var access: UInt64
+    }
     private struct Key: Hashable {
         let widthBucket: Int
         let lifecycle: String
@@ -251,10 +257,33 @@ final class NativePlanChecklistHeightCache {
     }
     static let shared = NativePlanChecklistHeightCache()
     private var entries: [Key: Entry] = [:]
+    private var taskEntries: [String: TaskEntry] = [:]
     private var sequence: UInt64 = 0
     private(set) var measurementCount = 0
+    private(set) var taskPreparationCount = 0
 
-    func height(of plan: ConversationExecutionPlan, width: CGFloat) -> CGFloat {
+    func height(of plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool = false) -> CGFloat {
+        if plan.taskId != nil {
+            // Both heights are prepared together on data/width changes. A
+            // disclosure click is a constant-time lookup, not a list scan or
+            // an offscreen render of every item.
+            let key = plan.planId + ":" + String(Int((width * 2).rounded(.down)))
+            sequence &+= 1
+            if var cached = taskEntries[key], cached.revision == plan.revision {
+                cached.access = sequence
+                taskEntries[key] = cached
+                return expanded ? cached.expanded : cached.collapsed
+            }
+            let heights = TaskExecutionChecklist.heights(plan: plan, width: width)
+            let entry = TaskEntry(revision: plan.revision, collapsed: heights.collapsed,
+                                  expanded: heights.expanded, access: sequence)
+            taskEntries[key] = entry
+            taskPreparationCount += 1
+            if taskEntries.count > 64, let oldest = taskEntries.min(by: { $0.value.access < $1.value.access })?.key {
+                taskEntries.removeValue(forKey: oldest)
+            }
+            return expanded ? entry.expanded : entry.collapsed
+        }
         let key = Key(widthBucket: Int((width * 2).rounded()), lifecycle: plan.lifecycle,
             explanation: plan.explanation, totalCount: plan.steps.count,
             visibleTexts: plan.steps.map(\.text))
@@ -367,6 +396,8 @@ final class NativeTimelineLayoutCache {
         let userInput: ConversationUserInput?
         let userInputStatus: String?
         let executionPlan: ConversationExecutionPlan?
+        let taskChecklistID: String?
+        let taskChecklistRevision: Int?
         let scheduledTriggerText: String?
         let scheduledTriggerExpanded: Bool
 
@@ -436,13 +467,16 @@ final class NativeTimelineLayoutCache {
             showsMessageStatusBar: row.showsMessageStatusBar,
             hasTimeSeparator: row.timeSeparatorText != nil,
             hasScheduledSource: row.scheduledMessageSource != nil,
-            widthBucket: Int((normalizedWidth * 2).rounded()),
+            widthBucket: row.executionPlan?.taskId != nil
+                ? Int((normalizedWidth * 2).rounded(.down)) : Int((normalizedWidth * 2).rounded()),
             isWorkspaceCard: row.isWorkspaceCard,
             imagePaths: row.images.map { $0.managedPath },
             imageGeometries: row.imageGeometries,
             userInput: row.userInput,
             userInputStatus: row.userInputStatus,
-            executionPlan: row.executionPlan,
+            executionPlan: row.executionPlan?.taskId == nil ? row.executionPlan : nil,
+            taskChecklistID: row.executionPlan?.taskId == nil ? nil : row.executionPlan?.planId,
+            taskChecklistRevision: row.executionPlan?.taskId == nil ? nil : row.executionPlan?.revision,
             scheduledTriggerText: row.scheduledTrigger?.text,
             scheduledTriggerExpanded: row.scheduledTrigger?.isExpanded ?? false
         )
@@ -467,17 +501,19 @@ final class NativeTimelineLayoutCache {
         }
 
         if let plan = row.executionPlan {
-            let cardWidth = min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, normalizedWidth - 8))
-            let measured = plan.taskId != nil
-                ? TaskExecutionChecklist.previewHeight(plan: plan, width: cardWidth - 28)
-                : NativePlanChecklistHeightCache.shared.height(of: plan, width: cardWidth - 28)
+            let cardWidth = plan.taskId != nil
+                ? min(780, max(120, normalizedWidth - 14))
+                : min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, normalizedWidth - 8))
+            let measured = NativePlanChecklistHeightCache.shared.height(of: plan, width: cardWidth - 28, expanded: row.isExpanded)
             let height = (plan.taskId != nil ? measured : min(300, measured)) + 28
             let layout = Layout(attributedText: NSAttributedString(string: ""), richBlocks: [],
                 processBlocks: [], cardWidth: cardWidth, textHeight: 0, rawStatusHeight: 0,
-                rowHeight: height + row.timeSeparatorHeight)
+                rowHeight: height + row.timeSeparatorHeight
+                    + (plan.taskId != nil ? 2 * typography.rowInset : 0),
+                cardHeight: height)
             values[key] = layout
             touch(key)
-            estimatedBytes += 512 + plan.steps.reduce(0) { $0 + $1.text.utf16.count * 8 }
+            estimatedBytes += plan.taskId != nil ? 512 : 512 + plan.steps.reduce(0) { $0 + $1.text.utf16.count * 8 }
             evictIfNeeded()
             return layout
         }
