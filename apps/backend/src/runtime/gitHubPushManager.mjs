@@ -372,7 +372,8 @@ export class GitHubPushManager {
     try {
       const result = await this.execFile("git", ["-C", cwd, ...arguments_], {
         encoding: "utf8",
-        maxBuffer: 8 * 1024 * 1024
+        maxBuffer: 8 * 1024 * 1024,
+        ...(arguments_[0] === "status" ? { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } } : {})
       });
       return { stdout: String(result?.stdout ?? ""), stderr: String(result?.stderr ?? "") };
     } catch (error) {

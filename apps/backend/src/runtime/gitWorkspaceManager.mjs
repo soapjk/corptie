@@ -1270,6 +1270,29 @@ export class GitWorkspaceManager {
   }
 
   async abortIntegrationMerge(input) {
+    return withWorktreeOperationLock(input.mainPath, async () => {
+      const delays = [50, 100, 200, 400, 800];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await this.abortIntegrationMergeLocked(input);
+        } catch (error) {
+          // A failed index-lock acquisition performs no abort. Revalidate the
+          // complete ownership/edit fence before trying again; never remove a
+          // Git lock or replay an arbitrary failed Git write.
+          const indexBusy = error?.code === 128 && /fatal: Unable to create ['"][^\r\n]*[/\\]index\.lock['"]: File exists\./u.test(String(error.stderr ?? ""));
+          if (!indexBusy) throw error;
+          if (attempt === delays.length) {
+            throw integrationGitError("GIT_INDEX_LOCK_BUSY",
+              safeGitError(error, "The integration target's Git index is still busy after bounded retries. The merge was preserved; retry conflict handling after the other Git operation finishes"),
+              { cause: error, retryCount: attempt });
+          }
+          await new Promise(done => setTimeout(done, delays[attempt]));
+        }
+      }
+    });
+  }
+
+  async abortIntegrationMergeLocked(input) {
     this.store.assertStandaloneWorktreeMutation?.({paths:[input.mainPath],jobId:input.jobId});
     const operationState = await this.integrationOperationState(input.mainPath);
     const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
@@ -1280,6 +1303,9 @@ export class GitWorkspaceManager {
           "MAIN_NOT_RESTORED",
           "main no longer contains the task-owned merge and has uncommitted changes."
         );
+      }
+      if (mainHead !== input.expectedMainHead) {
+        throw integrationGitError("MAIN_HEAD_CHANGED", "The target HEAD changed while waiting to restore the task-owned merge.");
       }
       return { aborted: false, alreadyClean: true, mainHead };
     }
