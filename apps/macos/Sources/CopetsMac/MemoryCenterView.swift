@@ -14,6 +14,32 @@ enum MemoryCenterLayout {
     static func showsDetailBesideList(_ width: CGFloat) -> Bool { width >= 720 }
 }
 
+/// Page-local column shell: content keeps its safe-area placement while the
+/// canvases extend vertically behind window chrome, like the console panes.
+struct MemoryCenterColumns<Scope: View, Content: View>: View {
+    let showsScope: Bool
+    @ViewBuilder let scope: () -> Scope
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if showsScope {
+                scope()
+                    .frame(width: 200)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+                    .background {
+                        WorkbenchStyle.sidebarColor.ignoresSafeArea(.container, edges: .vertical)
+                    }
+                Divider()
+            }
+            content()
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background { WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical) }
+    }
+}
+
 /// The standalone Tab owns its navigation and paging. Embedded owner inspectors
 /// continue using MemoryManagementView and their existing scroll ownership.
 struct MemoryCenterView: View {
@@ -51,26 +77,21 @@ struct MemoryCenterView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                toolbar(width: geometry.size.width)
-                Divider()
-                if mode == "queue" {
-                    MemoryCenterQueueView()
-                } else {
-                    HStack(spacing: 0) {
-                        if MemoryCenterLayout.showsSidebar(geometry.size.width) {
-                            scopeSidebar.frame(width: 200)
-                            Divider()
-                        }
-                        VStack(spacing: 0) {
-                            searchAndFilters(width: geometry.size.width)
-                            Divider()
-                            memoryColumns(width: geometry.size.width)
-                        }
+            MemoryCenterColumns(showsScope: mode != "queue" && MemoryCenterLayout.showsSidebar(geometry.size.width)) {
+                scopeSidebar
+            } content: {
+                VStack(spacing: 0) {
+                    toolbar(width: geometry.size.width)
+                    Divider()
+                    if mode == "queue" {
+                        MemoryCenterQueueView()
+                    } else {
+                        searchAndFilters(width: geometry.size.width)
+                        Divider()
+                        memoryColumns(width: geometry.size.width)
                     }
                 }
             }
-            .background(WorkbenchStyle.canvas)
             .font(WorkbenchTypography.font(for: .body))
         }
         .task(id: focus) { applyFocus(); await prepareOwners() }
@@ -188,7 +209,8 @@ struct MemoryCenterView: View {
                     }.listRowBackground(owner == item ? Color.primary.opacity(0.07) : .clear)
                 }
             }.listStyle(.sidebar).scrollContentBackground(.hidden).buttonStyle(.plain)
-        }.background(WorkbenchStyle.sidebarColor)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityIdentifier("memory.scopes")
     }
 
@@ -378,7 +400,9 @@ struct MemoryCenterView: View {
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
-        }.accessibilityIdentifier("memory.list")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("memory.list")
     }
 
     private var detail: some View {
@@ -406,7 +430,9 @@ struct MemoryCenterView: View {
                     description: Text(L10n("Read its content, scope and source evidence.")))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }.accessibilityIdentifier("memory.detail")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier("memory.detail")
     }
 
     private var emptyTitle: String {
@@ -581,7 +607,9 @@ struct MemoryCenterQueueView: View {
                     }.padding(.vertical, 8)
                 }.listStyle(.plain).scrollContentBackground(.hidden)
             }
-        }.task { await load() }.accessibilityIdentifier("memory.queue")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task { await load() }.accessibilityIdentifier("memory.queue")
     }
     static func status(_ job: MemoryExtractionJob) -> String {
         switch job.state {
