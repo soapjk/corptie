@@ -29,6 +29,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var hasExpandedProcessRows = false
     private var rows: [AppKitChatTimelineRow] = []
     private var presentationActive = true
+    private var needsPresentationLayout = false
     private var lastAppliedContentRevision: UInt64?
     private var lastAppliedContentSessionID: String?
     private var canAdvanceProcessClock: Bool
@@ -223,6 +224,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         presentationActive = active
         if !active { processClockTimer?.invalidate(); processClockTimer = nil }
         else {
+            if needsPresentationLayout {
+                needsPresentationLayout = false
+                synchronizeTableWidth()
+                if needsExactWidthReflow { performExactWidthReflow() }
+                reconcileLayout()
+                updateProcessCollapseButton()
+            }
             if needsTypographyReflow { reflowForTypography() }
             synchronizeProcessClock(); scheduleImageGeometryCommit(); scheduleUnderfilledHistoryEvaluation()
         }
@@ -1048,6 +1056,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func reconcileLayout() {
+        guard presentationActive else { needsPresentationLayout = true; return }
         guard !applyingCorrection, !isRestoringInitialViewport,
               !isProcessingUserScrollEvent,
               pendingRestorePosition == nil, !pendingInitialScrollToBottom else { return }
@@ -1218,6 +1227,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     @objc private func containerFrameDidChange(_ notification: Notification) {
+        guard presentationActive else { needsPresentationLayout = true; return }
         synchronizeTableWidth()
         updateProcessCollapseButton()
         reconcileLayout()
@@ -1246,6 +1256,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func synchronizeTableWidth() {
+        guard presentationActive else { needsPresentationLayout = true; return }
         guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
         // Every timeline stays overlay-style: a restored legacy preference
         // would introduce an opaque track strip and narrow the clip view.
@@ -1339,6 +1350,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func performExactWidthReflow() {
+        guard presentationActive else { needsPresentationLayout = true; return }
         guard let tableView else { return }
         needsExactWidthReflow = false
         heightCache = heightCache.filter { !$0.key.isLiveResizeApproximation }

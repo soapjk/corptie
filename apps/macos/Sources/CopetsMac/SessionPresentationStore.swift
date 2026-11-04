@@ -62,7 +62,17 @@ final class SessionPresentationCache: ObservableObject {
     var preparedRowsCount: Int { preparedRows.count }
 
     func preparedRows(for sessionID: String, context: PreparedRowsContext) -> [AppKitChatTimelineRow]? {
-        guard let index = preparedRows.firstIndex(where: { $0.sessionID == sessionID && $0.context == context }) else { return nil }
+        let trace = SessionSwitchTrace.shared.start(.preparedRowsLookup, sessionID: sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
+        guard let index = preparedRows.firstIndex(where: { $0.sessionID == sessionID }) else {
+            tracePreparedRows(sessionID, reason: "miss")
+            return nil
+        }
+        guard preparedRows[index].context == context else {
+            tracePreparedRows(sessionID, reason: "context-changed")
+            return nil
+        }
+        tracePreparedRows(sessionID, reason: "hit")
         let entry = preparedRows.remove(at: index)
         preparedRows.append(entry)
         return entry.rows
@@ -70,33 +80,44 @@ final class SessionPresentationCache: ObservableObject {
 
     func storePreparedRows(_ rows: [AppKitChatTimelineRow], for sessionID: String,
                            context: PreparedRowsContext, sourceItems: [CodexThreadItem]) {
-        invalidatePreparedRows(for: sessionID)
-        guard rows.count <= 256, sourceItems.count <= 2_000,
-              !rows.contains(where: { $0.processState == .running }) else { return }
+        invalidatePreparedRows(for: sessionID, reason: "replace")
+        guard rows.count <= 256 else { tracePreparedRows(sessionID, reason: "row-budget"); return }
+        guard sourceItems.count <= 2_000 else { tracePreparedRows(sessionID, reason: "source-budget"); return }
+        guard !rows.contains(where: { $0.processState == .running }) else {
+            tracePreparedRows(sessionID, reason: "running-process"); return
+        }
         var entryLength = 0
         var entryCount = 0
         for items in context.entryItems {
             entryCount += items.count
-            guard entryCount <= 2_000 else { return }
+            guard entryCount <= 2_000 else { tracePreparedRows(sessionID, reason: "entry-budget"); return }
             for item in items {
                 entryLength += item.text.utf16.count
-                guard entryLength <= 250_000 else { return }
+                guard entryLength <= 250_000 else { tracePreparedRows(sessionID, reason: "entry-text-budget"); return }
             }
         }
         var sourceLength = 0
         for item in sourceItems {
             sourceLength += item.text.utf16.count
-            guard sourceLength <= 250_000 else { return }
+            guard sourceLength <= 250_000 else { tracePreparedRows(sessionID, reason: "source-text-budget"); return }
         }
         preparedRows.append(PreparedRows(sessionID: sessionID, context: context, rows: rows))
         while preparedRows.count > 3 {
             let index = preparedRows.firstIndex { !pinnedSessionIDs.contains($0.sessionID) } ?? 0
-            preparedRows.remove(at: index)
+            let evicted = preparedRows.remove(at: index)
+            tracePreparedRows(evicted.sessionID, reason: "capacity-evicted")
         }
+        tracePreparedRows(sessionID, reason: "stored")
     }
 
-    func invalidatePreparedRows(for sessionID: String) {
+    private func tracePreparedRows(_ sessionID: String, reason: String) {
+        SessionSwitchTrace.shared.recordCache(sessionID: sessionID, layer: "prepared-rows", reason: reason, count: preparedRows.count)
+    }
+
+    func invalidatePreparedRows(for sessionID: String, reason: String = "invalidated") {
+        let count = preparedRows.count
         preparedRows.removeAll { $0.sessionID == sessionID }
+        if preparedRows.count != count { tracePreparedRows(sessionID, reason: reason) }
     }
 
     init(capacity: Int = 48) { self.capacity = max(1, capacity) }

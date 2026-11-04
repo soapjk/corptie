@@ -104,6 +104,7 @@ final class SessionSwitchTrace {
         case detailHostCreated, detailHostReused, detailHostRootUpdated
         case conversationBody, headerBody, modelMenuBody, composerBody
         case pageHostCreated, pageHostReused, pageHostEvicted
+        case pageResume, pageFlush, preparedRowsLookup
         case nativePageVisibilityCommitted, presentationDeferredWorkAllowed, presentationGateTimedOut
         case pageContentUncovered, presentationContentGateTimedOut
         case pageOpeningDrawPrepared
@@ -198,6 +199,12 @@ final class SessionSwitchTrace {
     func recordPagePool(sessionID: String?, count: Int, capacity: Int, reason: String) {
         guard enabled else { return }
         logger.info("page pool session=\(sessionID ?? "", privacy: .public) count=\(count) capacity=\(capacity) reason=\(reason, privacy: .public)")
+    }
+
+    func recordCache(sessionID: String, layer: String, reason: String, count: Int) {
+        guard enabled else { return }
+        let traceID = snapshot?.id ?? 0
+        logger.info("switch cache id=\(traceID) session=\(sessionID, privacy: .public) layer=\(layer, privacy: .public) reason=\(reason, privacy: .public) count=\(count)")
     }
 
     func mark(_ stage: Stage, sessionID: String? = nil) {

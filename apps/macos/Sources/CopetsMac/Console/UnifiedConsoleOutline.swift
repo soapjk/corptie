@@ -101,7 +101,7 @@ extension UnifiedConsoleView {
                     }),
                 rows: rows, isExpanded: outlineWorkIsExpanded(work.id),
                 allowsCollapse: !queryIsActive,
-                showsDisclosureIndicator: false,
+                showsDisclosureIndicator: false, showsRowDisclosureIndicator: false,
                 expansionChanged: { outlineWorkExpandedBinding(work.id).wrappedValue = $0 },
                 structureRevision: workRows.structureRevision, dataRevision: outlineProjectionStore.computationCount,
                 childRows: { entry in

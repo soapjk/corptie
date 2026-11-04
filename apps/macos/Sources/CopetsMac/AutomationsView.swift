@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import CorptieConversation
 
 enum AutomationCategory: String, CaseIterable, Identifiable {
@@ -42,29 +43,8 @@ enum AutomationOverviewPolicy {
         }
         }
     }
-}
-
-struct AutomationsView: View {
-    @EnvironmentObject private var router: AppTabRouter
-    @EnvironmentObject private var sidebarState: TabSidebarState
-    @StateObject private var backendClient = BackendClient.shared
-    @ObservedObject private var scheduling = BackendClient.shared.scheduledTaskController
-    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
-    @State private var category: AutomationCategory? = .all
-    @State private var editingAutomation: ScheduledSessionTask?
-    @State private var focusedAutomationID: String?
-    @State private var searchText = ""
-    @State private var showsCreationHelp = false
-    @State private var focusRevision = 0
-    @AppStorage("ui.automations.cards", store: CorptieAppEnvironment.userDefaults) private var showsCards = false
-
-    private func tasks(in category: AutomationCategory) -> [ScheduledSessionTask] {
-        AutomationOverviewPolicy.items(in: category, from: scheduling.automations)
-    }
-    private var visibleAutomations: [ScheduledSessionTask] {
-        tasks(in: category ?? .all).filter {
-            searchText.isEmpty || "\($0.name) \($0.message) \(targetName(for: $0))".localizedCaseInsensitiveContains(searchText)
-        }.sorted { left, right in
+    static func sortedItems(in category: AutomationCategory, from automations: [ScheduledSessionTask]) -> [ScheduledSessionTask] {
+        items(in: category, from: automations).sorted { left, right in
             let leftRank = left.status == .error ? 0 : (left.lastRunStatus == .running ? 1 : 2)
             let rightRank = right.status == .error ? 0 : (right.lastRunStatus == .running ? 1 : 2)
             if leftRank != rightRank { return leftRank < rightRank }
@@ -76,6 +56,63 @@ struct AutomationsView: View {
             if left.updatedAt != right.updatedAt { return left.updatedAt > right.updatedAt }
             return left.id < right.id
         }
+    }
+
+}
+
+private struct AutomationTarget: Equatable {
+    let sessionID: String
+    let title: String?
+}
+
+struct AutomationsView: View {
+    private let router = AppTabRouter.shared
+    @EnvironmentObject private var sidebarState: TabSidebarState
+    private let backendClient = BackendClient.shared
+    @ObservedObject private var scheduling = BackendClient.shared.scheduledTaskController
+    @State private var category: AutomationCategory? = .all
+    @State private var editingAutomation: ScheduledSessionTask?
+    @State private var focusedAutomationID: String?
+    @State private var searchText = ""
+    @State private var showsCreationHelp = false
+    @State private var focusRevision = 0
+    @State private var categoryItems: [AutomationCategory: [ScheduledSessionTask]] = [:]
+    @State private var visibleAutomations: [ScheduledSessionTask] = []
+    @State private var targets: [String: AutomationTarget] = [:]
+    @AppStorage("ui.automations.cards", store: CorptieAppEnvironment.userDefaults) private var showsCards = false
+
+    private func tasks(in category: AutomationCategory) -> [ScheduledSessionTask] {
+        categoryItems[category] ?? []
+    }
+
+    // Sorting is tied to source changes, never a geometry/body evaluation or
+    // returning to this cached page. Category switches reuse prepared arrays.
+    private func rebuildCategories(_ automations: [ScheduledSessionTask]) {
+        categoryItems = Dictionary(uniqueKeysWithValues: AutomationCategory.allCases.map {
+            ($0, AutomationOverviewPolicy.sortedItems(in: $0, from: automations))
+        })
+        updateVisibleAutomations()
+        focusPendingAutomation()
+    }
+
+    private func updateVisibleAutomations() {
+        let items = tasks(in: category ?? .all)
+        visibleAutomations = searchText.isEmpty ? items : items.filter {
+            "\($0.name) \($0.message) \(targetName(for: $0))".localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    private func updateTargets() {
+        var next: [String: AutomationTarget] = [:]
+        // AppStateStore already caches its stable Session order. Preserve the
+        // existing first matching active Session when aliases overlap.
+        for session in backendClient.sessions {
+            let key = session.external?.logicalSessionId ?? session.id
+            if next[key] == nil { next[key] = AutomationTarget(sessionID: session.id, title: session.title) }
+        }
+        guard next != targets else { return }
+        targets = next
+        if !searchText.isEmpty { updateVisibleAutomations() }
     }
 
     var body: some View {
@@ -131,8 +168,11 @@ struct AutomationsView: View {
             }
         }
         .task { await scheduling.loadAutomations() }
-        .onChange(of: router.pendingAutomationId, initial: true) { _, _ in focusPendingAutomation() }
-        .onChange(of: scheduling.automations.map(\.id)) { _, _ in focusPendingAutomation() }
+        .onChange(of: scheduling.automations, initial: true) { _, values in rebuildCategories(values) }
+        .onReceive(router.$pendingAutomationId.removeDuplicates().receive(on: DispatchQueue.main)) { _ in focusPendingAutomation() }
+        .onReceive(backendClient.appState.$state.map(\.sessions).removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateTargets() }
+        .onChange(of: category) { _, _ in updateVisibleAutomations() }
+        .onChange(of: searchText) { _, _ in updateVisibleAutomations() }
         .sheet(item: $editingAutomation) { automation in
             if let session = targetSession(for: automation) {
                 ScheduledTaskEditorSheet(
@@ -225,10 +265,9 @@ struct AutomationsView: View {
                         spacing: 12
                     ) {
                         ForEach(visibleAutomations) { automation in
-                            AutomationCard(
+                            AutomationMutationCard(
                                 automation: automation,
                                 targetName: targetName(for: automation),
-                                isMutating: commandState.scheduledTaskMutationIds.contains(automation.id),
                                 openTarget: { openTarget(automation) },
                                 edit: { edit(automation) },
                                 perform: { action in
@@ -265,13 +304,15 @@ struct AutomationsView: View {
     }
 
     private func targetName(for automation: ScheduledSessionTask) -> String {
-        targetSession(for: automation)?.title ?? automation.logicalSessionId
+        targets[automation.logicalSessionId]?.title ?? automation.logicalSessionId
     }
 
     private func targetSession(for automation: ScheduledSessionTask) -> TaskSession? {
-        backendClient.sessions.first {
-            ($0.external?.logicalSessionId ?? $0.id) == automation.logicalSessionId
-        }
+        guard let target = targets[automation.logicalSessionId],
+              let session = backendClient.appState.session(target.sessionID),
+              session.archived != true,
+              (session.external?.logicalSessionId ?? session.id) == automation.logicalSessionId else { return nil }
+        return session
     }
 
     private func edit(_ automation: ScheduledSessionTask) {
@@ -283,13 +324,30 @@ struct AutomationsView: View {
     }
 
     private func openTarget(_ automation: ScheduledSessionTask) {
-        guard let session = backendClient.sessions.first(where: {
-            ($0.external?.logicalSessionId ?? $0.id) == automation.logicalSessionId
-        }) else {
+        guard let session = targetSession(for: automation) else {
             router.navigationError = L10n("The target Logical Session is unavailable.")
             return
         }
         router.openSession(session.id, source: .userSelection)
+    }
+}
+
+// The mutation publisher affects only the matching visible card, not the
+// whole grid, its filtering or its other rows.
+private struct AutomationMutationCard: View {
+    let automation: ScheduledSessionTask
+    let targetName: String
+    let openTarget: () -> Void
+    let edit: () -> Void
+    let perform: (ScheduledSessionTaskAction) -> Void
+    let isList: Bool
+    @State private var isMutating = false
+
+    var body: some View {
+        AutomationCard(automation: automation, targetName: targetName, isMutating: isMutating,
+                       openTarget: openTarget, edit: edit, perform: perform, isList: isList)
+            .onReceive(BackendClient.shared.sessionCommandController.$scheduledTaskMutationIds
+                .map { $0.contains(automation.id) }.removeDuplicates()) { isMutating = $0 }
     }
 }
 

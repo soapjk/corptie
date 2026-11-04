@@ -30,7 +30,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
             ConsoleNativeOutline(groups: {
                 [ConsoleNativeOutlineGroup(id: "work", header: AnyView(Text("Work")),
                     rows: nested ? Array(tasks.prefix(1)) : (state.showsAll ? tasks : Array(tasks.prefix(5))),
-                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse, showsDisclosureIndicator: false, expansionChanged: { state.expanded = $0 },
+                    isExpanded: state.expanded, allowsCollapse: state.allowsCollapse, showsDisclosureIndicator: false, showsRowDisclosureIndicator: false, expansionChanged: { state.expanded = $0 },
                     childRows: { task in
                         state.childReads += 1
                         return nested && task.id == tasks.first?.id ? Array(tasks.dropFirst()) : []
@@ -65,13 +65,14 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         let next = try XCTUnwrap(outline.rowView(atRow: 2, makeIfNecessary: true))
         let initialY = next.frame.minY
         let parent = try XCTUnwrap(outline.item(atRow: 1))
-        outline.animator().expandItem(parent)
+        XCTAssertTrue(outline.frameOfOutlineCell(atRow: 1).isEmpty, "The left disclosure is hidden when a row supplies its trailing toggle")
+        state.taskExpanded = true
         XCTAssertGreaterThan(motionPositions(next).count, 2)
         XCTAssertTrue(state.taskExpanded)
         XCTAssertEqual(outline.numberOfRows, 1_003)
         let reads = state.childReads
         XCTAssertLessThan(state.mounted.count, 100)
-        outline.animator().collapseItem(parent)
+        state.taskExpanded = false
         XCTAssertGreaterThan(motionPositions(next).count, 2)
         XCTAssertFalse(state.taskExpanded)
         XCTAssertEqual(state.childReads, reads, "Disclosure must reuse prepared children, not reread them")
