@@ -104,7 +104,8 @@ export class GitCommitProtection {
   async runGit(cwd, arguments_) {
     return this.execFile("git", ["-C", cwd, ...arguments_], {
       encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024
+      maxBuffer: 4 * 1024 * 1024,
+      ...(arguments_[0] === "status" ? { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } } : {})
     });
   }
 }
