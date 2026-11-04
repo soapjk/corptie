@@ -40,7 +40,7 @@ extension UnifiedConsoleView {
                 sessionRow(row, showsHoverFeedback: false)
                     .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
             case .task(let task):
-                hierarchyTaskRow(task, showsHoverFeedback: false)
+                hierarchyTaskRow(task, showsHoverFeedback: false, nativeDisclosure: !isShowingWorkerArchive)
                     .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
             case .empty(_, let title):
                 outlineGroupEmptyRow(title)
@@ -80,7 +80,7 @@ extension UnifiedConsoleView {
                     + (outlineProjection.archivedRowsByWorkID[work.id] ?? []).map { .session($0) }
                 if rows.isEmpty { rows = [.empty("archive-empty", L10n("No Archived Sessions"))] }
             } else {
-                rows = workRows.rows(showsAll: showsAll || queryIsActive).map { .task($0) }
+                rows = (showsAll || queryIsActive ? workRows.nativeRoots : workRows.nativePreviewRoots).map { .task($0) }
                 if hiddenTaskCount > 0 { rows.append(.more(work.id, hiddenTaskCount)) }
             }
             groups.append(.init(id: work.id,
@@ -90,7 +90,24 @@ extension UnifiedConsoleView {
                     .contextMenu { workContextMenuContent(for: work) }),
                 rows: rows, isExpanded: outlineWorkIsExpanded(work.id),
                 allowsCollapse: !queryIsActive,
-                expansionChanged: { outlineWorkExpandedBinding(work.id).wrappedValue = $0 }))
+                expansionChanged: { outlineWorkExpandedBinding(work.id).wrappedValue = $0 },
+                structureRevision: workRows.structureRevision, dataRevision: outlineProjectionStore.computationCount,
+                childRows: { entry in
+                    guard !isShowingWorkerArchive, case .task(let task) = entry else { return [] }
+                    return (workRows.nativeChildren[task.id] ?? []).map { .task($0) }
+                }, rowIsExpanded: { entry in
+                    guard case .task(let task) = entry else { return false }
+                    return queryIsActive || expandedParentTaskIDs.contains(task.id)
+                }, rowExpansionChanged: { entry, expanded in
+                    guard case .task(let task) = entry else { return }
+                    if expanded {
+                        expandedParentTaskIDs.insert(task.id)
+                        Task { await entityClient.loadTaskChildren(task) }
+                    } else { expandedParentTaskIDs.remove(task.id) }
+                }, rowIsExpandable: { entry in
+                    guard !isShowingWorkerArchive, case .task(let task) = entry else { return false }
+                    return (task.hierarchy?.childCount ?? 0) > 0 || workRows.nativeChildren[task.id] != nil
+                }))
         }
         return groups
     }
@@ -231,7 +248,7 @@ extension UnifiedConsoleView {
     var outlinePreparationKey: ConsoleOutlineProjectionKey {
         ConsoleOutlineProjectionKey(entityRevision: entityGroupingRevision,
             sessionRevision: outlineSort == .updated ? sessionIndexStore.outlineActivityRevision : 0,
-            search: searchText, sort: outlineSort, expandedTaskIDs: expandedParentTaskIDs,
+            search: searchText, sort: outlineSort, expandedTaskIDs: isShowingWorkerArchive ? expandedParentTaskIDs : [],
             archiveRevision: isShowingWorkerArchive ? archivedSessionIndexStore.groupingRevision : 0,
             archiveFilterRevision: isShowingWorkerArchive && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? archivedSessionIndexStore.filterRevision : 0,

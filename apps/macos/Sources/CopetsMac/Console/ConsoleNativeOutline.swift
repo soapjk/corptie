@@ -11,6 +11,12 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var isSection = false
     var allowsCollapse = true
     var expansionChanged: (Bool) -> Void = { _ in }
+    var structureRevision: Int = 0
+    var dataRevision: Int = 0
+    var childRows: (Row) -> [Row] = { _ in [] }
+    var rowIsExpanded: (Row) -> Bool = { _ in false }
+    var rowExpansionChanged: (Row, Bool) -> Void = { _, _ in }
+    var rowIsExpandable: (Row) -> Bool = { _ in false }
 }
 
 struct ConsoleNativeOutline<Row: Identifiable, Content: View>: View where Row.ID == String {
@@ -33,6 +39,8 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         var group: ConsoleNativeOutlineGroup<Row>?
         var row: Row?
         var children: [Node] = []
+        weak var owner: Node?
+        var loadedRevision: Int?
         init(id: String) { self.id = id }
     }
 
@@ -53,9 +61,10 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
                 let children = group.rows.map { row in
                     let child = oldChildren[row.id] ?? Node(id: row.id)
                     child.row = row
+                    child.owner = node
                     return child
                 }
-                if node.children.map(\.id) != children.map(\.id) { changedChildren.append(node) }
+                if node.children.map(\.id) != children.map(\.id) || node.group?.structureRevision != group.structureRevision { changedChildren.append(node) }
                 node.group = group
                 node.children = children
                 return node
@@ -69,13 +78,20 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
                     outline.reloadItem(node, reloadChildren: true)
                 }
             }
-            for node in roots {
-                guard let group = node.group, !group.isSection,
-                      outline.isItemExpanded(node) != group.isExpanded else { continue }
-                let target = initial || rootIDsChanged || parent.reduceMotion ? outline : outline.animator()
-                if group.isExpanded { target.expandItem(node) }
-                else { target.collapseItem(node) }
+            func reconcile(_ node: Node) {
+                let group = node.group ?? node.owner?.group
+                guard let group, !group.isSection else { return }
+                let expanded = node.row.map(group.rowIsExpanded) ?? group.isExpanded
+                if outline.isItemExpanded(node) != expanded {
+                    let target = initial || rootIDsChanged || parent.reduceMotion ? outline : outline.animator()
+                    if expanded { target.expandItem(node) } else { target.collapseItem(node) }
+                }
+                if expanded {
+                    synchronizeChildren(node)
+                    for child in node.children where child.row.map(group.rowIsExpandable) == true { reconcile(child) }
+                }
             }
+            for node in roots { reconcile(node) }
             // Refresh only mounted cells. Updating status never reloads the tree
             // or constructs views for offscreen rows.
             let visible = outline.rows(in: outline.visibleRect)
@@ -97,8 +113,23 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
             return AnyView(EmptyView())
         }
 
+        private func synchronizeChildren(_ node: Node) {
+            guard let row = node.row, let owner = node.owner, let group = owner.group else { return }
+            guard node.loadedRevision != group.dataRevision else { return }
+            node.loadedRevision = group.dataRevision
+            let previous = Dictionary(uniqueKeysWithValues: node.children.map { ($0.id, $0) })
+            node.children = group.childRows(row).map { row in
+                let child = previous[row.id] ?? Node(id: row.id)
+                child.row = row
+                child.owner = owner
+                return child
+            }
+        }
+
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-            (item as? Node)?.children.count ?? roots.count
+            guard let node = item as? Node else { return roots.count }
+            synchronizeChildren(node)
+            return node.children.count
         }
 
         func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
@@ -106,8 +137,10 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         }
 
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-            guard let group = (item as? Node)?.group else { return false }
-            return !group.isSection
+            guard let node = item as? Node else { return false }
+            if let group = node.group { return !group.isSection }
+            guard let row = node.row, let group = node.owner?.group else { return false }
+            return group.rowIsExpandable(row)
         }
 
         func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
@@ -137,7 +170,8 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         private func expansionChanged(_ notification: Notification, expanded: Bool) {
             guard !applyingExpansion,
                   let node = notification.userInfo?["NSObject"] as? Node else { return }
-            node.group?.expansionChanged(expanded)
+            if let row = node.row { node.owner?.group?.rowExpansionChanged(row, expanded) }
+            else { node.group?.expansionChanged(expanded) }
         }
     }
 

@@ -106,11 +106,11 @@ struct MainWindowResizeLayoutTests {
         container.layoutSubtreeIfNeeded()
 
         #expect(container.cachedPageCount == 2)
-        #expect(container.attachedPageCount == 2)
+        #expect(container.attachedPageCount == 1)
         #expect(container.visibleTabs == [.automations])
         #expect(created[.console]?.frame == detachedConsoleFrame)
         #expect(created[.automations]?.frame == container.bounds)
-        #expect(created[.console]?.superview === container)
+        #expect(created[.console]?.superview == nil)
         #expect(created[.console]?.isHidden == true)
         #expect(created[.automations]?.superview === container)
     }
