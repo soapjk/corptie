@@ -10,7 +10,7 @@ import CorptieClientCore
         #expect(router.selectedTab == .resources)
         #expect(router.resourceFocus == focus)
         #expect(AppTab.resources.index == AppTab.worktrees.index + 1)
-        #expect(AppTab.resources.systemImage == "tray.full")
+        #expect(AppTab.resources.systemImage == "folder")
         router.openSession("session:source", source: .deepLink)
         #expect(router.selectedTab == .console)
         #expect(router.pendingSessionId == "session:source")
