@@ -19,6 +19,24 @@ const hierarchy = {
     mergeToParent: action(true), syncFromParent: action(true), syncFromMain: action(false), promoteToMain: action(false) }
 };
 
+test("Task detail accepts nullable dispatch reasons and preserves strict validation", () => {
+  const scope = { session: { sessionKind: "worker" }, logicalSessionId: "logical:parent",
+    task: { id: "task:parent", title: "Parent", revision: 1, coordinationDispatches: [] } };
+  for (const errorMessage of [undefined, null, "接收会话正忙，指令已排队"]) {
+    scope.task.coordinationDispatches = [{ dispatchId: "dispatch:one", taskId: "task:child", title: "Child",
+      status: errorMessage ? "waiting_dispatch" : "completed", errorCode: errorMessage ? "SESSION_BUSY" : null,
+      ...(errorMessage === undefined ? {} : { errorMessage }) }];
+    const document = projectNativeBusinessDocument(scope, {}, "dispatch-contract");
+    const data = document.cards.find(card => card.kind === "taskInfo").data;
+    assert.equal(data.coordinationDispatches[0].errorMessage, errorMessage);
+    for (const patch of [{ errorMessage: 12 }, { undeclaredField: "invalid" }]) {
+      const invalid = structuredClone(document);
+      Object.assign(invalid.cards.find(card => card.kind === "taskInfo").data.coordinationDispatches[0], patch);
+      assert.throws(() => validateNativeBusinessDocument(invalid), { code: "DETAIL_BUSINESS_INVALID" });
+    }
+  }
+});
+
 test("native Task card retains hierarchy and navigation to the actual parent Session", () => {
   const scope = { session: { sessionKind: "worker" }, logicalSessionId: "logical:child",
     task: { id: "task:child", title: "Child", parent_task_id: "task:parent", revision: 1 },
