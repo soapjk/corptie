@@ -30,6 +30,7 @@ import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { eventHasAgentMessage } from "../src/store/sessionEventSemantics.mjs";
 import { createProductEventPublisher } from "../src/application/productEventPublisher.mjs";
 import { createCollaborationTimelinePresentation } from "../src/collaboration/collaborationTimelinePresentation.mjs";
+import { CoordinationReadService } from "../src/application/coordinationReadService.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 async function restrictedFixture(t, providerId = "codex-app-server", supported = true) {
@@ -745,12 +746,12 @@ test("safe cleanup decision reuses parent Session deletion authority and never f
   assert.equal(f.terminals[0].status, "completed");
 });
 
-test("background reports cannot trigger new tasks; completed coordination replies advance unread semantics", async t => {
+test("mailbox source can trigger authorized follow-up; completed coordination replies advance unread semantics", async t => {
   const f = await restrictedFixture(t);
   f.output(f.instruction());
   await f.application.sendMessage(f.source.sessionId, "子任务执行结果通知", { idempotencyKey: "report", source: { type: "mailbox_event" } });
-  assert.equal(f.terminals[0].status, "failed");
-  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+  assert.equal(f.terminals[0].status, "completed");
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
   assert.equal(eventHasAgentMessage({ type: "SessionCoordinationCompleted", payload: { hasAgentMessage: true } }), true);
   assert.equal(f.requests[0].priority, "background");
   assert.equal(eventHasAgentMessage({ type: "SessionCoordinationCompleted", payload: {} }), false);
@@ -876,4 +877,114 @@ test('ordinary child mailbox failures notify the exact parent without a coordina
  f.mailbox.reportDispatchBlock(f.store.updateAgentTask(wrongWork.taskId,{source:{...wrongWork.source,dispatchBlock:{code:'MAILBOX_PAUSED',message:'Paused',kind:'paused'}}}));
  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:unrelated-origin'").n,0);
  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+});
+
+const readQuery = (tool, fields = {}) => ({ tool, taskId: null, sessionId: null, query: null,
+  cursor: null, messageId: null, offset: 0, limit: 6, ...fields });
+function historyItem(f, sessionId, id, text, createdAt = '2026-11-01T00:00:00.000Z') {
+  f.store.upsertTimelineItemProjection(sessionId, { id, turnId: `turn:${id}`, type: 'agentMessage',
+    presentationRole: 'final_answer', text, status: 'completed', createdAt });
+}
+
+for (const provider of ['codex-app-server', 'claude-sdk']) test(`parent reads child history and summarizes without delegating (${provider})`, async t => {
+  const f = await restrictedFixture(t, provider), child = f.child('历史查询');
+  const meta = f.open('history-reader', child.id);
+  historyItem(f, meta.sessionId, 'history-answer', '已完成接口设计与八项任务划分');
+  f.run(async input => {
+    assert.equal(input.executionPolicy, 'no-tools'); assert.equal(input.permissionProfile, 'read-only');
+    assert.equal(input.allowProviderFallback, false);
+    const context = JSON.parse(input.prompt);
+    assert.equal(Object.hasOwn(context, 'notificationOnly'), false);
+    if (!context.readResults.length) return { text: JSON.stringify({ kind: 'read', reply: '', items: [],
+      queries: [readQuery('read_messages', { taskId: child.id, sessionId: meta.sessionId, query: '任务划分' })] }) };
+    assert.match(context.readResults[0].result.items[0].text, /八项任务划分/);
+    return { text: JSON.stringify({ kind: 'discussion', reply: '子任务已完成接口设计与八项任务划分。', items: [], queries: [] }) };
+  });
+  await f.application.sendMessage(f.source.sessionId, '汇总子任务目前的结果', { idempotencyKey: 'read-summary', source: { type: 'mailbox_event' } });
+  assert.equal(f.terminals[0].status, 'completed'); assert.equal(f.requests.length, 2);
+  assert.equal(f.coordinator.listForParent(f.parent.id).length, 0); assert.equal(f.starts.length, 0);
+  assert.equal(f.events.filter(e => e.type === 'SessionCoordinationRead').length, 1);
+  assert.match(f.events.at(-1).payload.item.text, /八项任务划分/);
+});
+
+test('mailbox wakeup reads child results then dispatches the next authorized step', async t => {
+  const f = await restrictedFixture(t), child = f.child('交付结果'), meta = f.open('delivery-read', child.id);
+  historyItem(f, meta.sessionId, 'delivery-result', '规划已完成，可以启动开发');
+  f.run(async input => {
+    const ctx = JSON.parse(input.prompt);
+    if (!ctx.readResults.length) return { text: JSON.stringify({ kind: 'read', reply: '', items: [],
+      queries: [readQuery('read_message', { taskId: child.id, sessionId: meta.sessionId, messageId: 'delivery-result' })] }) };
+    assert.match(ctx.readResults[0].result.item.text, /规划已完成/);
+    return { text: JSON.stringify(f.instruction()) };
+  });
+  await f.application.sendMessage(f.source.sessionId, '按已授权的规划继续实施', { idempotencyKey: 'read-dispatch', source: { type: 'mailbox_event' } });
+  assert.equal(f.terminals[0].status, 'completed'); assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
+});
+
+test('read port scopes historical Sessions, searches long messages and preserves Unicode chunk offsets', async t => {
+  const f = await restrictedFixture(t), child = f.child('历史记录');
+  const old = f.open('old-history', child.id), current = f.open('new-history', child.id);
+  const read = new CoordinationReadService({ store: f.store, mailbox: f.mailbox });
+  const execute = query => read.execute(f.reference(), f.parent.id, query);
+  historyItem(f, old.sessionId, 'long-history', '😀'.repeat(7000) + '定位命中尾部');
+  historyItem(f, old.sessionId, 'literal-history', 'literal 10%_\\path');
+  const sessions = execute(readQuery('list_sessions', { taskId: child.id }));
+  assert.deepEqual(new Set(sessions.items.map(s => s.id)), new Set([old.sessionId, current.sessionId]));
+  const found = execute(readQuery('read_messages', { taskId: child.id, sessionId: old.sessionId, query: '定位命中' }));
+  assert.equal(found.items.length, 1); assert.match(found.items[0].text, /定位命中尾部/);
+  assert.ok(found.items[0].offset > 6000); assert.equal(found.items[0].textTruncated, true);
+  const chunk = execute(readQuery('read_message', { taskId: child.id, sessionId: old.sessionId, messageId: 'long-history' }));
+  assert.equal(chunk.nextOffset, 1600); assert.equal(Array.from(chunk.item.text).length, 1600);
+  const next = execute(readQuery('read_message', { sessionId: old.sessionId, messageId: 'long-history', offset: chunk.nextOffset }));
+  assert.equal(next.nextOffset, 3200); assert.equal(Array.from(next.item.text).length, 1600);
+  assert.equal(execute(readQuery('read_messages', { sessionId: old.sessionId, query: '10%_\\path' })).items.length, 1);
+  const other = f.store.createTask({ workId: f.work.id, title: '其他父任务', mainAgentId: f.role.agentId });
+  const outside = f.open('outside-history', other.id), sibling = f.child('另一个子任务'), siblingSession = f.open('sibling-history', sibling.id);
+  for (const query of [readQuery('read_task', { taskId: other.id }), readQuery('read_messages', { sessionId: outside.sessionId }),
+    readQuery('read_messages', { taskId: child.id, sessionId: siblingSession.sessionId })]) {
+    assert.throws(() => execute(query), e => /OUTSIDE_SCOPE/.test(e.code));
+  }
+  assert.throws(() => read.execute({ ...f.reference(), bindingId: 'stale' }, f.parent.id, readQuery('list_children')), { code: 'COORDINATION_READ_SCOPE_INVALID' });
+  assert.throws(() => execute(readQuery('shell')), { code: 'COORDINATION_READ_TOOL_UNSUPPORTED' });
+});
+
+test('read pagination stays complete after byte trimming and mailbox inspection never acknowledges messages', async t => {
+  const f = await restrictedFixture(t), child = f.child('分页'), meta = f.open('page-history', child.id);
+  const read = new CoordinationReadService({ store: f.store, mailbox: f.mailbox });
+  const execute = query => read.execute(f.reference(), f.parent.id, query);
+  for (let i = 0; i < 8; i++) historyItem(f, meta.sessionId, `page-${i}`, '汉'.repeat(800), `2026-11-01T00:00:0${i}.000Z`);
+  let cursor = null; const seen = [];
+  do {
+    const result = execute(readQuery('read_messages', { sessionId: meta.sessionId, limit: 6, cursor }));
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 8192);
+    seen.push(...result.items.map(i => i.id)); cursor = result.nextCursor;
+  } while (cursor);
+  assert.equal(new Set(seen).size, 8); assert.equal(seen.length, 8);
+  const message = f.mailbox.receiveEvent({ recipientSessionId: 'logical:parent', sourceType: 'background', sourceId: 'read-test',
+    body: '只读邮箱测试', intent: 'response_required', idempotencyKey: 'read-test',
+    authorization: { ownerLogicalSessionId: 'logical:parent', sourceId: 'read-test' } });
+  const before = f.mailbox.raw('logical:parent', message.messageId);
+  assert.equal(execute(readQuery('read_mailbox')).messages.length, 1);
+  assert.equal(execute(readQuery('read_mailbox', { messageId: message.messageId })).body, '只读邮箱测试');
+  assert.deepEqual(f.mailbox.raw('logical:parent', message.messageId), before);
+});
+
+test('read rounds are bounded, invalid tools cannot execute and policy changes fence follow-up dispatch', async t => {
+  for (const mode of ['exhaustion', 'invalid', 'policy']) await t.test(mode, async t => {
+    const f = await restrictedFixture(t);
+    f.run(async input => {
+      const ctx = JSON.parse(input.prompt);
+      if (mode === 'policy' && ctx.readResults.length) {
+        f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+        return { text: JSON.stringify(f.instruction()) };
+      }
+      return { text: JSON.stringify({ kind: 'read', reply: '', items: [],
+        queries: [readQuery(mode === 'invalid' ? 'write_file' : 'list_children')] }) };
+    });
+    await f.application.sendMessage(f.source.sessionId, '查询', { idempotencyKey: mode });
+    assert.equal(f.terminals[0].status, 'failed'); assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+    const turn = f.store.getSessionTurn(f.source.sessionId, f.reference().bindingId, `coordination:${mode}`);
+    assert.match(turn.failure_json, new RegExp(mode === 'exhaustion' ? 'COORDINATION_READ_LIMIT' : mode === 'invalid' ? 'COORDINATION_PLAN_INVALID' : 'COORDINATION_POLICY_CHANGED'));
+    assert.equal(f.requests.length, mode === 'exhaustion' ? 3 : mode === 'invalid' ? 1 : 2);
+  });
 });
