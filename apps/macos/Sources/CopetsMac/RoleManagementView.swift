@@ -37,6 +37,35 @@ enum RolesSkillsLayoutMetrics {
     }
 }
 
+/// Page-owned column shell: paint reaches the window edges while controls
+/// reserve the same title-bar space as the console. No content-sized wrapper,
+/// material or extra scrolling container surrounds the existing pane contents.
+struct RolePageColumns<Roles: View, Skills: View>: View {
+    let showsSkills: Bool
+    let topInset: CGFloat
+    @ViewBuilder var roles: () -> Roles
+    @ViewBuilder var skills: () -> Skills
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            roles()
+                .padding(.top, topInset)
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(WorkbenchStyle.canvas)
+            if showsSkills {
+                Divider()
+                skills()
+                    .padding(.top, topInset)
+                    .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+                    .background(WorkbenchStyle.sidebarColor)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(WorkbenchStyle.canvas)
+    }
+}
+
 struct RoleManagementView: View {
     // The client performs existing commands; only the registry projection is observed.
     private let client = EntityAPIClient.shared
@@ -81,21 +110,19 @@ struct RoleManagementView: View {
             let mcpSize = RolesSkillsLayoutMetrics.sheetSize(
                 in: geometry.size, ideal: CGSize(width: 760, height: 620))
 
-            HStack(alignment: .top, spacing: 0) {
+            RolePageColumns(
+                showsSkills: inlineSkills,
+                topInset: MainWindowLayoutMetrics.titlebarHeight
+            ) {
                 rolesColumn(
                     width: roleWidth, inlineSkills: inlineSkills,
                     canInlineSkills: RolesSkillsLayoutMetrics.mode(for: geometry.size.width)
                         == .split
                         && sidebarState.isVisible
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                if inlineSkills {
-                    Divider()
-                    skillsColumn(isSheet: false)
-                        .frame(width: RolesSkillsLayoutMetrics.skillsColumnWidth)
-                }
+            } skills: {
+                skillsColumn(isSheet: false)
             }
-            .background(Color(nsColor: .textBackgroundColor))
             .sheet(isPresented: $isShowingSkillsSheet, onDismiss: { skillsButtonFocused = true }) {
                 skillsColumn(isSheet: true)
                     .frame(width: skillsSize.width, height: skillsSize.height)
@@ -104,6 +131,9 @@ struct RoleManagementView: View {
                 McpManagementView(roles: registry.roles, preferredSize: mcpSize)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
+        .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $isCreatingRole) { RoleCreateView() }
         .sheet(item: $selectedRoleForDetail, onDismiss: restoreRoleFocus) { role in
             if let current = registry.roles.first(where: { $0.id == role.id }) {
@@ -219,6 +249,7 @@ struct RoleManagementView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -360,7 +391,7 @@ struct RoleManagementView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(isSheet ? WorkbenchStyle.canvas : Color.clear)
         .sheet(isPresented: $isRegisteringSkill) { SkillRegisterView { _ in } }
         .background {
             if isSheet {
