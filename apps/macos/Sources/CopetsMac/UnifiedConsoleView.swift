@@ -37,7 +37,7 @@ struct UnifiedConsoleView: View {
     @ObservedObject var viewportController = SessionViewportController.shared
     let selectionController = BackendClient.shared.sessionSelectionController
     @StateObject var sessionGroupProjectionStore = SessionGroupProjectionStore()
-    @StateObject var outlineProjectionStore = ConsoleOutlineProjectionStore()
+    @StateObject var outlineProjectionStore = ConsoleOutlineProjectionStore(defaults: .standard)
     @State var composerDraftRepository = ComposerDraftRepository()
     @State var detailRenderTask: Task<Void, Never>?
     @State var pendingSelectionTask: Task<Void, Never>?

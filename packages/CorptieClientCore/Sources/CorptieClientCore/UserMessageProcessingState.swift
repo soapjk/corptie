@@ -43,7 +43,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
             authoritativeValue: authoritativeStatus, legacyStatus: legacyStatus
         ) {
             switch state {
-            case .queued: kind = showsPendingAsProcessing ? .processing : .queued
+            case .queued: kind = .queued
             case .preparing: kind = showsPendingAsProcessing ? .processing : .preparing
             case .processing: kind = .processing
             case .failed: kind = .processingFailed

@@ -106,22 +106,53 @@ final class NativeMarkdownTextCache {
 /// wrapping engine and rendered with another.
 @MainActor
 enum NativeTextKitLayout {
+    private final class Workspace {
+        let source: NSAttributedString
+        let storage: NSTextStorage
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(containerSize: NSSize(width: 1, height: CGFloat.greatestFiniteMagnitude))
+
+        init(_ source: NSAttributedString) {
+            self.source = source
+            storage = NSTextStorage(attributedString: source)
+            container.lineFragmentPadding = 0
+            container.widthTracksTextView = false
+            container.heightTracksTextView = false
+            manager.addTextContainer(container)
+            storage.addLayoutManager(manager)
+        }
+
+        func height(of text: NSAttributedString, width: CGFloat, maximumLines: Int) -> CGFloat {
+            // Support mutable callers too; immutable markdown keeps its glyphs
+            // across width changes instead of constructing a new layout stack.
+            if !storage.isEqual(to: text) { storage.setAttributedString(text) }
+            container.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
+            container.maximumNumberOfLines = maximumLines
+            container.containerSize = NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
+            manager.ensureLayout(for: container)
+            return ceil(manager.usedRect(for: container).height)
+        }
+    }
+
+    // Identity lookup over four workspaces adds no hashing. Bound retained
+    // glyph state independently of the existing attributed-string caches.
+    private static var workspaces: [Workspace] = []
+    private static let maximumCharacters = 200_000
+
     static func height(of attributedText: NSAttributedString, width: CGFloat, maximumLines: Int = 0) -> CGFloat {
         guard attributedText.length > 0 else { return 0 }
-        let textStorage = NSTextStorage(attributedString: attributedText)
-        let layoutManager = NSLayoutManager()
-        let textContainer = NSTextContainer(
-            containerSize: NSSize(width: max(1, width), height: .greatestFiniteMagnitude)
-        )
-        textContainer.lineFragmentPadding = 0
-        textContainer.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
-        textContainer.maximumNumberOfLines = maximumLines
-        textContainer.widthTracksTextView = false
-        textContainer.heightTracksTextView = false
-        layoutManager.addTextContainer(textContainer)
-        textStorage.addLayoutManager(layoutManager)
-        layoutManager.ensureLayout(for: textContainer)
-        return ceil(layoutManager.usedRect(for: textContainer).height)
+        let workspace: Workspace
+        if let index = workspaces.firstIndex(where: { $0.source === attributedText }) {
+            workspace = workspaces.remove(at: index)
+        } else {
+            workspace = Workspace(attributedText)
+        }
+        let height = workspace.height(of: attributedText, width: width, maximumLines: maximumLines)
+        if attributedText.length <= maximumCharacters { workspaces.append(workspace) }
+        while workspaces.count > 4 || workspaces.reduce(0, { $0 + $1.storage.length }) > maximumCharacters {
+            workspaces.removeFirst()
+        }
+        return height
     }
 }
 

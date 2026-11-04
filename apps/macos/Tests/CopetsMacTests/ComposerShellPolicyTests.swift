@@ -6,6 +6,18 @@ import CorptieConversation
 /// The composer's geometry, key semantics and mention catalog are shared with the
 /// iPad; these pin the desktop values the shared layer must keep producing.
 final class ComposerShellPolicyTests: XCTestCase {
+    func testContinuousResizePublishesOnlyChangedModelWidthBudgets() {
+        let widths = (0..<180).map { ComposerModelWidthPolicy.maximumWidth(for: CGFloat(500 + $0)) }
+        let changes = zip(widths, widths.dropFirst()).filter { $0 != $1 }.count
+        XCTAssertLessThanOrEqual(changes, 8)
+        XCTAssertEqual(ComposerModelWidthPolicy.maximumWidth(for: 390), 176)
+        for width in 390...480 { XCTAssertEqual(ComposerModelWidthPolicy.maximumWidth(for: CGFloat(width)), 176) }
+        for width in 700...1_200 { XCTAssertEqual(ComposerModelWidthPolicy.maximumWidth(for: CGFloat(width)), 240) }
+        for width in 240...700 {
+            XCTAssertLessThanOrEqual(ComposerModelWidthPolicy.maximumWidth(for: CGFloat(width)), CGFloat(width) - 124)
+        }
+    }
+
     func testEmptyDraftRejectsStaleExpandedHeight() {
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(text: "", measuredHeight: 96), 30)
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(text: "", measuredHeight: 400), 30)
