@@ -343,29 +343,47 @@ struct WorktreeManagementLoadingTests {
 
     @MainActor
     @Test func fixturePageRendersAtWideMediumAndCompactWidthsWithoutMutation() async throws {
-        let recorder = RequestRecorder(details: ["repository:one": Self.detail(repositoryId: "repository:one", worktrees: [
+        let fixtureTrees = [
             Self.worktree("wt:main", branch: "main", isMain: true),
             Self.worktree("wt:feature", branch: "feature/a-long-branch-name-for-layout-validation", dirty: true)
-        ])])
+        ] + (2..<200).map { Self.worktree("wt:fixture-\($0)", branch: "feature/fixture-\($0)") }
+        let recorder = RequestRecorder(details: ["repository:one": Self.detail(repositoryId: "repository:one", worktrees: fixtureTrees)])
         let client = makeClient(recorder: recorder)
         await client.loadRepositories()
         let router = AppTabRouter()
         let sidebar = TabSidebarState(tab: .worktrees)
         let view = WorktreeManagementView(client: client).environmentObject(router).environmentObject(sidebar)
         let host = NSHostingView(rootView: view)
-        let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 1300, height: 850), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 1300, height: 850), styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
         window.contentView = host
         defer { window.orderOut(nil); window.contentView = nil }
-        for (name, width, appearance) in [("wide-light", 1300.0, NSAppearance.Name.aqua), ("medium-light", 850.0, .aqua), ("compact-dark", 600.0, .darkAqua)] {
+        for (name, width, height, appearance) in [("wide-light", 1300.0, 850.0, NSAppearance.Name.aqua), ("short-light", 1000.0, 500.0, .aqua), ("medium-light", 850.0, 1000.0, .aqua), ("compact-dark", 600.0, 650.0, .darkAqua)] {
             window.appearance = NSAppearance(named: appearance)
-            window.setContentSize(NSSize(width: width, height: 850))
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 850)
+            window.setContentSize(NSSize(width: width, height: height))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: height)
             try await Task.sleep(for: .milliseconds(250))
             host.layoutSubtreeIfNeeded()
             #expect(abs(host.bounds.width - width) < 1)
+            #expect(abs(host.bounds.height - height) < 1)
+            #expect(client.detail?.project.worktrees.count == 200)
             #expect(client.selection.repositoryId == "repository:one")
             #expect(client.selection.worktreeId == "wt:main")
             #expect(window.defaultButtonCell == nil)
+            if width > 1000 {
+                func scrollViews(in view: NSView) -> [NSScrollView] {
+                    (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+                }
+                let scroll = try #require(scrollViews(in: host).first { ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height + 50 })
+                let initialOrigin = scroll.contentView.bounds.origin
+                let target = min(initialOrigin.y + 300, (scroll.documentView?.bounds.height ?? 0) - scroll.contentView.bounds.height)
+                scroll.contentView.scroll(to: NSPoint(x: initialOrigin.x, y: target))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                #expect(scroll.contentView.bounds.origin.y > 0)
+                scroll.contentView.scroll(to: initialOrigin)
+                scroll.reflectScrolledClipView(scroll.contentView)
+                try await Task.sleep(for: .milliseconds(60))
+            }
             if let directory = ProcessInfo.processInfo.environment["CORPTIE_UI_EVIDENCE_DIR"] {
                 let url = URL(fileURLWithPath: directory, isDirectory: true)
                 #expect(!url.path.hasPrefix(FileManager.default.currentDirectoryPath + "/"))
@@ -385,11 +403,12 @@ struct WorktreeManagementLoadingTests {
         automaticRefreshInterval: TimeInterval = 60,
         now: @escaping () -> Date = Date.init
     ) -> WorktreeManagementClient {
-        WorktreeLoadingURLProtocol.recorder = recorder
+        let host = "fixture-" + UUID().uuidString.lowercased() + ".invalid"
+        WorktreeLoadingURLProtocol.register(recorder, host: host)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WorktreeLoadingURLProtocol.self]
         return WorktreeManagementClient(
-            baseURL: URL(string: "http://127.0.0.1:9999")!,
+            baseURL: URL(string: "http://" + host)!,
             session: URLSession(configuration: configuration),
             cacheLifetime: cacheLifetime,
             automaticRefreshInterval: automaticRefreshInterval,
@@ -510,13 +529,19 @@ private final class RequestRecorder: @unchecked Sendable {
 }
 
 private final class WorktreeLoadingURLProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var recorder: RequestRecorder?
+    private static let registryLock = NSLock()
+    nonisolated(unsafe) private static var recorders: [String: RequestRecorder] = [:]
+
+    static func register(_ recorder: RequestRecorder, host: String) {
+        registryLock.withLock { recorders[host] = recorder }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let recorder = Self.recorder, let url = request.url else {
+        guard let url = request.url,
+              let recorder = Self.registryLock.withLock({ Self.recorders[url.host ?? ""] }) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }

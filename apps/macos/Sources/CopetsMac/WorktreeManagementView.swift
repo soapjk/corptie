@@ -324,12 +324,12 @@ struct WorktreeManagementView: View {
         GeometryReader { geometry in
             pageColumns
                 .onChange(of: geometry.size.width, initial: true) { _, width in
-                    let next = layoutMode.resized(to: width - 24)
+                    let next = layoutMode.resized(to: width - 2)
                     if next != layoutMode { layoutMode = next }
                 }
         }
-        .padding(MainWindowPageLayoutMetrics.outerPadding)
-        .background(WorkbenchStyle.canvas)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
         .toolbar(removing: .sidebarToggle)
         .sheet(isPresented: $showingRepositoryPicker) {
             VStack(spacing: 0) {

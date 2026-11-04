@@ -7,6 +7,28 @@ import XCTest
 
 @MainActor
 final class WorktreePresentationTests: XCTestCase {
+    func testColumnBackgroundCoversCornersAndEmptyHeight() async throws {
+        _ = NSApplication.shared
+        let host = NSHostingView(rootView: Text("Fixture")
+            .modifier(WorktreePanel(sidebar: true))
+            .background(Color(red: 1, green: 0, blue: 1)))
+        host.frame = NSRect(x: 0, y: 0, width: 240, height: 600)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close(); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(60))
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        for point in [(0, 0), (bitmap.pixelsWide - 1, 0), (0, bitmap.pixelsHigh - 1), (bitmap.pixelsWide - 1, bitmap.pixelsHigh - 1)] {
+            let color = try XCTUnwrap(bitmap.colorAt(x: point.0, y: point.1)?.usingColorSpace(.deviceRGB))
+            // The former rounded clip exposed the magenta parent in these corners.
+            XCTAssertGreaterThan(color.greenComponent, 0.03)
+            XCTAssertGreaterThan(color.alphaComponent, 0.99)
+        }
+    }
+
     func testLayoutHysteresisDoesNotFlapOrPersistBusinessSelection() {
         XCTAssertEqual(WorktreeLayoutMode.threeColumns.resized(to: 969), .twoColumns)
         XCTAssertEqual(WorktreeLayoutMode.twoColumns.resized(to: 980), .twoColumns)
