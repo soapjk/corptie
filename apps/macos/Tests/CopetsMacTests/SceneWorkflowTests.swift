@@ -201,7 +201,14 @@ struct SceneWorkflowTests {
         for _ in 0..<4 { await client.loadMore(scene) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: SceneDetailView(scene: scene, client: client, draft: SceneEntryDraft(), operation: client.operation(for: scene.id)))
+        let draft = SceneEntryDraft()
+        draft.title = "Retained metric"; draft.value = "68.4"
+        let host = NSHostingView(rootView: ScenePageColumns(showsNavigation: true) {
+            Text("Scenes")
+        } detail: { _ in
+            SceneDetailView(scene: scene, client: client, draft: draft, operation: client.operation(for: scene.id))
+        })
+        let requestCount = SceneWorkflowProtocol.state.requests.count
         window.contentView = host
         defer { window.contentView = nil; window.close() }
         for width: CGFloat in [760, 420, 320] {
@@ -223,6 +230,21 @@ struct SceneWorkflowTests {
                     try png.write(to: root.appendingPathComponent("scene-host-\(Int(width)).png"))
                 }
             }
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            let scroll = try #require(descendants(host).compactMap { $0 as? NSScrollView }.first {
+                ($0.documentView?.frame.height ?? 0) > $0.contentView.bounds.height + 10
+            })
+            let document = try #require(scroll.documentView)
+            let maximum = max(0, document.frame.height - scroll.contentView.bounds.height)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: maximum))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await Task.sleep(for: .milliseconds(30)); host.layoutSubtreeIfNeeded()
+            #expect(scroll.contentView.bounds.minY > 0, "The record list must remain scrollable inside full-height columns")
+            scroll.contentView.scroll(to: .zero)
+            scroll.reflectScrolledClipView(scroll.contentView)
+            #expect(draft.title == "Retained metric" && draft.value == "68.4")
+            #expect(SceneWorkflowProtocol.state.requests.count == requestCount, "Resize and scrolling must not reload scene data")
+            print("[SceneScroll] width=\(width) rows=500 scrolled=true draftRetained=true extraRequests=0 (programmatic NSClipView; not a physical scroll)")
         }
     }
 
