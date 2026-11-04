@@ -247,7 +247,7 @@ func canIncrementallyAppendChatDisplayEntries(
 }
 
 func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
-    ConversationTimeline.makeEntries(from: items)
+    ConversationTimeline.makeEntries(from: items, showsPendingInputAsProcessing: true)
 }
 
 func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadItem] {
@@ -257,7 +257,7 @@ func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadIte
 func makeChatDisplayEntriesForTurn(
     _ items: [CodexThreadItem], displayTurnId: String? = nil
 ) -> [ChatDisplayEntry] {
-    ConversationTimeline.entriesForTurn(items, displayTurnId: displayTurnId)
+    ConversationTimeline.entriesForTurn(items, displayTurnId: displayTurnId, showsPendingInputAsProcessing: true)
 }
 
 /// Projects the state of the whole execution card from the turn lifecycle.

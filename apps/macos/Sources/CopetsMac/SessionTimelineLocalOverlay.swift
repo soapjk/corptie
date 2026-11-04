@@ -1,6 +1,6 @@
 import Foundation
 
-/// Per-client local acknowledgement overlay, not a second timeline cache.
+/// Per-client in-memory submission/acknowledgement overlay, not a second timeline cache.
 /// Authoritative snapshots and observable publication remain in
 /// SessionTimelineRepository. This owner retains only the temporary inputs
 /// needed to reconcile delayed server snapshots, with the existing lifetime.
@@ -16,7 +16,8 @@ final class SessionTimelineLocalOverlay {
         deliveryID: String,
         to session: TaskSession,
         residentDetail: CodexThreadDetail?,
-        now: String
+        now: String,
+        submitting: Bool = false
     ) -> CodexThreadDetail {
         let threadId = session.external?.threadId ?? session.id
         let item = CodexThreadItem(
@@ -27,10 +28,12 @@ final class SessionTimelineLocalOverlay {
             title: "User",
             text: text,
             options: nil,
-            status: "queued",
+            status: submitting ? "processing" : "queued",
             createdAt: now,
-            images: images
+            images: images,
+            sourceType: submitting ? "local_submission" : "local_acknowledgement"
         )
+        pendingUserMessagesBySessionID[session.id]?.removeAll { $0.id == messageID }
         pendingUserMessagesBySessionID[session.id, default: []].append(item)
 
         guard let residentDetail else {
@@ -54,6 +57,39 @@ final class SessionTimelineLocalOverlay {
             capabilities: detail.capabilities,
             turnCount: detail.turnCount,
             items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesBySessionID[session.id] ?? []),
+            lastAgentMessageSequence: detail.lastAgentMessageSequence,
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: detail.actions
+        )
+    }
+
+    func removeSubmission(messageID: String, sessionID: String, from detail: CodexThreadDetail?) -> CodexThreadDetail? {
+        pendingUserMessagesBySessionID[sessionID]?.removeAll { $0.id == messageID }
+        guard let detail else { return nil }
+        return Self.detailWithItems(detail, items: detail.items.filter {
+            !($0.id == messageID && $0.sourceType == "local_submission")
+        })
+    }
+
+    private static func detailWithItems(_ detail: CodexThreadDetail, items: [CodexThreadItem]) -> CodexThreadDetail {
+        CodexThreadDetail(
+            id: detail.id,
+            title: detail.title,
+            status: detail.status,
+            source: detail.source,
+            connectionStatus: detail.connectionStatus,
+            currentModel: detail.currentModel,
+            currentReasoningLevel: detail.currentReasoningLevel,
+            activityStatus: detail.activityStatus,
+            cwd: detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt,
+            canSend: detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: detail.capabilities,
+            turnCount: detail.turnCount,
+            items: items,
             lastAgentMessageSequence: detail.lastAgentMessageSequence,
             hasMoreHistory: detail.hasMoreHistory,
             historyItemsCount: detail.historyItemsCount,
@@ -139,28 +175,7 @@ final class SessionTimelineLocalOverlay {
     }
 
     static func detailReplacingItems(_ detail: CodexThreadDetail, transform: (CodexThreadItem) -> CodexThreadItem) -> CodexThreadDetail {
-        CodexThreadDetail(
-            id: detail.id,
-            title: detail.title,
-            status: detail.status,
-            source: detail.source,
-            connectionStatus: detail.connectionStatus,
-            currentModel: detail.currentModel,
-            currentReasoningLevel: detail.currentReasoningLevel,
-            activityStatus: detail.activityStatus,
-            cwd: detail.cwd,
-            createdAt: detail.createdAt,
-            updatedAt: detail.updatedAt,
-            canSend: detail.canSend,
-            sendUnavailableReason: detail.sendUnavailableReason,
-            capabilities: detail.capabilities,
-            turnCount: detail.turnCount,
-            items: detail.items.map(transform),
-            lastAgentMessageSequence: detail.lastAgentMessageSequence,
-            hasMoreHistory: detail.hasMoreHistory,
-            historyItemsCount: detail.historyItemsCount,
-            actions: detail.actions
-        )
+        detailWithItems(detail, items: detail.items.map(transform))
     }
 
     func reconcile(_ detail: CodexThreadDetail, for sessionID: String) -> CodexThreadDetail {
@@ -200,7 +215,9 @@ final class SessionTimelineLocalOverlay {
     }
 
     private func mergedItems(serverItems: [CodexThreadItem], pendingItems: [CodexThreadItem]) -> [CodexThreadItem] {
-        var items = serverItems
+        // Incremental snapshots may contain our own overlay. It is not a server
+        // acknowledgement and must not consume or duplicate the pending row.
+        var items = serverItems.filter { !isLocalOverlay($0) }
         var matchedServerIndexes = Set<Int>()
         for pendingItem in pendingItems {
             if let index = firstMatchingServerUserIndex(for: pendingItem, in: items, excluding: matchedServerIndexes) {
@@ -227,8 +244,13 @@ final class SessionTimelineLocalOverlay {
         return serverItems.indices.first { index in
             !matchedIndexes.contains(index)
                 && serverItems[index].type == "userMessage"
+                && !isLocalOverlay(serverItems[index])
                 && serverItems[index].id == pendingItem.id
         }
+    }
+
+    private func isLocalOverlay(_ item: CodexThreadItem) -> Bool {
+        item.sourceType == "local_submission" || item.sourceType == "local_acknowledgement"
     }
 }
 

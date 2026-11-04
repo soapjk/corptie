@@ -1,6 +1,6 @@
 import Foundation
 
-/// Message submission owns its in-flight command state and acknowledges local echo only after persistence.
+/// Submission feedback is immediate and memory-only; server echoes remain authoritative.
 @MainActor
 final class SessionMessageController {
     private static let iso8601Formatter = ISO8601DateFormatter()
@@ -81,24 +81,36 @@ final class SessionMessageController {
         let deliveryID = "delivery:\(UUID().uuidString)"
         latencyTrace.log(stage: "send_clicked")
         let isClearCommand = trimmed.lowercased() == "/clear"
-        let resolvesCollaborationConfirmation = selectedDetail?.items.contains(where: {
+        let resolvesCollaborationConfirmation = cachedDetail(session.id)?.items.contains(where: {
             $0.type == "collaborationConfirmation" && $0.collaborationConfirmationStatus == "pending"
         }) == true && Self.isCollaborationConfirmationReply(trimmed)
-        let presentsAcknowledgedUserMessage = reloadDetail
-            && !isClearCommand
+        let presentsAcknowledgedUserMessage = !isClearCommand
             && !resolvesCollaborationConfirmation
+
+        isSendingMessage = true
+        commands.setSendFailure(nil, sessionID: session.id)
+        sendStatusMessage = L10n("Sending...")
 
         // Capture viewport intent before the composer shrinks or the server
         // acknowledgement changes the row set. A later user scroll wins.
         if presentsAcknowledgedUserMessage {
             NotificationCenter.default.post(name: .sessionTimelineSubmissionAccepted, object: session.id)
+            let detail = timelineLocalOverlay.acknowledge(trimmed, images: images, messageID: messageID,
+                deliveryID: deliveryID, to: session, residentDetail: cachedDetail(session.id),
+                now: Self.iso8601Formatter.string(from: Date()), submitting: true)
+            storeDetail(detail, session.id)
         }
 
         Task {
-            isSendingMessage = true
-            commands.setSendFailure(nil, sessionID: session.id)
-            sendStatusMessage = L10n("Sending...")
             defer { isSendingMessage = false }
+            var submissionSettled = false
+            defer {
+                if presentsAcknowledgedUserMessage && !submissionSettled,
+                   let detail = timelineLocalOverlay.removeSubmission(messageID: messageID,
+                       sessionID: session.id, from: cachedDetail(session.id)) {
+                    storeDetail(detail, session.id)
+                }
+            }
 
             do {
                 let requestStartedAtMs = SessionMessageLatencyTrace.nowMs
@@ -141,11 +153,11 @@ final class SessionMessageController {
                     throw BackendError.message("\(message)\(hint)\nHTTP \(httpResponse.statusCode) · \(latencyTrace.traceId)")
                 }
 
-                // A Timeline row is product state, not a send animation. The
-                // backend creates the MessageDelivery and its session_items
-                // projection in one transaction before returning success, so
-                // only a 2xx acknowledgement may make this local echo visible.
-                if presentsAcknowledgedUserMessage && decoded?.mode != "session-command" {
+                // Only a successful receipt acknowledges the local submission.
+                // The backend creates the MessageDelivery and its session_items
+                // projection atomically; a server echo replaces the local row.
+                if presentsAcknowledgedUserMessage,
+                   !["session-command", "collaboration-confirmation", "session-channel-authorization"].contains(decoded?.mode ?? "") {
                     appendAcknowledgedUserMessage(
                         trimmed,
                         images: images,
@@ -153,6 +165,7 @@ final class SessionMessageController {
                         deliveryID: deliveryID,
                         to: session
                     )
+                    submissionSettled = true
                 }
                 onSuccess()
                 if decoded?.mode == "session-command" {
@@ -182,6 +195,12 @@ final class SessionMessageController {
                     sendStatusMessage = L10n("Sent to Codex")
                 }
             } catch {
+                if presentsAcknowledgedUserMessage,
+                   let detail = timelineLocalOverlay.removeSubmission(messageID: messageID,
+                       sessionID: session.id, from: cachedDetail(session.id)) {
+                    storeDetail(detail, session.id)
+                }
+                submissionSettled = true
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
                 latencyTrace.log(stage: "send_failed")
@@ -208,10 +227,6 @@ final class SessionMessageController {
         deliveryID: String,
         to session: TaskSession
     ) {
-        let threadId = session.external?.threadId ?? session.id
-        guard selectedSession?.id == session.id || selectedDetail?.id == threadId else {
-            return
-        }
         let detail = timelineLocalOverlay.acknowledge(
             text, images: images, messageID: messageID, deliveryID: deliveryID,
             to: session, residentDetail: cachedDetail(session.id),
