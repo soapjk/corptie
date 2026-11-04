@@ -5,8 +5,12 @@ import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 
 const text = { type: "string", maxLength: 16000 };
 export const COORDINATION_PLAN_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["kind", "reply", "items", "queries"], properties: {
+  type: "object", additionalProperties: false, required: ["kind", "reply", "items", "queries", "batchId", "presentation", "progressUpdates", "focus", "decision"], properties: {
     kind: { enum: ["discussion", "clarification", "read", "dispatch", "cleanup"] }, reply: text,
+    batchId: {type:["string","null"],maxLength:512}, presentation:{enum:["message","progress"]},
+    focus:{type:"string",maxLength:500},decision:{type:"string",maxLength:500},
+    progressUpdates:{type:"array",maxItems:10,items:{type:"object",additionalProperties:false,required:["taskId","summary"],
+      properties:{taskId:{type:"string",maxLength:512},summary:{type:"string",maxLength:240}}}},
     queries: { type:"array",maxItems:3,items:COORDINATION_READ_QUERY_SCHEMA },
     items: { type: "array", maxItems: 10, items: {
       type: "object", additionalProperties: false, required: ["action", "taskId", "title", "text", "agentId"], properties: {
@@ -18,7 +22,14 @@ export const COORDINATION_PLAN_SCHEMA = {
 };
 const validate = new Ajv({ strict: false }).compile(COORDINATION_PLAN_SCHEMA);
 const failure = (code, message) => Object.assign(new Error(message), { code, statusCode: 409, dispatchState: "not_sent" });
-const instructions = `You are the coordinating Session, NOT an implementation agent. Return only the requested JSON decision.
+const instructions = `Child progress is presented in one evolving card. Ordinary child reports must use presentation=progress,
+not a new chat reply. Still process the report and dispatch follow-up work immediately when needed.
+Use presentation=message for direct-user answers, genuinely new user decisions or major blockers requiring user action.
+Use progressUpdates [{taskId,summary}] for concise verified business progress, focus for the overall next step,
+and decision only for an unresolved decision the USER must make. Never set delivery/acceptance from a model turn ending.
+Return batchId=null for an independent new user instruction; reuse an exact supplied progress batch ID for continuation.
+Mailbox follow-ups stay with their reported batch. Do not mix unrelated batches. Never ask the user for a routine child update.
+You are the coordinating Session, NOT an implementation agent. Return only the requested JSON decision.
 Handle questions, discussion, planning, explanation, status checks, investigation of child conversations and summaries yourself.
 Use kind=read to query authoritative child state, message history and mailbox data when context is incomplete.
 Only requests that actually require implementation, mutations, running tests, conflict resolution, integration or deployment use
@@ -170,6 +181,9 @@ export class CoordinationTurnService {
     };
     let phase = "planning", planningRound = 0, successfulReads = 0, callBudgetMs = 0;
     let admissionStarted = false, admissionReceipt = null;
+    const reportBatchId = this.dispatch.progress?.reportBatch(context.source ?? context.options?.agentTask?.source, reference.logicalSessionId);
+    const isProgressReport = Boolean(reportBatchId);
+    let progressBatchId = reportBatchId;
     const progress = (stage, label) => {
       if (controller.signal.aborted || controller.policyChanged) return;
       this.assertCurrent(reference, task);
@@ -225,6 +239,7 @@ export class CoordinationTurnService {
         }),
         history: history.reverse().map(item => ({ role: item.type, text: String(item.text ?? "").slice(0, 1800),
           truncated: item.textTruncated || String(item.text ?? "").length > 1800 })),
+        progressBatch: reportBatchId ? JSON.parse(this.dispatch.progress?.batch(reportBatchId)?.snapshot_json ?? "null") : this.dispatch.progress?.latest(task.id) ?? null,
         sourceType: context.source?.type ?? "unknown",
         message: typeof message === "string" ? message : message.text };
       const reads=[];let readRounds=0,readCalls=0,readBytes=0,plan;
@@ -272,6 +287,10 @@ export class CoordinationTurnService {
       try { plan = JSON.parse(result.text);
         // Existing one-step planner adapters may omit the new empty read list.
         if(plan && !Object.hasOwn(plan,"queries") && plan.kind!=="read")plan.queries=[];
+        if(plan && typeof plan==="object") {
+          plan.batchId ??= reportBatchId ?? null; plan.presentation ??= isProgressReport ? "progress" : "message";
+          plan.progressUpdates ??=[];plan.focus ??="";plan.decision ??="";
+        }
       } catch { throw failure("COORDINATION_PLAN_INVALID", "协调决策格式错误，未派发。"); }
       if (!validate(plan) || (plan.kind === "dispatch" ? !plan.items.length || plan.items.some(item => item.action === "delete"
         || (item.action === "create" ? item.taskId !== null : !item.taskId))
@@ -302,6 +321,12 @@ export class CoordinationTurnService {
       }
       }
       checkDeadline();
+      if (plan.batchId) {
+        const batch = this.dispatch.progress?.batch(plan.batchId);
+        if (!batch || batch.parent_task_id !== task.id || batch.source_session_id !== reference.logicalSessionId
+          || reportBatchId && reportBatchId !== batch.batch_id) throw failure("COORDINATION_BATCH_OUTSIDE_SCOPE","进展批次不属于当前父会话。");
+        progressBatchId = batch.batch_id;
+      }
       let answer = plan.reply;
       if (plan.kind === "cleanup") {
         phase = "cleanup"; progress("cleanup", "正在受理清理"); admissionStarted = true;
@@ -318,12 +343,29 @@ export class CoordinationTurnService {
             ...(item.action === "send" ? { taskId: item.taskId } : {
               creation: { title: item.title, description: item.text, agentId: item.agentId }
             })
-          })) });
+          })) }, {sourceTurnId:turnId,batchId:progressBatchId});
+        progressBatchId = admitted.batchId;
         admissionReceipt = admitted.dispatches.map(row => row.dispatchId).join("、");
         const reusedCount = admitted.dispatches.filter(row => row.reused).length;
         answer = reusedCount ? `新增受理 ${admitted.dispatches.length - reusedCount} 项指令，复用 ${reusedCount} 项原请求；以实际回执为准。\n`
           : `已受理 ${admitted.dispatches.length} 项子任务指令，指令正在准备派发；实际启动或阻塞原因会另行回报。\n`;
         answer +=  admitted.dispatches.map(row => `${row.dispatchId}：${row.status}${row.reused ? `；${row.reuseMessage}` : ""}`).join("\n");
+      }
+      const snapshot = progressBatchId ? this.dispatch.progress?.annotate(progressBatchId,{updates:plan.progressUpdates,
+        focus:plan.focus,decision:plan.decision,reportDispatchIds:this.dispatch.progress?.reportDispatches(context.source ?? context.options?.agentTask?.source)}) : null;
+      const userDecision = plan.decision.trim() || plan.kind === "clarification";
+      const blocker = plan.presentation === "message" && snapshot && (snapshot.counts.blocked || snapshot.counts.waiting_input);
+      const important = isProgressReport && (userDecision || blocker);
+      if(important && progressBatchId) {
+        const key = userDecision ? `decision:${plan.decision||"clarification"}`
+          : `blocker:${snapshot.items.filter(item=>["blocked","waiting_input"].includes(item.state)).map(item=>item.assignmentId).join(",")}`;
+        this.dispatch.progress?.milestone(progressBatchId,key,plan.reply);
+      }
+      const silent = isProgressReport;
+      if(silent){
+        saveTurn("completed");
+        this.emitEvent("SessionCoordinationCompleted",{turnId,hasAgentMessage:false,progressBatchId},{sessionId:reference.sessionId});
+        return receipt;
       }
       const item = { id: `${turnId}:result`, turnId, bindingId: reference.bindingId, type: "agentMessage",
         presentationRole: "final_answer", text: answer, status: "completed", turnStatus: "completed", createdAt: new Date().toISOString(),

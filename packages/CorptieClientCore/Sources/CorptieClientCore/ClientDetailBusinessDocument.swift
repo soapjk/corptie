@@ -36,6 +36,7 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
     public let resourceRevision: String
     public let summary: ClientDetailBusinessTaskSummary
     public var parentTaskId: String? = nil
+    public var coordinationProgress: ClientCoordinationProgress? = nil
     public var coordinationEnabled: Bool? = nil
     public var coordinationExecution: ClientCoordinationExecution? = nil
     public var coordinationDispatches: [ClientTaskCoordinationDispatch]? = nil
@@ -70,6 +71,7 @@ public struct ClientDetailBusinessArtifacts: Decodable, Equatable, Sendable {
 }
 public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Sendable {
     public enum Payload: Equatable, Sendable {
+        case coordinationProgress(ClientCoordinationProgress)
         case task(ClientDetailBusinessTask), artifacts(ClientDetailBusinessArtifacts), unsupported
         case session(ClientDetailBusinessSession), summary(ClientDetailBusinessSummary), work(ClientDetailBusinessWork)
         case focus(ClientDetailBusinessList<ClientDetailBusinessFocus>), references(ClientDetailBusinessList<ClientDetailBusinessReference>)
@@ -108,6 +110,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
             case "memoryResources": payload = .memories(try value.decode(ClientDetailBusinessList<ClientDetailBusinessMemory>.self, forKey: .data))
             case "memoryHits": payload = .hits(try value.decode(ClientDetailBusinessList<ClientDetailBusinessMemory>.self, forKey: .data))
             case "schedules": payload = .schedules(try value.decode(ClientDetailBusinessList<ClientDetailBusinessSchedule>.self, forKey: .data))
+            case "coordinationProgress": payload = .coordinationProgress(try value.decode(ClientCoordinationProgress.self, forKey: .data))
             case "provider": payload = .provider(try value.decode(ClientDetailBusinessProvider.self, forKey: .data))
             case "worktree": payload = .worktree(try value.decode(ClientDetailBusinessWorktree.self, forKey: .data))
             case "turnMetrics": payload = .turn(try value.decode(ClientDetailBusinessTurn.self, forKey: .data))
@@ -130,6 +133,9 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
             else { throw ClientDetailFailure.invalidGraph }
         }
         switch payload {
+        case .coordinationProgress(let value):
+            guard value.version == 1, value.items.count <= 3, value.total <= 10000,
+                Set(value.items.map(\.id)).count == value.items.count else { throw ClientDetailFailure.invalidGraph }
         case .task(let task):
             let dispatches = task.coordinationDispatches ?? []
             guard dispatches.count <= 5, Set(dispatches.map(\.id)).count == dispatches.count,
@@ -178,6 +184,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
         func texts(_ values: [String]) -> Int { values.reduce(0) { $0 + $1.utf8.count * 2 } }
         let base = 2048 + actions.count * 2048
         switch payload {
+        case .coordinationProgress(let value): return base + value.items.count * 8192
         case .task(let value): return base + texts([value.title, value.description, value.acceptanceCriteria, value.verificationCriteria, value.summary.focus, value.summary.progress, value.summary.reason, value.summary.nextAction])
         case .session(let value): return base + texts([value.sessionId, value.workName])
         case .summary(let value): return base + texts([value.text])

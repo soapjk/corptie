@@ -34,6 +34,20 @@ public struct ClientDetailAPI: Sendable {
         request.timeoutInterval = events ? 35 : 15
         return request
     }
+    public func coordinationProgressPage(sessionID: String, batchID: String, offset: Int = 0) async throws -> ClientCoordinationProgressPage {
+        let prefix = route == .desktop ? [] : ["client", "v1"]
+        let request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "coordination-progress", batchID],
+            query: [URLQueryItem(name: "offset", value: String(offset))])
+        let (data, _) = try await transport.data(for: request)
+        return try JSONDecoder().decode(ClientCoordinationProgressPage.self, from: data)
+    }
+    public func coordinationProgressReport(sessionID: String, batchID: String, assignmentID: String, offset: Int = 0) async throws -> ClientCoordinationProgressReport {
+        let prefix = route == .desktop ? [] : ["client", "v1"]
+        let request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "coordination-progress", batchID],
+            query: [URLQueryItem(name: "offset", value: String(offset)), URLQueryItem(name: "assignment", value: assignmentID)])
+        let (data, _) = try await transport.data(for: request)
+        return try JSONDecoder().decode(ClientCoordinationProgressReport.self, from: data)
+    }
     public func businessSnapshot(sessionID: String) async throws -> ClientDetailBusinessDocument {
         let (data, _) = try await transport.data(for: businessRequest(sessionID: sessionID, events: false))
         return try ClientDetailBusinessDocument.decode(data)

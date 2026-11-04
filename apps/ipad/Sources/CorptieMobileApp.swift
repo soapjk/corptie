@@ -884,7 +884,13 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                         switch entry.kind {
                         case .message(let message):
-                            if message.presentationKind == .collaborationMessage
+                            if let progress = message.coordinationProgress {
+                                CoordinationProgressCard(progress: progress, api: {
+                                    ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
+                                }, openSession: { id in
+                                    if let target = workspace.sessions.first(where: { $0.id == id || $0.logicalSessionId == id }) { workspace.selection = target.id }
+                                })
+                            } else if message.presentationKind == .collaborationMessage
                                 || message.presentationKind == .collaborationConfirmation {
                                 PadCollaborationCard(message: message, connection: connection, sessionID: sessionID,
                                     canRespond: workspace.capabilities?.collaborationConfirmation?.available == true,

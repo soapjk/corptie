@@ -1,3 +1,4 @@
+import { coordinationProgressFor } from './coordinationProgressService.mjs';
 import { randomUUID } from "node:crypto";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
@@ -9,8 +10,11 @@ const fail = (code, message = code, statusCode = 409) => { throw Object.assign(n
 // Durable admission/outbox metadata. Message ownership, delivery and execution
 // remain in SessionMailboxService and the existing runtime queue.
 export class TaskCoordinationService {
-  constructor({ store, collaboration, mailbox, deletion, changed = () => {} }) {
+  constructor({ store, collaboration, mailbox, deletion, changed = () => {}, emitEvent = () => {} }) {
     Object.assign(this, { store, collaboration, mailbox, deletion, changed });
+    this.progress = coordinationProgressFor(store);
+    this.progress.onChanged = taskId => this.changed(taskId);
+    this.progress.publishMilestone = (sessionId,item) => emitEvent("SessionCoordinationMilestone",{turnId:item.turnId,item,hasAgentMessage:true},{sessionId});
     this.running = new Map();
     this.creationChains = new Map();
     this.reportScheduled = false;
@@ -30,6 +34,7 @@ export class TaskCoordinationService {
     this.store.db.run(`UPDATE task_coordination_dispatches SET ${keys.map(key => `${key}=?`).join(",")},updated_at=? WHERE dispatch_id=?`,
       [...keys.map(key => fields[key]), new Date().toISOString(), id]);
     this.store.scheduleSave();
+    this.progress.scheduleDispatch(id);
     this.changed(this.get(id)?.parent_task_id);
   }
   receipt(row) {
@@ -72,7 +77,7 @@ export class TaskCoordinationService {
       error_message: `${notice.reuseMessage}原请求：${canonical.dispatch_id}` });
     this.scheduleReports();
   }
-  acceptDispatch(metadata, actorId, input) {
+  acceptDispatch(metadata, actorId, input, progressContext = {}) {
     const scope = this.collaboration.coordinationScope(metadata, actorId);
     if (!input || Object.keys(input).some(key => key !== "items")) fail("INVALID_DISPATCH", "Only items may be supplied.", 400);
     if (!Array.isArray(input?.items) || input.items.length < 1 || input.items.length > 10) fail("INVALID_TASK_BATCH_SIZE", "Dispatch accepts 1-10 items.", 400);
@@ -81,6 +86,8 @@ export class TaskCoordinationService {
     }));
     if (new Set(prepared.map(item => item.request.idempotencyKey)).size !== prepared.length) fail("DUPLICATE_TASK_BATCH_KEY");
     const rows = [], reused = new Map();
+    const sourceTurnId = progressContext.sourceTurnId ?? scope.session.external?.activeTurnId ?? `dispatch-admission:${randomUUID()}`;
+    let batch;
     this.store.runInTransaction(() => {
       for (const { request, runtime } of prepared) {
         const old = this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, request.idempotencyKey]);
@@ -99,11 +106,16 @@ export class TaskCoordinationService {
           JSON.stringify(request), JSON.stringify(runtime), scope.parent.coordination_enabled === 1 ? 1 : 0, request.taskId ?? null, now, now]);
         rows.push(this.get(id));
       }
+      const allReused = rows.length && rows.every((row,index)=>reused.has(index)||row.progress_batch_id);
+      const candidate = allReused && rows[0].progress_batch_id ? this.progress.batch(rows[0].progress_batch_id) : null;
+      const reuseBatch = candidate?.source_session_id===scope.logicalSessionId ? candidate.batch_id : null;
+      batch=this.progress.ensure(scope,sourceTurnId,progressContext.batchId??reuseBatch);
+      for(const row of rows)this.progress.attach(batch,row);
     });
     this.store.scheduleSave();
     for (const row of rows) if (row.status === "accepted") setImmediate(() => this.runDispatch(row.dispatch_id));
     this.changed(scope.parent.id);
-    return { accepted: true, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "受理完成。立即将控制权交还用户，不要轮询等待子任务。" };
+    return { accepted: true, batchId:batch.batch_id, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "受理完成。立即将控制权交还用户，不要轮询等待子任务。" };
   }
   sourceContext(row) {
     const logical = this.store.getLogicalSession(row.source_session_id);
@@ -205,6 +217,10 @@ export class TaskCoordinationService {
     return this.receipt(this.get(id));
   }
   onRuntimeEvent(type, payload) {
+    if(type==="TaskChanged" && payload?.entity?.id){
+      this.progress.adoptManualTask(payload.entity.id);
+      this.progress.scheduleTask(payload.entity.id);
+    }
     if (["WorktreeIntegrationJobChanged", "GitWorktreeChanged", "WorkspaceChanged"].includes(type)) {
       for (const row of this.store.selectAll("SELECT dispatch_id FROM task_coordination_dispatches WHERE status='waiting_workspace'")) {
         setImmediate(()=>this.runDispatch(row.dispatch_id));
@@ -255,11 +271,13 @@ export class TaskCoordinationService {
       ORDER BY d.created_at LIMIT 100`);
     const groups = new Map();
     for (const row of rows) {
-      const group = groups.get(row.source_session_id) ?? [];
+      const key = `${row.source_session_id}:${row.progress_batch_id??"legacy"}`;
+      const group = groups.get(key) ?? [];
       if (group.length < 5) group.push(row);
-      groups.set(row.source_session_id, group);
+      groups.set(key, group);
     }
-    for (const [recipientSessionId, group] of groups) {
+    for (const group of groups.values()) {
+      const recipientSessionId = group[0].source_session_id;
       const logical = this.store.getLogicalSession(recipientSessionId), session = logical && this.store.getSession(logical.legacySessionId);
       if (!session || session.archived || session.deletedAt || sessionHasActiveRun(session) || this.store.getRunningAgentTaskForSession(session.id)) continue;
       if (this.store.listQueuedAgentTasksForSession(session.id, 100).some(op => op.source?.type !== "mailbox_event")) continue;
@@ -281,11 +299,14 @@ export class TaskCoordinationService {
           authorization: { ownerLogicalSessionId: recipientSessionId, sourceId: first.dispatch_id,
             coordinationDispatchId: first.dispatch_id, purpose: "parent_report", reportGeneration: first.report_generation,
             statusNotice:group.some(row=>["waiting_dispatch","blocked"].includes(row.status)) } });
-        for (const row of group) this.update(row.dispatch_id, { report_message_id: message.messageId });
+        for (const row of group) { this.update(row.dispatch_id, { report_message_id: message.messageId }); this.progress.correlateReports(row.dispatch_id,results.find(result=>result.dispatchId===row.dispatch_id)?.finalMessageId??null); }
       });
     }
   }
   recover() {
+    for(const row of this.store.selectAll(`SELECT b.batch_id FROM coordination_progress_batches b
+      JOIN logical_sessions l ON l.logical_session_id=b.source_session_id JOIN sessions s ON s.id=l.legacy_session_id
+      WHERE s.archived=0 AND s.deleted_at IS NULL ORDER BY b.created_at DESC LIMIT 1000`)) this.progress.schedule(row.batch_id);
     for (const row of this.store.selectAll("SELECT * FROM task_coordination_dispatches WHERE status NOT IN ('completed','failed','cancelled','unknown')")) {
       if (["accepted", "preparing", "waiting_workspace"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
       const work = this.store.getAgentTask(row.operation_id);

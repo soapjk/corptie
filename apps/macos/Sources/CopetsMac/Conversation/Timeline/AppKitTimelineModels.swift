@@ -16,6 +16,7 @@ enum ReplyIdentityLayout {
 }
 
 struct AppKitChatTimelineRow: Identifiable {
+    var coordinationProgress: ClientCoordinationProgress? = nil
     var scheduledTrigger: ScheduledTriggerPresentation? = nil
     var replyIdentity: ConversationReplyIdentity? = nil
     var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : ReplyIdentityLayout.headerHeight + ReplyIdentityLayout.bottomSpacing }
