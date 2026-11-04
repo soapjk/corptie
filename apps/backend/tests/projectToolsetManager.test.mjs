@@ -17,6 +17,22 @@ import { inspectGitWorkspace } from "../src/utils/gitWorktreeInventory.mjs";
 
 const execFileAsync = promisify(execFile);
 
+test("Toolset source inspection does not refresh the source index", async () => {
+  const fixture = await createFixture();
+  try {
+    const tracked = join(fixture.mainPath, "probe.js");
+    await writeFile(tracked, "unchanged\n");
+    await git(["add", "probe.js"], fixture.mainPath);
+    await git(["commit", "-m", "tracked source"], fixture.mainPath);
+    const indexPath = join(fixture.mainPath, ".git", "index");
+    const before = await readFile(indexPath);
+    await writeFile(tracked, "unchanged\n");
+    const result = await new ProjectToolsetManager().sourceIdentity(fixture.mainPath);
+    assert.equal(result.dirty, false);
+    assert.deepEqual(await readFile(indexPath), before);
+  } finally { await fixture.close(); }
+});
+
 test("fixed Toolset execution retains scripts and helpers when main changes, and rejects tampered copies", async () => {
   const fixture = await createFixture();
   const manager = new ProjectToolsetManager();

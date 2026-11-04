@@ -295,7 +295,8 @@ export class ProjectToolsetManager {
         "status", "--porcelain=v1", "-z", "--untracked-files=all",
         "--", ".", ":(exclude).corptie"
       ],
-      { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
+      { encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }
     )).stdout;
     if (!status) {
       const fingerprint = (await this.execFile(

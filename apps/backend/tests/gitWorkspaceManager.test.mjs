@@ -2101,6 +2101,61 @@ test("replanning aborts only the recorded task-owned integration merge and resto
   }
 });
 
+test("owned merge abort handles native index contention without removing locks or losing concurrent edits", async () => {
+  for (const mode of ["released", "persistent", "edited", "head_changed", "other_lock"]) {
+    const f = await createFixture(`abort-index-${mode}`, { activeFeatureWorktree: true });
+    const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+    try {
+      await writeFile(join(f.repository, "shared.txt"), "main\n");
+      await git(["add", "shared.txt"], f.repository);
+      await git(["commit", "-m", "main conflict"], f.repository);
+      await writeFile(join(f.activeWorktree, "shared.txt"), "source\n");
+      await git(["add", "shared.txt"], f.activeWorktree);
+      await git(["commit", "-m", "source conflict"], f.activeWorktree);
+      const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], f.repository)).trim();
+      const sourceHead = (await gitOutput(["rev-parse", "HEAD"], f.activeWorktree)).trim();
+      const input = { mainPath: f.repository, sourceHead, expectedMainHead, jobId: "job:abort-lock" };
+      await assert.rejects(manager.mergeIntegrationSource(input), { code: "MERGE_CONFLICT" });
+      const lock = join(f.repository, ".git", "index.lock");
+      await writeFile(lock, "external-owner", { flag: "wx" });
+      let attempts = 0, headChecks = 0;
+      manager.execFile = async (command, args, options) => {
+        const op = args.slice(2);
+        if (op.join(" ") === "rev-parse --verify HEAD") headChecks++;
+        if (op.join(" ") !== "merge --abort") return execFileAsync(command, args, options);
+        attempts++;
+        if (mode === "released" && attempts === 2) await rm(lock);
+        if (mode === "other_lock") throw Object.assign(new Error("other lock"), {
+          code: 128, stderr: `fatal: Unable to create '${f.repository}/.git/config.lock': File exists.`
+        });
+        try { return await execFileAsync(command, args, options); }
+        catch (error) {
+          if (mode === "edited") await writeFile(join(f.repository, "shared.txt"), "human resolution\n");
+          if (mode === "head_changed") {
+            await rm(lock);
+            await git(["update-ref", "HEAD", sourceHead], f.repository);
+          }
+          throw error;
+        }
+      };
+      if (mode === "released") {
+        assert.equal((await manager.abortIntegrationMerge(input)).aborted, true);
+        assert.equal(attempts, 2);
+        assert.ok(headChecks >= 2);
+        assert.equal((await gitOutput(["status", "--porcelain"], f.repository)).trim(), "");
+      } else {
+        const code = { persistent: "GIT_INDEX_LOCK_BUSY", edited: "INTEGRATION_CONFLICT_EDITS_PRESENT",
+          head_changed: "MAIN_HEAD_CHANGED", other_lock: 128 }[mode];
+        await assert.rejects(manager.abortIntegrationMerge(input), { code });
+        assert.equal(attempts, mode === "persistent" ? 6 : 1);
+        if (mode !== "head_changed") assert.equal(await readFile(lock, "utf8"), "external-owner");
+        assert.equal((await gitOutput(["rev-parse", "MERGE_HEAD"], f.repository)).trim(), sourceHead);
+        if (mode === "edited") assert.equal(await readFile(join(f.repository, "shared.txt"), "utf8"), "human resolution\n");
+      }
+    } finally { await f.close(); }
+  }
+});
+
 test("Git operation recovery continues only the exact displayed operation and HEAD", async () => {
   const fixture = await createFixture("git-operation-recovery", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
