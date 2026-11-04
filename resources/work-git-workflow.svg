@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 460" width="100%" height="100%">
+  <defs>
+    <linearGradient id="gitBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+    <linearGradient id="mainRepoGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#065f46"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="wtCardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#182333"/>
+      <stop offset="100%" stop-color="#0f1724"/>
+    </linearGradient>
+    <linearGradient id="conflictGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2d1a18"/>
+      <stop offset="100%" stop-color="#180e0d"/>
+    </linearGradient>
+    <filter id="gitShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <marker id="gitArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="greenArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+    <marker id="amberArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <style>
+    .g-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .g-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12.5px; fill: #94a3b8; }
+    .g-card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 14px; fill: #f1f5f9; }
+    .g-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    .g-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11.5px; fill: #94a3b8; }
+    .g-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; fill: #38bdf8; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="920" height="460" rx="14" fill="url(#gitBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Header -->
+  <g transform="translate(36, 24)">
+    <rect x="0" y="0" width="168" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="84" y="15" text-anchor="middle" class="g-badge" fill="#38bdf8">Git &amp; Worktree Flow</text>
+    <text x="0" y="46" class="g-title" font-size="18">Work 与 Git Worktree 管理全流程</text>
+    <text x="0" y="66" class="g-sub">任务分支物理隔离 · 一键同步 · 可视化审查 · 智能冲突闭环 · 安全合并主线</text>
+  </g>
+
+  <!-- Main Repo Line (Top Trunk) -->
+  <g transform="translate(36, 102)" filter="url(#gitShadow)">
+    <rect x="0" y="0" width="848" height="50" rx="10" fill="#0d281e" stroke="#10b981" stroke-width="1.2"/>
+    <circle cx="28" cy="25" r="7" fill="#10b981"/>
+    <text x="46" y="29" class="g-card-title" font-size="14.5">主仓库分支：<tspan class="g-code" fill="#a7f3d0">main / master</tspan> (本地项目根目录 Workspace)</text>
+    <text x="560" y="29" class="g-desc" fill="#6ee7b7">单一真实代码源 · 保持整洁稳定 · 不直接被 Agent 实验性乱改</text>
+  </g>
+
+  <!-- Outgoing Fork Arrows -->
+  <path d="M 220 152 L 220 188" stroke="#38bdf8" stroke-width="1.8" fill="none" marker-end="url(#gitArrow)"/>
+  <path d="M 640 152 L 640 188" stroke="#38bdf8" stroke-width="1.8" fill="none" marker-end="url(#gitArrow)"/>
+
+  <!-- Worktree Parallel Tasks Layer -->
+  <g transform="translate(36, 192)">
+
+    <!-- Worktree 1: Normal Smooth Lifecycle -->
+    <g transform="translate(0, 0)" filter="url(#gitShadow)">
+      <rect x="0" y="0" width="410" height="236" rx="12" fill="url(#wtCardGrad)" stroke="#0284c7" stroke-width="1.2"/>
+
+      <!-- Header -->
+      <g transform="translate(18, 16)">
+        <rect x="0" y="0" width="70" height="18" rx="4" fill="#082f49"/>
+        <text x="35" y="13" text-anchor="middle" class="g-code" font-size="10">Worktree 1</text>
+        <text x="80" y="14" class="g-card-title">独立工作分支：<tspan class="g-code" font-size="12">task/login-feature</tspan></text>
+      </g>
+
+      <line x1="18" y1="44" x2="392" y2="44" stroke="#1e293b" stroke-width="1"/>
+
+      <!-- Capabilities List -->
+      <g transform="translate(18, 56)">
+        <!-- Capability 1: Sync -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="374" height="38" rx="6" fill="#0a1524" stroke="#1e293b" stroke-width="0.8"/>
+          <text x="12" y="18" class="g-card-title" font-size="12" fill="#38bdf8">⚡ 一键同步 (Sync &amp; Rebase)</text>
+          <text x="12" y="31" class="g-desc" font-size="10.5">主线代码更新时，一键拉取最新 commit 并安全变基到任务分支</text>
+        </g>
+
+        <!-- Capability 2: Diff Review -->
+        <g transform="translate(0, 44)">
+          <rect x="0" y="0" width="374" height="38" rx="6" fill="#0a1524" stroke="#1e293b" stroke-width="0.8"/>
+          <text x="12" y="18" class="g-card-title" font-size="12" fill="#38bdf8">🔍 代码审查与集成计划 (Diff &amp; Plan)</text>
+          <text x="12" y="31" class="g-desc" font-size="10.5">直观查看文件增删改 Diff，审查 Agent 生成的集成方案与变更清单</text>
+        </g>
+
+        <!-- Capability 3: One-click Merge -->
+        <g transform="translate(0, 88)">
+          <rect x="0" y="0" width="374" height="38" rx="6" fill="#064e3b" fill-opacity="0.3" stroke="#059669" stroke-width="0.8"/>
+          <text x="12" y="18" class="g-card-title" font-size="12" fill="#34d399">✅ 一键合并回主线 (Safe Merge)</text>
+          <text x="12" y="31" class="g-desc" font-size="10.5" fill="#a7f3d0">测试与验收通过后，一键合入主分支并安全清理临时 Worktree</text>
+        </g>
+
+        <!-- Capability 4: Remote Push -->
+        <g transform="translate(0, 132)">
+          <rect x="0" y="0" width="374" height="34" rx="6" fill="#0a1524" stroke="#1e293b" stroke-width="0.8"/>
+          <text x="12" y="21" class="g-desc" font-size="11" fill="#cbd5e1">🚀 <tspan font-weight="600" fill="#f1f5f9">同步到远程</tspan>：一键推送到 GitHub / GitLab 远端仓库</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Worktree 2: Conflict & Recovery Handling -->
+    <g transform="translate(438, 0)" filter="url(#gitShadow)">
+      <rect x="0" y="0" width="410" height="236" rx="12" fill="url(#wtCardGrad)" stroke="#d97706" stroke-width="1.2"/>
+
+      <!-- Header -->
+      <g transform="translate(18, 16)">
+        <rect x="0" y="0" width="70" height="18" rx="4" fill="#451a03"/>
+        <text x="35" y="13" text-anchor="middle" class="g-code" font-size="10" fill="#fbbf24">Worktree 2</text>
+        <text x="80" y="14" class="g-card-title">独立工作分支：<tspan class="g-code" font-size="12">task/payment-api</tspan></text>
+      </g>
+
+      <line x1="18" y1="44" x2="392" y2="44" stroke="#1e293b" stroke-width="1"/>
+
+      <!-- Conflict Recovery Flow -->
+      <g transform="translate(18, 56)">
+        <!-- Step 1: Conflict Detected -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="374" height="46" rx="6" fill="#451a03" fill-opacity="0.3" stroke="#b45309" stroke-width="0.8"/>
+          <text x="12" y="19" class="g-card-title" font-size="12" fill="#fbbf24">⚠️ 合并遇阻 / 冲突检测 (Conflict Interception)</text>
+          <text x="12" y="34" class="g-desc" font-size="10.5" fill="#fde68a">系统自动阻断危险操作，绝不强行覆盖破坏主线或工作区分支</text>
+        </g>
+
+        <!-- Step 2: Agent Conflict Assistant -->
+        <g transform="translate(0, 52)">
+          <rect x="0" y="0" width="374" height="46" rx="6" fill="#0a1524" stroke="#b45309" stroke-width="0.8"/>
+          <text x="12" y="19" class="g-card-title" font-size="12" fill="#f59e0b">🤖 会话 Agent 协助冲突排查</text>
+          <text x="12" y="34" class="g-desc" font-size="10.5">任务会话自动分析双方修改意图，生成结构化解决建议与补丁方案</text>
+        </g>
+
+        <!-- Step 3: Verify & Re-merge -->
+        <g transform="translate(0, 104)">
+          <rect x="0" y="0" width="374" height="46" rx="6" fill="#0a1524" stroke="#1e293b" stroke-width="0.8"/>
+          <text x="12" y="19" class="g-card-title" font-size="12" fill="#38bdf8">🧪 冲突解开与快照重新验证</text>
+          <text x="12" y="34" class="g-desc" font-size="10.5">在隔离目录中重新运行测试验证，确认无回归后重新完成合并</text>
+        </g>
+
+        <!-- Status Tag -->
+        <rect x="0" y="156" width="374" height="20" rx="4" fill="#180e0d" stroke="#78350f" stroke-width="0.6"/>
+        <text x="187" y="170" text-anchor="middle" font-size="10" fill="#fde68a">🛡️ 保护机制：任何冲突解决都需人工确认，绝无黑盒覆写</text>
+      </g>
+    </g>
+
+  </g>
+</svg>
