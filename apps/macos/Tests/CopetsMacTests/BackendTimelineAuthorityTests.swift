@@ -4,7 +4,7 @@ import Testing
 @testable import CorptieMac
 
 struct BackendTimelineAuthorityTests {
-    @Test func userMessageEchoIsPublishedOnlyAfterBackendPersistenceAcknowledgement() throws {
+    @Test func localFeedbackPrecedesNetworkButAcknowledgementRequiresSuccess() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -19,6 +19,10 @@ struct BackendTimelineAuthorityTests {
         ))
 
         #expect(publication.lowerBound > acknowledgement.upperBound)
+        let localFeedback = try #require(source.range(of: "timelineLocalOverlay.acknowledge(trimmed"))
+        let requestTask = try #require(source.range(of: "        Task {"))
+        #expect(localFeedback.lowerBound < requestTask.lowerBound)
+        #expect(source.contains("submitting: true"))
         #expect(!source.contains("appendOptimisticUserMessage"))
         #expect(source.contains("backend creates the MessageDelivery and its session_items"))
     }

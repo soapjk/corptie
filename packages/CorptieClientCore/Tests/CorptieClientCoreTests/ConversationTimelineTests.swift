@@ -112,6 +112,32 @@ struct ConversationTimelineTests {
         #expect(projected([try input(nil, status: "processing", turnStatus: "completed")]).count == 1)
     }
 
+    @Test func pendingInputCanShowImmediateProcessingWithoutChangingExecutionAuthority() throws {
+        for state in ["queued", "preparing"] {
+            let value: [String: Any] = ["id": "pending", "type": "userMessage", "text": "request",
+                "turnId": "delivery:pending", "turnStatus": state, "userMessageStatus": state]
+            let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
+            #expect(ConversationTimeline.makeEntries(from: [item]).count == 1)
+            let immediate = ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true)
+            #expect(immediate.last?.isProcessGroup == true)
+            #expect(immediate.last?.processReplyState == .running)
+            #expect(item.userMessageStatus == state)
+            #expect(UserMessageStatusPresentation(authoritativeStatus: state, legacyStatus: nil,
+                showsPendingAsProcessing: true)?.kind == .processing)
+        }
+        for state in ["failed", "cancelled", "consumed"] {
+            #expect(UserMessageStatusPresentation(authoritativeStatus: state, legacyStatus: nil,
+                showsPendingAsProcessing: true)?.kind != .processing)
+        }
+        for role in ["automation", "system_event", "collaboration"] {
+            let value: [String: Any] = ["id": "event", "type": "userMessage", "text": "event",
+                "turnId": "event:pending", "turnStatus": "queued", "userMessageStatus": "queued",
+                "presentationRole": role, "collaborationDirection": "inbound"]
+            let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
+            #expect(!ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true).contains { $0.isProcessGroup })
+        }
+    }
+
     private func imageMessage(type: String = "imageView", role: String? = nil,
                               hasImages: Bool = true) throws -> ClientMessage {
         var value: [String: Any] = ["id": "image", "turnId": "turn", "type": type,
