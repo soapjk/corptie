@@ -302,7 +302,8 @@ struct MacSharedMessageTextCard: View {
     private func executionPlanCard(_ plan: ConversationExecutionPlan) -> some View {
         Group {
             if let taskID = plan.taskId {
-                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: layout.cardWidth - 28)
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: layout.cardWidth - 28,
+                    isExpanded: row.isExpanded, onToggleExpansion: toggle)
             } else { ExecutionPlanChecklist(plan: plan) }
         }
             .accessibilityActions {

@@ -11,6 +11,51 @@ func desktopExecutionChecklistAPI() throws -> ClientExecutionChecklistAPI {
     ClientExecutionChecklistAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)))
 }
 
+/// Prepared when message data changes, never while scrolling or expanding.
+struct ConversationChecklistDockProjection {
+    var timelineRows: [AppKitChatTimelineRow] = []
+    var checklist: ConversationExecutionPlan?
+
+    init(rows: [AppKitChatTimelineRow]) {
+        timelineRows.reserveCapacity(rows.count)
+        for row in rows {
+            if let plan = row.executionPlan, plan.taskId != nil {
+                checklist = plan
+            } else {
+                timelineRows.append(row)
+            }
+        }
+    }
+}
+
+/// A sibling of the message scroller, so reading history cannot hide it.
+struct PinnedExecutionChecklistCard: View {
+    let plan: ConversationExecutionPlan
+    @State private var width: CGFloat = 300
+    @State private var expanded = false
+
+    static func height(plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool) -> CGFloat {
+        min(280, NativePlanChecklistHeightCache.shared.height(of: plan, width: width - 28, expanded: expanded) + 28)
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            if let taskID = plan.taskId {
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width - 28,
+                    isExpanded: expanded, onToggleExpansion: { expanded.toggle() })
+                    .padding(14)
+            }
+        }
+        .frame(height: Self.height(plan: plan, width: width, expanded: expanded))
+        .frame(maxWidth: 780)
+        .onGeometryChange(for: CGFloat.self) { max(148, $0.size.width) } action: { width = $0 }
+        .modifier(ConversationSkinSurface(role: .plan, radius: 14,
+            legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.2)))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("conversation.pinned-execution-checklist")
+    }
+}
+
 /// Independent Detail module. It observes only its Task's committed checklist
 /// changes, never token streams or the complete global entity collection.
 struct TaskExecutionChecklistDetailCard: View {
@@ -70,9 +115,12 @@ struct DesktopExecutionChecklistContent: View {
     let taskID: String
     let width: CGFloat
     var canEdit = true
+    var isExpanded: Bool? = nil
+    var onToggleExpansion: (() -> Void)? = nil
     @State private var savedPlan: ConversationExecutionPlan?
     var body: some View {
-        TaskExecutionChecklist(plan: currentPlan, width: width, canEdit: canEdit) { command in
+        TaskExecutionChecklist(plan: currentPlan, width: width, canEdit: canEdit,
+                               isExpanded: isExpanded, onToggleExpansion: onToggleExpansion) { command in
             do {
                 let response = try await desktopExecutionChecklistAPI().update(taskID: taskID, command: command)
                 accept(response.checklist)

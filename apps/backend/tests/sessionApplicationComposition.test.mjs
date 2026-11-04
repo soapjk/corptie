@@ -7,6 +7,37 @@ import { AGENT_PROVIDER_CAPABILITIES as C } from "../src/agent-provider/contract
 import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import { collaborationDynamicTools } from "../src/collaboration/collaborationDynamicTools.mjs";
+import { EXECUTION_CHECKLIST_INSTRUCTIONS } from "../src/application/executionChecklistInstructions.mjs";
+
+for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
+  test(`${providerId}: custom startup and subsequent Worker messages both receive automatic checklist guidance`, async () => {
+    const session = { id: "session:existing", sessionKind: "worker", taskId: "task:one", workId: "work:one", status: "complete" };
+    const task = { id: "task:one", work_id: "work:one", title: "Work", revision: 1, resource_version: 1, lifecycle_state: "in_progress" };
+    const reference = { sessionId: session.id, logicalSessionId: "logical:existing", providerId,
+      providerSessionId: "native:existing", bindingId: "binding:existing", metadata: { session } };
+    const sent = [];
+    const registry = new AgentProviderRegistry([new CallbackAgentProvider({ id: providerId, displayName: providerId,
+      transport: "test", capabilities: [C.CONVERSATION_SEND] }, {
+      send: async (_reference, message, context) => {
+        sent.push({ message, context });
+        return { turnId: `turn:${sent.length}`, delivery: "accepted" };
+      }
+    })]);
+    const service = createSessionApplicationComposition({
+      store: { getSession: () => session, assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
+        getTask: () => task, getWork: () => ({ id: "work:one", name: "Work" }), selectOne: () => null,
+        getSessionToolCatalogMaterialization: () => null },
+      agentProviderRegistry: registry, sessionBindingRepository: { resolve: () => reference },
+      artifactService: { indexForSession: () => ({ items: [] }) }, resolveContextReferences: async () => null,
+      mcpAssignmentRevisionForAgent: () => null, assertForkDispatchAllowed() {}, assertSessionRecoveryMessageBoundary() {}, emitEvent() {}
+    });
+    const messages = ["Custom startup: implement the feature and verify it", "Follow-up: repair the edge case and run its checks"];
+    for (const message of messages) await service.sendMessage(session.id, message);
+    assert.deepEqual(sent.map(value => value.message), messages);
+    for (const value of sent) assert.ok(value.context.sessionContext.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+    assert.equal(sent.length, 2);
+  });
+}
 
 for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
   test(`${providerId}: all new Session kinds use one defaults policy; explicit choices and forks win`, async () => {

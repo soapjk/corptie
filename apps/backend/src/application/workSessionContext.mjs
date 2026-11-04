@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy.mjs";
+import { EXECUTION_CHECKLIST_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
 
 export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; manually create or switch Worktrees only when the direct user explicitly requests it. Scoped child Task tools may automatically allocate child Worktrees during autonomous decomposition, without a separate user creation request. This does not authorize manual Worktree changes; shell cd or command workdir never changes the logical Workspace.";
 
@@ -76,6 +77,7 @@ export function buildWorkSessionContext({
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     "For parent/child Tasks, read corptie_task_get_bound for the current hierarchy and binding revisions. A child delivers into its parent Worktree, not directly into main. A parent with child code deliveries must integrate them, call corptie_task_capture_integration before verification, and report evidence with that exact integrationSnapshotId. Any later code or delivery-scope change requires fresh verification; a snapshot alone proves no tests. Git integration never grants Task completion authority.",
     buildTaskCoordinationContext(task, coordination),
+    EXECUTION_CHECKLIST_INSTRUCTIONS,
     TASK_WORKSPACE_INSTRUCTIONS,
     ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS,
     startupReceipt

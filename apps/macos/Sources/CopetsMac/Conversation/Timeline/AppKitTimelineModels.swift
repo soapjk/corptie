@@ -67,7 +67,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let isCollaboration: Bool
     let collaborationRoute: NativeCollaborationRoutePresentation?
     let expandableTurnId: String?
-    let isExpanded: Bool
+    var isExpanded: Bool
     let processCount: Int?
     let processDuration: String?
     let processStartedAt: Date?
