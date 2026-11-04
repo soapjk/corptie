@@ -113,7 +113,6 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @State private var counts: [String: (attention: Int, running: Int)] = [:]
     @State private var residentTaskIDs = Set<String>()
     @State private var tasksByWork: [String: [CorptieTask]] = [:]
-    @State private var latestActivityByWork: [String: String] = [:]
     @State private var latestActivityByTask: [String: String] = [:]
     @State private var deferred: [String: ConsoleAttentionPolicy.Receipt] = Self.loadDeferred()
     private static var deferredKey: String { "console.taskCards.deferred.v1" }
@@ -249,10 +248,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private var orderedWorks: [Work] {
         let index = Dictionary(uniqueKeysWithValues: works.map { ($0.id, $0) })
-        let visible = workOrder.compactMap { index[$0] }.filter { !displayedTasks(for: $0).isEmpty }
-        guard sortMode != .standard else { return visible }
-        return sortMode.ordered(visible, id: { $0.id }, title: { $0.name }, updatedAt: { $0.updatedAt },
-                                activityAt: { latestActivityByWork[$0.id] })
+        return workOrder.compactMap { index[$0] }.filter { !displayedTasks(for: $0).isEmpty }
     }
 
     // Animate structural changes, not streaming messages, hover or container width.
@@ -263,9 +259,6 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func rebuild() {
-        latestActivityByWork = Dictionary(grouping: sessions.filter { $0.lastMessageAt != nil },
-                                         by: { $0.workId ?? "" })
-            .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" }
         latestActivityByTask = Dictionary(grouping: sessions.filter { $0.lastMessageAt != nil },
                                          by: { $0.taskId ?? "" })
             .mapValues { $0.compactMap(\.lastMessageAt).max() ?? "" }

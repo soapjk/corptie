@@ -364,9 +364,11 @@ public struct ConversationComposerEditorRow<Attachments: View, Editor: View, Sen
 public struct ComposerEditorRowLayout: Layout {
     private let spacing: CGFloat = 8
     private let minimumEditorWidth: CGFloat
+    private let preservesLeadingContentWidth: Bool
 
-    public init(minimumEditorWidth: CGFloat = 176) {
+    public init(minimumEditorWidth: CGFloat = 176, preservesLeadingContentWidth: Bool = false) {
         self.minimumEditorWidth = minimumEditorWidth
+        self.preservesLeadingContentWidth = preservesLeadingContentWidth
     }
 
     private func measure(width: CGFloat, subviews: Subviews)
@@ -374,7 +376,9 @@ public struct ComposerEditorRowLayout: Layout {
         guard !subviews.isEmpty else { return (.zero, .zero, false, .zero) }
         let model = subviews.count > 1 ? subviews[1].sizeThatFits(.unspecified) : .zero
         let modelWidth = min(width, model.width)
-        let stacked = subviews.count > 1 && width < minimumEditorWidth + spacing + modelWidth
+        let leadingWidth = preservesLeadingContentWidth
+            ? max(minimumEditorWidth, subviews[0].sizeThatFits(.unspecified).width) : minimumEditorWidth
+        let stacked = subviews.count > 1 && width < leadingWidth + spacing + modelWidth
         let editorWidth = subviews.count < 2 || stacked ? width : max(0, width - modelWidth - spacing)
         let editor = subviews[0].sizeThatFits(.init(width: editorWidth, height: nil))
         let height = stacked ? editor.height + spacing + model.height : max(editor.height, model.height)

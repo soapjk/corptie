@@ -3,6 +3,26 @@ import XCTest
 
 @MainActor
 final class SessionTimelineLocalOverlayTests: XCTestCase {
+    func testBusyOrUnacknowledgedSessionKeepsNewInputsQueuedWithoutProcessCards() {
+        let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 1, rawItemCount: 3, longMessageCharacters: 32))
+        for busy in [false, true] {
+            let overlay = SessionTimelineLocalOverlay()
+            var session = fixture.session
+            if busy { session.executionStatus = "running" }
+            let first = overlay.acknowledge("first", messageID: "first", deliveryID: "first",
+                to: session, residentDetail: fixture.detail, now: fixture.detail.updatedAt, submitting: true)
+            XCTAssertEqual(first.items.last?.status, busy ? "queued" : "processing")
+            let second = overlay.acknowledge("second", messageID: "second", deliveryID: "second",
+                to: session, residentDetail: first, now: fixture.detail.updatedAt, submitting: true)
+            XCTAssertEqual(second.items.last?.status, "queued")
+            let queuedEntries = makeChatDisplayEntries(from: second.items.filter { $0.id == "second" })
+            XCTAssertFalse(queuedEntries.contains { $0.isProcessGroup })
+            let accepted = overlay.acknowledge("second", messageID: "second", deliveryID: "second",
+                to: session, residentDetail: second, now: fixture.detail.updatedAt)
+            XCTAssertFalse(makeChatDisplayEntries(from: accepted.items.filter { $0.id == "second" }).contains { $0.isProcessGroup })
+        }
+    }
+
     func testImmediateSubmissionCanFailWithoutDeletingAnAuthoritativeEcho() throws {
         let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 1, rawItemCount: 3, longMessageCharacters: 32))
         let overlay = SessionTimelineLocalOverlay()

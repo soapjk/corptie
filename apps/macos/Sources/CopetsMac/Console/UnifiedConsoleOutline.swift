@@ -39,6 +39,8 @@ extension UnifiedConsoleView {
             case .session(let row):
                 sessionRow(row, showsHoverFeedback: false)
                     .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
+            case .workChat(let work):
+                outlineWorkChatRow(work)
             case .task(let task):
                 hierarchyTaskRow(task, showsHoverFeedback: false, nativeDisclosure: !isShowingWorkerArchive)
                     .consoleOutlineRowSurface(isSelected: selectedTaskId == task.id)
@@ -85,11 +87,18 @@ extension UnifiedConsoleView {
                 rows = (showsAll || queryIsActive ? workRows.nativeRoots : workRows.nativePreviewRoots).map { .task($0) }
                 if hiddenTaskCount > 0 { rows.append(.more(work.id, hiddenTaskCount)) }
             }
+            rows.insert(.workChat(work), at: 0)
             groups.append(.init(id: work.id,
                 header: AnyView(outlineWorkHeader(work,
                     hasUnread: unreadSummary.workIDs.contains(work.id),
                     isWorking: processingWorkIDs.contains(work.id))
-                    .contextMenu { workContextMenuContent(for: work) }),
+                    .contextMenu { workContextMenuContent(for: work) }
+                    .draggable(ConsoleWorkOrderDragItem(id: work.id))
+                    .dropDestination(for: ConsoleWorkOrderDragItem.self) { items, location in
+                        guard items.count == 1 else { return false }
+                        return outlineProjectionStore.moveWork(items[0].id, relativeTo: work.id,
+                            after: location.y >= 15)
+                    }),
                 rows: rows, isExpanded: outlineWorkIsExpanded(work.id),
                 allowsCollapse: !queryIsActive,
                 showsDisclosureIndicator: false,
@@ -127,7 +136,7 @@ extension UnifiedConsoleView {
                         .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                         .frame(width: 18)
-                    ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing && !isExpanded,
+                    ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing,
                         isActive: sidebarState.isSelected)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -203,30 +212,38 @@ extension UnifiedConsoleView {
         isWorking: Bool
     ) -> some View {
         let isExpanded = outlineWorkIsExpanded(work.id)
-        let workChat = workChatSession(for: work.id)
         return ConsoleWorkOutlineHeader(
             work: work,
             isExpanded: isExpanded,
             isSelected: selectedWorkId == work.id,
             isWorking: isWorking,
             hasUnread: hasUnread,
-            isChatSelected: selectionController.presentationSessionID == workChat?.id,
-            isChatRunning: workChat?.executionTaskStatus == .running,
-            hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
                 let expanded = outlineWorkExpandedBinding(work.id)
                 expanded.wrappedValue = !expanded.wrappedValue
-            },
-            openChat: {
-                // Resolve at invocation: an equal header must not retain an
-                // old Work Chat binding when its display inputs stay the same.
-                guard let currentChat = workChatSession(for: work.id) else { return }
-                openWorkChat(for: work, session: currentChat)
             },
             createTask: { presentTaskCreation(for: work.id) },
             actionOwner: outlineExpansionPreferences,
             isActive: sidebarState.isSelected
         ).equatable()
+    }
+
+    @ViewBuilder
+    func outlineWorkChatRow(_ work: Work) -> some View {
+        if let session = workChatSession(for: work.id), let row = sessionIndexStore.row(id: session.id) {
+            ConsoleWorkChatRowContent(isActive: sidebarState.isSelected, showsHoverFeedback: false,
+                row: row, isSelected: selectionController.presentationSessionID == session.id) {
+                    guard let current = workChatSession(for: work.id) else { return }
+                    openWorkChat(for: work, session: current)
+                }
+                .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == session.id)
+        } else {
+            Label(L10n("Work Chat"), systemImage: "bubble.left.and.bubble.right")
+                .font(WorkbenchTypography.font(for: .navigation))
+                .foregroundStyle(.secondary)
+                .help(L10n("Session Not Ready"))
+                .accessibilityValue(L10n("Session Not Ready"))
+        }
     }
 
     @ViewBuilder
@@ -377,6 +394,7 @@ extension UnifiedConsoleView {
 enum ConsoleNativeOutlineEntry: Identifiable {
     case session(SessionRowModel)
     case task(CorptieTask)
+    case workChat(Work)
     case empty(String, String)
     case more(String, Int)
 
@@ -384,6 +402,7 @@ enum ConsoleNativeOutlineEntry: Identifiable {
         switch self {
         case .session(let row): "session:" + row.id
         case .task(let task): "task:" + task.id
+        case .workChat(let work): "work-chat:" + work.id
         case .empty(let id, _): "empty:" + id
         case .more(let workID, _): "more:" + workID
         }

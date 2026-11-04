@@ -197,6 +197,126 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         XCTAssertFalse(store.lastComputationUsedMainThread)
     }
 
+    func testWorkChatEntryOpensWithoutHoverAndTitleIdentifiesItsWork() throws {
+        _ = NSApplication.shared
+        var session = try motionSession()
+        session.sessionKind = .workChat; session.taskId = nil; session.workId = "work:motion"
+        let row = SessionRowModel(session: session)
+        var opens = 0
+        let host = NSHostingView(rootView: ConsoleWorkChatRowContent(row: row, isSelected: false) { opens += 1 })
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 280, height: 30),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host; window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        settle(0.05)
+        let point = CGPoint(x: 90, y: 15)
+        for kind in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: kind, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 1, clickCount: 1, pressure: kind == .leftMouseDown ? 1 : 0))
+            window.sendEvent(event)
+        }
+        settle(0.05)
+        XCTAssertEqual(opens, 1)
+        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: "Project A"), "Project A · Work Chat")
+        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: nil), "Work Chat")
+        session.sessionKind = .worker
+        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: "Project A"), session.title)
+    }
+
+    func testManualWorkOrderRestoresAfterRecreatingStoreAndInitialEmptyInventory() async throws {
+        let suite = "ConsoleWorkOutlineDisclosureTests.workOrder.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func work(_ id: String) -> Work {
+            Work(id: id, workspaceId: "workspace:test", name: id, description: "", status: "active",
+                profile: "", tags: [], contributorRoleIds: [], createdAt: "", updatedAt: "")
+        }
+        let works = [work("work:a"), work("work:b"), work("work:c")]
+        let store = ConsoleOutlineProjectionStore(defaults: defaults)
+        await store.prepare(key: .init(entityRevision: 1, sessionRevision: 0, search: "", sort: .standard),
+            tasks: [], works: works, sessions: [])
+        XCTAssertTrue(store.moveWork("work:c", relativeTo: "work:a", after: false))
+        let restored = ConsoleOutlineProjectionStore(defaults: try XCTUnwrap(UserDefaults(suiteName: suite)))
+        await restored.prepare(key: .init(entityRevision: 0, sessionRevision: 0, search: "", sort: .standard),
+            tasks: [], works: [], sessions: [])
+        await restored.prepare(key: .init(entityRevision: 1, sessionRevision: 0, search: "", sort: .name),
+            tasks: [], works: works, sessions: [])
+        XCTAssertEqual(restored.prepared.works.map(\.id), ["work:c", "work:a", "work:b"])
+        await restored.prepare(key: .init(entityRevision: 2, sessionRevision: 0, search: "", sort: .updated),
+            tasks: [], works: [work("work:new"), works[1], works[0]], sessions: [])
+        XCTAssertEqual(restored.prepared.works.map(\.id), ["work:a", "work:b", "work:new"])
+        XCTAssertTrue(restored.moveWork("work:new", relativeTo: "work:a", after: false))
+        let again = ConsoleOutlineProjectionStore(defaults: defaults)
+        await again.prepare(key: .init(entityRevision: 3, sessionRevision: 0, search: "", sort: .standard),
+            tasks: [], works: [works[0], works[1], work("work:new")], sessions: [])
+        XCTAssertEqual(again.prepared.works.map(\.id), ["work:new", "work:a", "work:b"])
+    }
+
+    func testManualWorkOrderSurvivesRefreshAndInFlightPreparationWithoutRebuildingTasks() async throws {
+        let session = try motionSession(), store = ConsoleOutlineProjectionStore()
+        func work(_ id: String) -> Work {
+            Work(id: id, workspaceId: "workspace:test", name: id, description: "", status: "active",
+                profile: "", tags: [], contributorRoleIds: [], createdAt: "", updatedAt: "")
+        }
+        let works = [work("work:motion"), work("work:b"), work("work:c")]
+        let tasks = motionTasks(count: 1_000, session: session)
+        func key(_ revision: UInt64) -> ConsoleOutlineProjectionKey {
+            .init(entityRevision: revision, sessionRevision: 0, search: "", sort: .name)
+        }
+        await store.prepare(key: key(1), tasks: tasks, works: works, sessions: [])
+        let count = store.computationCount
+        let revision = store.prepared.workRowsByWorkID[works[0].id]?.structureRevision
+        XCTAssertTrue(store.moveWork(works[2].id, relativeTo: works[0].id, after: false))
+        XCTAssertEqual(store.prepared.works.map(\.id), [works[2].id, works[0].id, works[1].id])
+        XCTAssertEqual(store.computationCount, count)
+        XCTAssertEqual(store.prepared.workRowsByWorkID[works[0].id]?.structureRevision, revision)
+        XCTAssertFalse(store.moveWork("missing", relativeTo: works[0].id, after: false))
+        XCTAssertFalse(store.moveWork(works[0].id, relativeTo: works[0].id, after: false))
+        let pending = Task { await store.prepare(key: key(2), tasks: tasks, works: works.reversed(), sessions: []) }
+        while store.requestedKey != key(2) { await Task.yield() }
+        XCTAssertTrue(store.moveWork(works[2].id, relativeTo: works[1].id, after: true))
+        await pending.value
+        XCTAssertEqual(store.prepared.works.map(\.id), works.map(\.id))
+        XCTAssertEqual(store.prepared.workRowsByWorkID[works[0].id]?.structureRevision, revision)
+        await store.prepare(key: key(3), tasks: tasks, works: works.reversed(), sessions: [])
+        XCTAssertEqual(store.prepared.works.map(\.id), works.map(\.id))
+    }
+
+    func testSortModesAndActivityKeepWorkPositionsWhileOrderingTasks() async throws {
+        let session = try motionSession(), store = ConsoleOutlineProjectionStore()
+        func work(_ id: String, _ name: String) -> Work {
+            Work(id: id, workspaceId: "workspace:test", name: name, description: "", status: "active",
+                profile: "", tags: [], contributorRoleIds: [], createdAt: "2026-01-01", updatedAt: "2026-01-01")
+        }
+        let first = work("work:motion", "Zulu"), second = work("work:other", "Alpha")
+        let added = work("work:new", "Aardvark")
+        let base = motionTasks(count: 2, session: session)
+        var tasks = base
+        tasks[0].title = "Zulu"; tasks[1].title = "Alpha"
+        tasks[0].updatedAt = "2026-01-02"; tasks[1].updatedAt = "2026-01-01"
+        func prepare(_ revision: UInt64, _ sort: WorkOutlineSort, _ works: [Work], sessions: [TaskSession] = []) async {
+            await store.prepare(key: .init(entityRevision: revision, sessionRevision: revision, search: "", sort: sort),
+                tasks: tasks, works: works, sessions: sessions)
+        }
+        await prepare(1, .standard, [first, second])
+        XCTAssertEqual(store.prepared.works.map(\.id), [first.id, second.id])
+        await prepare(2, .name, [second, first])
+        XCTAssertEqual(store.prepared.works.map(\.id), [first.id, second.id])
+        XCTAssertEqual(store.prepared.workRowsByWorkID[first.id]?.allRows.map(\.id), [tasks[1].id, tasks[0].id])
+        var active = session
+        active.taskId = tasks[1].id; active.workId = second.id
+        active.lastMessageAt = "2026-12-01"
+        await prepare(3, .updated, [second, first], sessions: [active])
+        XCTAssertEqual(store.prepared.works.map(\.id), [first.id, second.id])
+        XCTAssertEqual(store.prepared.workRowsByWorkID[first.id]?.allRows.map(\.id), [tasks[1].id, tasks[0].id])
+        await prepare(4, .name, [added, second, first])
+        XCTAssertEqual(store.prepared.works.map(\.id), [first.id, second.id, added.id])
+        await prepare(5, .updated, [added, second])
+        XCTAssertEqual(store.prepared.works.map(\.id), [second.id, added.id])
+    }
+
     func testBackgroundPreparationReusesOtherWorksAndDiscardsSupersededRequests() async throws {
         let session = try motionSession(), store = ConsoleOutlineProjectionStore()
         var tasks = motionTasks(count: 300, session: session)

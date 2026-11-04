@@ -113,7 +113,7 @@ struct ConversationTimelineTests {
     }
 
     @Test func pendingInputCanShowImmediateProcessingWithoutChangingExecutionAuthority() throws {
-        for state in ["queued", "preparing"] {
+        for state in ["preparing"] {
             let value: [String: Any] = ["id": "pending", "type": "userMessage", "text": "request",
                 "turnId": "delivery:pending", "turnStatus": state, "userMessageStatus": state]
             let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
@@ -124,6 +124,17 @@ struct ConversationTimelineTests {
             #expect(item.userMessageStatus == state)
             #expect(UserMessageStatusPresentation(authoritativeStatus: state, legacyStatus: nil,
                 showsPendingAsProcessing: true)?.kind == .processing)
+        }
+        for authoritative in [true, false] {
+            var value: [String: Any] = ["id": "queued", "type": "userMessage", "text": "queued request",
+                "turnId": "delivery:queued", "turnStatus": "running", "status": "queued"]
+            if authoritative { value["userMessageStatus"] = "queued" }
+            let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
+            #expect(!ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true).contains { $0.isProcessGroup })
+            let status = UserMessageStatusPresentation(authoritativeStatus: authoritative ? "queued" : nil,
+                legacyStatus: "queued", queuePosition: 3, showsPendingAsProcessing: true)
+            #expect(status?.kind == .queued)
+            #expect(status?.queuePosition == 3)
         }
         for state in ["failed", "cancelled", "consumed"] {
             #expect(UserMessageStatusPresentation(authoritativeStatus: state, legacyStatus: nil,
