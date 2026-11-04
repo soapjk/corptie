@@ -1687,6 +1687,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let createdAt: String?
     var images: [ChatImageReference]? = nil
     var rawMetadataJSON: String? = nil
+    var coordinationProgress: ClientCoordinationProgress? = nil
     var executionPlan: ConversationExecutionPlan? = nil
     var toolExecution: ConversationToolExecution? = nil
     var changeSet: ConversationChangeSet? = nil

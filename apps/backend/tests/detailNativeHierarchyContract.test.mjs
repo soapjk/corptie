@@ -73,3 +73,13 @@ test("shared worktree contract carries additive code-delivery classification wit
   assert.equal(document.cards[0].data.hierarchy.changeState,"no_changes");
   assert.equal(document.cards[0].data.hierarchy.actions.promoteToMain.available,false);
 });
+
+test('native detail carries the same bounded progress snapshot as the chat card',async()=>{
+ const {projectCoordinationProgress}=await import('../src/application/coordinationProgressProjection.mjs');
+ const progress=projectCoordinationProgress({batchId:'progress:one',parentSessionId:'logical:parent',revision:1,updatedAt:'2026-11-04T00:00:00Z',
+  assignments:[{assignmentId:'one',taskId:'task:child',title:'Child',dispatchState:'completed',updatedAt:'2026-11-04T00:00:00Z'}]});
+ const doc=projectNativeBusinessDocument({session:{sessionKind:'worker'},logicalSessionId:'logical:parent',
+  task:{id:'task:parent',title:'Parent',revision:1,coordinationProgress:progress}},{},'progress-generation');
+ const card=doc.cards.find(card=>card.kind==='coordinationProgress');assert.deepEqual(card.data,progress);
+ assert.equal(card.revision,'1');assert.equal(validateNativeBusinessDocument(doc),doc);
+});

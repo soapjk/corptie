@@ -1,3 +1,4 @@
+import { coordinationProgressFor } from './coordinationProgressService.mjs';
 import { randomUUID, createHash } from "node:crypto";
 import { ClientInspectorStream } from "./clientInspectorStream.mjs";
 import { validateDetailContract } from "./detailDocumentContract.mjs";
@@ -796,6 +797,7 @@ export class DetailDocumentService {
     const logicalSessionId = logical?.logicalSessionId ?? this.store.getLogicalSessionByLegacySessionId?.(session.id)?.logicalSessionId ?? session.id;
     const rawTask = session.taskId ? this.store.getTask(session.taskId) : null;
     const task = rawTask ? { ...rawTask,
+      coordinationProgress: !rawTask.parent_task_id && this.store.db && this.store.selectOne ? coordinationProgressFor(this.store).latest(rawTask.id) : null,
       coordinationExecution: !rawTask.parent_task_id ? this.coordinationState?.(session.id) ?? null : null,
       coordinationDispatches: !rawTask.parent_task_id ? this.store.listTaskCoordinationDispatches?.(rawTask.id) ?? [] : [] } : null;
     const workId = task?.work_id ?? session.workId;

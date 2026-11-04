@@ -75,6 +75,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public var processEndedAt: String?
     /// Managed attachments (additive; older backends omit them). Bytes come from `ClientSessionAPI.image`.
     public let images: [ClientMessageImage]
+    public var coordinationProgress: ClientCoordinationProgress? = nil
     public let executionPlan: ConversationExecutionPlan?
     public let toolExecution: ConversationToolExecution?
     public let changeSet: ConversationChangeSet?
@@ -97,10 +98,11 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         case messageOrigin, automationRunId, automationRunStatus, automationRunError
         case automationTriggerType, automationScheduleType, automationIntervalSeconds, automationConditionCheckIntervalSeconds, automationProcessPollIntervalSeconds
         case automationExpiresAt, systemEventKind, systemEventReason, systemEventSource
-        case processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
+        case coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        coordinationProgress = try? container.decodeIfPresent(ClientCoordinationProgress.self, forKey: .coordinationProgress)
         id = try container.decode(String.self, forKey: .id)
         turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
         type = try container.decode(String.self, forKey: .type)

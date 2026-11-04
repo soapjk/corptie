@@ -123,6 +123,7 @@ function publicClientMessage(item) {
         mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
         byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null,
         ...normalizedImageGeometry(image.pixelWidth, image.pixelHeight) })) : [],
+    coordinationProgress: item.type === "coordinationProgress" ? item.coordinationProgress ?? null : null,
     executionPlan: ["executionPlan", "executionChecklist"].includes(item.type) ? publicExecutionPlan(item.executionPlan) : null,
     toolExecution: publicToolExecution(item.toolExecution),
     changeSet: publicChangeSet(item.changeSet),

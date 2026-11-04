@@ -13,6 +13,7 @@ public struct ClientDetailContext: Equatable, Sendable {
 }
 
 public enum ClientDetailCardKind: String, Sendable {
+    case coordinationProgress
     case sessionInfo, chatSummary, workOverview, taskInfo, focusTasks, provider, worktree
     case artifacts, contextReferences, memoryHits, memoryResources, schedules, turnMetrics
 }
@@ -20,7 +21,7 @@ public enum ClientDetailCardKind: String, Sendable {
 public enum ClientDetailCardPolicy {
     private static let chat: [ClientDetailCardKind] = [.sessionInfo, .chatSummary, .provider, .worktree, .contextReferences, .memoryHits, .schedules, .turnMetrics]
     private static let work: [ClientDetailCardKind] = [.sessionInfo, .workOverview, .focusTasks, .provider, .worktree, .artifacts, .contextReferences, .memoryHits, .memoryResources, .schedules, .turnMetrics]
-    private static let task: [ClientDetailCardKind] = [.sessionInfo, .taskInfo, .provider, .worktree, .artifacts, .contextReferences, .memoryHits, .memoryResources, .schedules, .turnMetrics]
+    private static let task: [ClientDetailCardKind] = [.sessionInfo, .taskInfo, .coordinationProgress, .provider, .worktree, .artifacts, .contextReferences, .memoryHits, .memoryResources, .schedules, .turnMetrics]
     private static func order(_ context: ClientDetailContext) -> [ClientDetailCardKind] {
         switch context.kind { case .chat: chat; case .work: work; case .task: task; case .legacy: [] }
     }

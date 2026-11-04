@@ -1,3 +1,4 @@
+import { coordinationProgressFor } from './coordinationProgressService.mjs';
 import https from "node:https";
 import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
 import { readFile } from "node:fs/promises";
@@ -156,7 +157,9 @@ export class ClientDeviceGateway {
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|user-message-navigation|stop|capabilities|composer|conversation-commands|tasks|task-startup|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
+      const progressRead = /^\/client\/v1\/sessions\/[^/]+\/coordination-progress\/[^/]+$/.test(path) && request.method === "GET";
+      if(progressRead && [...url.searchParams.keys()].some(key=>!["offset","assignment"].includes(key))) throw deviceError("REQUEST_NOT_ALLOWED",403);
+      if (url.search && !progressRead && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
           && !/^\/client\/v1\/tasks\/[^/]+\/child-deliveries$/.test(path)
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "task-startup", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
@@ -234,6 +237,12 @@ export class ClientDeviceGateway {
         handleDetailActionHttp({ request, response, url, service: this.detailActions, authenticate, sendJson: reply,
           route: "pairedDevice", writesAllowed: this.detailWritesAllowed });
         return;
+      }
+      const progress=/^\/client\/v1\/sessions\/([^/]+)\/coordination-progress\/([^/]+)$/.exec(path);
+      if(progress&&request.method==='GET'&&this.sessionAPI?.inspector){
+        const id=decode(progress[1],'INVALID_SESSION_ID');this.sessionAPI.inspector.scope(id,identity);
+        const service=coordinationProgressFor(this.sessionAPI.inspector.store),batch=decode(progress[2],'INVALID_BATCH_ID'),offset=Number(url.searchParams.get('offset')??0);
+        return reply(response,200,url.searchParams.has('assignment')?service.report(id,batch,url.searchParams.get('assignment'),offset):service.page(id,batch,offset));
       }
       const detailSync = /^\/client\/v1\/sessions\/([^/]+)\/detail\/sync$/.exec(path);
       if (detailSync && this.sessionAPI?.inspector) {

@@ -1113,3 +1113,122 @@ test('distinct creation slots and separate parents still create independently',a
  await Promise.all(accepted.dispatches.map(row=>f.coordinator.runDispatch(row.dispatchId)));
  assert.equal(f.starts.length,2);assert.notEqual(accepted.dispatches[0].dispatchId,accepted.dispatches[1].dispatchId);
 });
+
+test('progress batch persists one stable card across dispatch updates and coalesces reuse of a child',async t=>{
+ const f=await fixture(t);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('progress')]},{sourceTurnId:'parent-turn:one'});
+ const dispatch=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(dispatch);
+ const service=f.coordinator.progress,first=service.refresh(accepted.batchId);
+ assert.equal(first.total,1);assert.equal(first.counts.queued,1);
+ const id='coordination-progress:'+accepted.batchId;
+ const original=f.store.getSessionItem(f.source.sessionId,id);
+ assert.ok(original);const beforeRevision=first.revision;
+ f.coordinator.update(dispatch,{status:'running'});
+ const second=service.refresh(accepted.batchId);assert.equal(second.revision,beforeRevision+1);
+ assert.equal(second.items[0].assignmentId,first.items[0].assignmentId);
+ assert.equal(f.store.getSessionItem(f.source.sessionId,id).createdAt,original.createdAt);
+ assert.equal(service.refresh(accepted.batchId).revision,second.revision);
+ const child=f.coordinator.get(dispatch).target_task_id;
+ const sent=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{action:'send',taskId:child,text:'补充同一批要求',idempotencyKey:'progress-send'}]},
+  {sourceTurnId:'parent-turn:two',batchId:accepted.batchId});
+ assert.equal(service.refresh(accepted.batchId).total,1);assert.equal(sent.batchId,accepted.batchId);
+ assert.equal(service.page('logical:parent',accepted.batchId).items.length,1);
+ const other=f.store.createTask({workId:f.work.id,title:'Other',mainAgentId:f.role.agentId}),meta=f.open('foreign-progress',other.id);
+ assert.throws(()=>service.page(meta.sessionId,accepted.batchId),{code:'COORDINATION_PROGRESS_NOT_FOUND'});
+});
+
+test('ordinary child mailbox reports update progress without adding a parent reply; direct user answers remain visible',async t=>{
+ const f=await restrictedFixture(t);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('quiet-report')]},{sourceTurnId:'quiet-batch'});
+ const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+ const row=f.coordinator.get(id),child=f.store.getTask(row.target_task_id);
+ f.output({kind:'discussion',reply:'这一轮报告已核实',items:[],queries:[],presentation:'progress',batchId:accepted.batchId,
+  progressUpdates:[{taskId:child.id,summary:'接口已实现，等待联调'}],focus:'继续其他独立开发',decision:''});
+ await f.application.sendMessage(f.source.sessionId,'子任务报告',{idempotencyKey:'quiet-report',source:{type:'mailbox_event',coordinationDispatchId:id,coordinationPurpose:'parent_report'}});
+ assert.equal(f.terminals[0].status,'completed');assert.equal(f.events.at(-1).payload.hasAgentMessage,false);
+ assert.equal(f.events.at(-1).payload.item,undefined);
+ const progress=f.coordinator.progress.refresh(accepted.batchId);assert.equal(progress.items[0].summary,'接口已实现，等待联调');
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_items WHERE session_id=? AND type='agentMessage'",[f.source.sessionId]).n,0);
+ f.output({kind:'discussion',reply:'这是对用户的回答',items:[]});
+ await f.application.sendMessage(f.source.sessionId,'解释一下',{idempotencyKey:'direct-answer'});
+ assert.equal(f.events.at(-1).payload.item.text,'这是对用户的回答');
+});
+
+test('separate batches keep their own execution receipt and scope amendments to assigned children',async t=>{
+ const f=await fixture(t),one=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('batch-one')]},{sourceTurnId:'one'});
+ await f.coordinator.runDispatch(one.dispatches[0].dispatchId);
+ const child=f.coordinator.get(one.dispatches[0].dispatchId).target_task_id;
+ f.coordinator.update(one.dispatches[0].dispatchId,{status:'completed'});
+ const two=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{action:'send',taskId:child,text:'全新工作',idempotencyKey:'new-batch'}]},{sourceTurnId:'two'});
+ await f.coordinator.runDispatch(two.dispatches[0].dispatchId);
+ assert.notEqual(one.batchId,two.batchId);
+ assert.equal(f.coordinator.progress.refresh(one.batchId).counts.needs_review,1);
+ assert.equal(f.coordinator.progress.refresh(two.batchId).counts.queued,1);
+ const before=f.coordinator.progress.refresh(two.batchId);
+ f.coordinator.progress.annotate(two.batchId,{updates:[{taskId:'task:foreign',summary:'不可写入'}]});
+ assert.equal(f.coordinator.progress.refresh(two.batchId).items[0].summary,before.items[0].summary);
+ assert.equal(f.coordinator.progress.milestone(two.batchId,'decision:one','需要用户决定'),true);
+ assert.equal(f.coordinator.progress.milestone(two.batchId,'decision:one','需要用户决定'),false);
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_items WHERE session_id=? AND id LIKE 'coordination-summary:%'",[f.source.sessionId]).n,1);
+});
+
+test('progress report reading is bounded and cannot read an unrelated child message',async t=>{
+ const f=await fixture(t),accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('report-read')]},{sourceTurnId:'report-reader'});
+ const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+ const child=f.store.getTask(f.coordinator.get(id).target_task_id);
+ historyItem(f,child.current_session_id,'progress-report','😀'.repeat(2000));
+ f.coordinator.progress.correlateReports(id,'progress-report');
+ const snapshot=f.coordinator.progress.refresh(accepted.batchId),assignment=snapshot.items[0].assignmentId;
+ const report=f.coordinator.progress.report('logical:parent',accepted.batchId,assignment);
+ assert.equal(report.nextOffset,1600);assert.equal(Array.from(report.text).length,1600);
+ const other=f.child('Foreign_report'),meta=f.open('foreign-report',other.id);
+ historyItem(f,meta.sessionId,'foreign-report-message','private');
+ f.coordinator.progress.correlateReports(id,'foreign-report-message');
+ assert.throws(()=>f.coordinator.progress.report('logical:parent',accepted.batchId,assignment),{code:'COORDINATION_PROGRESS_NOT_FOUND'});
+});
+
+test('progress survives a service restart and manual children use the same projection',async t=>{
+ const f=await fixture(t);
+ f.store.db.run('UPDATE tasks SET current_session_id=? WHERE id=?',[f.source.sessionId,f.parent.id]);
+ const child=f.child('Manual_progress');f.open('manual-progress',child.id);
+ f.coordinator.progress.adoptManualTask(child.id);
+ const batch=f.store.selectOne('SELECT batch_id FROM coordination_progress_assignments WHERE task_id=?',[child.id]);
+ assert.ok(batch);
+ const first=f.coordinator.progress.refresh(batch.batch_id);
+ const restored=new (f.coordinator.progress.constructor)(f.store);
+ assert.deepEqual(restored.latest(f.parent.id),first);
+ assert.equal(restored.page('logical:parent',batch.batch_id).items[0].taskId,child.id);
+ assert.equal(restored.reportBatch({type:'mailbox_event',coordinationPurpose:'parent_report'},'logical:parent'),null);
+});
+
+test('paired progress pages allow their bounded query, require credentials and reject another Session',async t=>{
+ const f=await fixture(t),accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('mobile-progress')]},{sourceTurnId:'mobile-progress'});
+ await f.coordinator.runDispatch(accepted.dispatches[0].dispatchId);f.coordinator.progress.refresh(accepted.batchId);
+ const authority=new ClientDeviceAuthority(join(f.store.dataRoot,'test-progress-devices'));await authority.initialize();
+ const invite=authority.invite(),claim=authority.claim({...invite,name:'Test iPhone'});await authority.approve(invite.pairingId,true);
+ const credentials=await authority.exchange(claim);
+ const resolveSession=id=>{const route=f.store.getLogicalSession(id)??f.store.getLogicalSessionByLegacySessionId(id);return{sessionId:route?.legacySessionId??id,logicalSessionId:route?.logicalSessionId??id};};
+ const gateway=new ClientDeviceGateway(authority,{detailActionService:{},sessionAPI:{inspector:new ClientInspectorAPI({store:f.store,resolveSession})}});
+ const server=createServer((request,response)=>gateway.handle(request,response));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+ const root=`http://127.0.0.1:${server.address().port}/client/v1/sessions/`;
+ const headers={authorization:`Bearer ${credentials.accessToken}`};
+ const path=`logical:parent/coordination-progress/${accepted.batchId}?offset=0`;
+ const page=await fetch(root+path,{headers});assert.equal(page.status,200,await page.clone().text());assert.equal((await page.json()).items.length,1);
+ assert.equal((await fetch(root+path)).status,401);
+ const child=f.store.getTask(f.coordinator.get(accepted.dispatches[0].dispatchId).target_task_id);
+ assert.equal((await fetch(root+`${child.current_session_id}/coordination-progress/${accepted.batchId}?offset=0`,{headers})).status,404);
+ assert.equal((await fetch(root+path+'&arbitrary=1',{headers})).status,403);
+});
+
+test('late completion reports cannot overwrite the latest instruction summary for that child',async t=>{
+ const f=await fixture(t),one=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('late-progress')]},{sourceTurnId:'late-one'});
+ await f.coordinator.runDispatch(one.dispatches[0].dispatchId);
+ const taskId=f.coordinator.get(one.dispatches[0].dispatchId).target_task_id;
+ const two=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{action:'send',taskId,text:'后续工作',idempotencyKey:'late-two'}]},
+  {sourceTurnId:'late-two',batchId:one.batchId});
+ await f.coordinator.runDispatch(two.dispatches[0].dispatchId);
+ f.coordinator.progress.annotate(one.batchId,{updates:[{taskId,summary:'正在处理后续工作'}]});
+ const snapshot=f.coordinator.progress.annotate(one.batchId,{updates:[{taskId,summary:'旧工作已结束'}],reportDispatchIds:[one.dispatches[0].dispatchId]});
+ assert.equal(snapshot.items[0].summary,'正在处理后续工作');
+});
