@@ -208,6 +208,8 @@ final class SessionPageRenderInputs {
     }
     func resume() {
         guard !retired else { return }
+        let trace = SessionSwitchTrace.shared.start(.pageResume, sessionID: scope.sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         guard !active else { flush(); return }
         active = true
         flush()
@@ -218,6 +220,7 @@ final class SessionPageRenderInputs {
     }
     func retire() {
         guard !retired else { return }
+        SessionSwitchTrace.shared.recordCache(sessionID: scope.sessionID, layer: "page-inputs", reason: businessHandle.retired ? "business-retired" : "retired", count: 0)
         active = false; retired = true; activity.deactivate()
         retainedEditor?.suspendPresentation(); suspendNativePresentation?()
         subscriptions.removeAll(); pending = []
@@ -260,6 +263,8 @@ final class SessionPageRenderInputs {
     }
     private func flush() {
         guard active, !pending.isEmpty, !retired else { return }
+        let trace = SessionSwitchTrace.shared.start(.pageFlush, sessionID: scope.sessionID)
+        defer { SessionSwitchTrace.shared.finish(trace) }
         var changes = pending; pending = []; refreshCount += 1
         if changes.contains(.metadata) { mentionSessions = sourceState.sessions }
         if changes.contains(.metadata), let value = latestSession(), session != value {

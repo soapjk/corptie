@@ -28,6 +28,7 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var isSection = false
     var allowsCollapse = true
     var showsDisclosureIndicator = true
+    var showsRowDisclosureIndicator = true
     var expansionChanged: (Bool) -> Void = { _ in }
     var structureRevision: Int = 0
     var dataRevision: Int = 0
@@ -197,7 +198,10 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
 
     func makeNSView(context: Context) -> NSScrollView {
         let outline = ConsoleNativeOutlineView()
-        outline.showsDisclosure = { ($0 as? Node)?.group?.showsDisclosureIndicator ?? true }
+        outline.showsDisclosure = { item in
+            guard let node = item as? Node else { return true }
+            return node.group?.showsDisclosureIndicator ?? node.owner?.group?.showsRowDisclosureIndicator ?? true
+        }
         let column = NSTableColumn(identifier: .init("content"))
         outline.addTableColumn(column)
         outline.outlineTableColumn = column

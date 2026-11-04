@@ -19,6 +19,13 @@ struct ManagementOverviewTests {
         #expect(AutomationOverviewPolicy.items(in: .failed, from: [failed, running]).map(\.id) == ["retry"])
     }
 
+    @Test func preparedCategoryOrderPrioritizesErrorsThenRunningAndStableIDs() {
+        let input = [automation("z", status: .active), automation("running", status: .active, lastRun: .running),
+                     automation("error", status: .error), automation("a", status: .active)]
+        #expect(AutomationOverviewPolicy.sortedItems(in: .all, from: input).map(\.id) == ["error", "running", "a", "z"])
+        #expect(AutomationOverviewPolicy.sortedItems(in: .running, from: input).map(\.id) == ["running"])
+    }
+
     @MainActor @Test func untrustedAndRevokedMemoriesCannotBePresentedAsActive() throws {
         let data = Data(#"{"id":"memory:a","ownerType":"task","ownerId":"task:a","kind":"fact","content":"A fact","sourceType":"extracted","promotionStatus":"candidate","trustLevel":"untrusted","createdAt":"2026-01-01T00:00:00Z"}"#.utf8)
         let memory = try JSONDecoder().decode(MemoryItem.self, from: data)
