@@ -55,11 +55,14 @@ final class BackendEventRouter {
             return
         }
         if eventName == "WorktreeIntegrationJobChanged" {
-            OperationNotificationManager.shared.observe(data: data)
+            if !(await WorktreeManagementClient.shared.receiveJobEvent(data)) {
+                OperationNotificationManager.shared.observe(data: data)
+            }
             return
         }
         if eventName == "EventReplayRequired" || eventName == "BackendStoreReady" {
             OperationNotificationManager.shared.recoverJobs()
+            Task { await WorktreeManagementClient.shared.recoverAfterEventGap() }
         }
         if eventName == "SessionChannelMessageSent", let bytes = data.data(using: .utf8),
            let envelope = try? JSONDecoder().decode(TaskCollaborationFlowEvent.Envelope.self, from: bytes) {

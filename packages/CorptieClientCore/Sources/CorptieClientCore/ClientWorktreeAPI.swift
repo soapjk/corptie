@@ -332,6 +332,20 @@ public struct ClientWorktreeConflictResolution: Decodable, Equatable, Sendable {
     }
 }
 
+/// Legacy Jobs can contain numeric process exit codes. Keep that transport
+/// variation from making the entire repository or live event unreadable.
+public struct ClientWorktreeFailureCode: Decodable, Equatable, Sendable {
+    public let value: String
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            value = Int(text).map { "PROCESS_EXIT_\($0)" } ?? text
+        } else {
+            value = "PROCESS_EXIT_\(try container.decode(Int.self))"
+        }
+    }
+}
+
 public struct ClientWorktreeConflictAutomation: Decodable, Equatable, Sendable {
     public let status: String
     public let scopeWorktreeIds: [String]
@@ -344,7 +358,8 @@ public struct ClientWorktreeConflictAutomation: Decodable, Equatable, Sendable {
     public let currentWorktreeId: String?
     public let blockedWorktreeId: String?
     public let conflictFiles: [String]
-    public let failureCode: String?
+    private let rawFailureCode: ClientWorktreeFailureCode?
+    public var failureCode: String? { rawFailureCode?.value }
     public let failureReason: String?
     // Legacy transport names remain stable; business code uses Role.
     enum CodingKeys: String, CodingKey {
@@ -359,7 +374,7 @@ public struct ClientWorktreeConflictAutomation: Decodable, Equatable, Sendable {
         case currentWorktreeId
         case blockedWorktreeId
         case conflictFiles
-        case failureCode
+        case rawFailureCode = "failureCode"
         case failureReason
     }
 }
