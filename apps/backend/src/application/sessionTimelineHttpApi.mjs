@@ -1,3 +1,4 @@
+import { coordinationProgressFor } from './coordinationProgressService.mjs';
 import { activeStoredSessionProjections } from "./providerSessionProjection.mjs";
 import { DEFAULT_SESSION_HISTORY_WINDOW, MAX_SESSION_HISTORY_PAGE, normalizeSessionHistoryLimit } from "./sessionHistoryWindow.mjs";
 
@@ -7,6 +8,14 @@ export function handleSessionTimelineHttpRequest({
   readSessionHistory, readSessionTimelineWindow, publishStateChangesIfNeeded,
   readJson, sendJson, unifiedErrorStatus
 }) {
+  const progressMatch=url.pathname.match(/^\/sessions\/([^/]+)\/coordination-progress\/([^/]+)$/);
+  if(request.method==='GET'&&progressMatch){
+    sessionApplicationService.referenceFor(decodeURIComponent(progressMatch[1]))
+      .then(reference=>{const service=coordinationProgressFor(store),batch=decodeURIComponent(progressMatch[2]),offset=Number(url.searchParams.get('offset')??0);
+        return url.searchParams.has('assignment')?service.report(reference.sessionId,batch,url.searchParams.get('assignment'),offset):service.page(reference.sessionId,batch,offset);})
+      .then(result=>sendJson(response,200,result)).catch(error=>sendJson(response,unifiedErrorStatus(error),{code:error.code}));
+    return true;
+  }
   const navigationMatch = url.pathname.match(/^\/sessions\/([^/]+)\/user-message-navigation$/);
   if (request.method === "GET" && navigationMatch) {
     sessionApplicationService.referenceFor(decodeURIComponent(navigationMatch[1]))

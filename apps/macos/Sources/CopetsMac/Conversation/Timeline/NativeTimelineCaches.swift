@@ -566,7 +566,9 @@ final class NativeTimelineLayoutCache {
             }
         } : []
         let textHeight: CGFloat
-        if row.nativeStyle == .process && !row.isExpanded {
+        if row.coordinationProgress != nil {
+            textHeight = 0
+        } else if row.nativeStyle == .process && !row.isExpanded {
             textHeight = 0
         } else if hasRichBlock {
             textHeight = richBlocks.reduce(0) { height, block in
@@ -606,7 +608,10 @@ final class NativeTimelineLayoutCache {
         let processSummaryExtraHeight: CGFloat = row.nativeStyle == .process
             ? Self.processSummaryExtraHeight(for: row, cardWidth: cardWidth,
                 includesCurrentStep: !MacSharedMessageTextCard.supportsProcess(row)) : 0
-        if row.nativeStyle == .process && !row.isExpanded {
+        if let progress = row.coordinationProgress {
+            cardHeight = progress.previewHeight
+            rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight, typography: typography)
+        } else if row.nativeStyle == .process && !row.isExpanded {
             rowHeight = (row.processCurrentStepTitle == nil ? 32 : 48) + processSummaryExtraHeight
             cardHeight = rowHeight - 2
         } else {

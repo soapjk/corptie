@@ -65,6 +65,8 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
       label: { fallback: "协调模式" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
     if (scope.parentSessionId) actions.push(nav("resource.open", "session", scope.parentSessionId, "打开父任务"));
     cards.push(card("task-information", "taskInfo", data, actions));
+    if(task.coordinationProgress) cards.push({id:"coordination-progress",kind:"coordinationProgress",version:1,
+      revision:String(task.coordinationProgress.revision),loadState:"ready",data:task.coordinationProgress,actions:[],nextCursor:null});
   }
   for (const name of eligibleNativeBusinessModules(scope)) {
     if (name === "worktree" && results[name]?.state !== "error" && results[name]?.data?.attached === false) continue;

@@ -55,7 +55,7 @@ export class CoordinationReadService {
         ...(before?[before.createdAt,before.createdAt,before.id]:[]),limit+1]),limit);
     }else if(input.tool==="read_dispatches"){
       result=page(this.store.selectAll(`SELECT dispatch_id AS id,target_task_id AS targetTaskId,status,error_code AS errorCode,
-        json_extract(request_json,'$.action') AS action,json_extract(request_json,'$.creation.title') AS title,
+        progress_batch_id AS batchId,json_extract(request_json,'$.action') AS action,json_extract(request_json,'$.creation.title') AS title,
         substr(error_message,1,500) AS errorMessage,created_at AS createdAt,updated_at AS updatedAt
         FROM task_coordination_dispatches WHERE parent_task_id=? ${task.id!==root.id?"AND target_task_id=?":""}
         ${before?"AND (created_at < ? OR (created_at=? AND dispatch_id<?))":""}

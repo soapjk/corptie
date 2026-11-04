@@ -403,7 +403,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
 
     private func usesSharedCard(_ row: AppKitChatTimelineRow) -> Bool {
-        return (row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
+        return (row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards))
             && MacSharedMessageTextCard.supports(row)
     }
 

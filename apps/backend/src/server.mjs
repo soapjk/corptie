@@ -1600,7 +1600,7 @@ const {
   ensureTaskWorkspace
 });
 taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
-taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService,
+taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService, emitEvent,
   mailbox: sessionMailbox, deletion: taskDeletionService,
   changed: taskId => { if (taskId) emitEvent("TaskChanged", { taskId, action: "coordination-state",
     entity: { ...store.getTask(taskId), coordinationDispatches: store.listTaskCoordinationDispatches(taskId) } }); } });

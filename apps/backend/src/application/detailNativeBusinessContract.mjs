@@ -1,3 +1,4 @@
+import { coordinationProgressSchema } from './coordinationProgressProjection.mjs';
 import { createHash } from "node:crypto";
 import Ajv from "ajv";
 import { taskHierarchySummarySchema, worktreeHierarchySchema } from "../domain/taskHierarchyContract.mjs";
@@ -15,10 +16,11 @@ const summary = object({ state: string(64), focus: string(), progress: string(),
 const focusSummary = object({ state: string(64), focus: string(), progress: string(), current: boolean, messageSummary: string(), intervention: string(64), reason: string(), nextAction: string(), generatedAt: nullable(string(64)) });
 const memory = { memoryId: string(512), kind: string(64), content: string(), unavailable: boolean, snapshotAtRecall: boolean, updatedAt: nullable(string(64)), resourceVersion: integer };
 const schemas = {
+  coordinationProgress: coordinationProgressSchema,
   sessionInfo: object({ sessionId: string(512), workName: string() }),
   chatSummary: object({ text: string() }),
   workOverview: object({ workId: string(512), name: string(), description: string() }),
-  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema), coordinationEnabled: boolean,
+  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema), coordinationEnabled: boolean, coordinationProgress: nullable(coordinationProgressSchema),
     coordinationExecution: nullable(object({ status: { enum: ["off", "pending", "enforced", "unsupported"] }, reason: string(1024) })),
     coordinationDispatches: array(extended({ dispatchId: string(512), taskId: nullable(string(512)), title: string(512), status: string(64), errorCode: nullable(string(512)) }, { errorMessage: nullable(string()) }), 5) }),
   artifacts: list({ artifactId: string(512), title: string(512), summary: string(), version: integer, contentHash: string(64), readAvailable: boolean }),
