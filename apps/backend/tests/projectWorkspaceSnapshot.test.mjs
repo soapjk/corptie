@@ -153,3 +153,15 @@ test('dirty submodule contents are explicitly rejected instead of silently captu
  await writeFile(join(f.path,'sub','sub.txt'),'dirty\n');await assert.rejects(f.capture(),{code:'PARENT_SUBMODULE_DIRTY'});
  assert.equal(await readFile(join(f.path,'sub','sub.txt'),'utf8'),'dirty\n');
 });
+
+test('released stale integration plan does not reserve the parent while live/unverified targets remain fenced',()=>{
+ const details={resumeRequiresReplan:true,dispatchRevision:21,plan:{writeWorktreeIds:['parent'],items:[]},
+   dispatchSafety:{verifiedRevision:21,safeWorktrees:[{worktreeId:'parent'}],blockedWorktreeIds:[]}};
+ const job={status:'paused',phase:'failed',details};
+ assert.equal(integrationBlocksWorkspaceCapture(job,'parent'),false);
+ assert.equal(integrationBlocksWorkspaceCapture({...job,status:'running'},'parent'),true);
+ assert.equal(integrationBlocksWorkspaceCapture({...job,details:{...details,resumeRequiresReplan:false}},'parent'),true);
+ assert.equal(integrationBlocksWorkspaceCapture({...job,details:{...details,dispatchSafety:{...details.dispatchSafety,verifiedRevision:20}}},'parent'),true);
+ assert.equal(integrationBlocksWorkspaceCapture({...job,details:{...details,dispatchSafety:{...details.dispatchSafety,blockedWorktreeIds:['parent']}}},'parent'),true);
+ assert.equal(integrationBlocksWorkspaceCapture({...job,details:{...details,dispatchSafety:{...details.dispatchSafety,safeWorktrees:[]}}},'parent'),true);
+});

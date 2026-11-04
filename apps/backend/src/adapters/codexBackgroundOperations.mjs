@@ -69,6 +69,9 @@ export function createCodexBackgroundOperations({
 
   async function runEphemeralPrompt(options = {}) {
     const noTools = options.executionPolicy === "no-tools";
+    const timeoutMs = options.timeoutMs ?? 120000;
+    const startedAt = Date.now();
+    let phase = "initialize";
     let noToolsConfig;
     if (!["legacy", "no-tools"].includes(options.executionPolicy ?? "legacy")) {
       throw Object.assign(new Error("Unsupported Codex background execution policy."), {
@@ -80,22 +83,27 @@ export function createCodexBackgroundOperations({
       if (options.permissionProfile && options.permissionProfile !== "read-only") {
         throw Object.assign(new Error("No-tools background requests must be read-only."), { code: "CAPABILITY_UNSUPPORTED" });
       }
+      try {
       await initialize();
+      phase = "read_configuration";
       const configuration = await request("config/read", { includeLayers: false,
         cwd: options.cwd ?? defaultWorkspacePath() });
       if (!configuration?.config || typeof configuration.config !== "object") {
         throw Object.assign(new Error("Cannot verify inherited Codex tool configuration."), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" });
       }
       noToolsConfig = codexNoToolsConfig(configuration.config.mcp_servers ?? {});
+      } catch (error) {
+        if (error?.code === "BACKGROUND_TIMEOUT") Object.assign(error, { phase, timeoutMs, elapsedMs: Date.now() - startedAt });
+        throw error;
+      }
     }
-    const timeoutMs = options.timeoutMs ?? 120000;
     const prompt = options.prompt ?? "";
     const cwd = options.cwd ?? defaultWorkspacePath();
     const notificationStart = notificationCount();
-    const startedAt = Date.now();
     let threadId = null;
     let turnId = null;
     let turnCompleted = false;
+    phase = "start_thread";
     const permissionProfile = options.permissionProfile ?? "read-only";
     if (!["read-only", "workspace-write"].includes(permissionProfile)) {
       const error = new Error(`Unsupported background permission profile: ${permissionProfile}`);
@@ -125,6 +133,7 @@ export function createCodexBackgroundOperations({
       threadId = started?.thread?.id ?? null;
       if (!threadId) throw new Error("Codex thread/start returned no ephemeral thread id.");
       options.signal?.throwIfAborted();
+      phase = "start_turn";
       const turn = await startTurn(threadId, prompt, {
         cwd,
         approvalPolicy: "never",
@@ -136,6 +145,7 @@ export function createCodexBackgroundOperations({
       });
       turnId = turn?.turn?.id ?? null;
       if (!turnId) throw new Error("Codex turn/start returned no ephemeral turn id.");
+      phase = "wait_completion";
       while (Date.now() - startedAt < timeoutMs) {
         options.signal?.throwIfAborted();
         const completed = notificationsSince(notificationStart).find((message) => {
@@ -167,7 +177,14 @@ export function createCodexBackgroundOperations({
         }
         await new Promise((resolve) => setTimeout(resolve, 120));
       }
-      throw Object.assign(new Error("Timed out while waiting for the Codex ephemeral turn."), { code: "BACKGROUND_TIMEOUT" });
+      throw Object.assign(new Error("Timed out while waiting for the Codex ephemeral turn."), {
+        code: "BACKGROUND_TIMEOUT", phase, timeoutMs, elapsedMs: Date.now() - startedAt
+      });
+    } catch (error) {
+      if (error?.code === "BACKGROUND_TIMEOUT") {
+        error.phase ??= phase; error.timeoutMs ??= timeoutMs; error.elapsedMs ??= Date.now() - startedAt;
+      }
+      throw error;
     } finally {
       if (threadId) {
         if (noTools && !turnCompleted && turnId) {

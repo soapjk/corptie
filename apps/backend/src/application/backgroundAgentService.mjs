@@ -170,6 +170,7 @@ export class BackgroundAgentService {
       const performanceMeasurement = {
         phases: {
           agentContextMs,
+          queueWaitMs: input.queueWaitMs,
           providerInvokeMs: roundedMilliseconds(performance.now() - providerStartedAt)
         },
         totalMs: roundedMilliseconds(performance.now() - operationStartedAt)
@@ -179,6 +180,9 @@ export class BackgroundAgentService {
         providerId,
         purpose: request.purpose,
         error: error.message,
+        errorCode: error.code ?? null,
+        phase: error.phase ?? null,
+        timeoutMs: request.timeoutMs,
         ...performanceMeasurement
       });
       await this.deliverCompletion(input, `Background operation failed: ${error.message}`, "failed");
