@@ -33,6 +33,20 @@ import { createCollaborationTimelinePresentation } from "../src/collaboration/co
 import { CoordinationReadService } from "../src/application/coordinationReadService.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
+test("repository dispatch records remain valid in native Task detail on every Provider", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
+    const f = await fixture(t, provider);
+    const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("detail-contract")] });
+    const id = receipt.dispatches[0].dispatchId;
+    for (const errorMessage of [null, "会话正忙，等待派发"]) {
+      f.coordinator.update(id, { status: errorMessage ? "waiting_dispatch" : "accepted", error_message: errorMessage });
+      const task = { ...f.store.getTask(f.parent.id), coordinationDispatches: f.store.listTaskCoordinationDispatches(f.parent.id) };
+      const document = projectNativeBusinessDocument({ session: f.store.getSession(f.source.sessionId),
+        logicalSessionId: "logical:parent", task }, {}, "repository-dispatch");
+      assert.equal(document.cards.find(card => card.kind === "taskInfo").data.coordinationDispatches[0].errorMessage, errorMessage);
+    }
+  });
+});
 async function restrictedFixture(t, providerId = "codex-app-server", supported = true) {
   const f = await fixture(t, providerId);
   f.workService.updateTask(f.parent.id, { coordinationEnabled: true });

@@ -801,7 +801,7 @@ export class DetailDocumentService {
     const workId = task?.work_id ?? session.workId;
     const taskHierarchy = task ? this.store.hierarchySummaries?.([task.id]).get(task.id) ?? null : null;
     const parent = task?.parent_task_id ? this.store.getTask(task.parent_task_id) : null;
-    const parentSession = parent?.work_id === workId && parent.current_session_id ? this.store.getSession(parent.current_session_id) : null;
+    const parentSession = parent && parent.work_id === workId && parent.current_session_id ? this.store.getSession(parent.current_session_id) : null;
     const parentSessionId = parentSession && !parentSession.archived
       ? this.store.getLogicalSessionByLegacySessionId?.(parentSession.id)?.logicalSessionId ?? parentSession.id : null;
     return { session, logicalSessionId, task, taskHierarchy, parentSessionId, work: workId ? this.store.getWork(workId) : null };
