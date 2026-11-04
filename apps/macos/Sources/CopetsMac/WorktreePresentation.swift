@@ -153,8 +153,10 @@ struct WorktreePanel: ViewModifier {
     func body(content: Content) -> some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(sidebar ? WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas)
-            .clipShape(RoundedRectangle(cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius))
+            // Paint the complete column, including title-bar and bottom safe areas.
+            // Content keeps its own safe-area layout; no rounded card clips the canvas.
+            .background((sidebar ? WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas)
+                .ignoresSafeArea(.container, edges: .vertical))
     }
 }
 
