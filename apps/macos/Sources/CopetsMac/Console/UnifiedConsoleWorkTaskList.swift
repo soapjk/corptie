@@ -147,6 +147,7 @@ extension UnifiedConsoleView {
     func workChatRow(_ row: SessionRowModel, ownsContextMenu: Bool = true) -> some View {
         let session = row.session
         let rowView = ConsoleWorkChatRowContent(
+            isActive: sidebarState.isSelected,
             row: row,
             isSelected: selectionController.selectedSessionID == session.id
         ) {
