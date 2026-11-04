@@ -339,6 +339,51 @@ struct WorktreeIntegrationCandidateTests {
     }
 
     @MainActor
+    @Test func staleCancellationReconcilesCompletionWithoutRepositoryScanning() async throws {
+        let completed = Self.jobEnvelope.replacingOccurrences(of: "\"status\":\"queued\"", with: "\"status\":\"completed\"")
+        for legacy in [false, true] {
+            let responses = legacy ? [(409, "{\"code\":\"JOB_NOT_CANCELABLE\",\"error\":\"already ended\"}"), (200, completed)] : [(202, completed)]
+            let recorder = CandidateRequestRecorder(startResponses: [(202, Self.cancelableJobEnvelope)], jobResponses: responses)
+            let client = makeClient(recorder)
+            client.selection.repositoryId = "repository:one"
+            await client.prepareFreshPlan()
+            #expect(await client.confirmPlan())
+            let before = recorder.paths.count
+            await client.cancelIntegration(expectedJobID: "job:one")
+            #expect(client.job?.status == "completed")
+            #expect(client.job?.canCancel == false)
+            #expect(client.errorMessage == nil)
+            #expect(client.operationNotice != nil)
+            #expect(!client.isMutating)
+            #expect(Array(recorder.paths.dropFirst(before)) == (legacy
+                ? ["/worktree-management/jobs/job:one/cancel", "/worktree-management/jobs/job:one"]
+                : ["/worktree-management/jobs/job:one/cancel"]))
+            let after = recorder.paths.count
+            await client.cancelIntegration(expectedJobID: "job:one")
+            #expect(recorder.paths.count == after)
+        }
+    }
+
+    @MainActor
+    @Test func cancellationConfirmationNeverTargetsAReplacementJobAndRetainsRealFailures() async throws {
+        let recorder = CandidateRequestRecorder(startResponses: [(202, Self.cancelableJobEnvelope)],
+            jobResponses: [(500, "{\"code\":\"CLEANUP_FAILED\",\"error\":\"complete cleanup failure details\"}")])
+        let client = makeClient(recorder)
+        client.selection.repositoryId = "repository:one"
+        await client.prepareFreshPlan()
+        #expect(await client.confirmPlan())
+        let before = recorder.paths.count
+        await client.cancelIntegration(expectedJobID: "job:previous")
+        #expect(recorder.paths.count == before)
+        #expect(client.errorMessage != nil)
+        await client.cancelIntegration(expectedJobID: "job:one")
+        #expect(recorder.paths.count == before + 1)
+        #expect(client.errorMessage?.contains("complete cleanup failure details") == true)
+        #expect(client.job?.status == "queued")
+        #expect(!client.isMutating)
+    }
+
+    @MainActor
     private func makeClient(_ recorder: CandidateRequestRecorder) -> WorktreeManagementClient {
         CandidateURLProtocol.recorder = recorder
         let configuration = URLSessionConfiguration.ephemeral
@@ -361,6 +406,10 @@ struct WorktreeIntegrationCandidateTests {
     {"repositoryId":"repository:one","operationType":"merge","syncMode":null,"targetWorktreeId":"wt:main","targetBranchName":"main","sourceWorktreeIds":["wt:feature"],"executionPath":"/tmp/repository","mainWorktreeId":"wt:main","mainPath":"/tmp/repository","mainHeadBefore":"abc123","inventoryVersion":"inventory-one","mergeOrder":["wt:feature"],"blockingRisks":[],"items":[]}
     """
 
+    fileprivate static var cancelableJobEnvelope: String {
+        jobEnvelope.replacingOccurrences(of: "\"error\":null", with: "\"availableActions\":[\"cancel\"],\"error\":null")
+    }
+
     fileprivate static let jobEnvelope = """
     {"job":{"id":"job:one","repositoryId":"repository:one","status":"queued","phase":"queued","planFingerprint":"fingerprint-one","error":null,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:01Z","confirmedAt":"2026-10-01T00:00:01Z","completedAt":null,"plan":\(plan),"currentWorktreeId":null,"progress":{"completed":0,"total":1,"fraction":0},"audit":[],"conflictResolution":null,"conflictAutomation":null,"commitProtectionDecisions":{}}}
     """
@@ -370,6 +419,7 @@ private final class CandidateRequestRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var responses: [(Int, String)]
     private var candidateResponses: [(Int, String)]
+    private var jobResponses: [(Int, String)]
     private let startDelay: TimeInterval
     private(set) var paths: [String] = []
     private(set) var candidateBodies: [[String: Any]] = []
@@ -378,11 +428,13 @@ private final class CandidateRequestRecorder: @unchecked Sendable {
     init(
         startResponses: [(Int, String)] = [],
         candidateResponses: [(Int, String)] = [],
-        startDelay: TimeInterval = 0
+        startDelay: TimeInterval = 0,
+        jobResponses: [(Int, String)] = []
     ) {
         responses = startResponses
         self.candidateResponses = candidateResponses
         self.startDelay = startDelay
+        self.jobResponses = jobResponses
     }
 
     func response(for request: URLRequest) -> (Int, String) {
@@ -407,6 +459,9 @@ private final class CandidateRequestRecorder: @unchecked Sendable {
                 return responses.isEmpty
                     ? (500, "{\"error\":\"missing response\"}")
                     : responses.removeFirst()
+            }
+            if path.contains("/worktree-management/jobs/") {
+                return jobResponses.isEmpty ? (500, "{\"error\":\"missing Job response\"}") : jobResponses.removeFirst()
             }
             return (404, "{\"error\":\"unexpected path\"}")
         }

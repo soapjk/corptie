@@ -2000,3 +2000,9 @@
 "还原大小" = "Restore Size";
 "全屏幕" = "Full Screen";
 "移到其他屏幕" = "Move to Another Display";
+
+"正在处理另一个 Worktree 操作，请稍后重试。" = "Another Worktree operation is in progress. Try again shortly.";
+
+"合并已完成，无需取消。" = "The merge has already completed; no cancellation is needed.";
+
+"合并已取消。" = "The merge has already been canceled.";

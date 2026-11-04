@@ -746,14 +746,57 @@ final class WorktreeManagementClient: ObservableObject {
         candidateReview = review
     }
 
-    func cancelIntegration() async {
-        guard let job, job.canCancel else { return }
-        await mutate {
-            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
-                "worktree-management/jobs/\(job.id)/cancel",
-                body: ["replan": false]
-            )
-            self.applyJob(envelope.job)
+    func cancelIntegration(expectedJobID: String) async {
+        guard !isMutating else {
+            errorMessage = L10n("正在处理另一个 Worktree 操作，请稍后重试。")
+            return
+        }
+        guard let current = job, current.id == expectedJobID else {
+            errorMessage = L10n("任务状态已变化，请刷新并使用当前可用操作。")
+            return
+        }
+        if ["completed", "canceled"].contains(current.status) {
+            detailCache.removeValue(forKey: current.repositoryId)
+            errorMessage = nil
+            operationNoticeTitle = "Worktree operation completed"
+            operationNotice = L10n(current.status == "completed" ? "合并已完成，无需取消。" : "合并已取消。")
+            return
+        }
+        guard current.canCancel else {
+            errorMessage = current.recovery?.message ?? L10n("任务状态已变化，请刷新并使用当前可用操作。")
+            return
+        }
+        let repositoryID = selection.repositoryId
+        isMutating = true
+        errorMessage = nil
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope
+            var rejection: WorktreeManagementClientError?
+            do {
+                envelope = try await post("worktree-management/jobs/\(current.id)/cancel", body: ["replan": false])
+            } catch let failure as WorktreeManagementClientError where failure.code == "JOB_NOT_CANCELABLE" {
+                // Older backends reject a stale completed-job cancellation.
+                // Reconcile only that exact Job; do not rescan Git or retry a
+                // mutation against whichever Job has since become current.
+                envelope = try await get("worktree-management/jobs/\(current.id)")
+                if !["completed", "canceled"].contains(envelope.job.status) { rejection = failure }
+            }
+            guard selection.repositoryId == repositoryID, job?.id == current.id else { return }
+            guard envelope.job.id == current.id else {
+                errorMessage = L10n("任务状态已变化，请刷新并使用当前可用操作。")
+                return
+            }
+            detailCache.removeValue(forKey: current.repositoryId)
+            applyJob(envelope.job)
+            if let rejection { throw rejection }
+            if ["completed", "canceled"].contains(envelope.job.status) {
+                operationNoticeTitle = "Worktree operation completed"
+                operationNotice = L10n(envelope.job.status == "completed" ? "合并已完成，无需取消。" : "合并已取消。")
+            }
+        } catch {
+            guard selection.repositoryId == repositoryID, job?.id == current.id else { return }
+            errorMessage = error.localizedDescription
         }
     }
 
