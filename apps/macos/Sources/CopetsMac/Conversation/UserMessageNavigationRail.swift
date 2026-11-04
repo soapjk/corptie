@@ -222,19 +222,37 @@ struct UserMessageMarkerShape: Shape {
     }
 }
 
+/// Only the tiny glyph observes high-frequency pointer samples. Popover hosts
+/// and reply text do not participate in every mouse-move rendering update.
+private struct UserMessageNavigationMarkerGlyph: View {
+    let index: Int
+    let hover: UserMessageNavigationHover
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let pointer = hover.activated ? hover.pointerPosition : nil
+        let emphasized = pointer.map { max(0, Int($0.rounded())) }
+        let width = UserMessageMarkerAppearance.width(index: index, pointer: pointer)
+        UserMessageMarkerShape(width: width)
+            .fill(Color.primary.opacity(index == emphasized ? 0.9 : 0.18))
+            .frame(width: 32, height: 2, alignment: .leading)
+            // Phase edges ease in/out. Pointer motion itself must be direct,
+            // otherwise a new 160ms tween continually chases the moving cursor.
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pointer != nil)
+            .animation(nil, value: pointer)
+    }
+}
+
 struct UserMessageNavigationRail: View {
     let baseURL: URL
     let sessionID: String
     let active: Bool
     let navigate: (String) -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visibility = MacQuickMessageVisibility()
     @State private var state = UserMessageNavigationState()
     @State private var hover = UserMessageNavigationHover()
 
     var body: some View {
-        let pointer = hover.activated ? hover.pointerPosition : nil
-        let emphasizedIndex = pointer.map { max(0, min(state.groups.count - 1, Int($0.rounded()))) }
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(state.showsNavigation ? state.groups : []) { group in
@@ -242,11 +260,7 @@ struct UserMessageNavigationRail: View {
                         if group.items.count == 1 { jump(group.items[0].id) }
                         else { hover.showImmediately(group) }
                     } label: {
-                        let width = UserMessageMarkerAppearance.width(index: group.ordinal, pointer: pointer)
-                        UserMessageMarkerShape(width: width)
-                            .fill(Color.primary.opacity(group.ordinal == emphasizedIndex ? 0.9 : 0.18))
-                            .frame(width: 32, height: 2, alignment: .leading)
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: width)
+                        UserMessageNavigationMarkerGlyph(index: group.ordinal, hover: hover)
                             .frame(width: 32, height: 10, alignment: .leading)
                             .contentShape(Rectangle())
                     }
