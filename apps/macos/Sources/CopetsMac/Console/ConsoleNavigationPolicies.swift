@@ -230,6 +230,27 @@ struct HoverRevealHeaderAction<Header: View>: View {
     }
 }
 
+/// Collapsed groups summarize the same activity shown by their child rows.
+struct ConsoleGroupStatusIndicators: View {
+    let isExpanded: Bool
+    let isProcessing: Bool
+    let hasUnread: Bool
+    var isActive = true
+
+    var body: some View {
+        if !isExpanded {
+            HStack(spacing: 4) {
+                if isProcessing {
+                    TaskActivityIndicator(activity: .processing, label: L10n("Processing"), isActive: isActive)
+                }
+                if hasUnread {
+                    UnreadSessionDot(label: L10n("Unread Session"))
+                }
+            }
+        }
+    }
+}
+
 struct ConsoleWorkOutlineHeader: View {
     let work: Work
     let isExpanded: Bool
@@ -294,15 +315,8 @@ struct ConsoleWorkOutlineHeader: View {
             .accessibilityValue(hasUnreadChat ? L10n("Unread Session") : "")
 
         } actions: {
-            if isWorking {
-                Circle().fill(Color.accentColor).frame(width: 5, height: 5)
-                    .help(L10n("Processing"))
-                    .accessibilityLabel(L10n("Processing"))
-            }
-            if hasUnread && !isExpanded {
-                UnreadSessionDot(label: L10n("Unread Session"))
-                    .padding(.trailing, 4)
-            }
+            ConsoleGroupStatusIndicators(isExpanded: isExpanded, isProcessing: isWorking,
+                hasUnread: hasUnread, isActive: isActive)
 
             Button(action: createTask) {
                 Image(systemName: "plus")

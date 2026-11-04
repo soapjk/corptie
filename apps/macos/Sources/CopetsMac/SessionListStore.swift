@@ -181,6 +181,8 @@ final class SessionIndexStore: ObservableObject {
     @Published private(set) var outlineActivityRevision: UInt64 = 0
     @Published private(set) var workUnreadSummary = WorkRailUnreadSummary(sessions: [])
     @Published private(set) var processingWorkIDs: Set<String> = []
+    @Published private(set) var hasProcessingAssistantSessions = false
+    private var processingAssistantCount = 0
     private var unreadAssistantCount = 0
     private var unreadWorkCounts: [String: Int] = [:]
     private var workTasks: [String: CorptieTask] = [:]
@@ -217,6 +219,11 @@ final class SessionIndexStore: ObservableObject {
                 if unreadWorkCounts[id] == 0 { unreadWorkCounts[id] = nil }
             }
         }
+        func processingAssistant(_ session: TaskSession?, delta: Int) {
+            guard let session, session.hasValidProductClassification, session.archived != true,
+                  session.resolvedSessionKind == .assistantChat, session.executionTaskStatus == .running else { return }
+            processingAssistantCount += delta
+        }
         var affectedTasks: Set<String> = []
         var activityChanged = patch.hasStructuralChanges
         let changes = patch.updated.map { (rowsByID[$0.sessionID]?.session, Optional($0.session)) }
@@ -224,6 +231,7 @@ final class SessionIndexStore: ObservableObject {
             + patch.removedIDs.map { (rowsByID[$0]?.session, Optional<TaskSession>.none) }
         for (old, new) in changes {
             unread(old, delta: -1); unread(new, delta: 1)
+            processingAssistant(old, delta: -1); processingAssistant(new, delta: 1)
             if old?.lastMessageAt != new?.lastMessageAt || old?.workId != new?.workId
                 || old?.taskId != new?.taskId || old?.archived != new?.archived { activityChanged = true }
             for session in [old, new].compactMap({ $0 }) {
@@ -235,6 +243,8 @@ final class SessionIndexStore: ObservableObject {
         let summary = WorkRailUnreadSummary(hasUnreadAssistantSessions: unreadAssistantCount > 0,
             workIDs: Set(unreadWorkCounts.keys))
         if summary != workUnreadSummary { workUnreadSummary = summary }
+        let assistantProcessing = processingAssistantCount > 0
+        if assistantProcessing != hasProcessingAssistantSessions { hasProcessingAssistantSessions = assistantProcessing }
         if activityChanged { outlineActivityRevision &+= 1 }
         for id in affectedTasks {
             guard let task = workTasks[id] else { continue }
