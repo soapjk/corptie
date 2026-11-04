@@ -441,6 +441,21 @@ test("completion proof is persisted only after matching main verification", asyn
   assert.deepEqual(store.getWorktreeIntegrationJob(plan.id).details.completionEvidence, completed.completionEvidence);
 });
 
+test("canceling a completed Job returns completion without Git or persistence writes", async () => {
+  const { service, store, calls } = memoryFixture({ featureDirty: false });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const completed = await waitForJob(service, plan.id, "completed");
+  const stored = structuredClone(store.getWorktreeIntegrationJob(plan.id));
+  const previousCalls = [...calls];
+  const result = await service.cancel(plan.id, { replan: false });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.completionEvidence, completed.completionEvidence);
+  assert.deepEqual(store.getWorktreeIntegrationJob(plan.id), stored);
+  assert.deepEqual(calls, previousCalls);
+  await assert.rejects(service.cancel(plan.id, { replan: true }), { code: "JOB_NOT_CANCELABLE" });
+});
+
 test("wrapped HEAD drift keeps exact diagnostics and requires a fresh plan instead of an ineffective retry", async () => {
   const failure = Object.assign(new Error("target HEAD changed"), {
     code: "MAIN_HEAD_CHANGED", recoverable: false, expectedHead: "expected-head", actualHead: "actual-head"
