@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 340" width="100%" height="100%">
+  <defs>
+    <linearGradient id="scBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+    <linearGradient id="devCardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#182333"/>
+      <stop offset="100%" stop-color="#101722"/>
+    </linearGradient>
+    <linearGradient id="chatCardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#221c33"/>
+      <stop offset="100%" stop-color="#151222"/>
+    </linearGradient>
+    <filter id="scShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <style>
+    .sc-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .sc-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12.5px; fill: #94a3b8; }
+    .sc-card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 15px; fill: #f1f5f9; }
+    .sc-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10.5px; font-weight: 600; text-transform: uppercase; }
+    .sc-item-label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 12px; fill: #cbd5e1; }
+    .sc-item-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11.5px; fill: #94a3b8; }
+  </style>
+
+  <!-- Background -->
+  <rect width="920" height="340" rx="14" fill="url(#scBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Title -->
+  <g transform="translate(36, 26)">
+    <rect x="0" y="0" width="168" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="84" y="15" text-anchor="middle" class="sc-badge" fill="#38bdf8">Dual-Track Sessions</text>
+    <text x="0" y="48" class="sc-title" font-size="18">双轨会话体系：项目开发与聊天对话分类管理</text>
+    <text x="0" y="68" class="sc-sub">清晰区分重度代码落地与轻量思考咨询，物理环境严格隔离，职责边界分明</text>
+  </g>
+
+  <!-- Left Card: Task Development Session -->
+  <g transform="translate(36, 108)" filter="url(#scShadow)">
+    <rect x="0" y="0" width="410" height="206" rx="12" fill="url(#devCardGrad)" stroke="#0284c7" stroke-width="1.2"/>
+
+    <!-- Header -->
+    <g transform="translate(20, 18)">
+      <rect x="0" y="0" width="30" height="30" rx="6" fill="#0369a1" fill-opacity="0.25" stroke="#38bdf8" stroke-width="1"/>
+      <text x="15" y="20" text-anchor="middle" font-size="16">🛠️</text>
+      <text x="40" y="15" class="sc-card-title">项目开发会话 (Task Session)</text>
+      <text x="40" y="32" class="sc-sub" font-size="11.5">重度研发 · 面向代码交付与实体任务</text>
+    </g>
+
+    <line x1="20" y1="62" x2="390" y2="62" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Key Points -->
+    <g transform="translate(20, 76)">
+      <circle cx="6" cy="7" r="3" fill="#38bdf8"/>
+      <text x="16" y="11" class="sc-item-label">独立工作区：<tspan class="sc-item-desc">绑定独立 Git Worktree 与工作分支，严格物理隔离</tspan></text>
+
+      <circle cx="6" cy="35" r="3" fill="#38bdf8"/>
+      <text x="16" y="39" class="sc-item-label">工程能力：<tspan class="sc-item-desc">具备文件编辑、终端编译、自动化测试与子任务拆解权限</tspan></text>
+
+      <circle cx="6" cy="63" r="3" fill="#38bdf8"/>
+      <text x="16" y="67" class="sc-item-label">长任务支持：<tspan class="sc-item-desc">耗时构建/测试期间会话自动休眠，就绪后主动唤醒</tspan></text>
+
+      <circle cx="6" cy="91" r="3" fill="#38bdf8"/>
+      <text x="16" y="95" class="sc-item-label">交付闭环：<tspan class="sc-item-desc">内置 Diff 审查、冲突解决建议，一键交付并合并回主线</tspan></text>
+    </g>
+
+    <!-- Tag -->
+    <rect x="296" y="16" width="94" height="20" rx="10" fill="#082f49" stroke="#0284c7" stroke-width="0.8"/>
+    <text x="343" y="29" text-anchor="middle" class="sc-badge" fill="#38bdf8" font-size="9.5">Git Worktree 隔离</text>
+  </g>
+
+  <!-- Right Card: Chat / Discussion Session -->
+  <g transform="translate(474, 108)" filter="url(#scShadow)">
+    <rect x="0" y="0" width="410" height="206" rx="12" fill="url(#chatCardGrad)" stroke="#7c3aed" stroke-width="1.2"/>
+
+    <!-- Header -->
+    <g transform="translate(20, 18)">
+      <rect x="0" y="0" width="30" height="30" rx="6" fill="#6d28d9" fill-opacity="0.25" stroke="#a78bfa" stroke-width="1"/>
+      <text x="15" y="20" text-anchor="middle" font-size="16">💬</text>
+      <text x="40" y="15" class="sc-card-title">聊天对话会话 (Work Chat / Free Session)</text>
+      <text x="40" y="32" class="sc-sub" font-size="11.5">轻量咨询 · 需求讨论、方案论证与技术调研</text>
+    </g>
+
+    <line x1="20" y1="62" x2="390" y2="62" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Key Points -->
+    <g transform="translate(20, 76)">
+      <circle cx="6" cy="7" r="3" fill="#a78bfa"/>
+      <text x="16" y="11" class="sc-item-label">零环境污染：<tspan class="sc-item-desc">纯逻辑对话，不锁定、不修改任何 Git 仓库与本地分支</tspan></text>
+
+      <circle cx="6" cy="35" r="3" fill="#a78bfa"/>
+      <text x="16" y="39" class="sc-item-label">知识中枢：<tspan class="sc-item-desc">快速调阅项目背景记忆与全局 Artifacts 方案文档</tspan></text>
+
+      <circle cx="6" cy="63" r="3" fill="#a78bfa"/>
+      <text x="16" y="67" class="sc-item-label">无缝转化：<tspan class="sc-item-desc">充分讨论明确方案后，可一键提炼目标并派发为正式 Task</tspan></text>
+
+      <circle cx="6" cy="91" r="3" fill="#a78bfa"/>
+      <text x="16" y="95" class="sc-item-label">自由探讨：<tspan class="sc-item-desc">多模型自由切换对比分析，不受工程代码锁定限制</tspan></text>
+    </g>
+
+    <!-- Tag -->
+    <rect x="296" y="16" width="94" height="20" rx="10" fill="#2e1065" stroke="#7c3aed" stroke-width="0.8"/>
+    <text x="343" y="29" text-anchor="middle" class="sc-badge" fill="#c084fc" font-size="9.5">纯对话 / 零锁仓</text>
+  </g>
+</svg>

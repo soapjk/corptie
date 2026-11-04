@@ -1,0 +1,214 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 510" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="ccBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+
+    <!-- Work Container Gradient -->
+    <linearGradient id="workOuterGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#062e24"/>
+      <stop offset="100%" stop-color="#031813"/>
+    </linearGradient>
+
+    <!-- Task Container Gradient -->
+    <linearGradient id="taskInnerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#08283d"/>
+      <stop offset="100%" stop-color="#051724"/>
+    </linearGradient>
+
+    <!-- Session Box Gradient -->
+    <linearGradient id="sessionBoxGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3d1d05"/>
+      <stop offset="100%" stop-color="#231003"/>
+    </linearGradient>
+
+    <!-- Worktree Box Gradient -->
+    <linearGradient id="wtBoxGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0a2538"/>
+      <stop offset="100%" stop-color="#051520"/>
+    </linearGradient>
+
+    <!-- Role Card Gradient -->
+    <linearGradient id="roleBoxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2b0e45"/>
+      <stop offset="100%" stop-color="#140624"/>
+    </linearGradient>
+
+    <!-- Inject Arrow Gradient -->
+    <linearGradient id="injectGrad" x1="100%" y1="0%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+
+    <filter id="ccShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.38"/>
+    </filter>
+
+    <marker id="injectArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+
+  <style>
+    .t-main { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .t-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12.5px; fill: #94a3b8; }
+    .t-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    .t-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 13.5px; fill: #f1f5f9; }
+    .t-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11px; fill: #cbd5e1; }
+    .t-dim { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10.5px; fill: #94a3b8; }
+    .t-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10.5px; fill: #38bdf8; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="960" height="510" rx="14" fill="url(#ccBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Title -->
+  <g transform="translate(36, 22)">
+    <rect x="0" y="0" width="188" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="94" y="15" text-anchor="middle" class="t-badge" fill="#38bdf8">Mental Model &amp; Architecture</text>
+    <text x="0" y="46" class="t-main" font-size="18">四大核心概念：层级包含与动态装配体系</text>
+    <text x="0" y="66" class="t-sub">用空间包含关系呈现“Work 包含 Task”，用连线呈现“Role 动态注入 Session”，理清权责与协作逻辑</text>
+  </g>
+
+  <!-- LEFT: Outer Big Container "Work" (Width: 574, Height: 334) -->
+  <g transform="translate(36, 96)" filter="url(#ccShadow)">
+    <!-- Work Outer Boundary -->
+    <rect x="0" y="0" width="574" height="334" rx="12" fill="url(#workOuterGrad)" stroke="#059669" stroke-width="1.5"/>
+
+    <!-- Work Header -->
+    <g transform="translate(18, 14)">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#065f46" stroke="#10b981" stroke-width="1"/>
+      <text x="14" y="19" text-anchor="middle" font-size="15">📂</text>
+      <text x="38" y="15" class="t-main" font-size="14.5" fill="#a7f3d0">Work（长期项目 / 本地工作区）</text>
+      <text x="38" y="30" class="t-dim" fill="#6ee7b7">顶层容器 · 绑定本地代码仓库 (Workspace)，管理全局记忆与公共资料，承载全局架构规划</text>
+    </g>
+
+    <!-- Inside Work: Task 1 Container (Height: 184) -->
+    <g transform="translate(18, 52)">
+      <rect x="0" y="0" width="538" height="186" rx="10" fill="url(#taskInnerGrad)" stroke="#0284c7" stroke-width="1.2"/>
+
+      <!-- Task Header -->
+      <g transform="translate(14, 12)">
+        <rect x="0" y="0" width="24" height="24" rx="5" fill="#0369a1" stroke="#38bdf8" stroke-width="1"/>
+        <text x="12" y="16" text-anchor="middle" font-size="13">🎯</text>
+        <text x="32" y="13" class="t-title" fill="#bae6fd">Task 1：独立开发任务</text>
+        <text x="32" y="27" class="t-dim">一项目标明确、可独立完成和验收的实体工作（从 Work 中拆解分派出来）</text>
+      </g>
+
+      <!-- Inside Task 1: Left is Session Box, Right is Worktree Box -->
+      <g transform="translate(14, 46)">
+
+        <!-- Session Box (The Executor) -->
+        <g transform="translate(0, 0)">
+          <rect x="0" y="0" width="260" height="126" rx="8" fill="url(#sessionBoxGrad)" stroke="#d97706" stroke-width="1.2"/>
+          <g transform="translate(12, 12)">
+            <text x="0" y="13" class="t-title" fill="#fbbf24">⚡ Session（运行时执行会话）</text>
+            <text x="0" y="28" class="t-dim" fill="#fde68a" font-weight="600">决定“谁在执行以及拥有什么权限”</text>
+          </g>
+          <line x1="12" y1="46" x2="248" y2="46" stroke="#78350f" stroke-width="1"/>
+          <g transform="translate(12, 58)">
+            <text x="0" y="11" class="t-body">· 持有真实系统工具调用权限</text>
+            <text x="0" y="27" class="t-body">· 维护即时上下文与对话记忆</text>
+            <text x="0" y="43" class="t-body">· 接收用户指令并推进代码落地</text>
+            <text x="0" y="58" class="t-body" fill="#f59e0b">· 随插随用：动态装配 Role 人设</text>
+          </g>
+        </g>
+
+        <!-- Worktree Box (The Physical Isolation) -->
+        <g transform="translate(272, 0)">
+          <rect x="0" y="0" width="238" height="126" rx="8" fill="url(#wtBoxGrad)" stroke="#0284c7" stroke-width="1"/>
+          <g transform="translate(12, 12)">
+            <text x="0" y="13" class="t-title" fill="#7dd3fc">🌲 专属 Git Worktree</text>
+            <text x="0" y="28" class="t-dim">物理隔离的本地开发环境</text>
+          </g>
+          <line x1="12" y1="46" x2="226" y2="46" stroke="#0e3a59" stroke-width="1"/>
+          <g transform="translate(12, 58)">
+            <text x="0" y="11" class="t-body">· 独立工作分支与目录</text>
+            <text x="0" y="27" class="t-body">· 改代码与测试互不干扰</text>
+            <text x="0" y="43" class="t-body">· 支持一键同步与一键合并</text>
+            <text x="0" y="58" class="t-body" fill="#38bdf8">· 任务完成安全合并回主线</text>
+          </g>
+        </g>
+
+      </g>
+    </g>
+
+    <!-- Inside Work: Task 2 Placeholder (Showing Work contains 1-to-N Tasks) -->
+    <g transform="translate(18, 248)">
+      <rect x="0" y="0" width="538" height="70" rx="8" fill="#041b16" stroke="#059669" stroke-width="1" stroke-dasharray="5,4"/>
+      <g transform="translate(14, 14)">
+        <text x="0" y="15" class="t-title" font-size="12.5" fill="#6ee7b7">🎯 Task 2 ... Task N（其他并行任务）</text>
+        <text x="0" y="34" class="t-dim">同一个 Work 下可同时开启多个独立任务，各自运行专属 Session 与 Worktree，并行编码互不串线</text>
+      </g>
+      <rect x="424" y="22" width="100" height="22" rx="4" fill="#064e3b"/>
+      <text x="474" y="36" text-anchor="middle" font-size="10" fill="#a7f3d0" font-weight="600">多任务物理并行</text>
+    </g>
+
+  </g>
+
+  <!-- RIGHT: Independent Resource "Role" (Width: 290, Height: 334) -->
+  <g transform="translate(634, 96)" filter="url(#ccShadow)">
+    <rect x="0" y="0" width="290" height="334" rx="12" fill="url(#roleBoxGrad)" stroke="#7c3aed" stroke-width="1.5"/>
+
+    <!-- Role Header -->
+    <g transform="translate(16, 14)">
+      <rect x="0" y="0" width="28" height="28" rx="6" fill="#581c87" stroke="#a78bfa" stroke-width="1"/>
+      <text x="14" y="19" text-anchor="middle" font-size="15">🎭</text>
+      <text x="38" y="15" class="t-main" font-size="14.5" fill="#e9d5ff">Role（AI 角色设定）</text>
+      <text x="38" y="30" class="t-dim" fill="#c084fc" font-weight="600">决定“怎么做”</text>
+    </g>
+
+    <line x1="16" y1="52" x2="274" y2="52" stroke="#4c1d95" stroke-width="1"/>
+
+    <!-- Role Content Details -->
+    <g transform="translate(16, 66)">
+      <rect x="0" y="0" width="258" height="54" rx="6" fill="#1d0a2f" stroke="#6b21a8" stroke-width="0.8"/>
+      <text x="10" y="18" class="t-title" font-size="11.5" fill="#f3e8ff">1. 人设与规则 (Persona)</text>
+      <text x="10" y="36" class="t-dim" font-size="10.5">工作原则、思考逻辑、代码风格约束</text>
+
+      <rect x="0" y="64" width="258" height="54" rx="6" fill="#1d0a2f" stroke="#6b21a8" stroke-width="0.8"/>
+      <text x="10" y="18" class="t-title" font-size="11.5" fill="#f3e8ff">2. 专业技能集合 (Skills)</text>
+      <text x="10" y="36" class="t-dim" font-size="10.5">挂载专属能力（Git 操作、测试、评审等）</text>
+
+      <rect x="0" y="128" width="258" height="66" rx="6" fill="#1d0a2f" stroke="#6b21a8" stroke-width="0.8"/>
+      <text x="10" y="18" class="t-title" font-size="11.5" fill="#f3e8ff">3. 独立可复用配置</text>
+      <text x="10" y="36" class="t-dim" font-size="10.5">不绑定任何具体 Task 或单一会话；</text>
+      <text x="10" y="52" class="t-dim" font-size="10.5">可按需装配给任意 Session 执行任务</text>
+    </g>
+
+    <rect x="16" y="284" width="258" height="34" rx="6" fill="#3b0764" stroke="#a855f7" stroke-width="0.8"/>
+    <text x="129" y="300" text-anchor="middle" font-size="11" fill="#f3e8ff" font-weight="600">热插拔能力插件</text>
+    <text x="129" y="312" text-anchor="middle" font-size="9.5" fill="#d8b4fe">会话内随时切换角色，无需重建窗口</text>
+  </g>
+
+  <!-- DYNAMIC INJECTION ARROW from Role to Session -->
+  <g filter="url(#ccShadow)">
+    <!-- Path from Role (x=634, y=250) across to Session (x=310, y=250) -->
+    <path d="M 634 250 C 560 250, 390 250, 316 250" stroke="url(#injectGrad)" stroke-width="2.5" fill="none" stroke-dasharray="6,4" marker-end="url(#injectArrow)"/>
+
+    <!-- Floating Badge on the Arrow -->
+    <g transform="translate(416, 230)">
+      <rect x="0" y="0" width="168" height="40" rx="20" fill="#151022" stroke="url(#injectGrad)" stroke-width="1.5"/>
+      <text x="84" y="17" text-anchor="middle" class="t-badge" fill="#fbbf24">👉 动态装配 / 注入 (Inject)</text>
+      <text x="84" y="31" text-anchor="middle" font-size="9.5" fill="#e9d5ff">赋予会话专业人设与技能集</text>
+    </g>
+  </g>
+
+  <!-- BOTTOM: Golden Summary Banner -->
+  <g transform="translate(36, 442)" filter="url(#ccShadow)">
+    <rect x="0" y="0" width="888" height="52" rx="10" fill="#111622" stroke="#334155" stroke-width="1.2"/>
+    <rect x="14" y="12" width="26" height="26" rx="13" fill="#1e1b4b" stroke="#8b5cf6" stroke-width="1"/>
+    <text x="27" y="29" text-anchor="middle" font-size="13">💡</text>
+    <text x="48" y="24" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-weight="700" font-size="13" fill="#f8fafc">
+      核心层级关系：
+      <tspan fill="#6ee7b7">Work 包含多个 Task</tspan> ➔
+      <tspan fill="#38bdf8">Task 运行 Session &amp; 隔离 Worktree</tspan> ➔
+      <tspan fill="#c084fc">Role 作为独立插件随时动态注入 Session</tspan>
+    </text>
+    <text x="48" y="41" class="t-dim" font-size="11" fill="#94a3b8">
+      最本质的认知铁律：<tspan fill="#c084fc" font-weight="600">Role 决定“怎么做”</tspan>，<tspan fill="#fbbf24" font-weight="600">Session 决定“谁在执行以及拥有什么权限”</tspan>。
+    </text>
+  </g>
+</svg>
