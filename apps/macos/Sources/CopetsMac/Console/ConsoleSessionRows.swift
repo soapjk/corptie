@@ -80,6 +80,7 @@ struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
 /// observes the stable row model directly so content-only patches stay local.
 struct ConsoleSessionRow: View {
     var showsHoverFeedback = true
+    var isActive = true
     @ObservedObject var row: SessionRowModel
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
@@ -102,7 +103,9 @@ struct ConsoleSessionRow: View {
                         .accessibilityLabel("信箱有待处理消息")
                 }
                 if [.running, .blocked, .failed].contains(session.executionTaskStatus) {
-                    SessionStatusLight(status: session.executionTaskStatus, diameter: 5)
+                    TaskActivityIndicator(activity: .resolve(hasBinding: true,
+                        sessionExecutionStatus: session.executionTaskStatus.rawValue, taskExecutionStatus: nil),
+                        isActive: isActive)
                 }
                 if isSessionUnread(session) {
                     Circle()
@@ -129,6 +132,7 @@ struct ConsoleSessionRow: View {
 }
 
 struct ConsoleWorkChatRowContent: View {
+    var isActive = true
     @ObservedObject var row: SessionRowModel
     let isSelected: Bool
     let onSelect: () -> Void
@@ -144,7 +148,9 @@ struct ConsoleWorkChatRowContent: View {
                 }
                 Spacer(minLength: 0)
                 if [.running, .blocked, .failed].contains(session.executionTaskStatus) {
-                    SessionStatusLight(status: session.executionTaskStatus, diameter: 5)
+                    TaskActivityIndicator(activity: .resolve(hasBinding: true,
+                        sessionExecutionStatus: session.executionTaskStatus.rawValue, taskExecutionStatus: nil),
+                        isActive: isActive)
                 }
                 if isSessionUnread(session) {
                     Circle()

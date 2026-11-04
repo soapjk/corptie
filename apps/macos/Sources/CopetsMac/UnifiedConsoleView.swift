@@ -1069,6 +1069,7 @@ struct UnifiedConsoleView: View {
         let isSelected = selectionController.presentationSessionID == row.session.id
         return ConsoleSessionRow(
             showsHoverFeedback: showsHoverFeedback,
+            isActive: sidebarState.isSelected,
             row: row,
             selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) }
         )

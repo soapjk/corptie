@@ -57,7 +57,8 @@ extension UnifiedConsoleView {
         let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         var groups = [ConsoleNativeOutlineGroup(
             id: "assistant",
-            header: AnyView(outlineChatHeader(hasUnread: unreadSummary.hasUnreadAssistantSessions)),
+            header: AnyView(outlineChatHeader(hasUnread: unreadSummary.hasUnreadAssistantSessions,
+                isProcessing: sessionIndexStore.hasProcessingAssistantSessions)),
             rows: assistantRows.isEmpty
                 ? [ConsoleNativeOutlineEntry.empty("assistant-empty", L10n("No Assistant Sessions"))]
                 : assistantRows.map { .session($0) },
@@ -114,7 +115,7 @@ extension UnifiedConsoleView {
         return groups
     }
 
-    func outlineChatHeader(hasUnread: Bool) -> some View {
+    func outlineChatHeader(hasUnread: Bool, isProcessing: Bool) -> some View {
         ConsoleAssistantExpansionScope(preferences: outlineExpansionPreferences,
             forceExpanded: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { isExpanded in
             Button {
@@ -131,12 +132,8 @@ extension UnifiedConsoleView {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    if hasUnread {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 8, height: 8)
-                            .accessibilityLabel(L10n("Unread Session"))
-                    }
+                    ConsoleGroupStatusIndicators(isExpanded: isExpanded, isProcessing: isProcessing,
+                        hasUnread: hasUnread, isActive: sidebarState.isSelected)
                 }
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())

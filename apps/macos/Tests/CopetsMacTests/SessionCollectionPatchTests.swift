@@ -4,6 +4,35 @@ import Testing
 
 @MainActor
 struct SessionCollectionPatchTests {
+    @Test func assistantProcessingSummaryTracksMultipleSessionsAndMembershipChanges() {
+        let store = SessionIndexStore()
+        var first = makeSession(id: "first", sessionKind: .assistantChat, status: .running)
+        var second = makeSession(id: "second", sessionKind: .assistantChat, status: .running)
+        let worker = makeSession(id: "worker", sessionKind: .worker, status: .running)
+        store.replaceAll(with: [first, second, worker])
+        #expect(store.hasProcessingAssistantSessions)
+        first.executionStatus = "completed"
+        store.replaceAll(with: [first, second, worker])
+        #expect(store.hasProcessingAssistantSessions)
+        second = makeSession(id: "second", sessionKind: .assistantChat, status: .running, archived: true)
+        store.replaceAll(with: [first, second, worker])
+        #expect(!store.hasProcessingAssistantSessions)
+        second = makeSession(id: "second", sessionKind: .assistantChat, status: .running)
+        store.replaceAll(with: [first, second, worker])
+        #expect(store.hasProcessingAssistantSessions)
+        second.sessionKind = .workChat
+        second.workId = "work:other"
+        store.replaceAll(with: [first, second, worker])
+        #expect(!store.hasProcessingAssistantSessions)
+        first.executionStatus = "running"
+        store.replaceAll(with: [first, second, worker])
+        #expect(store.hasProcessingAssistantSessions)
+        store.replaceAll(with: [second, worker])
+        #expect(!store.hasProcessingAssistantSessions)
+        store.replaceAll(with: [])
+        #expect(!store.hasProcessingAssistantSessions)
+    }
+
     @Test func outlineSummariesAndLookupsStayEquivalentAcrossContentStatusAndMembershipPatches() {
         let store = SessionIndexStore()
         var task = makeCorptieTask(id: "task:one", lifecycleState: "in_progress")
