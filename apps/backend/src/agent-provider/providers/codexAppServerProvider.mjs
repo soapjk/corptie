@@ -34,7 +34,9 @@ export function createCodexAppServerProvider(operations, options = {}) {
       backgroundExecutionPolicies: ["no-tools"],
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.UNAVAILABLE,
-        supportsStatusProbe: typeof operations.probeTurnExecution === "function"
+        supportsStatusProbe: typeof operations.probeTurnExecution === "function",
+        // App Server owns model retries, including transport fallback.
+        managesConnectionRetries: true
       },
       toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {

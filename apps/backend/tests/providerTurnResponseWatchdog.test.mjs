@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ProviderTurnResponseWatchdog } from "../src/application/providerTurnResponseWatchdog.mjs";
+import { createCodexAppServerProvider } from "../src/agent-provider/providers/codexAppServerProvider.mjs";
+import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
+import { createOpenClackyProvider } from "../src/agent-provider/providers/openClackyProvider.mjs";
 
 function scheduler() {
   let nextId = 1;
@@ -400,6 +403,49 @@ test("a real retry after the silent-start check still fails within a bounded dea
   assert.equal(failures[0].timeoutKind, "provider_retry");
   assert.equal(failures[0].lastProviderError.message, "connection failed");
   assert.equal(watchdog.pending.size, 0);
+});
+
+test("native recovery can continue past the host deadline and settle the same Turn", async () => {
+  const providers = [
+    createCodexAppServerProvider({ probeTurnExecution: async () => ({ state: "running" }) }),
+    createClaudeAgentSdkProvider({})
+  ];
+  for (const provider of providers) {
+    const timers = scheduler();
+    const warnings = [];
+    const probes = [];
+    const timeouts = [];
+    const liveness = provider.descriptor.metadata.turnLiveness;
+    const watchdog = new ProviderTurnResponseWatchdog({
+      warningAfterMs: 20, timeoutAfterMs: 120,
+      resolveTurnLiveness: () => liveness,
+      schedule: timers.schedule, cancel: timers.cancel,
+      onDelayed: entry => warnings.push(entry),
+      onCheckRequested: entry => probes.push(entry),
+      onTimeout: entry => timeouts.push(entry)
+    });
+    const binding = { ...turn, providerId: provider.descriptor.id };
+    const observe = (type, payload) => watchdog.observe({ binding, event: { ...binding, type, payload } });
+    const retry = message => observe("provider.error", { willRetry: true, error: { message } });
+    watchdog.watch(binding);
+    retry("Reconnecting 2/5");
+    retry("Reconnecting 4/5");
+    assert.equal(timers.countDelay(120), 1);
+    timers.run(120);
+    await Promise.resolve();
+    assert.deepEqual(timeouts, []);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].warningKind, "connection_retry");
+    assert.equal(warnings[0].lastProviderError.message, "Reconnecting 4/5");
+    assert.equal(probes.length, liveness.supportsStatusProbe ? 1 : 0);
+    assert.equal(watchdog.pending.size, 1);
+    assert.equal(retry("Reconnecting 5/5"), true);
+    assert.equal(observe("assistant.message.delta"), true);
+    assert.equal(observe("turn.completed"), true);
+    assert.equal(watchdog.pending.size, 0);
+    assert.equal(timers.size, 0);
+  }
+  assert.equal(createOpenClackyProvider({}).descriptor.metadata.turnLiveness.managesConnectionRetries, false);
 });
 
 test("silence never kills a turn regardless of Provider heartbeat or status-query capability", async () => {

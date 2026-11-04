@@ -77,6 +77,16 @@ test("stream-idle warning explains that execution continues without reliable hea
   assert.equal(event.payload.willRetry, true);
 });
 
+test("a native recovery warning leaves the turn interruptible without issuing an interrupt", () => {
+  const f = fixture();
+  f.handlers.handleProviderResponseDelayed({ ...f.entry, warningKind: "connection_retry" });
+  assert.deepEqual(f.calls.map(([name]) => name), ["ingest"]);
+  const event = f.calls[0][1];
+  assert.equal(event.type, "provider.error");
+  assert.equal(event.payload.willRetry, true);
+  assert.match(event.payload.error.message, /重连结果.*手动停止/);
+});
+
 test("retry timeout reports a model-network failure instead of generic stream silence", async () => {
   const f = fixture();
   await f.handlers.handleProviderResponseTimeout({
