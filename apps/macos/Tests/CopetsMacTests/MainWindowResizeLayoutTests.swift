@@ -100,17 +100,17 @@ struct MainWindowResizeLayoutTests {
         container.layoutSubtreeIfNeeded()
         container.select(.automations)
         container.layoutSubtreeIfNeeded()
-        let detachedConsoleFrame = try #require(created[.console]?.frame)
+        let hiddenConsoleFrame = try #require(created[.console]?.frame)
 
         container.frame.size = NSSize(width: 1_450, height: 860)
         container.layoutSubtreeIfNeeded()
 
         #expect(container.cachedPageCount == 2)
-        #expect(container.attachedPageCount == 1)
+        #expect(container.attachedPageCount == 2)
         #expect(container.visibleTabs == [.automations])
-        #expect(created[.console]?.frame == detachedConsoleFrame)
+        #expect(created[.console]?.frame == hiddenConsoleFrame)
         #expect(created[.automations]?.frame == container.bounds)
-        #expect(created[.console]?.superview == nil)
+        #expect(created[.console]?.superview === container)
         #expect(created[.console]?.isHidden == true)
         #expect(created[.automations]?.superview === container)
     }
@@ -146,29 +146,6 @@ struct MainWindowResizeLayoutTests {
             locationY: 0,
             contentHeight: 0
         ))
-    }
-
-    @Test
-    func mainTabLayoutContractRetainsButHidesInactivePages() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/MainTabView.swift")
-        let contents = try String(contentsOf: source, encoding: .utf8)
-
-        #expect(contents.contains("private var pages: [AppTab: NSView] = [:]"))
-        #expect(contents.contains("private var participatingTabs: Set<AppTab>"))
-        #expect(contents.contains("pages[tab] = created"))
-        #expect(contents.contains("page.frame = bounds"))
-        #expect(contents.contains("addSubview(page)"))
-        #expect(contents.contains("page.isHidden = !participates"))
-        #expect(contents.contains("transform.translation.x"))
-        #expect(contents.contains("page.setAccessibilityHidden(tab != selectedTab)"))
-        #expect(!contents.contains("MainTabPageLayout"))
-        #expect(AppTab.allCases.contains(.automations))
-        #expect(contents.contains("case .automations:"))
-        #expect(contents.contains("AutomationsView()"))
     }
 
     @Test

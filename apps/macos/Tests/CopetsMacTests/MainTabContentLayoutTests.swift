@@ -68,16 +68,16 @@ struct MainTabContentLayoutTests {
             from: .automations,
             to: .worktrees
         ))
-        #expect(container.attachedTabs == [.worktrees])
+        #expect(container.attachedTabs == [.automations, .worktrees])
         #expect(container.visibleTabs == [.worktrees])
-        #expect(container.attachedPageCount == 1)
+        #expect(container.attachedPageCount == 2)
         #expect(container.cachedPage(for: .automations)?.frame == container.bounds)
         #expect(container.cachedPage(for: .worktrees)?.frame == container.bounds)
         #expect(container.activePageLayoutCount == layoutCount + 1)
 
         container.finishActiveTransition()
         #expect(container.transition == nil)
-        #expect(container.attachedTabs == [.worktrees])
+        #expect(container.attachedTabs == [.automations, .worktrees])
         #expect(container.visibleTabs == [.worktrees])
         #expect(container.cachedPage(for: .automations)?.isHidden == true)
     }
@@ -168,8 +168,48 @@ struct MainTabContentLayoutTests {
         #expect(created[.console] === console)
         #expect(created[.console]?.marker == "scroll-and-selection-state")
         #expect(container.cachedPageCount == 2)
-        #expect(container.attachedTabs == [.console])
+        #expect(container.attachedTabs == [.console, .worktrees])
         #expect(container.visibleTabs == [.console])
+    }
+
+    @MainActor
+    @Test
+    func warmSwiftUIPageKeepsWindowBindingAndStateAcrossSwitchAndResize() async throws {
+        _ = NSApplication.shared
+        let probe = TabWindowBindingProbe()
+        let container = MainTabPageContainer(animationDuration: 0) { tab in
+            let host = NSHostingView(rootView: TabStateProbe(probe: tab == .console ? probe : TabWindowBindingProbe()))
+            host.sizingOptions = []
+            return host
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = container
+        defer { window.contentView = nil }
+        container.select(.console, animated: false)
+        window.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        probe.increment?()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(probe.value == 1)
+        let attachments = probe.attachments
+        let original = try #require(container.cachedPage(for: .console))
+        let originalFrame = original.frame
+        container.select(.worktrees, animated: false)
+        for width in [1100, 1200, 1300] {
+            container.setFrameSize(NSSize(width: width, height: 750))
+            window.layoutIfNeeded()
+        }
+        #expect(original.frame == originalFrame)
+        #expect(original.window === window)
+        container.select(.console, animated: false)
+        window.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(probe.value == 1)
+        #expect(probe.attachments == attachments)
+        #expect(probe.detachments == 0)
+        #expect(original.frame == container.bounds)
     }
 
     @MainActor
@@ -239,5 +279,35 @@ struct MainTabContentLayoutTests {
         #expect(!contentView.contains("Color.clear"))
         #expect(!contentView.contains("contentTopInset"))
         #expect(!contentView.contains("LinearGradient("))
+    }
+}
+
+@MainActor private final class TabWindowBindingProbe {
+    var attachments = 0
+    var detachments = 0
+    var value = 0
+    var increment: (() -> Void)?
+}
+
+private struct TabStateProbe: View {
+    let probe: TabWindowBindingProbe
+    @State private var value = 0
+    var body: some View {
+        let _ = { probe.value = value; probe.increment = { value += 1 } }()
+        TabBindingMarker(probe: probe).overlay(Text("State \(value)"))
+    }
+}
+private struct TabBindingMarker: NSViewRepresentable {
+    let probe: TabWindowBindingProbe
+    func makeNSView(context: Context) -> Marker { Marker(probe) }
+    func updateNSView(_ view: Marker, context: Context) {}
+    final class Marker: NSView {
+        let probe: TabWindowBindingProbe
+        init(_ probe: TabWindowBindingProbe) { self.probe = probe; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError() }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil { probe.detachments += 1 } else { probe.attachments += 1 }
+        }
     }
 }

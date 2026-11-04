@@ -281,9 +281,11 @@ private struct PendingGitOperationAction: Identifiable {
 }
 
 struct WorktreeManagementView: View {
-    @EnvironmentObject private var router: AppTabRouter
+    private let router = AppTabRouter.shared
     @EnvironmentObject private var sidebarState: TabSidebarState
-    @ObservedObject private var backendClient = BackendClient.shared
+    private let backendClient = BackendClient.shared
+    @State private var isBackendOnline = BackendClient.shared.isOnline
+    @State private var pendingNavigationID = AppTabRouter.shared.pendingWorktreeNavigation?.id
     @StateObject private var client: WorktreeManagementClient
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
@@ -330,6 +332,8 @@ struct WorktreeManagementView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
+        .onReceive(backendClient.$isOnline.removeDuplicates()) { isBackendOnline = $0 }
+        .onReceive(router.$pendingWorktreeNavigation.map { $0?.id }.removeDuplicates()) { pendingNavigationID = $0 }
         .toolbar(removing: .sidebarToggle)
         .sheet(isPresented: $showingRepositoryPicker) {
             VStack(spacing: 0) {
@@ -357,7 +361,7 @@ struct WorktreeManagementView: View {
         .onChange(of: client.selection.worktreeId) { _, id in
             if id != nil { compactShowsList = false }
         }
-        .onChange(of: router.pendingWorktreeNavigation?.id) { _, id in
+        .onChange(of: pendingNavigationID) { _, id in
             if id != nil { compactShowsList = false; listHidden = false }
         }
         .onChange(of: client.selection.repositoryId, initial: true) { _, id in
@@ -373,12 +377,12 @@ struct WorktreeManagementView: View {
             OperationNotificationManager.shared.visibleJobID = id
         }
         .task(id: worktreeReloadTrigger) {
-            guard backendClient.isOnline else {
+            guard isBackendOnline else {
                 client.dismissError()
                 return
             }
             guard WorktreeAutomaticLoadPolicy.shouldLoad(
-                isBackendOnline: backendClient.isOnline,
+                isBackendOnline: isBackendOnline,
                 isTabSelected: sidebarState.isSelected,
                 hasPendingNavigation: router.pendingWorktreeNavigation != nil
             ) else { return }
@@ -541,7 +545,7 @@ struct WorktreeManagementView: View {
     @ViewBuilder
     private var pageColumns: some View {
         VStack(spacing: 0) {
-            if !backendClient.isOnline {
+            if !isBackendOnline {
                 Label(L10n("Backend offline. Previously loaded data may be out of date."), systemImage: "wifi.slash")
                     .font(.callout).padding(8).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -605,13 +609,13 @@ struct WorktreeManagementView: View {
     }
 
     private var worktreeReloadTrigger: String {
-        "\(backendClient.isOnline):\(sidebarState.isSelected)"
+        "\(isBackendOnline):\(sidebarState.isSelected)"
     }
 
     private var worktreeNavigationTrigger: WorktreeNavigationTaskTrigger {
         WorktreeNavigationTaskTrigger(
-            requestId: router.pendingWorktreeNavigation?.id,
-            isBackendOnline: backendClient.isOnline,
+            requestId: pendingNavigationID,
+            isBackendOnline: isBackendOnline,
             isTabSelected: sidebarState.isSelected
         )
     }
@@ -685,7 +689,7 @@ struct WorktreeManagementView: View {
                 Text(selectionNotice).font(.callout).foregroundStyle(.secondary).padding(12)
             }
             if let project = client.detail?.project {
-                if !isBatchSelecting { worktreeActions(project).disabled(!backendClient.isOnline) }
+                if !isBatchSelecting { worktreeActions(project).disabled(!isBackendOnline) }
                 if let job = client.job {
                     Button {
                         detailTab = .execution
@@ -767,7 +771,7 @@ struct WorktreeManagementView: View {
                             proxy.scrollTo(request.worktreeId, anchor: .center)
                         }
                     }
-                    if isBatchSelecting { batchActionBar(project).disabled(!backendClient.isOnline) }
+                    if isBatchSelecting { batchActionBar(project).disabled(!isBackendOnline) }
                 }
             } else if client.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -812,7 +816,7 @@ struct WorktreeManagementView: View {
                 .help(L10n("Select Worktrees"))
                 .accessibilityLabel(L10n("Select Worktrees"))
                 .controlSize(.small)
-                .disabled(!backendClient.isOnline || client.isMutating || client.job?.isActive == true || client.job?.status == "paused")
+                .disabled(!isBackendOnline || client.isMutating || client.job?.isActive == true || client.job?.status == "paused")
                 .accessibilityIdentifier("worktree.batch.select")
             }
         }
@@ -1048,7 +1052,7 @@ struct WorktreeManagementView: View {
                 }
             }
             .controlSize(.small)
-            .disabled(!backendClient.isOnline)
+            .disabled(!isBackendOnline)
             Text(worktreePushExplanation(worktree))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2553,7 +2557,7 @@ private struct WorktreeBatchOperationFlowSheet: View {
 private struct WorktreeIntegrationFlowSheet: View {
     @ObservedObject var client: WorktreeManagementClient
     @Binding var isPresented: Bool
-    @EnvironmentObject private var router: AppTabRouter
+    private let router = AppTabRouter.shared
 
     var body: some View {
         Group {
