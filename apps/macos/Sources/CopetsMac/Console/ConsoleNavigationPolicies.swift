@@ -278,7 +278,7 @@ struct ConsoleWorkOutlineHeader: View {
                     WorkOutlineFolderIcon(isExpanded: isExpanded)
                         .stroke(.secondary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
                         .frame(width: 18, height: 14)
-                    ConsoleWorkTitle(title: work.name, isWorking: isWorking && !isExpanded, isActive: isActive)
+                    ConsoleWorkTitle(title: work.name, isWorking: isWorking, isActive: isActive)
                         .font(WorkbenchTypography.font(for: .navigation))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
