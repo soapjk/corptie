@@ -271,7 +271,10 @@ private struct ResidentSessionPageHeader: View {
         guard epoch == request else { return false }
         for invalid in entries.filter({ $0.inputs.retired }) { dispose(invalid, reason: "retired") }
         let entry: Entry
-        if let cached {
+        // Initial attachment and offscreen selection also reach this path.
+        // Reuse by identity here so those paths cannot consume multiple slots
+        // with copies of the same Session.
+        if let cached = cached ?? entries.first(where: { $0.inputs.scope.sessionID == sessionID && !$0.inputs.retired }) {
             entry = cached
             SessionSwitchTrace.shared.mark(.pageHostReused, sessionID: sessionID)
         } else {

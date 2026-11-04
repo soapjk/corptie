@@ -2932,6 +2932,24 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(successes, 100)
     }
 
+    func testSuspendedTimelineDefersWidthReflowUntilResumed() async throws {
+        let harness = makeHarness(followsLatest: true)
+        harness.coordinator.apply(rows: (0..<30).map {
+            row(id: "suspended-\($0)", text: String(repeating: "Long reply ", count: 60))
+        })
+        await settleMainQueue()
+        let oldWidth = try XCTUnwrap(harness.tableView.tableColumns.first).width
+        harness.coordinator.setPresentationActive(false)
+        harness.scrollView.setFrameSize(NSSize(width: 700, height: 400))
+        NotificationCenter.default.post(name: NSView.frameDidChangeNotification, object: harness.scrollView.contentView)
+        await settleMainQueue()
+        XCTAssertEqual(harness.tableView.tableColumns.first?.width, oldWidth)
+        harness.coordinator.setPresentationActive(true)
+        await settleMainQueue()
+        XCTAssertGreaterThan(try XCTUnwrap(harness.tableView.tableColumns.first?.width), oldWidth)
+        XCTAssertTrue(harness.coordinator.followsLatest)
+    }
+
     private func makeHarness(
         followsLatest: Bool,
         useSharedTextCards: Bool = ProcessInfo.processInfo.environment["CORPTIE_TEST_LEGACY_CARDS"] != "1",

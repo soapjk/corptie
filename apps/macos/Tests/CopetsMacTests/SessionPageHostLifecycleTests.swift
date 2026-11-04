@@ -295,6 +295,41 @@ import CorptieConversation
         XCTAssertEqual(client.sessionSelectionController.selectedSessionID, target.id)
     }
 
+    func testOffscreenRoundTripsReuseDistinctSessionPagesInsteadOfConsumingDuplicateSlots() throws {
+        _ = NSApplication.shared
+        let source = AppStateStore(), client = BackendClient()
+        let ids = ["cache-a", "cache-b", "cache-c", "cache-d", "cache-e", "cache-f"]
+        for id in ids { source.acceptCreatedSession(session(id, task: "task-" + id)) }
+        var allocations = 0
+        let controller = ResidentSessionPageHostController(fallback: ConsolePaneContent { Text("None") },
+            isVisible: { _ in false }, makeInputs: { id in
+                guard let value = source.session(id) else { return nil }
+                allocations += 1
+                return SessionPageRenderInputs(session: value,
+                    scope: .init(serverID: client.baseURL.absoluteString, ownerID: client.detailBusinessOwnerID,
+                        principalID: "local-user", sessionID: id, taskID: value.taskId, workID: value.workId),
+                    backend: client, timeline: SessionTimelineState(sessionID: id),
+                    projection: SessionPresentationState(cache: nil), entities: EntityAPIClient(appState: source),
+                    search: UnifiedSearchNavigation(), sourceState: source)
+            }, root: { Text($0.session.title) })
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 640, height: 400)
+        defer { controller.disposeAll() }
+        for id in ids {
+            client.sessionSelectionController.select(id)
+            controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: id, isActive: true)
+        }
+        let original = Dictionary(uniqueKeysWithValues: controller.entries.map { ($0.inputs.scope.sessionID, ObjectIdentifier($0)) })
+        for id in ids.reversed() + ids {
+            client.sessionSelectionController.select(id)
+            controller.update(fallback: ConsolePaneContent { Text("None") }, selectedSessionID: id, isActive: true)
+            XCTAssertEqual(controller.current.map(ObjectIdentifier.init), original[id])
+            XCTAssertEqual(Set(controller.entries.map { $0.inputs.scope.sessionID }).count, controller.entries.count)
+        }
+        XCTAssertEqual(allocations, ids.count)
+        XCTAssertEqual(controller.entries.count, ids.count)
+    }
+
     func testWholeNativePagesKeepEightAndEvictBeforeNinthAllocation() async throws {
         _ = NSApplication.shared
         let source = AppStateStore(), client = BackendClient()

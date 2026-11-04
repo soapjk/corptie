@@ -190,21 +190,11 @@ final class MainTabPageContainer: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor
     }
 
-    override func layout() {
-        super.layout()
-        for tab in participatingTabs {
-            guard let page = pages[tab], page.frame != bounds else { continue }
-            page.frame = bounds
-            activePageLayoutCount += 1
-        }
-    }
-
     func select(_ tab: AppTab, animated: Bool = true) {
         guard selectedTab != tab else {
             if !animated, transition != nil {
                 finishTransition(generation: transitionGeneration)
             }
-            needsLayout = true
             return
         }
         if transition != nil {
@@ -230,9 +220,8 @@ final class MainTabPageContainer: NSView {
         transitionGeneration &+= 1
         let generation = transitionGeneration
 
-        attach(oldPage, for: previousTab)
+        oldPage.autoresizingMask = []
         attach(newPage, for: tab)
-        addSubview(newPage, positioned: .above, relativeTo: oldPage)
         updateVisibilityAndAccessibility()
 
         guard animated, animationDuration > 0, bounds.width > 0 else {
@@ -282,6 +271,7 @@ final class MainTabPageContainer: NSView {
             page.frame = bounds
             activePageLayoutCount += 1
         }
+        page.autoresizingMask = [.width, .height]
         page.isHidden = false
     }
 
@@ -316,20 +306,14 @@ final class MainTabPageContainer: NSView {
 
     private func updateVisibilityAndAccessibility() {
         for (tab, page) in pages {
-            let participates = participatingTabs.contains(tab)
+            let participates = tab == selectedTab
             page.isHidden = !participates
-            // Retain the host, but remove inactive pages from the window tree.
-            // isHidden alone leaves their SwiftUI hosts in AppKit layout traversal.
-            if !participates { page.removeFromSuperview() }
-            page.setAccessibilityHidden(tab != selectedTab)
+            // Keep the window binding and local SwiftUI state. Only the active
+            // page follows AppKit's native autoresizing; hidden pages keep their
+            // last size and catch up once when selected.
+            page.autoresizingMask = participates ? [.width, .height] : []
+            page.setAccessibilityHidden(!participates)
         }
-    }
-
-    private var participatingTabs: Set<AppTab> {
-        if let selectedTab {
-            return [selectedTab]
-        }
-        return []
     }
 
     private func resetLayer(of page: NSView) {

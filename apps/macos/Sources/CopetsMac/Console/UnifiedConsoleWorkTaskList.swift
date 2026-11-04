@@ -94,14 +94,18 @@ extension UnifiedConsoleView {
     }
 
     func hierarchyTaskRow(_ task: CorptieTask, showsHoverFeedback: Bool = true, nativeDisclosure: Bool = false) -> some View {
-        HStack(spacing: 4) {
+        let isExpanded = expandedParentTaskIDs.contains(task.id)
+            || (nativeDisclosure && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        let hasChildren = (task.hierarchy?.childCount ?? 0) > 0
+            || (nativeDisclosure && outlineProjection.workRowsByWorkID[task.workId]?.nativeChildren[task.id]?.isEmpty == false)
+        return HStack(spacing: 4) {
             taskRow(task, showsHoverFeedback: showsHoverFeedback)
             if let hierarchy = task.hierarchy, hierarchy.childCount > 0 {
                 Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount)")
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     .accessibilityLabel(L10n("子任务完成进度"))
             }
-            if !nativeDisclosure, (task.hierarchy?.childCount ?? 0) > 0 {
+            if hasChildren {
                 Button {
                     let wasExpanded = expandedParentTaskIDs.contains(task.id)
                     withAnimation(reduceOutlineMotion ? nil : .default) {
@@ -113,13 +117,16 @@ extension UnifiedConsoleView {
                     }
                 } label: {
                     Image(systemName: "chevron.right")
-                        .rotationEffect(.degrees(expandedParentTaskIDs.contains(task.id) ? 90 : 0))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(reduceOutlineMotion ? nil : .default, value: isExpanded)
                         .frame(width: 20, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .consoleHoverFeedback()
-                .accessibilityLabel(L10n(expandedParentTaskIDs.contains(task.id) ? "收起子任务" : "展开子任务"))
+                .accessibilityLabel(L10n(isExpanded ? "收起子任务" : "展开子任务"))
+                .accessibilityIdentifier("task.subtasks.toggle.\(task.id)")
+                .disabled(nativeDisclosure && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if expandedParentTaskIDs.contains(task.id), entityClient.taskChildrenCursors[task.id] != nil {
                 Button { Task { await entityClient.loadTaskChildren(task, more: true) } } label: {
