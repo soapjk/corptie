@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 460" width="100%" height="100%">
+  <defs>
+    <linearGradient id="colBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+    <linearGradient id="parentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="childGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f2942"/>
+      <stop offset="100%" stop-color="#0a1826"/>
+    </linearGradient>
+    <linearGradient id="channelBadgeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#ec4899"/>
+    </linearGradient>
+    <filter id="colShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <marker id="colArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="pinkArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ec4899"/>
+    </marker>
+    <marker id="greenColArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+  </defs>
+
+  <style>
+    .c-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .c-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12.5px; fill: #94a3b8; }
+    .c-card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 14px; fill: #f1f5f9; }
+    .c-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    .c-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11.5px; fill: #94a3b8; }
+    .c-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; fill: #38bdf8; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="920" height="460" rx="14" fill="url(#colBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Header -->
+  <g transform="translate(36, 24)">
+    <rect x="0" y="0" width="220" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="110" y="15" text-anchor="middle" class="c-badge" fill="#ec4899">Subtasks &amp; Collaboration</text>
+    <text x="0" y="46" class="c-title" font-size="18">子任务层级交付与跨会话原生协作体系</text>
+    <text x="0" y="66" class="c-sub">复杂工程父子拆解与集成验证 · 跨会话直连沟通，告别开发者人肉二传手</text>
+  </g>
+
+  <!-- Left: Parent/Child Hierarchy (Width: 420) -->
+  <g transform="translate(36, 96)" filter="url(#colShadow)">
+    <rect x="0" y="0" width="414" height="336" rx="12" fill="#0b111c" stroke="#4338ca" stroke-width="1.2"/>
+
+    <!-- Parent Header -->
+    <g transform="translate(16, 14)">
+      <rect x="0" y="0" width="80" height="18" rx="4" fill="#312e81"/>
+      <text x="40" y="13" text-anchor="middle" class="c-badge" fill="#c7d2fe">父任务架构</text>
+      <text x="90" y="14" class="c-card-title">Parent Task：重构认证中心</text>
+      <text x="0" y="40" class="c-desc">统筹方案设计 · 制定全链路验收标准 · 负责最终集成验证</text>
+    </g>
+
+    <line x1="16" y1="58" x2="398" y2="58" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Downward Dispatch Arrows -->
+    <path d="M 120 58 L 120 84" stroke="#818cf8" stroke-width="1.5" fill="none" marker-end="url(#colArrow)"/>
+    <path d="M 290 58 L 290 84" stroke="#818cf8" stroke-width="1.5" fill="none" marker-end="url(#colArrow)"/>
+
+    <!-- Child Task 1 -->
+    <g transform="translate(16, 88)">
+      <rect x="0" y="0" width="186" height="136" rx="8" fill="url(#childGrad)" stroke="#0284c7" stroke-width="1"/>
+      <text x="12" y="20" class="c-card-title" font-size="12" fill="#38bdf8">Child Task 1</text>
+      <text x="12" y="36" class="c-desc" font-weight="600" fill="#f1f5f9">OAuth 协议对接</text>
+      <text x="12" y="56" class="c-desc" font-size="10.5">· 独立分配子 Worktree</text>
+      <text x="12" y="72" class="c-desc" font-size="10.5">· 独立单元测试通过</text>
+      <rect x="12" y="86" width="162" height="38" rx="4" fill="#032541"/>
+      <text x="93" y="102" text-anchor="middle" font-size="9.5" fill="#38bdf8" font-weight="600">向上交付代码产物 ➔</text>
+      <text x="93" y="116" text-anchor="middle" font-size="8.5" fill="#94a3b8">Delivery into Parent</text>
+    </g>
+
+    <!-- Child Task 2 -->
+    <g transform="translate(212, 88)">
+      <rect x="0" y="0" width="186" height="136" rx="8" fill="url(#childGrad)" stroke="#0284c7" stroke-width="1"/>
+      <text x="12" y="20" class="c-card-title" font-size="12" fill="#38bdf8">Child Task 2</text>
+      <text x="12" y="36" class="c-desc" font-weight="600" fill="#f1f5f9">Token 存储与加密</text>
+      <text x="12" y="56" class="c-desc" font-size="10.5">· 独立分配子 Worktree</text>
+      <text x="12" y="72" class="c-desc" font-size="10.5">· 安全模块测试通过</text>
+      <rect x="12" y="86" width="162" height="38" rx="4" fill="#032541"/>
+      <text x="93" y="102" text-anchor="middle" font-size="9.5" fill="#38bdf8" font-weight="600">向上交付代码产物 ➔</text>
+      <text x="93" y="116" text-anchor="middle" font-size="8.5" fill="#94a3b8">Delivery into Parent</text>
+    </g>
+
+    <!-- Integration Verification Box at Parent -->
+    <g transform="translate(16, 238)">
+      <rect x="0" y="0" width="382" height="82" rx="6" fill="#064e3b" fill-opacity="0.25" stroke="#059669" stroke-width="1"/>
+      <text x="14" y="20" class="c-card-title" font-size="12" fill="#34d399">🛡️ 父任务集中集成快照与验收验证</text>
+      <text x="14" y="38" class="c-desc" font-size="11">接收所有子任务交付物后，触发统一集成快照；</text>
+      <text x="14" y="54" class="c-desc" font-size="11">在父任务环境中跑通完整端到端测试，杜绝局部完成但联调崩溃。</text>
+      <rect x="274" y="56" width="96" height="18" rx="4" fill="#065f46"/>
+      <text x="322" y="69" text-anchor="middle" font-size="9.5" fill="#a7f3d0" font-weight="600">统一质量闭环</text>
+    </g>
+  </g>
+
+  <!-- Right: Cross-Session Channel Collaboration (Width: 420) -->
+  <g transform="translate(470, 96)" filter="url(#colShadow)">
+    <rect x="0" y="0" width="414" height="336" rx="12" fill="#0d101d" stroke="#ec4899" stroke-width="1.2"/>
+
+    <!-- Header -->
+    <g transform="translate(16, 14)">
+      <rect x="0" y="0" width="110" height="18" rx="4" fill="#831843"/>
+      <text x="55" y="13" text-anchor="middle" class="c-badge" fill="#fbcfe8">跨会话原生通信</text>
+      <text x="120" y="14" class="c-card-title">Channel 双向协作通道</text>
+      <text x="0" y="40" class="c-desc">不同任务/不同项目间的会话直接建立通信，无需人工二传手</text>
+    </g>
+
+    <line x1="16" y1="58" x2="398" y2="58" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Session Left -->
+    <g transform="translate(16, 76)">
+      <rect x="0" y="0" width="168" height="92" rx="8" fill="#181324" stroke="#a855f7" stroke-width="1"/>
+      <text x="12" y="20" class="c-card-title" font-size="12" fill="#c084fc">会话 A：项目 A 前端</text>
+      <text x="12" y="38" class="c-desc" font-size="10.5">· 正在改动登录界面</text>
+      <text x="12" y="54" class="c-desc" font-size="10.5">· 依赖后端最新接口</text>
+      <rect x="12" y="64" width="80" height="18" rx="4" fill="#3b0764"/>
+      <text x="52" y="77" text-anchor="middle" font-size="9" fill="#e9d5ff">Task Session A</text>
+    </g>
+
+    <!-- Session Right -->
+    <g transform="translate(230, 76)">
+      <rect x="0" y="0" width="168" height="92" rx="8" fill="#181324" stroke="#ec4899" stroke-width="1"/>
+      <text x="12" y="20" class="c-card-title" font-size="12" fill="#f472b6">会话 B：项目 B 后端</text>
+      <text x="12" y="38" class="c-desc" font-size="10.5">· 正在重构 Auth 微服务</text>
+      <text x="12" y="54" class="c-desc" font-size="10.5">· 掌握最新 API 契约</text>
+      <rect x="12" y="64" width="80" height="18" rx="4" fill="#831843"/>
+      <text x="52" y="77" text-anchor="middle" font-size="9" fill="#fbcfe8">Task Session B</text>
+    </g>
+
+    <!-- Bi-directional Channel in between -->
+    <g transform="translate(90, 180)">
+      <rect x="0" y="0" width="234" height="42" rx="21" fill="#201127" stroke="url(#channelBadgeGrad)" stroke-width="1.5"/>
+      <text x="117" y="18" text-anchor="middle" class="c-badge" fill="#f472b6">⚡ 受控授权 Channel 通信</text>
+      <text x="117" y="32" text-anchor="middle" font-size="9.5" fill="#fbcfe8">直传 API 契约 · 错误码与联调参数</text>
+    </g>
+
+    <!-- Bi-directional Arrows -->
+    <path d="M 100 168 L 100 180" stroke="#ec4899" stroke-width="1.5" fill="none" marker-end="url(#pinkArrow)"/>
+    <path d="M 314 168 L 314 180" stroke="#ec4899" stroke-width="1.5" fill="none" marker-end="url(#pinkArrow)"/>
+
+    <!-- Scenario Description Box -->
+    <g transform="translate(16, 238)">
+      <rect x="0" y="0" width="382" height="82" rx="6" fill="#1f1124" stroke="#831843" stroke-width="0.8"/>
+      <text x="14" y="20" class="c-card-title" font-size="12" fill="#f472b6">💡 典型实战场景：</text>
+      <text x="14" y="38" class="c-desc" font-size="11">会话 A：“请把你们刚改好的 /auth/token 接口结构发我”</text>
+      <text x="14" y="54" class="c-desc" font-size="11">会话 B：“收到，字段已改用 refreshToken，格式为 {...}”</text>
+      <text x="14" y="70" class="c-desc" font-size="11" fill="#a78bfa">双方 Agent 自主协商完成接口对齐，无需人工搬运上下文！</text>
+    </g>
+  </g>
+</svg>

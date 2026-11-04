@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 480" width="100%" height="100%">
+  <defs>
+    <linearGradient id="rmBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c1017"/>
+      <stop offset="100%" stop-color="#141a24"/>
+    </linearGradient>
+    <linearGradient id="roleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#311042"/>
+      <stop offset="100%" stop-color="#170d22"/>
+    </linearGradient>
+    <linearGradient id="sessionGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0e2a47"/>
+      <stop offset="100%" stop-color="#081726"/>
+    </linearGradient>
+    <linearGradient id="providerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#142838"/>
+      <stop offset="100%" stop-color="#0a151f"/>
+    </linearGradient>
+    <linearGradient id="memGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e1b4b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <filter id="rmShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <marker id="rmArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="purpleArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#c084fc"/>
+    </marker>
+  </defs>
+
+  <style>
+    .rm-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 700; fill: #f8fafc; }
+    .rm-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 12.5px; fill: #94a3b8; }
+    .rm-card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-weight: 600; font-size: 14px; fill: #f1f5f9; }
+    .rm-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    .rm-desc { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 11.5px; fill: #94a3b8; }
+    .rm-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; fill: #38bdf8; }
+  </style>
+
+  <!-- Background Base -->
+  <rect width="920" height="480" rx="14" fill="url(#rmBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Top Header -->
+  <g transform="translate(36, 24)">
+    <rect x="0" y="0" width="180" height="22" rx="11" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+    <text x="90" y="15" text-anchor="middle" class="rm-badge" fill="#c084fc">Role, Model &amp; Memory</text>
+    <text x="0" y="46" class="rm-title" font-size="18">Role 角色、模型无缝切换与分层记忆体系</text>
+    <text x="0" y="66" class="rm-sub">人设与技能解耦 · 会话内自由热切模型底座 · 三层精准记忆按需注入</text>
+  </g>
+
+  <!-- Left Side: Role & Model Assembly into Session (Width: 440) -->
+  <g transform="translate(36, 96)">
+
+    <!-- Upper Box: Role Definition -->
+    <g transform="translate(0, 0)" filter="url(#rmShadow)">
+      <rect x="0" y="0" width="430" height="106" rx="10" fill="url(#roleGrad)" stroke="#7c3aed" stroke-width="1.2"/>
+      <g transform="translate(16, 14)">
+        <rect x="0" y="0" width="80" height="18" rx="4" fill="#4c1d95"/>
+        <text x="40" y="13" text-anchor="middle" class="rm-badge" fill="#e9d5ff">Role 角色定义</text>
+        <text x="92" y="14" class="rm-card-title">人设 (Persona) 与技能集 (Skills)</text>
+      </g>
+      <text x="16" y="58" class="rm-desc">· 角色配置：定义工作法则、代码规范、思考风格（可随时复用与共享）</text>
+      <text x="16" y="76" class="rm-desc">· 技能挂载：绑定专用 Skills（如 Git 操作、测试套件、代码审查工具）</text>
+      <text x="16" y="94" class="rm-desc" fill="#c084fc">✨ 独立配置资源：不绑定单一会话，可按需指派给任何 Task</text>
+    </g>
+
+    <!-- Lower Box: Provider Models -->
+    <g transform="translate(0, 118)" filter="url(#rmShadow)">
+      <rect x="0" y="0" width="430" height="106" rx="10" fill="url(#providerGrad)" stroke="#0284c7" stroke-width="1.2"/>
+      <g transform="translate(16, 14)">
+        <rect x="0" y="0" width="96" height="18" rx="4" fill="#075985"/>
+        <text x="48" y="13" text-anchor="middle" class="rm-badge" fill="#bae6fd">AI 运行环境底座</text>
+        <text x="108" y="14" class="rm-card-title">多 Provider 引擎支持</text>
+      </g>
+      <text x="16" y="58" class="rm-desc">· 主流模型接入：Claude Code、Codex、OpenClacky 等多端原生支持</text>
+      <text x="16" y="76" class="rm-desc">· 各司其职：架构论证选高智能强推理模型，大批量改代码切高性价比模型</text>
+      <text x="16" y="94" class="rm-desc" fill="#38bdf8">⚡ 本地认证隔离：各 Provider 独立配置与状态隔离，安全透明</text>
+    </g>
+
+    <!-- Converging Arrows into Active Session -->
+    <path d="M 215 224 L 215 244" stroke="#818cf8" stroke-width="2" fill="none" marker-end="url(#rmArrow)"/>
+
+    <!-- Bottom Center Box: Active Session with Seamless Switch -->
+    <g transform="translate(0, 248)" filter="url(#rmShadow)">
+      <rect x="0" y="0" width="430" height="104" rx="10" fill="url(#sessionGrad)" stroke="#38bdf8" stroke-width="1.5"/>
+      <g transform="translate(16, 14)">
+        <rect x="0" y="0" width="110" height="18" rx="4" fill="#0369a1"/>
+        <text x="55" y="13" text-anchor="middle" class="rm-badge" fill="#e0f2fe">动态装配运行中心</text>
+        <text x="120" y="14" class="rm-card-title">会话内无缝切换 Agent &amp; 模型</text>
+      </g>
+      <text x="16" y="56" class="rm-desc" fill="#f8fafc">🔄 <tspan font-weight="600">会话不中断、上下文不丢失：</tspan></text>
+      <text x="16" y="74" class="rm-desc">遇到瓶颈时，随时在输入栏将当前会话切给具备专门经验的 Agent；</text>
+      <text x="16" y="92" class="rm-desc">或一键切换底层 AI 模型，无须新建窗口从头复述需求。</text>
+    </g>
+
+  </g>
+
+  <!-- Right Side: 3-Layer Memory Architecture (Width: 390) -->
+  <g transform="translate(494, 96)" filter="url(#rmShadow)">
+    <rect x="0" y="0" width="390" height="356" rx="12" fill="#0c111d" stroke="#4f46e5" stroke-width="1.2"/>
+
+    <!-- Header -->
+    <g transform="translate(18, 16)">
+      <rect x="0" y="0" width="120" height="20" rx="4" fill="#312e81"/>
+      <text x="60" y="14" text-anchor="middle" class="rm-badge" fill="#c7d2fe">分层记忆机制</text>
+      <text x="18" y="44" class="rm-card-title" font-size="14.5">精准上下文命中，拒绝 Token 浪费</text>
+    </g>
+
+    <line x1="18" y1="58" x2="372" y2="58" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Layer 1: Global Preferences -->
+    <g transform="translate(18, 70)">
+      <rect x="0" y="0" width="354" height="74" rx="6" fill="#1e1b4b" fill-opacity="0.4" stroke="#6366f1" stroke-width="0.8"/>
+      <text x="12" y="20" class="rm-card-title" font-size="12" fill="#a5b4fc">L1：全局偏好记忆 (Global Preferences)</text>
+      <text x="12" y="38" class="rm-desc" font-size="11">· 跨所有项目与任务全局生效</text>
+      <text x="12" y="54" class="rm-desc" font-size="11">· 记录用户代码风格偏好、禁忌规范、技术栈铁律</text>
+      <rect x="250" y="10" width="92" height="16" rx="3" fill="#312e81"/>
+      <text x="296" y="22" text-anchor="middle" font-size="9" fill="#c7d2fe">全局长期记忆</text>
+    </g>
+
+    <!-- Layer 2: Work-Level Context -->
+    <g transform="translate(18, 154)">
+      <rect x="0" y="0" width="354" height="84" rx="6" fill="#172554" fill-opacity="0.4" stroke="#3b82f6" stroke-width="0.8"/>
+      <text x="12" y="20" class="rm-card-title" font-size="12" fill="#93c5fd">L2：项目级长期记忆 (Work Context)</text>
+      <text x="12" y="38" class="rm-desc" font-size="11">· 当前项目内所有 Task 与会话共享</text>
+      <text x="12" y="54" class="rm-desc" font-size="11">· 记录仓库架构设计原则、模块边界与核心业务概念</text>
+      <text x="12" y="70" class="rm-desc" font-size="11">· 避免每个新任务都从头“教学”项目背景</text>
+      <rect x="250" y="10" width="92" height="16" rx="3" fill="#1e3a8a"/>
+      <text x="296" y="22" text-anchor="middle" font-size="9" fill="#bfdbfe">项目级共享</text>
+    </g>
+
+    <!-- Layer 3: Task-Level Short-Term Memory -->
+    <g transform="translate(18, 248)">
+      <rect x="0" y="0" width="354" height="88" rx="6" fill="#082f49" fill-opacity="0.4" stroke="#0ea5e9" stroke-width="0.8"/>
+      <text x="12" y="20" class="rm-card-title" font-size="12" fill="#7dd3fc">L3：任务级工作记忆 (Task Memory)</text>
+      <text x="12" y="38" class="rm-desc" font-size="11">· 单个任务执行期的临时上下文与即时决策</text>
+      <text x="12" y="54" class="rm-desc" font-size="11">· 记录当前步骤排查结论、中间踩坑经验</text>
+      <text x="12" y="70" class="rm-desc" font-size="11" fill="#38bdf8">· 任务完成后归档，永不污染其他无关任务上下文</text>
+      <rect x="250" y="10" width="92" height="16" rx="3" fill="#0369a1"/>
+      <text x="296" y="22" text-anchor="middle" font-size="9" fill="#e0f2fe">任务级独立隔离</text>
+    </g>
+
+  </g>
+</svg>
