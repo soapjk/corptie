@@ -25,7 +25,12 @@ struct MacResourcePage: View {
                     throw EntityLaunchError(message: "文档位置不是有效的本机文件路径。", code: "ARTIFACT_PATH_INVALID")
                 }
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: receipt.path)])
-            })
-            .mainWindowPageCard()
+            }, columnLayout: ResourceBrowserColumnLayout(
+                sidebarBackground: WorkbenchStyle.sidebarColor,
+                readingBackground: WorkbenchStyle.canvas,
+                contentTopInset: MainWindowLayoutMetrics.titlebarHeight))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
+            .ignoresSafeArea(.container, edges: .top)
     }
 }
