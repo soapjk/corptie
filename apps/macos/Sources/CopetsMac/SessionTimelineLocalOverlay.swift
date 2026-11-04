@@ -20,6 +20,8 @@ final class SessionTimelineLocalOverlay {
         submitting: Bool = false
     ) -> CodexThreadDetail {
         let threadId = session.external?.threadId ?? session.id
+        let waitsForEarlierInput = session.executionTaskStatus == .running
+            || (pendingUserMessagesBySessionID[session.id]?.contains { $0.id != messageID } ?? false)
         let item = CodexThreadItem(
             id: messageID,
             turnId: "delivery:\(deliveryID)",
@@ -28,7 +30,7 @@ final class SessionTimelineLocalOverlay {
             title: "User",
             text: text,
             options: nil,
-            status: submitting ? "processing" : "queued",
+            status: submitting && !waitsForEarlierInput ? "processing" : "queued",
             createdAt: now,
             images: images,
             sourceType: submitting ? "local_submission" : "local_acknowledgement"

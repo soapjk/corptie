@@ -421,7 +421,7 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
                legacyStatus: item.timelineLegacyMessageStatus)
            let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
            guard state == .processing || (showsPendingInputAsProcessing && kind == .userMessage
-               && (state == .queued || state == .preparing)) else { return false }
+               && state == .preparing) else { return false }
            return kind == .userMessage || kind == .systemEvent || kind == .automationEvent
                || (kind == .collaborationMessage && item.collaborationDirection?.lowercased() == "inbound")
        }) {

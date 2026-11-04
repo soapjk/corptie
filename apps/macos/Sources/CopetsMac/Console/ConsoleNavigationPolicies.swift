@@ -249,11 +249,7 @@ struct ConsoleWorkOutlineHeader: View {
     let isSelected: Bool
     let isWorking: Bool
     let hasUnread: Bool
-    let isChatSelected: Bool
-    let isChatRunning: Bool
-    let hasUnreadChat: Bool
     let toggleExpanded: () -> Void
-    let openChat: () -> Void
     let createTask: () -> Void
     // Equal display values may retain actions only within the same Console
     // lifetime. Actions in that scope must resolve current state when invoked.
@@ -264,20 +260,20 @@ struct ConsoleWorkOutlineHeader: View {
 
     @State private var isHovering = false
     @FocusState private var isCreateTaskFocused: Bool
-    @FocusState private var isChatFocused: Bool
 
     var body: some View {
         let _ = SessionSwitchTrace.shared.recordWorkHeader(workID: work.id, inputs: .init(
             title: work.name, avatarPath: work.avatarPath, expanded: isExpanded,
             selected: isSelected, working: isWorking, unread: hasUnread,
-            chatSelected: isChatSelected, chatRunning: isChatRunning,
-            unreadChat: hasUnreadChat, active: isActive))
+            chatSelected: false, chatRunning: false,
+            unreadChat: false, active: isActive))
         WorkOutlineHeaderRow(toggleExpanded: toggleExpanded) {
             Button(action: toggleExpanded) {
                 HStack(spacing: 7) {
                     WorkOutlineFolderIcon(isExpanded: isExpanded)
                         .stroke(.secondary, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
                         .frame(width: 18, height: 14)
+                        .animation(reduceMotion ? nil : ConsoleWorkOutlineMetrics.disclosureAnimation, value: isExpanded)
                     ConsoleWorkTitle(title: work.name, isWorking: isWorking, isActive: isActive)
                         .font(WorkbenchTypography.font(for: .navigation))
                         .foregroundStyle(.primary)
@@ -291,22 +287,7 @@ struct ConsoleWorkOutlineHeader: View {
             .accessibilityValue(accessibilityValue)
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
         } discussion: {
-            Button(action: openChat) {
-                Image(systemName: "bubble.left")
-                    .font(.system(size: 12))
-                    .foregroundStyle(isChatSelected ? Color.primary : Color.secondary)
-                    .frame(width: 24, height: 24)
-                    .background(isChatSelected ? Color.primary.opacity(0.06) : .clear,
-                                in: RoundedRectangle(cornerRadius: 5))
-            }
-            .buttonStyle(.plain)
-            .consoleHoverFeedback()
-            .focused($isChatFocused)
-            .opacity(isHovering || isChatFocused || isChatSelected || hasUnreadChat ? 1 : 0)
-            .help(L10n("Open Work Chat"))
-            .accessibilityLabel(L10nFormat("%@ · %@", work.name, L10n("Open Work Chat")))
-            .accessibilityValue(hasUnreadChat ? L10n("Unread Session") : "")
-
+            EmptyView()
         } actions: {
             ConsoleGroupStatusIndicators(isExpanded: isExpanded, isProcessing: isWorking,
                 hasUnread: hasUnread)
@@ -341,9 +322,6 @@ extension ConsoleWorkOutlineHeader: Equatable {
             && lhs.isSelected == rhs.isSelected
             && lhs.isWorking == rhs.isWorking
             && lhs.hasUnread == rhs.hasUnread
-            && lhs.isChatSelected == rhs.isChatSelected
-            && lhs.isChatRunning == rhs.isChatRunning
-            && lhs.hasUnreadChat == rhs.hasUnreadChat
             && lhs.isActive == rhs.isActive
     }
 }
@@ -408,9 +386,19 @@ enum ConsoleSelectionRefreshPolicy {
 
 /// The front flap opens without changing the header's icon or row geometry.
 struct WorkOutlineFolderIcon: Shape {
-    let isExpanded: Bool
+    var opening: CGFloat
+
+    init(isExpanded: Bool) { opening = isExpanded ? 1 : 0 }
+
+    var animatableData: CGFloat {
+        get { opening }
+        set { opening = newValue }
+    }
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
+        // The back remains still while the front flap opens. Both endpoints
+        // share the same path topology so SwiftUI can interpolate the flap.
         path.move(to: CGPoint(x: 1, y: 12.5))
         path.addLine(to: CGPoint(x: 1, y: 2.5))
         path.addQuadCurve(to: CGPoint(x: 2, y: 1.5), control: CGPoint(x: 1, y: 1.5))
@@ -418,17 +406,15 @@ struct WorkOutlineFolderIcon: Shape {
         path.addLine(to: CGPoint(x: 8, y: 3.5))
         path.addLine(to: CGPoint(x: 15, y: 3.5))
         path.addQuadCurve(to: CGPoint(x: 16, y: 4.5), control: CGPoint(x: 16, y: 3.5))
-        if isExpanded {
-            path.addLine(to: CGPoint(x: 16, y: 6.5))
-            path.move(to: CGPoint(x: 1, y: 12.5))
-            path.addLine(to: CGPoint(x: 4, y: 6.5))
-            path.addLine(to: CGPoint(x: 17, y: 6.5))
-            path.addLine(to: CGPoint(x: 14, y: 12.5))
-        } else {
-            path.addLine(to: CGPoint(x: 16, y: 11.5))
-            path.addQuadCurve(to: CGPoint(x: 15, y: 12.5), control: CGPoint(x: 16, y: 12.5))
-        }
+        path.addLine(to: CGPoint(x: 16, y: 11.5))
+        path.addQuadCurve(to: CGPoint(x: 15, y: 12.5), control: CGPoint(x: 16, y: 12.5))
         path.addLine(to: CGPoint(x: 1, y: 12.5))
+
+        path.move(to: CGPoint(x: 1, y: 12.5))
+        path.addLine(to: CGPoint(x: 1 + 3 * opening, y: 4.5 + 2 * opening))
+        path.addLine(to: CGPoint(x: 16 + opening, y: 4.5 + 2 * opening))
+        path.addLine(to: CGPoint(x: 15 - opening, y: 12.5))
+        path.closeSubpath()
         return path.applying(CGAffineTransform(a: rect.width / 18, b: 0, c: 0,
             d: rect.height / 14, tx: rect.minX, ty: rect.minY))
     }

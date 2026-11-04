@@ -62,6 +62,54 @@ struct ComposerShellMetricsTests {
         func updateNSView(_ nsView: NSView, context: Context) {}
     }
 
+    @Test @MainActor func footerReservesRealUsageWidthAndKeepsControlsSeparate() throws {
+        let mounts = Mounts()
+        func surface(stopping: Bool) -> some View {
+            ComposerEditorRowLayout(minimumEditorWidth: 100, preservesLeadingContentWidth: true) {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").frame(width: 28, height: 28)
+                    ConversationComposerStatusRow(isReady: true, readinessTitle: "", readinessMessage: "",
+                        readinessCode: nil, executionState: .complete, activity: nil) {
+                        HStack(spacing: 10) {
+                            ConversationComposerUsageSlot {
+                                SessionUsageItem(icon: "text.alignleft", value: "上下文已用 70.7%", progress: 0.707, color: .red)
+                            }
+                            ConversationComposerUsageSlot {
+                                SessionUsageItem(icon: "bolt.fill", value: "额度剩余 36%", progress: 0.36, color: .red)
+                            }
+                        }.font(.system(size: 9, weight: .semibold)).lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
+                }.background(EditorProbe(mounts: mounts, identifier: "usage"))
+                HStack(spacing: 6) {
+                    Image(systemName: "cpu").frame(width: 14, height: 14)
+                    ComposerModelMenuLabel(modelLabel: "GPT-6.1", reasoningShortLabel: "中",
+                        isBusy: false, maxWidth: 176, showsSurface: false, presentation: .regular,
+                        showsDisclosureIndicator: true)
+                    if stopping { Color.red.frame(width: 32, height: 32) }
+                    Image(systemName: "arrow.up").frame(width: 28, height: 28)
+                }.background(EditorProbe(mounts: mounts, identifier: "controls"))
+            }
+        }
+        func find(_ id: String, _ view: NSView) -> NSView? {
+            if view.identifier?.rawValue == id { return view }
+            return view.subviews.lazy.compactMap { find(id, $0) }.first
+        }
+        for stopping in [false, true] {
+            let host = NSHostingView(rootView: surface(stopping: stopping))
+            for width: CGFloat in [264, 320, 390, 560, 740] {
+                host.frame = CGRect(x: 0, y: 0, width: width, height: 120)
+                host.layoutSubtreeIfNeeded()
+                let usage = try #require(find("usage", host)), controls = try #require(find("controls", host))
+                let left = usage.convert(usage.bounds, to: host), right = controls.convert(controls.bounds, to: host)
+                #expect(left.minX >= -1 && left.maxX <= width + 1)
+                #expect(right.minX >= -1 && right.maxX <= width + 1)
+                #expect(left.intersection(right).isEmpty)
+                if width == 740 { #expect(abs(left.midY - right.midY) < 1) }
+            }
+        }
+    }
+
     @Test @MainActor func unifiedComposerKeepsEditorAboveFooterAcrossNarrowWidths() throws {
         let editorMounts = Mounts(), footerMounts = Mounts()
         let host = NSHostingView(rootView: ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {

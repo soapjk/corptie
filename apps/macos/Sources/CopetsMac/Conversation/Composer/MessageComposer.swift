@@ -107,7 +107,7 @@ struct SessionMessageComposerSurface: View {
     let onJumpToLatest: (() -> Void)?
     let hasUnreadMessagesBelow: Bool
     @FocusState private var isFocused: Bool
-    @State private var composerWidth: CGFloat = 0
+    @State private var modelMenuWidth: CGFloat = 176
     @State private var inputHeight = ComposerInputLayout.minimumHeight
     @State private var editorController: ComposerEditorController
     @State private var hasSendableText: Bool
@@ -225,11 +225,14 @@ struct SessionMessageComposerSurface: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)
+        .background {
+            if !compact && allowsModelSwitch {
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ComposerWidthPreferenceKey.self,
+                        value: ComposerModelWidthPolicy.maximumWidth(for: proxy.size.width))
+                }
             }
-        )
+        }
         .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
             if acceptsPresentationUpdates, notification.object as? String == sessionId { editorController.focusIfRequested() }
         }
@@ -250,7 +253,7 @@ struct SessionMessageComposerSurface: View {
             if acceptsPresentationUpdates { editorController.draft.mentions = mentions }
         }
         .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
-            if acceptsPresentationUpdates, composerWidth != width { composerWidth = width }
+            if acceptsPresentationUpdates, modelMenuWidth != width { modelMenuWidth = width }
         }
         .task(id: renderInputs?.activity.isActive) {
             guard acceptsPresentationUpdates, allowsActions, allowsModelSwitch,
@@ -338,7 +341,7 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var composerToolbar: some View {
-        ComposerEditorRowLayout(minimumEditorWidth: 100) {
+        ComposerEditorRowLayout(minimumEditorWidth: 100, preservesLeadingContentWidth: true) {
             HStack(spacing: 6) {
                 moreMenu
                 statusRow
@@ -840,8 +843,19 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var modelMenuMaxWidth: CGFloat {
-        min(ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth, presentation: .regular),
-            composerWidth > 0 ? max(80, composerWidth - 124) : 176)
+        modelMenuWidth
+    }
+}
+
+/// Observe only the derived menu budget, not every pixel of the composer.
+/// Eight-point budgets preserve readable truncation without feeding continuous
+/// window geometry back into the whole SwiftUI input surface.
+enum ComposerModelWidthPolicy {
+    static func maximumWidth(for composerWidth: CGFloat) -> CGFloat {
+        guard composerWidth.isFinite, composerWidth > 0 else { return 176 }
+        let available = min(ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth, presentation: .regular),
+            max(80, composerWidth - 124))
+        return floor(available / 8) * 8
     }
 }
 
@@ -937,7 +951,7 @@ struct ComposerGlassActionBackground: View {
 }
 
 private struct ComposerWidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+    static let defaultValue: CGFloat = 176
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()

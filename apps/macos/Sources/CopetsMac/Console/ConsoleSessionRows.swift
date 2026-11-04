@@ -133,6 +133,7 @@ struct ConsoleSessionRow: View {
 
 struct ConsoleWorkChatRowContent: View {
     var isActive = true
+    var showsHoverFeedback = true
     @ObservedObject var row: SessionRowModel
     let isSelected: Bool
     let onSelect: () -> Void
@@ -141,8 +142,12 @@ struct ConsoleWorkChatRowContent: View {
         let session = row.session
         Button(action: onSelect) {
             HStack(spacing: 9) {
-                HStack(spacing: 4) {
-                    Text(row.listTitle)
+                HStack(spacing: 7) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 13))
+                        .frame(width: 18)
+                        .foregroundStyle(.secondary)
+                    Text(L10n("Work Chat"))
                         .font(WorkbenchTypography.font(for: .navigation))
                         .lineLimit(1)
                 }
@@ -163,8 +168,10 @@ struct ConsoleWorkChatRowContent: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
+        .accessibilityLabel(L10n("Open Work Chat"))
+        .accessibilityIdentifier("console.work-chat." + (session.workId ?? session.id))
         .buttonStyle(SessionSelectionPressStyle())
-        .consoleHoverFeedback()
+        .consoleHoverFeedback(enabled: showsHoverFeedback)
         .listRowBackground(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(isSelected ? Color.primary.opacity(0.055) : Color.clear)

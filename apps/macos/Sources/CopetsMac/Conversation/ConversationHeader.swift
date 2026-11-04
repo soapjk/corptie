@@ -22,7 +22,8 @@ struct DetailHeaderView: View {
             projectStatus: supplementaryData.selectedSessionID == session?.id ? supplementaryData.selectedProjectWorktreeStatus : nil,
             showsHistoricalThread: backendClient.sessionSelectionController.selectedSessionID == session?.id && backendClient.viewingHistoricalThreadId != nil,
             hasPendingScheduledWake: session?.taskId.flatMap { id in entityClient.tasks.first { $0.id == id } }?.hasPendingScheduledWake == true,
-            providers: modelCatalog.agentProviders)
+            providers: modelCatalog.agentProviders,
+            workName: session?.workId.flatMap { AppStateStore.shared.work($0)?.name })
     }
 }
 
@@ -63,17 +64,19 @@ struct SessionConversationHeaderSurface: View {
     private let hasPendingScheduledWake: Bool
     private let providers: [AgentProviderDescriptor]
     private let renderInputs: SessionPageRenderInputs?
+    private let workName: String?
 
     init(session: TaskSession?, historicalWorkspacePath: String? = nil,
          activity: ConversationDetailPresentationActivity? = nil, backendClient: BackendClient,
          projectStatus: ProjectWorktreeStatusResponse?, showsHistoricalThread: Bool,
          hasPendingScheduledWake: Bool, providers: [AgentProviderDescriptor],
-         renderInputs: SessionPageRenderInputs? = nil) {
+         renderInputs: SessionPageRenderInputs? = nil, workName: String? = nil) {
         self.session = session; self.historicalWorkspacePath = historicalWorkspacePath
         self.activity = renderInputs?.activity ?? activity; self.backendClient = backendClient
         self.incomingProjectStatus = projectStatus; self.showsHistoricalThread = showsHistoricalThread
         self.hasPendingScheduledWake = hasPendingScheduledWake; self.providers = providers
         self.renderInputs = renderInputs
+        self.workName = workName ?? renderInputs?.workName
     }
 
     var body: some View {
@@ -295,7 +298,16 @@ struct SessionConversationHeaderSurface: View {
     }
 
     private var selectedTitle: String? {
-        session?.title
+        guard let session else { return nil }
+        return Self.displayTitle(session: session, workName: workName)
+    }
+
+    static func displayTitle(session: TaskSession, workName: String?) -> String {
+        guard session.resolvedSessionKind == .workChat else { return session.title }
+        guard let name = workName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            return L10n("Work Chat")
+        }
+        return "\(name) · \(L10n("Work Chat"))"
     }
 
     private var selectedSessionWorktree: ProjectWorktreeStatus? {

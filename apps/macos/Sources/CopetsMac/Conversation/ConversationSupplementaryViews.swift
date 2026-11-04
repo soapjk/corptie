@@ -162,7 +162,7 @@ struct ChatUsageBar: View {
                 }
             }
             .font(.system(size: 9, weight: .semibold))
-            .fixedSize(horizontal: true, vertical: false)
+            .lineLimit(2)
         }
     }
 

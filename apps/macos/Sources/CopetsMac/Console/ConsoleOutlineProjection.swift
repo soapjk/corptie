@@ -52,7 +52,7 @@ struct ConsoleOutlineWorkRows {
 
 struct ConsoleOutlineProjection {
     let tasksByWorkID: [String: [CorptieTask]]
-    let works: [Work]
+    var works: [Work]
     let processingWorkIDs: Set<String>
     var workRowsByWorkID: [String: ConsoleOutlineWorkRows] = [:]
     var archivedTasksByWorkID: [String: [CorptieTask]] = [:]
@@ -83,7 +83,7 @@ struct ConsoleOutlineComputedGroup: Sendable {
 
 struct ConsoleOutlineComputation: Sendable {
     let key: ConsoleOutlineProjectionKey
-    let workIDs: [String]
+    var workIDs: [String]
     let active: [String: ConsoleOutlineComputedGroup]
     let archived: [String: ConsoleOutlineComputedGroup]
     let archivedSessionIDs: [String: [String]]
@@ -93,7 +93,7 @@ struct ConsoleOutlineComputation: Sendable {
 
 /// Only Sendable values cross the worker boundary; no observable stores or UI models.
 struct ConsoleOutlineSnapshot: Sendable {
-    struct WorkRecord: Sendable { let id: String, title: String, updatedAt: String }
+    struct WorkRecord: Sendable { let id: String }
     let key: ConsoleOutlineProjectionKey
     let tasks: [ConsoleOutlineTaskRecord]
     let works: [WorkRecord]
@@ -109,8 +109,7 @@ struct ConsoleOutlineSnapshot: Sendable {
                 title: searching || key.sort == .name ? $0.title : "", description: searching ? $0.description : "",
                 updatedAt: key.sort == .updated ? $0.updatedAt : "", archived: $0.archived == true, done: $0.lifecycleState == "done")
         }
-        self.works = works.map { WorkRecord(id: $0.id, title: key.sort == .name ? $0.name : "",
-            updatedAt: key.sort == .updated ? $0.updatedAt : "") }
+        self.works = works.map { WorkRecord(id: $0.id) }
         self.sessions = key.sort == .updated ? sessions : []
         self.archivedSessions = key.showsArchive ? archivedSessions : []
     }
@@ -119,11 +118,10 @@ struct ConsoleOutlineSnapshot: Sendable {
         guard !Task.isCancelled else { return nil }
         let query = key.search.trimmingCharacters(in: .whitespacesAndNewlines)
         let byID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        var taskActivity: [String: String] = [:], workActivity: [String: String] = [:]
+        var taskActivity: [String: String] = [:]
         for session in sessions {
             guard let date = session.lastMessageAt else { continue }
             if let id = session.taskId { taskActivity[id] = max(taskActivity[id] ?? "", date) }
-            if let id = session.workId { workActivity[id] = max(workActivity[id] ?? "", date) }
         }
         var rebuilt: Set<String> = []
         func groups(archived: Bool, old: [String: ConsoleOutlineComputedGroup]) -> [String: ConsoleOutlineComputedGroup] {
@@ -174,8 +172,13 @@ struct ConsoleOutlineSnapshot: Sendable {
             archiveIDs[workID, default: []].append(session.id)
         }
         guard !Task.isCancelled else { return nil }
-        let workIDs = key.sort.ordered(works, id: { $0.id }, title: { $0.title }, updatedAt: { $0.updatedAt },
-            activityAt: { workActivity[$0.id] }).map(\.id)
+        // Work positions survive sort, activity and inventory refreshes. Only
+        // Task groups above use the selected ordering; newly seen Works append.
+        let incomingWorkIDs = works.map(\.id)
+        let incoming = Set(incomingWorkIDs)
+        let retained = (previous?.workIDs ?? []).filter { incoming.contains($0) }
+        let known = Set(retained)
+        let workIDs = retained + incomingWorkIDs.filter { !known.contains($0) }
         return ConsoleOutlineComputation(key: key, workIDs: workIDs, active: active, archived: archived,
             archivedSessionIDs: archiveIDs, rebuiltWorkIDs: rebuilt, usedMainThread: Thread.isMainThread)
     }
@@ -193,6 +196,38 @@ final class ConsoleOutlineProjectionStore: ObservableObject {
     private(set) var computationCount = 0
     private(set) var rebuiltWorkIDs: Set<String> = []
     private(set) var lastComputationUsedMainThread = false
+
+    private static let manualWorkOrderKey = "console.workOutline.manualOrder.v1"
+    private let defaults: UserDefaults?
+    private var manualWorkOrder: [String]
+
+    // Tests and transient projections remain in-memory unless a preferences
+    // store is explicitly supplied by the application host.
+    init(defaults: UserDefaults? = nil) {
+        self.defaults = defaults
+        manualWorkOrder = defaults?.stringArray(forKey: Self.manualWorkOrderKey) ?? []
+    }
+
+    /// Reorder only the small Work inventory; reuse all prepared Task rows.
+    @discardableResult
+    func moveWork(_ sourceID: String, relativeTo targetID: String, after: Bool) -> Bool {
+        guard sourceID != targetID,
+              let source = prepared.works.firstIndex(where: { $0.id == sourceID }),
+              prepared.works.contains(where: { $0.id == targetID }) else { return false }
+        var works = prepared.works
+        let moved = works.remove(at: source)
+        guard let target = works.firstIndex(where: { $0.id == targetID }) else { return false }
+        works.insert(moved, at: target + (after ? 1 : 0))
+        let ids = works.map(\.id)
+        guard ids != prepared.works.map(\.id) else { return false }
+        computation?.workIDs = ids
+        var next = prepared
+        next.works = works
+        prepared = next
+        manualWorkOrder = ids
+        defaults?.set(ids, forKey: Self.manualWorkOrderKey)
+        return true
+    }
 
     func prepare(key: ConsoleOutlineProjectionKey, tasks: [CorptieTask], works: [Work], sessions: [TaskSession],
                  archivedRows: [SessionRowModel] = [], isCurrent: () -> Bool = { true }) async {
@@ -212,7 +247,14 @@ final class ConsoleOutlineProjectionStore: ObservableObject {
         let result = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
         guard requested == generation else { return }
         worker = nil
-        guard !Task.isCancelled, isCurrent(), let result else { return }
+        guard !Task.isCancelled, isCurrent(), var result else { return }
+        // A drag may have committed while the background snapshot was running.
+        let incoming = Set(result.workIDs)
+        let preferredOrder = manualWorkOrder.isEmpty ? (computation?.workIDs ?? []) : manualWorkOrder
+        var seen: Set<String> = []
+        let retained = preferredOrder.filter { incoming.contains($0) && seen.insert($0).inserted }
+        let known = Set(retained)
+        result.workIDs = retained + result.workIDs.filter { !known.contains($0) }
         let tasksByID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let worksByID = Dictionary(works.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let archivedByID = Dictionary(archivedRows.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
