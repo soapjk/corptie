@@ -181,18 +181,41 @@ import CorptieClientCore
         hover.leave(item); hover.leaveRail(); await settle()
         XCTAssertNil(hover.preview, "Idle markers derive no emphasized index after exit")
     }
-    func testMovingBetweenMarkersRestartsDwellAndDiscardsOldCompletion() async {
+    func testRailWarmupDoesNotRestartAcrossMarkersAndActiveMovementIsImmediate() async {
         let gate = DwellGate()
         let hover = UserMessageNavigationHover { await gate.wait($0) }
-        let a = group("a"), b = group("b", ordinal: 1)
+        let a = group("a"), b = group("b", ordinal: 1), c = group("c", ordinal: 2)
+        hover.enterRail()
         hover.enter(a); await queued(gate, 1)
-        hover.leave(a); hover.enter(b); await queued(gate, 2)
+        hover.leave(a); hover.enter(b)
+        let warmingCalls = await gate.count()
+        XCTAssertEqual(warmingCalls, 1)
+        XCTAssertFalse(hover.activated)
         await gate.release(); await settle()
-        XCTAssertNil(hover.preview)
-        await gate.release(); await settle()
+        XCTAssertTrue(hover.activated)
         XCTAssertEqual(hover.preview?.id, "b")
+        hover.leave(b); hover.enter(c)
+        XCTAssertEqual(hover.preview?.id, "c", "Activated movement must not wait for another dwell")
+        let activeCalls = await gate.count()
+        XCTAssertEqual(activeCalls, 1)
         hover.close()
+    }
+    func testLeavingRegionResetsActivationAndReentryRequiresNewDwell() async {
+        let gate = DwellGate()
+        let hover = UserMessageNavigationHover { await gate.wait($0) }
+        let item = group("a")
+        hover.enter(item); await queued(gate, 1)
+        await gate.release(); await settle()
+        XCTAssertTrue(hover.activated)
+        hover.leaveRail(); await settle()
+        XCTAssertFalse(hover.activated)
         XCTAssertNil(hover.preview)
+        hover.enter(item); await queued(gate, 2)
+        XCTAssertFalse(hover.activated)
+        XCTAssertNil(hover.preview)
+        await gate.release(); await settle()
+        XCTAssertTrue(hover.activated)
+        hover.close()
     }
     func testSourceToPreviewTransferAndImmediatePanelExit() async {
         let hover = UserMessageNavigationHover()
@@ -205,6 +228,43 @@ import CorptieClientCore
         hover.panelHover(false); await settle()
         XCTAssertNil(hover.preview)
     }
+    func testRailExitClearsPointerEvenWhilePreviewRemainsOpen() {
+        let hover = UserMessageNavigationHover()
+        let item = group("a", ordinal: 5)
+        hover.enter(item, position: 5.2)
+        hover.showImmediately(item)
+        hover.panelHover(true)
+        hover.leaveRail()
+        XCTAssertNil(hover.pointerPosition)
+        XCTAssertFalse(hover.activated)
+        XCTAssertNotNil(hover.preview)
+        hover.showImmediately(group("refreshed-last", ordinal: 12))
+        XCTAssertNil(hover.pointerPosition, "Page refresh must never emphasize the last bar after exit")
+        XCTAssertFalse(hover.activated)
+        hover.close()
+    }
+    func testWidthProfileIsContinuousAndStrictlyDecreasesWithDistance() {
+        for pointer: CGFloat in [0, 2, 2.2, 2.35] {
+            let nearest = Int(pointer.rounded())
+            let widths = (nearest..<(nearest + 6)).map { UserMessageMarkerAppearance.width(index: $0, pointer: pointer) }
+            XCTAssertEqual(widths[0], 26, accuracy: 0.001)
+            for i in 1..<widths.count { XCTAssertGreaterThan(widths[i-1], widths[i]) }
+        }
+        let a = UserMessageMarkerAppearance.width(index: 3, pointer: 2.2)
+        let b = UserMessageMarkerAppearance.width(index: 3, pointer: 2.3)
+        XCTAssertGreaterThan(b, a)
+        XCTAssertLessThan(b - a, 3)
+        XCTAssertEqual(UserMessageMarkerAppearance.width(index: 31, pointer: nil), 10)
+    }
+    func testMarkerPathInterpolatesWithoutChangingItsLayoutBounds() {
+        var marker = UserMessageMarkerShape(width: 10)
+        let bounds = CGRect(x: 0, y: 0, width: 32, height: 2)
+        marker.animatableData = 18
+        XCTAssertEqual(marker.path(in: bounds).boundingRect.width, 18, accuracy: 0.001)
+        marker.animatableData = 26
+        XCTAssertEqual(marker.path(in: bounds).boundingRect.width, 26, accuracy: 0.001)
+    }
+
     func testExplicitClickDoesNotWaitForDwell() {
         let hover = UserMessageNavigationHover()
         hover.showImmediately(group("clicked"))
