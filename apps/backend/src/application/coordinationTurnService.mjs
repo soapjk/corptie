@@ -23,6 +23,9 @@ Handle questions, discussion, planning, explanation, status checks, investigatio
 Use kind=read to query authoritative child state, message history and mailbox data when context is incomplete.
 Only requests that actually require implementation, mutations, running tests, conflict resolution, integration or deployment use
 kind=dispatch with 1-10 items. A request to discuss a change or explain a problem is not itself an execution request.
+Before creating, inspect pending dispatch receipts as well as children: waiting_workspace means accepted and awaiting resources, NOT failed.
+Reuse the original pending creation; do not submit another create after "continue" or a workspace-unblocked report.
+Never infer creation failure merely because targetTaskId is null. If a pending definition needs amendments, explain what is not yet delivered.
 Prefer reusing an eligible direct child for related execution. Never claim a change or test occurred without evidence.
 Use only supplied child IDs and contributor Role IDs. New titles allow Chinese, letters, digits, hyphen and underscore,
 but cannot start with a digit. For create use taskId=null; for send use an existing direct child ID.
@@ -53,8 +56,12 @@ Respond in the user's language. Never wait or poll for child results.`;
  * No second mailbox, journal, persistent policy schema or Provider-name checks.
  */
 export class CoordinationTurnService {
-  constructor({ store, registry, planner, dispatch, emitEvent = () => {}, resolveReference, onTerminal = () => {} }) {
+  constructor({ store, registry, planner, dispatch, emitEvent = () => {}, resolveReference, onTerminal = () => {},
+    timing = {}, now = () => Date.now(), schedule = setTimeout, cancelTimer = clearTimeout }) {
     Object.assign(this, { store, registry, planner, dispatch, emitEvent, resolveReference, onTerminal });
+    this.timing = { callMs: 120_000, totalMs: 300_000, warningMs: 20_000, ...timing };
+    for (const value of Object.values(this.timing)) if (!Number.isInteger(value) || value < 1) throw new TypeError("Invalid coordination timing policy.");
+    Object.assign(this, { now, schedule, cancelTimer });
     this.readOnly = new CoordinationReadService({store,mailbox:dispatch.mailbox});
     this.active = new Map();
     this.nativeAdmissions = new Set();
@@ -156,10 +163,26 @@ export class CoordinationTurnService {
       this.store.upsertSession({ ...current,
         provider: reference.providerId, cwd: current.external?.cwd,
         status: status === "completed" ? "complete" : status, progress: status === "running" ? 0.5 : 1,
+        activityStatus: status === "running" ? "协调规划" : null,
         capabilities: { ...current.capabilities, canInterrupt: status === "running" },
         external: { ...current.external, activeTurnId: status === "running" ? turnId : null,
-          lastSettledTurnId: status === "running" ? current.external?.lastSettledTurnId : turnId,
-          activityStatus: status === "running" ? "协调规划" : null } });
+          lastSettledTurnId: status === "running" ? current.external?.lastSettledTurnId : turnId } });
+    };
+    let phase = "planning", planningRound = 0, successfulReads = 0, callBudgetMs = 0;
+    let admissionStarted = false, admissionReceipt = null;
+    const progress = (stage, label) => {
+      if (controller.signal.aborted || controller.policyChanged) return;
+      this.assertCurrent(reference, task);
+      const current = this.store.getSession(reference.sessionId);
+      this.store.upsertSession({ ...current, activityStatus: label });
+      this.emitEvent("SessionCoordinationProgress", { turnId, stage, round: planningRound, label }, { sessionId: reference.sessionId });
+    };
+    const deadline = this.now() + this.timing.totalMs;
+    const checkDeadline = () => {
+      controller.signal.throwIfAborted();
+      if (controller.policyChanged) throw failure("COORDINATION_POLICY_CHANGED", "协调开关在规划期间变化，本轮未继续派发。");
+      this.assertCurrent(reference, task);
+      if (this.now() >= deadline) throw failure("COORDINATION_TOTAL_TIMEOUT", "整轮协调规划已达到时间预算。");
     };
     try {
       this.store.runInTransaction(() => {
@@ -195,29 +218,56 @@ export class CoordinationTurnService {
       const payload = { task: { id: task.id, title: task.title, description: String(task.description??"").slice(0,3000),
         acceptanceCriteria: String(task.acceptance_criteria??"").slice(0,3000),
         definitionTruncated:String(task.description??"").length>3000 || String(task.acceptance_criteria??"").length>3000 }, contributors, children,
-        dispatches: this.dispatch.listForParent(task.id).map(row=>({...row,errorMessage:String(row.errorMessage??"").slice(0,300)})),
+        dispatches: this.dispatch.listForParent(task.id).map(row=>{
+          const request = JSON.parse(this.dispatch.get(row.dispatchId)?.request_json ?? "{}");
+          return {...row, action:request.action, title:request.creation?.title ?? null,
+            description:String(request.creation?.description??"").slice(0,1000), errorMessage:String(row.errorMessage??"").slice(0,300)};
+        }),
         history: history.reverse().map(item => ({ role: item.type, text: String(item.text ?? "").slice(0, 1800),
           truncated: item.textTruncated || String(item.text ?? "").length > 1800 })),
         sourceType: context.source?.type ?? "unknown",
         message: typeof message === "string" ? message : message.text };
       const reads=[];let readRounds=0,readCalls=0,readBytes=0,plan;
-      const deadline=Date.now()+60000;
       while(true){
+      checkDeadline();
+      phase = "planning"; planningRound++;
+      callBudgetMs = Math.min(this.timing.callMs, deadline - this.now());
+      progress("planning", planningRound === 1 ? "正在规划" : "正在根据查询结果规划");
       const render=()=>JSON.stringify({...payload,readTools:COORDINATION_READ_TOOLS,
         readBudget:{remainingRounds:2-readRounds,remainingCalls:6-readCalls},readResults:reads});
       while(Buffer.byteLength(render())>64*1024 && payload.history.length){payload.history.shift();payload.historyTruncated=true;}
       const prompt=render();
       if (Buffer.byteLength(prompt) > 64 * 1024) throw failure("COORDINATION_CONTEXT_TOO_LARGE", "协调输入超出预算，未派发。");
-      const result = await this.planner.run({ purpose: "session-coordination-plan", cwd: session.external?.cwd ?? process.cwd(),
+      const callStartedAt = this.now();
+      let warning;
+      let result;
+      try {
+        warning = this.schedule(() => {
+          try { progress("waiting_model", "正在等待模型返回，可停止"); } catch { /* The main path checks retirement. */ }
+        }, this.timing.warningMs);
+        warning?.unref?.();
+        result = await this.planner.run({ purpose: "session-coordination-plan", cwd: session.external?.cwd ?? process.cwd(),
         priority: context.source?.type === "mailbox_event" ? "background" : "interactive",
         prompt, developerInstructions: instructions, preferredProviderId: reference.providerId,
         preferredModel: session.external?.currentModel ?? null, preferredReasoning: session.external?.currentReasoningLevel ?? null,
         allowProviderFallback: false, executionPolicy: "no-tools", permissionProfile: "read-only",
-        outputSchema: COORDINATION_PLAN_SCHEMA, signal: controller.signal, timeoutMs:Math.max(1,deadline-Date.now()) });
+        outputSchema: COORDINATION_PLAN_SCHEMA, signal: controller.signal, timeoutMs: callBudgetMs });
+      } catch (error) {
+        if (error.code === "BACKGROUND_TIMEOUT" || this.now() - callStartedAt >= callBudgetMs) {
+          checkDeadline();
+          throw failure("COORDINATION_MODEL_TIMEOUT", `第 ${planningRound} 轮模型规划超时（本次预算 ${Math.ceil(callBudgetMs / 1000)} 秒）。`);
+        }
+        throw error;
+      } finally {
+        this.cancelTimer(warning);
+        console.info("[coordination-performance]", JSON.stringify({ turnId, phase: "planning", round: planningRound,
+          callBudgetMs, elapsedMs: this.now() - callStartedAt, remainingMs: Math.max(0, deadline - this.now()) }));
+      }
+      checkDeadline();
+      if (this.now() - callStartedAt >= callBudgetMs) throw failure("COORDINATION_MODEL_TIMEOUT", `第 ${planningRound} 轮模型规划超时。`);
       controller.signal.throwIfAborted();
       if (controller.policyChanged) throw failure("COORDINATION_POLICY_CHANGED", "协调开关在规划期间变化，本轮未继续派发。");
       this.assertCurrent(reference, task);
-      if(Date.now()>deadline)throw failure("COORDINATION_READ_TIMEOUT","协调查询超时，请缩小查询范围。");
       if (typeof result.text !== "string" || Buffer.byteLength(result.text) > 192 * 1024) throw failure("COORDINATION_PLAN_INVALID", "协调输出超出预算，未派发。");
       try { plan = JSON.parse(result.text);
         // Existing one-step planner adapters may omit the new empty read list.
@@ -232,11 +282,18 @@ export class CoordinationTurnService {
       if(plan.kind!=="read")break;
       if(readRounds>=2 || readCalls+plan.queries.length>6)throw failure("COORDINATION_READ_LIMIT","已达到本轮只读查询上限，请缩小问题范围。");
       readRounds++;
+      phase = "reading";
+      progress("reading", "正在查询子任务");
       for(const query of plan.queries){
-        controller.signal.throwIfAborted();this.assertCurrent(reference,task);readCalls++;
+        checkDeadline();readCalls++;
+        const readStartedAt = this.now();
         let output;
         try{output=this.readOnly.execute(reference,task.id,query);}
         catch(error){output={tool:query.tool,referenceOnly:true,errorCode:error.code??"COORDINATION_READ_FAILED",message:"查询未成功；请核对目标和范围，不要编造结果。"};}
+        checkDeadline();
+        if (!output.errorCode) successfulReads++;
+        console.info("[coordination-performance]", JSON.stringify({ turnId, phase: "reading", tool: query.tool,
+          elapsedMs: this.now() - readStartedAt, errorCode: output.errorCode ?? null }));
         const size=Buffer.byteLength(JSON.stringify(output));
         if(readBytes+size>24000)output={tool:query.tool,referenceOnly:true,errorCode:"COORDINATION_READ_BUDGET_EXCEEDED",message:"请根据已有结果汇总或缩小范围。"};
         else readBytes+=size;
@@ -244,13 +301,17 @@ export class CoordinationTurnService {
         this.emitEvent("SessionCoordinationRead",{turnId,tool:query.tool,taskId:query.taskId,sessionId:query.sessionId,errorCode:output.errorCode??null},{sessionId:reference.sessionId});
       }
       }
+      checkDeadline();
       let answer = plan.reply;
       if (plan.kind === "cleanup") {
+        phase = "cleanup"; progress("cleanup", "正在受理清理"); admissionStarted = true;
         const deleted = await this.dispatch.collaboration.deleteChildTask({ sessionId: reference.logicalSessionId ?? reference.sessionId,
           providerBindingId: reference.bindingId }, session.agentId, { childTaskId: plan.items[0].taskId, idempotencyKey: `${turnId}:cleanup` });
+        admissionReceipt = deleted.operation?.operationId ?? "清理请求已受理";
         answer = `子任务安全清理请求已受理；以删除作业的实际状态为准。${deleted.operation?.operationId ?? ""}`;
       }
       if (plan.kind === "dispatch") {
+        phase = "dispatch"; progress("dispatch", "正在受理派发"); admissionStarted = true;
         const admitted = this.dispatch.acceptDispatch({ sessionId: reference.logicalSessionId ?? reference.sessionId,
           providerBindingId: reference.bindingId }, session.agentId, { items: plan.items.map((item, index) => ({
             action: item.action, text: item.text, idempotencyKey: `${turnId}:${index}`,
@@ -258,8 +319,11 @@ export class CoordinationTurnService {
               creation: { title: item.title, description: item.text, agentId: item.agentId }
             })
           })) });
-        answer = `已受理 ${admitted.dispatches.length} 项子任务指令，指令正在准备派发；实际启动或阻塞原因会另行回报。\n`
-          + admitted.dispatches.map(row => `${row.dispatchId}：${row.status}`).join("\n");
+        admissionReceipt = admitted.dispatches.map(row => row.dispatchId).join("、");
+        const reusedCount = admitted.dispatches.filter(row => row.reused).length;
+        answer = reusedCount ? `新增受理 ${admitted.dispatches.length - reusedCount} 项指令，复用 ${reusedCount} 项原请求；以实际回执为准。\n`
+          : `已受理 ${admitted.dispatches.length} 项子任务指令，指令正在准备派发；实际启动或阻塞原因会另行回报。\n`;
+        answer +=  admitted.dispatches.map(row => `${row.dispatchId}：${row.status}${row.reused ? `；${row.reuseMessage}` : ""}`).join("\n");
       }
       const item = { id: `${turnId}:result`, turnId, bindingId: reference.bindingId, type: "agentMessage",
         presentationRole: "final_answer", text: answer, status: "completed", turnStatus: "completed", createdAt: new Date().toISOString(),
@@ -270,7 +334,15 @@ export class CoordinationTurnService {
       });
       this.emitEvent("SessionCoordinationCompleted", { turnId, item, hasAgentMessage: Boolean(answer.trim()) }, { sessionId: reference.sessionId });
       return receipt;
-    } catch (error) {
+    } catch (caught) {
+      let error = caught;
+      if (["COORDINATION_MODEL_TIMEOUT", "COORDINATION_TOTAL_TIMEOUT"].includes(error.code)) {
+        const outcome = admissionReceipt ? `操作已受理，回执：${admissionReceipt}；请核实状态，不要重复派发。`
+          : admissionStarted ? "已尝试受理操作，请先核对实际回执，不要重复派发。" : "本轮尚未受理新的派发或清理操作。";
+        error = failure(error.code, `${error.message}已成功完成 ${successfulReads} 次只读查询。${outcome}`);
+      }
+      console.info("[coordination-performance]", JSON.stringify({ turnId, phase, round: planningRound,
+        errorCode: error.code ?? "COORDINATION_FAILED", successfulReads, admissionStarted, admissionReceipt }));
       const status = controller.signal.aborted ? "cancelled" : "failed";
       saveTurn(status, null, error);
       const item = { id: `${turnId}:failure`, turnId, type: "system", title: "协调执行未完成",

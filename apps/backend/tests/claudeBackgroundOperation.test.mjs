@@ -56,3 +56,31 @@ test("unsupported permissions and an already-aborted request never launch a Quer
   controller.abort();
   await assert.rejects(runClaudeBackgroundPrompt({ signal: controller.signal }, ports));
 });
+
+test('deadline preserves BACKGROUND_TIMEOUT and releases the Claude operation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let closed = 0;
+  const result = runClaudeBackgroundPrompt({ timeoutMs: 120000, executionPolicy: 'no-tools' }, {
+    environment: () => ({}),
+    queryFactory: request => ({
+      async *[Symbol.asyncIterator]() {
+        await new Promise(resolve => request.options.abortController.signal.addEventListener('abort', resolve, { once: true }));
+        request.options.abortController.signal.throwIfAborted();
+      }, close() { closed++; }
+    })
+  });
+  const rejected = assert.rejects(result, { code: 'BACKGROUND_TIMEOUT', phase: 'wait_completion', timeoutMs: 120000 });
+  t.mock.timers.tick(120000); await rejected; assert.equal(closed, 1);
+});
+
+test('explicit cancellation preserves the caller reason and closes the Claude operation', async () => {
+  const controller = new AbortController(), reason = Object.assign(new Error('Stopped'), { code: 'BACKGROUND_CANCELLED' });
+  let closed = 0;
+  await assert.rejects(runClaudeBackgroundPrompt({ signal: controller.signal }, {
+    environment: () => ({}), queryFactory: () => ({
+      async *[Symbol.asyncIterator]() { controller.abort(reason); throw new Error('SDK aborted'); },
+      close() { closed++; }
+    })
+  }), error => error === reason);
+  assert.equal(closed, 1);
+});
