@@ -384,6 +384,64 @@ struct WorktreeIntegrationCandidateTests {
     }
 
     @MainActor
+    @Test func liveJobEventsFinishPausedPagesAndIgnoreOlderSnapshots() async throws {
+        let paused = Self.cancelableJobEnvelope
+            .replacingOccurrences(of: "\"status\":\"queued\"", with: "\"status\":\"paused\"")
+        let completed = Self.jobEnvelope
+            .replacingOccurrences(of: "\"status\":\"queued\"", with: "\"status\":\"completed\"")
+        let recorder = CandidateRequestRecorder(startResponses: [(202, paused)])
+        let client = makeClient(recorder)
+        client.selection.repositoryId = "repository:one"
+        await client.prepareFreshPlan()
+        #expect(await client.confirmPlan())
+        #expect(client.job?.status == "paused")
+        #expect(client.job?.shouldPoll == false)
+        let reads = recorder.paths.count
+        #expect(await client.receiveJobEvent("{\"payload\":\(completed)}"))
+        #expect(client.job?.status == "completed")
+        #expect(client.job?.canCancel == false)
+        #expect(await client.receiveJobEvent("{\"payload\":\(paused)}"))
+        #expect(client.job?.status == "completed")
+        #expect(recorder.paths.count == reads, "A complete event must not trigger another Job fetch or a Git scan")
+    }
+
+    @MainActor
+    @Test func jobEventsNeverReplaceAnotherRepositoryAndRejectMalformedPayloads() async throws {
+        let recorder = CandidateRequestRecorder(startResponses: [(202, Self.cancelableJobEnvelope)])
+        let client = makeClient(recorder)
+        client.selection.repositoryId = "repository:one"
+        await client.prepareFreshPlan()
+        #expect(await client.confirmPlan())
+        let unrelated = Self.jobEnvelope.replacingOccurrences(of: "repository:one", with: "repository:other")
+        #expect(await client.receiveJobEvent("{\"payload\":\(unrelated)}"))
+        #expect(client.job?.repositoryId == "repository:one")
+        #expect(await client.receiveJobEvent("invalid JSON") == false)
+        #expect(client.job?.repositoryId == "repository:one")
+    }
+
+    @MainActor
+    @Test func retainedNumericProcessCodesCannotBlockCompletionEventsOrRepositoryDecoding() async throws {
+        let cases: [(String, String?)] = [("128", "PROCESS_EXIT_128"), ("\"128\"", "PROCESS_EXIT_128"),
+            ("\"GIT_INDEX_LOCK_BUSY\"", "GIT_INDEX_LOCK_BUSY"), ("null", nil)]
+        for (raw, expected) in cases {
+            let completed = Self.jobEnvelope
+                .replacingOccurrences(of: "\"status\":\"queued\"", with: "\"status\":\"completed\"")
+                .replacingOccurrences(of: "\"conflictAutomation\":null", with:
+                    "\"conflictAutomation\":{\"status\":\"blocked\",\"scopeWorktreeIds\":[],\"completedWorktreeIds\":[],\"conflictFiles\":[],\"failureCode\":\(raw),\"failureReason\":\"index lock\"}")
+            let envelope = try JSONDecoder().decode(WorktreeIntegrationJobEnvelope.self, from: Data(completed.utf8))
+            #expect(envelope.job.conflictAutomation?.failureCode == expected)
+            let recorder = CandidateRequestRecorder(startResponses: [(202, Self.cancelableJobEnvelope)])
+            let client = makeClient(recorder)
+            client.selection.repositoryId = "repository:one"
+            await client.prepareFreshPlan()
+            #expect(await client.confirmPlan())
+            #expect(await client.receiveJobEvent("{\"payload\":\(completed)}"))
+            #expect(client.job?.status == "completed")
+            #expect(client.job?.conflictAutomation?.failureCode == expected)
+        }
+    }
+
+    @MainActor
     private func makeClient(_ recorder: CandidateRequestRecorder) -> WorktreeManagementClient {
         CandidateURLProtocol.recorder = recorder
         let configuration = URLSessionConfiguration.ephemeral

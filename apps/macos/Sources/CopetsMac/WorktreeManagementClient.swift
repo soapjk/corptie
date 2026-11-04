@@ -42,6 +42,7 @@ final class WorktreeManagementClient: ObservableObject {
     private var repositoryListMilliseconds = 0
     private var lastAutomaticRefreshAt: Date?
     private var gitHubPushInspectionTask: Task<Void, Never>?
+    private var eventRecoveryInFlight = false
     private let logger = Logger(subsystem: "com.corptie.mac", category: "WorktreeLoad")
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -146,6 +147,41 @@ final class WorktreeManagementClient: ObservableObject {
             return
         }
         await loadRepository(repositoryId, force: true)
+    }
+
+    /// The existing event stream owns live updates, including paused Jobs.
+    /// Decode once off the UI thread and reuse the result for notifications.
+    func receiveJobEvent(_ data: String) async -> Bool {
+        let next = await Task.detached(priority: .utility) {
+            struct Envelope: Decodable { let payload: WorktreeIntegrationJobEnvelope }
+            guard let bytes = data.data(using: .utf8) else { return nil as WorktreeIntegrationJob? }
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try? decoder.decode(Envelope.self, from: bytes).payload.job
+        }.value
+        guard let next else { return false }
+        if let notification = next.notification { OperationNotificationManager.shared.observe(notification) }
+        detailCache.removeValue(forKey: next.repositoryId)
+        guard selection.repositoryId == next.repositoryId else { return true }
+        guard !rejectsJobSnapshot(next) else { return true }
+        let becameTerminal = ["completed", "canceled"].contains(next.status)
+            && (job?.id != next.id || job?.status != next.status)
+        if job != next { applyJob(next) }
+        if becameTerminal, detail != nil {
+            // Publish completion before asynchronously refreshing Git inventory.
+            Task { [weak self] in
+                guard let self, self.selection.repositoryId == next.repositoryId else { return }
+                await self.recoverAfterEventGap()
+            }
+        }
+        return true
+    }
+
+    func recoverAfterEventGap() async {
+        guard selection.repositoryId != nil, !isMutating, !eventRecoveryInFlight else { return }
+        eventRecoveryInFlight = true
+        defer { eventRecoveryInFlight = false }
+        await refreshSelected()
     }
 
     @discardableResult
@@ -999,11 +1035,14 @@ final class WorktreeManagementClient: ObservableObject {
                 queryItems: force ? [URLQueryItem(name: "forceFresh", value: "true")] : []
             )
             async let serviceRequest: ProjectDevelopmentServiceStatus? = try? get("projects/\(id)/development-service")
-            let response = try await detailRequest
+            var response = try await detailRequest
             let detailMilliseconds = milliseconds(since: startedAt)
             guard generation == detailGeneration, selection.repositoryId == id else { return }
-            detail = response
             applyJob(response.latestJob)
+            // An earlier inventory read must not cache an older Job over a
+            // terminal event that arrived while that read was in flight.
+            response = ManagedRepositoryDetail(repository: response.repository, project: response.project, latestJob: job)
+            detail = response
             selection.reconcile(repositories: repositories, worktrees: response.project.worktrees)
             listLoadState = .loaded
             errorMessage = nil
@@ -1062,10 +1101,21 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     private func applyJob(_ nextJob: WorktreeIntegrationJob?) {
+        guard !rejectsJobSnapshot(nextJob) else { return }
         let shouldRestartPolling = nextJob?.shouldPoll == true
             && (job?.id != nextJob?.id || job?.shouldPoll != true)
         job = nextJob
         if shouldRestartPolling { jobPollingGeneration &+= 1 }
+    }
+
+    private func rejectsJobSnapshot(_ next: WorktreeIntegrationJob?) -> Bool {
+        guard let current = job, current.repositoryId == selection.repositoryId else { return false }
+        guard let next else { return true }
+        guard current.repositoryId == next.repositoryId else { return false }
+        if current.id != next.id { return current.createdAt > next.createdAt }
+        return current.updatedAt > next.updatedAt
+            || (["completed", "canceled"].contains(current.status)
+                && !["completed", "canceled"].contains(next.status))
     }
 
     private func scheduleGitHubPushInspection() {

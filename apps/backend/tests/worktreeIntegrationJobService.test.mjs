@@ -2156,16 +2156,20 @@ test("idle Session without a successful instruction and Turn does not promote an
   assert.equal(calls.some(call => call.startsWith("merge:integration:")), false);
 });
 
-test("presentation normalizes legacy numeric audit codes for strict clients", () => {
-  const presented = presentJob({
+test("presentation normalizes legacy numeric audit and conflict codes without rewriting stored history", () => {
+  const stored = {
     id: "worktree_integration:legacy-audit",
     status: "paused",
     phase: "failed",
     details: {
       audit: [{ at: "2026-10-14T08:02:57.000Z", event: "execution_paused", code: 128 }],
-      plan: { items: [] }
+      plan: { items: [] },
+      conflictAutomation: { status: "blocked", failureCode: 128, failureReason: "index lock" }
     }
-  });
+  };
+  const presented = presentJob(stored);
+  assert.equal(presented.conflictAutomation.failureCode, "PROCESS_EXIT_128");
+  assert.equal(stored.details.conflictAutomation.failureCode, 128);
   assert.equal(presented.audit[0].code, "PROCESS_EXIT_128");
   assert.doesNotThrow(() => JSON.stringify(presented));
 });

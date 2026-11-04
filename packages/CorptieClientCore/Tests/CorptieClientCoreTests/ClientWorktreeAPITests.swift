@@ -3,6 +3,17 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func conflictAutomationAcceptsLegacyNumericProcessCodesWithoutLosingItsDiagnostic() throws {
+        let cases: [(String, String?)] = [("128", "PROCESS_EXIT_128"), ("\"128\"", "PROCESS_EXIT_128"),
+            ("\"MERGE_CONFLICT\"", "MERGE_CONFLICT"), ("null", nil)]
+        for (raw, expected) in cases {
+            let data = Data("{\"status\":\"blocked\",\"scopeWorktreeIds\":[],\"completedWorktreeIds\":[],\"conflictFiles\":[],\"failureCode\":\(raw),\"failureReason\":\"full index lock diagnostic\"}".utf8)
+            let state = try JSONDecoder().decode(ClientWorktreeConflictAutomation.self, from: data)
+            #expect(state.failureCode == expected)
+            #expect(state.failureReason == "full index lock diagnostic")
+        }
+    }
+
     @Test func recoveryActionsAndCompleteDiagnosticsSurviveDecoding() throws {
         var value = try JSONSerialization.jsonObject(with: Data(#"{"id":"job:1","repositoryId":"repo:one","status":"paused","phase":"failed","planFingerprint":"fingerprint","createdAt":"now","updatedAt":"now","availableActions":["repreflight","cancel"],"recovery":{"kind":"repreflight","message":"Review a fresh plan"},"plan":{"repositoryId":"repo:one","mainWorktreeId":"main","mainPath":"/repo","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":1,"total":3,"fraction":0.333}}"#.utf8)) as! [String: Any]
         let full = String(repeating: "诊断 👨‍👩‍👧‍👦\n", count: 3_000) + "LAST_DIAGNOSTIC"
