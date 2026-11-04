@@ -90,7 +90,8 @@ struct ConversationNativeRowBuilder {
                 authoritativeStatus: item.userMessageStatus,
                 legacyStatus: item.status,
                 queuePosition: item.queuePosition,
-                processingError: item.processingError
+                processingError: item.processingError,
+                showsPendingAsProcessing: true
             ) : nil
             images = (item.images ?? []).map { image in
                 ChatTimelineImage(

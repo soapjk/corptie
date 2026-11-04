@@ -85,7 +85,7 @@ public enum ConversationTimeline {
         var hasFinalReply: Bool = false
     }
 
-public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item]) -> [ConversationEntry<Item>] {
+public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item], showsPendingInputAsProcessing: Bool = false) -> [ConversationEntry<Item>] {
     let ordered = orderedItems(items)
     guard !ordered.isEmpty else { return [] }
 
@@ -198,7 +198,8 @@ public static func makeEntries<Item: ConversationTimelineItem>(from items: [Item
             : "\(sourceTurnId):display-segment:\(segmentIndex)"
         entries.append(contentsOf: entriesForTurn(
             bucket.items,
-            displayTurnId: displayTurnId
+            displayTurnId: displayTurnId,
+            showsPendingInputAsProcessing: showsPendingInputAsProcessing
         ))
     }
     return entries
@@ -327,7 +328,8 @@ private static func isFixedUTCISO8601Timestamp(_ value: String, length: Int) -> 
 
 public static func entriesForTurn<Item: ConversationTimelineItem>(
     _ items: [Item],
-    displayTurnId: String? = nil
+    displayTurnId: String? = nil,
+    showsPendingInputAsProcessing: Bool = false
 ) -> [ConversationEntry<Item>] {
     let userMessages = items.filter {
         ConversationPresentationKind.resolve(type: $0.type, presentationRole: $0.presentationRole) == .userMessage
@@ -410,14 +412,16 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         }
     }
     flushProcessBuffer(isLastInTurn: true)
-    // The authoritative delivery state can start a turn before the Provider
-    // emits any visible content. Reuse the first process row's identity without
-    // inventing a source message, tool step or persisted placeholder.
+    // Processing and opted-in pending user feedback can precede visible
+    // Provider content. Reuse a process row without rewriting source lifecycle
+    // or creating a persisted message/tool step.
     if lastProcessIndex == nil, !isTerminalTurn, !baseTurnId.isEmpty,
        let input = items.last(where: { item in
-           guard UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
-               legacyStatus: item.timelineLegacyMessageStatus) == .processing else { return false }
+           let state = UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
+               legacyStatus: item.timelineLegacyMessageStatus)
            let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+           guard state == .processing || (showsPendingInputAsProcessing && kind == .userMessage
+               && (state == .queued || state == .preparing)) else { return false }
            return kind == .userMessage || kind == .systemEvent || kind == .automationEvent
                || (kind == .collaborationMessage && item.collaborationDirection?.lowercased() == "inbound")
        }) {
