@@ -130,7 +130,10 @@ final class UserMessageNavigationState {
 final class UserMessageNavigationHover {
     static let delay: Duration = .milliseconds(600)
     private(set) var preview: UserMessageNavigationGroup?
-    private var markerID: String?
+    private(set) var activated = false
+    private(set) var pointerPosition: CGFloat?
+    private var insideRail = false
+    private var nearest: UserMessageNavigationGroup?
     private var insidePanel = false
     private var pending: Task<Void, Never>?
     private var exitCheck: Task<Void, Never>?
@@ -139,28 +142,33 @@ final class UserMessageNavigationHover {
     init(wait: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.wait = wait
     }
-    func enter(_ group: UserMessageNavigationGroup) {
+    func enterRail() {
         exitCheck?.cancel()
-        markerID = group.id
-        pending?.cancel()
-        guard preview?.id != group.id else { return }
-        preview = nil
+        insideRail = true
+        guard !activated, pending == nil else { return }
         let wait = wait
         pending = Task { [weak self] in
             do { try await wait(Self.delay) } catch { return }
-            guard !Task.isCancelled, let self, self.markerID == group.id else { return }
+            guard !Task.isCancelled, let self, self.insideRail else { return }
             self.pending = nil
-            self.preview = group
+            self.activated = true
+            self.preview = self.nearest
         }
     }
+    func enter(_ group: UserMessageNavigationGroup, position: CGFloat? = nil) {
+        pointerPosition = position ?? CGFloat(group.ordinal)
+        nearest = group
+        enterRail()
+        if activated, preview?.id != group.id { preview = group }
+    }
     func leave(_ group: UserMessageNavigationGroup) {
-        guard markerID == group.id else { return }
-        markerID = nil
-        pending?.cancel(); pending = nil
-        reconcileExit()
+        // Crossing rows or their boundaries stays within the same activated
+        // region. Only the outer rail/panel boundary ends this interaction.
     }
     func leaveRail() {
-        markerID = nil
+        pointerPosition = nil
+        activated = false
+        insideRail = false
         pending?.cancel(); pending = nil
         reconcileExit()
     }
@@ -171,20 +179,46 @@ final class UserMessageNavigationHover {
     func showImmediately(_ group: UserMessageNavigationGroup) {
         pending?.cancel(); pending = nil
         exitCheck?.cancel()
+        if insideRail { activated = true }
+        nearest = group
         preview = group
     }
     func close() {
         pending?.cancel(); pending = nil
         exitCheck?.cancel(); exitCheck = nil
-        markerID = nil; insidePanel = false; preview = nil
+        insideRail = false; insidePanel = false; activated = false
+        pointerPosition = nil; nearest = nil; preview = nil
     }
     private func reconcileExit() {
         exitCheck?.cancel()
         exitCheck = Task { [weak self] in
             await Task.yield()
-            guard !Task.isCancelled, let self, self.markerID == nil, !self.insidePanel else { return }
+            guard !Task.isCancelled, let self, !self.insideRail, !self.insidePanel else { return }
             self.close()
         }
+    }
+}
+
+enum UserMessageMarkerAppearance {
+    static func width(index: Int, pointer: CGFloat?) -> CGFloat {
+        guard let pointer else { return 10 }
+        // Normalize to the closest bar, keeping it longest even between centers.
+        // An exponential falloff has no equal-length stepped plateaus.
+        let nearestDistance = abs(pointer - pointer.rounded())
+        let distance = max(0, abs(CGFloat(index) - pointer) - nearestDistance)
+        return 6 + 20 * CGFloat(exp(-Double(distance) * 0.42))
+    }
+}
+
+/// Width interpolates in the painted path, not SwiftUI's layout negotiation.
+struct UserMessageMarkerShape: Shape {
+    var width: CGFloat
+    var animatableData: CGFloat {
+        get { width }
+        set { width = newValue }
+    }
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY, width: min(rect.width, max(0, width)), height: rect.height))
     }
 }
 
@@ -199,24 +233,22 @@ struct UserMessageNavigationRail: View {
     @State private var hover = UserMessageNavigationHover()
 
     var body: some View {
-        let emphasizedIndex = hover.preview?.ordinal
+        let pointer = hover.activated ? hover.pointerPosition : nil
+        let emphasizedIndex = pointer.map { max(0, min(state.groups.count - 1, Int($0.rounded()))) }
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(state.showsNavigation ? state.groups : []) { group in
                     Button {
                         if group.items.count == 1 { jump(group.items[0].id) }
                         else { hover.showImmediately(group) }
                     } label: {
-                        Rectangle().fill(Color.primary.opacity(group.ordinal == emphasizedIndex ? 0.9 : 0.18))
-                            .frame(width: emphasizedIndex.map { markerWidth(distance: abs(group.ordinal - $0)) } ?? 20, height: 2)
-                            // Animate only this tiny painted bar. The outer hit
-                            // area and the conversation layout stay fixed.
-                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: emphasizedIndex)
-                            .frame(width: 32, height: 8, alignment: .leading)
+                        let width = UserMessageMarkerAppearance.width(index: group.ordinal, pointer: pointer)
+                        UserMessageMarkerShape(width: width)
+                            .fill(Color.primary.opacity(group.ordinal == emphasizedIndex ? 0.9 : 0.18))
+                            .frame(width: 32, height: 2, alignment: .leading)
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: width)
+                            .frame(width: 32, height: 10, alignment: .leading)
                             .contentShape(Rectangle())
-                    }
-                    .onHover { inside in
-                        if inside { hover.enter(group) } else { hover.leave(group) }
                     }
                     .accessibilityLabel(group.items.first?.preview.isEmpty == false ? group.items[0].preview : "历史用户消息")
                     // macOS uses the source anchor edge; trailing presents right.
@@ -227,16 +259,31 @@ struct UserMessageNavigationRail: View {
                     }
                 }
             }
+            .onContinuousHover { phase in
+                if case .active(let point) = phase, state.showsNavigation, !state.groups.isEmpty {
+                    // Content-local coordinates include scrolling. Continuous,
+                    // contiguous rows select the nearest bar in constant time.
+                    guard point.x >= 0, point.x <= 32, point.y >= 0,
+                          point.y < CGFloat(state.groups.count) * 10 else {
+                        hover.leaveRail(); return
+                    }
+                    let index = Int(point.y / 10)
+                    hover.enter(state.groups[index], position: point.y / 10 - 0.5)
+                } else if case .ended = phase {
+                    hover.leaveRail()
+                }
+            }
         }
-        .frame(width: 32).frame(maxHeight: 360)
+        .frame(width: 32).frame(maxHeight: min(360, CGFloat(state.groups.count) * 10))
         .opacity(state.showsNavigation ? 1 : 0)
         .allowsHitTesting(active && state.showsNavigation)
         .background { UserMessageNavigationVisibilityBridge { visibility = $0 } }
         .disabled(!active)
         .font(.system(size: 9, weight: .semibold))
         .buttonStyle(.plain)
-        .padding(.vertical, 4)
-        .onHover { inside in if !inside { hover.leaveRail() } }
+        .onHover { inside in
+            if inside { hover.enterRail() } else { hover.leaveRail() }
+        }
         .task(id: "\(baseURL.absoluteString):\(sessionID):\(active):\(visibility.visible):\(visibility.activation)") {
             guard active, visibility.visible else { state.stop(); hover.close(); return }
             state.activate(baseURL: baseURL, sessionID: sessionID)
@@ -252,14 +299,6 @@ struct UserMessageNavigationRail: View {
             }
         }
         .onDisappear { hover.close(); state.stop() }
-    }
-    private func markerWidth(distance: Int) -> CGFloat {
-        switch distance {
-        case 0: 26
-        case 1, 2: 20
-        case 3: 14
-        default: 10
-        }
     }
     private var previewPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
