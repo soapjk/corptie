@@ -1,6 +1,37 @@
 import SwiftUI
 import CorptieConversation
 
+/// Page-local shell: match the console's flat, full-height columns without
+/// coupling scene navigation to its mode, split-controller or saved widths.
+struct ScenePageColumns<Navigation: View, Detail: View>: View {
+    let showsNavigation: Bool
+    @ViewBuilder let navigation: () -> Navigation
+    @ViewBuilder let detail: (Bool) -> Detail
+
+    var body: some View {
+        GeometryReader { geometry in
+            let inline = geometry.size.width >= 820
+            HStack(spacing: 0) {
+                if inline && showsNavigation {
+                    navigation()
+                        .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
+                        // ConsoleSplitController's default work-outline width.
+                        .frame(width: 284)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .background(WorkbenchStyle.sidebarColor)
+                }
+                detail(inline)
+                    .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(WorkbenchStyle.canvas)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(WorkbenchStyle.canvas)
+        .ignoresSafeArea(.container, edges: .top)
+    }
+}
+
 struct ScenesView: View {
     @EnvironmentObject private var sidebarState: TabSidebarState
     @StateObject private var client: SceneAPIClient
@@ -13,20 +44,11 @@ struct ScenesView: View {
     private var selectedScene: SceneInstance? { selectedSceneID.flatMap { client.scenesByID[$0] } }
 
     var body: some View {
-        GeometryReader { geometry in
-            let inline = geometry.size.width >= 820
-            HStack(spacing: 0) {
-                if inline && sidebarState.isVisible && !client.scenes.isEmpty {
-                    navigation.frame(width: geometry.size.width >= 1040 ? 260 : 220)
-                    Divider()
-                }
-                detail(inline: inline)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        ScenePageColumns(showsNavigation: sidebarState.isVisible && !client.scenes.isEmpty) {
+            navigation
+        } detail: { inline in
+            detail(inline: inline)
         }
-        .padding(.top, MainWindowLayoutMetrics.titlebarHeight)
-        .mainWindowPageCard()
-        .padding(MainWindowPageLayoutMetrics.outerPadding)
         .task { await client.loadInventory(); selectFirstSceneIfNeeded() }
         // One owner for selection reads. Detail and creation never start a duplicate request.
         .task(id: selectedSceneID) {
@@ -48,6 +70,7 @@ struct ScenesView: View {
                     .font(WorkbenchTypography.font(for: .navigation))
                     .lineLimit(1).help(scene.name).padding(.vertical, 4).tag(scene.id)
             }.listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
             if let error = client.inventoryError {
                 SceneNotice(message: error) { Task { await client.loadInventory() } }.padding(12)
             }
@@ -204,6 +227,7 @@ struct SceneDetailView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .contentMargins(.horizontal, 0, for: .scrollContent)
             .accessibilityIdentifier("scenes.detail")
             .onChange(of: locale) { _, _ in client.prepareRows(scene: scene) }
