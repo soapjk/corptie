@@ -229,8 +229,14 @@ private struct ResidentSessionPageHeader: View {
         let warm = entries.first { $0.inputs.scope.sessionID == sessionID && !$0.inputs.retired }
         SessionSwitchTrace.shared.recordPagePool(sessionID: sessionID, count: entries.count,
             capacity: capacity, reason: warm == nil ? "miss" : "hit")
-        materialize(sessionID, request: request, cached: warm)
-        guard epoch == request, let current, current.inputs.scope.sessionID == sessionID else { return true }
+        let materialized = materialize(sessionID, request: request, cached: warm)
+        guard epoch == request else { return true }
+        guard materialized, let current, current.inputs.scope.sessionID == sessionID else {
+            cancelPendingPresentation()
+            if let current { reveal(current); current.inputs.resume() }
+            else { showFallback() }
+            return false
+        }
         activate()
         guard epoch == request else { return true }
         selectedSessionID = sessionID
@@ -252,13 +258,14 @@ private struct ResidentSessionPageHeader: View {
             if presentOpeningPage(sessionID: selectedSessionID, title: "", activate: {}) { return }
             // Initial mounting may precede attachment to a window.
             current?.inputs.freeze()
-            materialize(selectedSessionID, request: epoch, cached: nil)
+            if !materialize(selectedSessionID, request: epoch, cached: nil) { showFallback() }
             current?.inputs.resume()
         } else { showFallback() }
     }
 
-    private func materialize(_ sessionID: String, request: UInt64, cached: Entry?) {
-        guard epoch == request else { return }
+    @discardableResult
+    private func materialize(_ sessionID: String, request: UInt64, cached: Entry?) -> Bool {
+        guard epoch == request else { return false }
         for invalid in entries.filter({ $0.inputs.retired }) { dispose(invalid, reason: "retired") }
         let entry: Entry
         if let cached {
@@ -268,7 +275,7 @@ private struct ResidentSessionPageHeader: View {
             // Free only the one slot needed before exceeding the page limit.
             // Pressure-mode surplus is removed after the target is visible.
             trim(to: min(SessionSwitchingPreferences.maximumResidentPages - 1, max(1, capacity - 1)))
-            guard let inputs = makeInputs(sessionID) else { pendingSessionID = nil; showFallback(); return }
+            guard let inputs = makeInputs(sessionID) else { return false }
             inputs.resume()
             entry = Entry(inputs: inputs, root: root(inputs))
             SessionSwitchTrace.shared.mark(.pageHostCreated, sessionID: sessionID)
@@ -281,6 +288,7 @@ private struct ResidentSessionPageHeader: View {
         if entry.host.view.frame != entry.surface.bounds { entry.host.view.frame = entry.surface.bounds }
         entry.inputs.setConversationTopInset(entry.host.view.safeAreaInsets.top)
         reveal(entry)
+        return true
     }
 
     private func scheduleCleanup() {

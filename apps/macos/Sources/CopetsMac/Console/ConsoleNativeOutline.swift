@@ -12,6 +12,12 @@ final class ConsoleNativeOutlineView: NSOutlineView {
     }
 }
 
+/// Plain SwiftUI buttons otherwise consume an inactive window's first click
+/// just activating the window. Keep row reuse and first-click navigation alike.
+private final class ConsoleOutlineHostingView: NSHostingView<AnyView> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// AppKit owns row reuse, disclosure geometry and animation. SwiftUI supplies
 /// the existing row controls; no animated height or presentation state is kept.
 struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
@@ -136,7 +142,7 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
             guard let node = item as? Node else { return nil }
             let identifier = NSUserInterfaceItemIdentifier(node.group == nil ? "row" : "header")
             let host = outlineView.makeView(withIdentifier: identifier, owner: nil) as? NSHostingView<AnyView>
-                ?? NSHostingView(rootView: content(for: node))
+                ?? ConsoleOutlineHostingView(rootView: content(for: node))
             host.identifier = identifier
             host.sizingOptions = []
             host.rootView = content(for: node)
