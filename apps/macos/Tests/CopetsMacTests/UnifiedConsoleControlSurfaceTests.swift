@@ -6,6 +6,49 @@ import Testing
 @testable import CorptieMac
 
 struct UnifiedConsoleControlSurfaceTests {
+    @MainActor @Test
+    func quickSessionTitleClicksInsideNativeOutlineAreNotLost() throws {
+        struct Row: Identifiable { let id: String }
+        _ = NSApplication.shared
+        var selections: [String] = []
+        let host = NSHostingView(rootView: ConsoleNativeOutline(groups: {
+            [ConsoleNativeOutlineGroup(id: "work", header: AnyView(Text("Work")),
+                rows: (0..<1000).map { Row(id: String($0)) }, isExpanded: true)]
+        }) { row in
+            Button { selections.append(row.id) } label: {
+                Text("Session \(row.id)").frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
+            }.buttonStyle(SessionSelectionPressStyle()).contextMenu { Button("Action") {} }
+        })
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 240),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        func findOutline(_ view: NSView) -> NSOutlineView? {
+            (view as? NSOutlineView) ?? view.subviews.lazy.compactMap(findOutline).first
+        }
+        let outline = try #require(findOutline(host))
+        #expect(outline.acceptsFirstMouse(for: nil), "The first click must also select while activating the window")
+        for rowIndex in [1, 501, 3, 1, 502] {
+            outline.scrollRowToVisible(rowIndex)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+            let row = try #require(outline.view(atColumn: 0, row: rowIndex, makeIfNecessary: true))
+            #expect(row.acceptsFirstMouse(for: nil), "Hosted titles must retain first-click selection after row reuse")
+            let point = row.convert(.init(x: 80, y: row.bounds.midY), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try #require(NSEvent.mouseEvent(with: type, location: point,
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: rowIndex,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                window.sendEvent(event)
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            #expect(selections.last == String(rowIndex - 1))
+        }
+        #expect(selections == ["0", "500", "2", "0", "501"])
+    }
+
     @MainActor
     @Test(.serialized, arguments: [true, false])
     func sessionSelectionRunsBeforeMouseUpAndDoesNotRunAgainOnRelease(enabled: Bool) throws {
