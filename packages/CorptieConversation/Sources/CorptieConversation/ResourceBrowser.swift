@@ -56,6 +56,26 @@ public extension Notification.Name {
     static let corptieOpenResource = Notification.Name("corptie.resource.open")
 }
 
+/// Optional column paint supplied by a platform shell. Other resource browsers
+/// retain their existing presentation; no desktop tokens enter the shared reader.
+public struct ResourceBrowserColumnLayout {
+    let sidebarBackground: Color
+    let readingBackground: Color
+    let contentTopInset: CGFloat
+
+    public init(sidebarBackground: Color, readingBackground: Color, contentTopInset: CGFloat = 0) {
+        self.sidebarBackground = sidebarBackground
+        self.readingBackground = readingBackground
+        self.contentTopInset = contentTopInset
+    }
+
+    // Reserve useful reading width even after a wide divider is restored into
+    // a narrower window. Pure geometry: resizing does not mutate selection or load.
+    static func sidebarWidth(preferred: CGFloat, available: CGFloat) -> CGFloat {
+        min(max(240, preferred), min(480, max(240, available - 401)))
+    }
+}
+
 /// Shared catalog/reader. Platform shells own routing and credentials, not data semantics.
 public struct ResourceBrowser: View {
     @Binding private var focus: ClientResourceFocus?
@@ -66,6 +86,7 @@ public struct ResourceBrowser: View {
     let api: @MainActor () async throws -> ClientResourceAPI
     let openSession: (String) -> Void
     let revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
+    let columnLayout: ResourceBrowserColumnLayout?
     @State private var store = ResourceBrowserStore()
     @State private var query = ""
     @State private var work = ""
@@ -86,29 +107,37 @@ public struct ResourceBrowser: View {
     public init(focus: Binding<ClientResourceFocus?>, active: Bool, connected: Bool = true,
                 works: [(id: String, name: String)], currentWorkId: String? = nil,
                 api: @escaping @MainActor () async throws -> ClientResourceAPI, openSession: @escaping (String) -> Void,
-                revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)? = nil) {
+                revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)? = nil,
+                columnLayout: ResourceBrowserColumnLayout? = nil) {
         _focus = focus; self.active = active; self.connected = connected; self.works = works
         self.currentWorkId = currentWorkId; self.api = api; self.openSession = openSession
         self.revealFile = revealFile
+        self.columnLayout = columnLayout
         _work = State(initialValue: focus.wrappedValue?.workId ?? "")
     }
     private var requestKey: String { "\(active):\(connected):\(query):\(work):\(status):\(sort):\(refreshID)" }
     public var body: some View {
         GeometryReader { geometry in
             if geometry.size.width >= 700 {
+                let width = columnLayout == nil ? listWidth
+                    : ResourceBrowserColumnLayout.sidebarWidth(preferred: listWidth, available: geometry.size.width)
                 HStack(spacing: 0) {
-                    catalog.frame(width: listWidth)
-                    Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1)
+                    catalogColumn.frame(width: width)
+                    Rectangle().fill(columnLayout == nil ? Color.secondary.opacity(0.2) : .clear).frame(width: 1)
                         .overlay { Color.clear.frame(width: 10).contentShape(Rectangle()).gesture(DragGesture().onChanged { value in
-                            if dragStart == nil { dragStart = listWidth }
-                            listWidth = min(480, max(240, (dragStart ?? 300) + value.translation.width))
+                            if dragStart == nil { dragStart = width }
+                            let proposed = (dragStart ?? width) + value.translation.width
+                            listWidth = columnLayout == nil ? min(480, max(240, proposed))
+                                : ResourceBrowserColumnLayout.sidebarWidth(preferred: proposed, available: geometry.size.width)
                         }.onEnded { _ in dragStart = nil }) }
-                    selected.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .zIndex(1)
+                    readingColumn
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 NavigationStack {
-                    catalog.navigationDestination(isPresented: Binding(get: { !(focus?.id.isEmpty ?? true) }, set: { if !$0 { focus = nil } })) {
-                        selected.navigationTitle("资源详情").navigationBarTitleDisplayModeCompat()
+                    catalogColumn.navigationDestination(isPresented: Binding(get: { !(focus?.id.isEmpty ?? true) }, set: { if !$0 { focus = nil } })) {
+                        readingColumn.navigationTitle("资源详情").navigationBarTitleDisplayModeCompat()
                     }
                 }
             }
@@ -127,6 +156,20 @@ public struct ResourceBrowser: View {
                 focus = .init(id: resource.id); refreshID &+= 1
             }
         }
+    }
+    private var catalogColumn: some View {
+        catalog
+            .padding(.top, columnLayout?.contentTopInset ?? 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background { if let columnLayout { columnLayout.sidebarBackground.ignoresSafeArea(.container, edges: .vertical) } }
+            .accessibilityIdentifier("resources.catalog")
+    }
+    private var readingColumn: some View {
+        selected
+            .padding(.top, columnLayout?.contentTopInset ?? 0)
+            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background { if let columnLayout { columnLayout.readingBackground.ignoresSafeArea(.container, edges: .vertical) } }
+            .accessibilityIdentifier("resources.reader")
     }
     private var catalog: some View {
         VStack(alignment: .leading, spacing: 10) {
