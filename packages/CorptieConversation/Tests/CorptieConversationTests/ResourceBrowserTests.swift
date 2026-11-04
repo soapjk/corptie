@@ -8,6 +8,17 @@ import CorptieClientCore
 @testable import CorptieConversation
 
 @MainActor @Suite struct ResourceBrowserTests {
+    @Test func columnWidthPreservesReaderSpaceWhenWindowShrinks() {
+        for width in [700.0, 701, 780, 900, 1200, 1920] {
+            for preferred in [100.0, 240, 300, 480, 700] {
+                let result = ResourceBrowserColumnLayout.sidebarWidth(preferred: preferred, available: width)
+                #expect(result >= 240 && result <= 480)
+                #expect(width - result - 1 >= 400)
+            }
+        }
+        #expect(ResourceBrowserColumnLayout.sidebarWidth(preferred: 480, available: 700) == 299)
+        #expect(ResourceBrowserColumnLayout.sidebarWidth(preferred: 480, available: 1200) == 480)
+    }
     private func api() throws -> ClientResourceAPI {
         let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:47321")!), data: { request in
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems?.first { $0.name == "query" }?.value ?? ""
@@ -37,6 +48,29 @@ import CorptieClientCore
         #expect(store.items.isEmpty); #expect(store.error == nil); #expect(!store.loading)
     }
     #if os(macOS)
+    @Test func columnBackgroundsFillTheViewportAtDifferentSizes() throws {
+        for size in [NSSize(width: 1200, height: 700), .init(width: 700, height: 900),
+                     .init(width: 1000, height: 620)] {
+            let browser = ResourceBrowser(focus: .constant(nil), active: false,
+                connected: false, works: [], api: { throw ClientConnectionError.invalidResponse },
+                openSession: { _ in }, columnLayout: .init(
+                    sidebarBackground: Color(red: 1, green: 0, blue: 0),
+                    readingBackground: Color(red: 0, green: 0, blue: 1), contentTopInset: 32))
+            // Offscreen rasterization checks column paint, not screen latency.
+            let renderer = ImageRenderer(content: browser.frame(width: size.width, height: size.height))
+            renderer.scale = 1
+            let image = try #require(renderer.cgImage)
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            for y in [2, bitmap.pixelsHigh - 3] {
+                let sidebar = try #require(bitmap.colorAt(x: 2, y: y)?.usingColorSpace(.deviceRGB))
+                let reader = try #require(bitmap.colorAt(x: bitmap.pixelsWide - 3, y: y)?.usingColorSpace(.deviceRGB))
+                print("RESOURCE_COLUMN_PAINT size=\(size) y=\(y) sidebar=\(sidebar) reader=\(reader)")
+                #expect(sidebar.redComponent > 0.9 && sidebar.blueComponent < 0.1)
+                #expect(reader.blueComponent > 0.9 && reader.redComponent < 0.1)
+            }
+        }
+    }
+
     @Test func markdownDocumentTablesFollowTheReaderWidthWhenItsWindowResizes() throws {
         _ = NSApplication.shared
         let source = "# 文档\n\n| 时间 | 安排 | 备注 |\n| --- | --- | --- |\n| 07:30 | 早餐 | 休息 |\n"
