@@ -171,3 +171,22 @@ test("registry exposes Provider descriptors without a product Session read surfa
   assert.equal(typeof registry.listSessionsSync, "undefined");
   assert.deepEqual(registry.descriptors().map((descriptor) => descriptor.id), ["provider.a", "provider.b"]);
 });
+
+for (const id of ['codex-app-server', 'claude-sdk', 'openclacky']) {
+  test(`${id}: disabled policy blocks execution, preserves stop, and rechecks after asynchronous preparation`, async () => {
+    let enabled = false, sent = 0, finish;
+    const provider = fakeProvider({ id, methods: { send: async () => { sent++; return 'sent'; } } });
+    const registry = new AgentProviderRegistry([provider], { executionPolicy: {
+      assertAllowed: () => { if (!enabled) throw Object.assign(new Error('disabled'), { code: 'PROVIDER_DISABLED' }); },
+      prepare: () => new Promise(resolve => { finish = resolve; })
+    } });
+    assert.throws(() => registry.invoke(id, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND), { code: 'PROVIDER_DISABLED' });
+    assert.equal((await registry.invoke(id, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT, {})).interrupted, true);
+    enabled = true;
+    const send = registry.invoke(id, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND);
+    await new Promise(resolve => setImmediate(resolve));
+    enabled = false; finish();
+    await assert.rejects(send, { code: 'PROVIDER_DISABLED' });
+    assert.equal(sent, 0);
+  });
+}

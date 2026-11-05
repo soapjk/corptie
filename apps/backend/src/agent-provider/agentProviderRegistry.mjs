@@ -10,6 +10,8 @@ import { withSessionActions } from "./sessionActions.mjs";
 
 export class AgentProviderRegistry {
   constructor(providers = [], options = {}) {
+    this.executionPolicy = options.executionPolicy ?? null;
+    this.activeExecutions = new Map();
     this.providers = new Map();
     this.providerIdsByIdentity = new Map();
     this.defaultProviderId = normalizedOptionalProviderId(options.defaultProviderId);
@@ -102,7 +104,7 @@ export class AgentProviderRegistry {
 
   descriptors() {
     return Array.from(this.providers.values())
-      .map((provider) => provider.descriptor)
+      .map((provider) => this.executionPolicy ? { ...provider.descriptor, executionEnabled: this.executionPolicy.isEnabled?.(provider.descriptor.id) ?? true } : provider.descriptor)
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
@@ -125,8 +127,26 @@ export class AgentProviderRegistry {
     return { provider, method };
   }
 
+  assertExecutionAllowed(providerId) {
+    this.executionPolicy?.assertAllowed(this.get(providerId).descriptor.id);
+  }
+
   invoke(providerId, capability, ...args) {
     const { provider, method } = this.requireCapability(providerId, capability);
+    const policy = this.executionPolicy;
+    const startsExecution = new Set(["session.create", "session.fork", "session.restart", "conversation.send",
+      "conversation.send.image", "background.prompt", "conversation.command"]);
+    if (policy && startsExecution.has(capability)) {
+      policy.assertAllowed(provider.descriptor.id);
+      return Promise.resolve().then(() => policy.prepare?.(provider.descriptor.id, capability, args)).then(() => {
+        policy.assertAllowed(provider.descriptor.id);
+        const id = provider.descriptor.id;
+        this.activeExecutions.set(id, (this.activeExecutions.get(id) ?? 0) + 1);
+        return Promise.resolve().then(() => provider[method](...args)).finally(() => {
+          this.activeExecutions.set(id, Math.max(0, this.activeExecutions.get(id) - 1));
+        });
+      });
+    }
     return provider[method](...args);
   }
 

@@ -1,3 +1,5 @@
+import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.mjs";
+import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
 import { worktreeDispatchBlocker } from "./application/worktreeExecutionBarrier.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
@@ -628,6 +630,7 @@ const bundledGitCommitProtectionPath = fileURLToPath(new URL(
   "../resources/git-commit-protection.json",
   import.meta.url
 ));
+let providerRuntimeSettings;
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const corptieClaudeRuntimePaths = resolveCorptieClaudeRuntimePaths({ environmentName });
 const {
@@ -788,7 +791,7 @@ const codexEnvironmentRegistry = new CodexEnvironmentRegistry({
   isolatedHome: corptieCodexRuntimePaths.codexHome,
   hasExistingSessions: () => store.listSessions().some(session => session.external?.provider === "codex-app-server")
 });
-const codexRuntimeOptions = { environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+const codexRuntimeOptions = { environmentName, corptieHome: store.dataRoot, bundledMemoryPath: bundledAgentMemoryPath,
   bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
   collaborationMcpServerPath };
 let managedCodexResources;
@@ -801,10 +804,10 @@ async function prepareCodexEnvironment(profile) {
   await codexEnvironmentRegistry.validate(profile);
   return resources;
 }
-const codexEnvironment = (profile, command = codexAppServerCommand()) => ({
+const codexEnvironment = (profile, command = codexAppServerCommand()) => selectedCredentialEnvironment({
   ...environmentForCommand(command),
   ...proxyEnvForProfile(store.settings().agentProxy?.codex), CODEX_HOME: profile.home
-});
+}, "codex-app-server", providerRuntimeSettings?.sources["codex-app-server"]);
 let nativeCodexInstructions;
 async function codexEnvironmentInstructions() {
   nativeCodexInstructions ??= Promise.all([
@@ -953,7 +956,7 @@ const providerSessionLifecycle = new ProviderSessionLifecycle({
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
-  environment: () => process.env,
+  environment: () => selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings?.sources["claude-sdk"]),
   prepareSessionInput: prepareClaudeProviderSessionInput,
   onProviderEvent: handleClaudeProviderEventSafely,
   listModels: loadClaudeModels,
@@ -1111,7 +1114,37 @@ const claudeNotificationReceiver = createClaudeNotificationReceiver({
   continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args)
 });
 
+providerRuntimeSettings = new ProviderRuntimeSettings({
+  path: () => join(store.layout.stateDirectory, "provider-credential-sources.json"),
+  adapters: createProviderCredentialAdapters({ codexPaths: corptieCodexRuntimePaths,
+    claudePaths: corptieClaudeRuntimePaths, openClackyPaths: corptieOpenClackyRuntimePaths,
+    nativeCodexHome: codexEnvironmentRegistry.nativeHome }),
+  isBusy: (providerId) => (agentProviderRegistry.activeExecutions.get(providerId) ?? 0) > 0
+    || store.listSessions().some(session => session.external?.provider === providerId
+      && (session.external?.activeTurnId || session.activeTurnId || session.rawStatus?.activeTurnId)),
+  onChanged: (providerId) => firstRunSetup.invalidateConnectionTest(providerId)
+});
+providerRuntimeSettings.adapters["codex-app-server"].afterSync = () => codexRuntime.close();
+providerRuntimeSettings.adapters["codex-app-server"].onSourceApplied = () =>
+  codexEnvironmentSetup.configureEnvironment(codexEnvironmentRegistry.selection({ mode: "isolated" }));
+providerRuntimeSettings.adapters["codex-app-server"].usesLegacyEnvironment = (reference) =>
+  (reference?.providerSessionId ? codexEnvironmentRegistry.forThread(reference.providerSessionId)
+    : codexEnvironmentRegistry.current).mode === "native";
+// Historical native bindings cannot consume a different selected source implicitly.
+providerRuntimeSettings.adapters["codex-app-server"].assertExecutionScope = (reference) => {
+  if (reference?.providerSessionId && codexEnvironmentRegistry.forThread(reference.providerSessionId).mode !== "isolated") {
+    throw Object.assign(new Error("此历史会话绑定官方原生环境，不能静默切换凭证来源；请新建使用独立环境的会话。"),
+      { code: "PROVIDER_ENVIRONMENT_REBIND_REQUIRED", dispatchState: "not_dispatched" });
+  }
+};
+agentProviderRegistry.executionPolicy = {
+  isEnabled: (providerId) => firstRunSetup.isEnabled(providerId),
+  assertAllowed: (providerId) => firstRunSetup.assertExecutionAllowed(providerId),
+  prepare: (providerId, _capability, args) => providerRuntimeSettings.prepareExecution(providerId, args)
+};
+
 const firstRunSetup = new FirstRunSetupService({
+  runtimeSettings: providerRuntimeSettings,
   path: () => join(store.dataRoot, "first-run-setup.json"),
   hasWorks: () => store.listWorks().length > 0,
   hasProviderUsage: (providerId) => store.listSessions().some((session) => session.external?.provider === providerId),
@@ -1161,12 +1194,12 @@ const firstRunSetup = new FirstRunSetupService({
       } },
     { id: "claude-sdk", name: "Claude Code", discover: () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] }),
       probe: createClaudeReplyProbe({ environment: async () => {
-        await ensureCorptieClaudeRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+        await ensureCorptieClaudeRuntime({ environmentName, corptieHome: store.dataRoot, importAuthentication: false, bundledMemoryPath: bundledAgentMemoryPath,
           bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath });
-        return process.env;
+        return selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings?.sources["claude-sdk"]);
       } }),
       prepare: async () => {
-        await ensureCorptieClaudeRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+        await ensureCorptieClaudeRuntime({ environmentName, corptieHome: store.dataRoot, importAuthentication: false, bundledMemoryPath: bundledAgentMemoryPath,
           bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath });
         setProviderRuntimeReadiness("claude-sdk", { state: "ready" });
       },
@@ -1195,8 +1228,8 @@ function assertSetupPathChangeAllowed(providerId, path) {
   const saved = firstRunSetup.state.providers?.[providerId];
   const previous = saved?.configuredPath ?? (saved?.confirmed ? saved.path : null);
   if (previous === path) return;
-  if (store.listSessions({ archived: false }).some((session) => session.external?.provider === providerId)) {
-    throw new Error("该 Provider 已有会话，请先保留当前路径完成引导。");
+  if (store.listSessions({ archived: false }).some((session) => session.external?.provider === providerId && sessionHasActiveRun(session))) {
+    throw new Error("该执行引擎正在运行，请等待当前请求结束后再更改程序。");
   }
 }
 
@@ -1737,6 +1770,11 @@ const {
   runtimeQueuePosition, drainAgentWork, tickAgentWorkQueue
 } = createRuntimeAgentWorkQueue({
   store, collaborationCore, sessionChannelService, collaborationDispatcher, channelMailbox, sessionMailbox,
+  providerDispatchDecision: (item) => {
+    const id = store.getSession(item.sessionId)?.external?.provider;
+    return !id || firstRunSetup.isEnabled(id) ? { allowed: true }
+      : { allowed: false, code: "PROVIDER_DISABLED", kind: "paused", message: "执行引擎已关闭，排队请求已暂停。" };
+  },
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
@@ -2456,6 +2494,7 @@ await migrateStoreOffMainThread({
 await store.initialize({ resolveDataPath: false, performMigrations: false });
 if (!developmentPreview) skillRegistryService.reconcileInterruptedInstallations();
 detailServiceFor(store, detailMigration);
+await providerRuntimeSettings.initialize();
 await firstRunSetup.initialize();
 await codexEnvironmentRegistry.initialize();
 if (firstRunSetup.state.defaultProviderId) {

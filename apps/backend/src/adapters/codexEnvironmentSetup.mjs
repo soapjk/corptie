@@ -11,7 +11,6 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
   afterAuthentication = async () => {},
   onEnvironmentChanged = () => {},
   importAuthentication = importCorptieCodexAuthentication }) {
-  const logins = new Map();
   const resolveEnvironment = (input) => registry.selection(input);
   const environmentDescriptor = (profile) => registry.descriptor(profile);
   const environmentFingerprint = (profile) => registry.fingerprint(profile);
@@ -34,7 +33,7 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
       await client.initialize();
       const account = await client.request("account/read", { refreshToken: false });
       if (account?.requiresOpenaiAuth === true && !account.account) {
-        throw Object.assign(new Error("此 Codex 环境尚未登录，请登录后重新检测。"), { code: "PROVIDER_LOGIN_REQUIRED" });
+        throw Object.assign(new Error("此 Codex 环境尚未登录，请在 Codex 官方 CLI 或 App 中登录后重新检测。"), { code: "PROVIDER_LOGIN_REQUIRED" });
       }
       const reply = await client.runEphemeralPrompt({ prompt: PROVIDER_PROBE_PROMPT, cwd,
         executionPolicy: "no-tools", permissionProfile: "read-only", model: model || undefined,
@@ -53,7 +52,7 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
       const variant = (typeof info === "string" ? info : info?.type ?? Object.keys(info ?? {})[0] ?? "").toLowerCase();
       const status = info?.httpStatusCode ?? info?.httpConnectionFailed?.httpStatusCode;
       if (variant === "unauthorized" || status === 401) {
-        throw Object.assign(new Error("Codex 认证已失效，请在所选环境中重新登录。"), { code: "PROVIDER_LOGIN_REQUIRED" });
+        throw Object.assign(new Error("Codex 认证已失效，请在 Codex 官方 CLI 或 App 中重新登录。"), { code: "PROVIDER_LOGIN_REQUIRED" });
       }
       if (variant === "usagelimitexceeded" || status === 429) {
         throw Object.assign(new Error("Codex 额度或请求频率受限，请稍后重试。"), { code: "PROVIDER_USAGE_LIMIT" });
@@ -90,55 +89,9 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
       await afterAuthentication(profile);
       return { state: "imported" };
     }
-    if (input.action === "status" || input.action === "cancel") {
-      const login = logins.get(input.loginId);
-      if (!login || login.profileId !== profile.profileId) throw new Error("登录请求已失效，请重新登录。");
-      if (input.action === "cancel") {
-        await login.client.request("account/login/cancel", { loginId: input.loginId }).catch(() => {});
-        await finishLogin(input.loginId);
-        return { state: "cancelled" };
-      }
-      if (login.state !== "pending") {
-        const state = login.state;
-        await finishLogin(input.loginId);
-        if (state === "completed") await afterAuthentication(profile);
-        return { state };
-      }
-      return { state: "pending" };
-    }
-    if (input.action !== "login") throw new Error("认证操作无效。");
-    if (!canImport(profile)) throw new Error("此环境有正在执行或尚未持久化的会话，请结束后再登录。");
-    if (logins.size >= 2) throw new Error("已有登录正在进行，请先完成或取消。");
-    await prepare(profile);
-    let loginId;
-    const client = createClient({ command: input.path, env: environment(profile),
-      onNotification: (message) => {
-        if (message.method === "account/login/completed" && message.params?.loginId === loginId) {
-          const login = logins.get(loginId);
-          if (login) login.state = message.params.success ? "completed" : "failed";
-        }
-      } });
-    try {
-      await client.initialize();
-      const result = await client.request("account/login/start", { type: "chatgpt" });
-      loginId = result.loginId;
-      if (!loginId || !result.authUrl) throw new Error();
-      const timer = setTimeout(() => { void finishLogin(loginId); }, 5 * 60_000);
-      timer.unref?.();
-      logins.set(loginId, { client, timer, profileId: profile.profileId, state: "pending" });
-      return { state: "pending", loginId, authUrl: result.authUrl };
-    } catch {
-      await client.close();
-      throw new Error("无法启动 Codex 登录，请检查程序版本，或在 Codex 中登录后重新检测。");
-    }
+    throw Object.assign(new Error("请在 Codex 官方 CLI 或 App 中登录，然后重新检测。"), { code: "PROVIDER_OFFICIAL_LOGIN_REQUIRED" });
   }
-  async function finishLogin(id) {
-    const login = logins.get(id);
-    if (!login) return;
-    logins.delete(id);
-    clearTimeout(login.timer);
-    await login.client.close();
-  }
+
   return { resolveEnvironment, environmentDescriptor, environmentFingerprint, configureEnvironment, probe, authentication,
-    assertNoPendingLogin() { if (logins.size) throw new Error("请先完成或取消正在进行的登录，再更改程序。"); } };
+    assertNoPendingLogin() {} };
 }

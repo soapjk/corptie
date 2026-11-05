@@ -223,11 +223,15 @@ struct NewSessionCreationSheet: View {
                 .foregroundStyle(.secondary)
             Picker(L10n("Provider"), selection: $selectedProviderId) {
                 ForEach(creatableProviders) { provider in
-                    Text(provider.displayName).tag(provider.id)
+                    Text(provider.isExecutionEnabled ? provider.displayName : "\(provider.displayName) · \(L10n("已关闭"))").tag(provider.id)
                 }
             }
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
+            if modelCatalog.agentProviders.descriptor(matching: selectedProviderId)?.isExecutionEnabled == false {
+                Text(L10n("所选执行引擎已关闭，请先在设置中启用或手动选择其他引擎。"))
+                    .font(.caption).foregroundStyle(.red)
+            }
             if creatableProviders.isEmpty {
                 Text(L10n("没有可创建 Session 的 Provider。"))
                     .font(.caption)
@@ -388,7 +392,8 @@ struct NewSessionCreationSheet: View {
 
     private var canCreate: Bool {
         guard !titleWasEdited || sessionTitle.isEmpty || EntityNamePolicy.isValid(sessionTitle) else { return false }
-        guard selectedRoleId != nil, !selectedProviderId.isEmpty else { return false }
+        guard selectedRoleId != nil, !selectedProviderId.isEmpty,
+              modelCatalog.agentProviders.descriptor(matching: selectedProviderId)?.isExecutionEnabled != false else { return false }
         switch kind {
         case .assistantChat: return true
         case .workChat: return selectedWorkId != nil

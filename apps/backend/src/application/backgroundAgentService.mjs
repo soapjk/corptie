@@ -108,6 +108,9 @@ export class BackgroundAgentService {
       throw new BackgroundAgentUnavailableError();
     }
 
+    if (!input.foundationAPI && (resolvedProviderId ?? this.defaultProviderId)) {
+      this.registry.assertExecutionAllowed?.(resolvedProviderId ?? this.defaultProviderId);
+    }
     const providerId = input.foundationAPI ? FOUNDATION_API_ID : this.selectProvider(resolvedProviderId, permissionProfile, {
       allowFallback: input.allowProviderFallback !== false,
       executionPolicy: input.executionPolicy ?? "legacy"

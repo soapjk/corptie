@@ -66,18 +66,14 @@ test("credential import requires isolated mode, explicit confirmation and an idl
   assert.equal(busy.calls.length, 0);
 });
 
-test("login status and cancellation own one bounded App Server without importing credentials", async () => {
+test("official tools own login; all legacy login actions are rejected without starting a client", async () => {
   const f = fixture();
-  const login = await f.setup.authentication({ action: "login", path: "codex" });
-  assert.equal(login.loginId, "login");
-  assert.deepEqual(await f.setup.authentication({ action: "status", loginId: "login" }), { state: "pending" });
-  f.clients[0].config.onNotification({ method: "account/login/completed", params: { loginId: "login", success: true } });
-  assert.deepEqual(await f.setup.authentication({ action: "status", loginId: "login" }), { state: "completed" });
-  assert.equal(f.clients[0].closed, true);
-  await f.setup.authentication({ action: "login", path: "codex" });
-  assert.deepEqual(await f.setup.authentication({ action: "cancel", loginId: "login" }), { state: "cancelled" });
-  assert.equal(f.clients[1].closed, true);
-  assert.ok(!f.calls.some(call => call[0] === "import"));
+  for (const action of ["login", "status", "cancel"]) {
+    await assert.rejects(f.setup.authentication({ action, path: "codex", loginId: "old" }),
+      { code: "PROVIDER_OFFICIAL_LOGIN_REQUIRED" });
+  }
+  assert.equal(f.clients.length, 0);
+  assert.equal(f.calls.length, 0);
 });
 
 test("configuration changed during probe is rejected and never selected", async () => {

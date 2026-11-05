@@ -187,11 +187,11 @@ struct SettingsWindowLayoutTests {
         let firstRun = try String(contentsOf: sources.appendingPathComponent("FirstRunSetupView.swift"), encoding: .utf8)
         let groups = firstRun.components(separatedBy: "struct ProviderEnvironmentSettingsView: View {")[1]
         #expect(groups.contains("Provider 专属配置"))
-        #expect(groups.contains("ForEach(status.providers)"))
+        #expect(groups.contains("ForEach(draft.providers)"))
         #expect(!groups.contains(".filter"))
         #expect(groups.contains("FirstRunProviderCard(provider: provider"))
         #expect(groups.contains("allowsAutomaticChecks: false"))
-        #expect(firstRun.contains("guard allowsAutomaticChecks || checkGeneration > 0 else { return }"))
+        #expect(firstRun.contains("guard checkGeneration > 0 else { return }"))
         #expect(!groups.contains("TaskCreationDefaultsSettingsView"))
     }
 }

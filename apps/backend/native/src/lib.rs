@@ -118,10 +118,11 @@ fn local_state_native(receipt:LocalStateDirectory) -> Result<NativeLocalStateRes
 
 #[napi]
 pub fn local_state_directory(root_path:String, create:bool, expected_device:Option<String>, expected_inode:Option<String>,
-    expected_directory_device:Option<String>, expected_directory_inode:Option<String>) -> Result<LocalStateDirectory> {
+    expected_directory_device:Option<String>, expected_directory_inode:Option<String>,
+    adopt_ignored_existing:Option<bool>) -> Result<LocalStateDirectory> {
     let root=c_string(root_path)?;
     let mut value=NativeLocalStateResult::default();
-    unsafe { corptie_local_state(root.as_ptr(), if create {1} else {0},
+    unsafe { corptie_local_state(root.as_ptr(), if create { if adopt_ignored_existing.unwrap_or(false) {3} else {1} } else {0},
         parse_u64(expected_device.unwrap_or("0".into()))?, parse_u64(expected_inode.unwrap_or("0".into()))?,
         parse_u64(expected_directory_device.unwrap_or("0".into()))?, parse_u64(expected_directory_inode.unwrap_or("0".into()))?, &mut value); }
     Ok(local_state_result(&value))

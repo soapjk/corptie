@@ -22,6 +22,8 @@ struct FirstRunProvider: Decodable, Identifiable {
     let message: String?
     var environment: ProviderRuntimeEnvironment? = nil
     var errorCode: String? = nil
+    var runtime: ProviderRuntimeSettingsProjection? = nil
+    var lastCheckedAt: String? = nil
     var program: ProviderProgramInventory? = nil
 }
 
@@ -66,11 +68,6 @@ struct ProviderRuntimeEnvironment: Decodable, Equatable {
     let canImportAuthentication: Bool
 }
 
-private struct ProviderAuthenticationResult: Decodable {
-    let state: String
-    let loginId: String?
-    let authUrl: String?
-}
 
 struct FirstRunStatus: Decodable {
     var providers: [FirstRunProvider]
@@ -80,7 +77,7 @@ struct FirstRunStatus: Decodable {
     let assistantSessionId: String?
     let workSessionId: String?
 
-    var canContinue: Bool { providers.contains { $0.enabled && $0.executable && $0.checkState == "available" } }
+    var canContinue: Bool { providers.contains { $0.enabled && $0.executable } }
 
     static func requiresSetup(_ status: FirstRunStatus?) -> Bool {
         status?.completed != true
@@ -113,7 +110,7 @@ struct FirstRunSetupRoot<Content: View>: View {
 
     private var canEnter: Bool {
         status?.providers.contains {
-            $0.enabled && $0.executable && $0.checkState == "available" && !dirtyProviders.contains($0.id)
+            $0.enabled && $0.executable && !dirtyProviders.contains($0.id)
         } == true
     }
 
@@ -337,6 +334,7 @@ enum FirstRunSetupAPI {
 }
 
 struct FirstRunProviderCard: View {
+    let settingsDraft: ProviderSettingsDraft?
     let provider: FirstRunProvider
     let busy: Bool
     let scanGeneration: Int
@@ -353,8 +351,6 @@ struct FirstRunProviderCard: View {
     @State private var editingPath = false
     @State private var environmentMode: String
     @State private var environmentHome: String
-    @State private var authenticationBusy = false
-    @State private var loginId: String?
     @State private var selectionMode: String
     @State private var checkModel: String
     @State private var scanning = false
@@ -362,22 +358,26 @@ struct FirstRunProviderCard: View {
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
          pathChanged: @escaping (Bool) -> Void, updated: @escaping (FirstRunProvider) -> Void,
-         allowsAutomaticChecks: Bool = true) {
+         allowsAutomaticChecks: Bool = true, settingsDraft: ProviderSettingsDraft? = nil) {
+        self.settingsDraft = settingsDraft
         self.provider = provider
         self.busy = busy
         self.scanGeneration = scanGeneration
         self.isDefault = isDefault
-        self.allowsAutomaticChecks = allowsAutomaticChecks
+        self.allowsAutomaticChecks = false
         self.pathChanged = pathChanged
         self.updated = updated
         let automatic = provider.program.map { !["manual", "controlled"].contains($0.mode) } ?? false
-        _path = State(initialValue: automatic ? (provider.program?.recommendedPath ?? provider.path) : provider.path)
+        _path = State(initialValue: settingsDraft?.values[provider.id]?.path ?? (automatic ? (provider.program?.recommendedPath ?? provider.path) : provider.path))
         _result = State(initialValue: provider)
         _environmentMode = State(initialValue: provider.environment?.mode ?? "native")
         _environmentHome = State(initialValue: provider.environment?.home ?? "")
         _selectionMode = State(initialValue: automatic ? "auto" : (provider.program?.mode ?? "manual"))
         _checkModel = State(initialValue: provider.program?.model ?? "")
     }
+
+    private var displayEnabled: Bool { settingsDraft?.values[provider.id]?.enabled ?? result.enabled }
+    private var hasPendingSettings: Bool { settingsDraft?.dirtyIDs.contains(provider.id) == true }
 
     private var available: Bool {
         !testing && resultMatchesSelection && result.checkState == "available"
@@ -390,18 +390,18 @@ struct FirstRunProviderCard: View {
     }
 
     private var selectionKey: String { "\(path)|\(environmentMode)|\(environmentHome)|\(selectionMode)|\(checkModel)" }
-    private var controlsBusy: Bool { busy || saving || authenticationBusy || scanning }
+    private var controlsBusy: Bool { busy || saving || scanning }
 
     private var statusLabel: String {
         if testing { return L10n("检测中") }
-        if authenticationBusy { return L10n("登录中") }
+        if hasPendingSettings { return L10n("有未保存的修改") }
         if saving { return L10n("正在保存…") }
-        if !resultMatchesSelection { return L10n("等待检测") }
-        if available { return L10n(result.enabled ? "已就绪" : "可用 · 未启用") }
+        if !resultMatchesSelection { return L10n("配置已更改 · 待检测") }
+        if available { return L10n(displayEnabled ? "已就绪" : "可用 · 未启用") }
         switch result.checkState {
         case "missing": return L10n("未找到程序")
-        case "failed": return L10n(result.errorCode == "PROVIDER_LOGIN_REQUIRED" ? "需要登录" : "需要修复")
-        default: return L10n("等待检测")
+        case "failed": return L10n(result.errorCode == "PROVIDER_LOGIN_REQUIRED" ? "请在官方工具中登录" : "连接检测失败")
+        default: return L10n(displayEnabled ? "已启用 · 待检测" : "未启用 · 待检测")
         }
     }
 
@@ -412,7 +412,7 @@ struct FirstRunProviderCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
                         Text(provider.name).font(WorkbenchTypography.font(for: .cardTitle))
-                        if isDefault && result.enabled && available {
+                        if isDefault && displayEnabled && available {
                             Text(L10n("默认"))
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(Color.accentColor)
@@ -431,16 +431,19 @@ struct FirstRunProviderCard: View {
                         Text(statusLabel)
                     }
                     .font(WorkbenchTypography.font(for: .help))
-                    .foregroundStyle(available && result.enabled ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(available && displayEnabled ? Color.accentColor : Color.secondary)
                 }
                 Spacer(minLength: 8)
                 Toggle(L10n("启用"), isOn: Binding(
-                    get: { result.enabled },
-                    set: { enabled in Task { await setEnabled(enabled) } }
+                    get: { displayEnabled },
+                    set: { enabled in
+                        if let settingsDraft { settingsDraft.edit(provider.id, enabled: enabled) }
+                        else { Task { await setEnabled(enabled) } }
+                    }
                 ))
                 .toggleStyle(.switch)
                 .accessibilityLabel(L10nFormat("启用 %@", provider.name))
-                .disabled(controlsBusy || testing || !resultMatchesSelection || (!result.enabled && !available))
+                .disabled(controlsBusy || testing || (!displayEnabled && path.isEmpty))
             }
             if available && !editingPath && result.program == nil {
                 HStack {
@@ -470,11 +473,29 @@ struct FirstRunProviderCard: View {
                     }
                 }
             }
-            if let environment = provider.environment {
-                environmentSelection(environment)
+            if isDefault && !displayEnabled {
+                Text(L10n("当前默认执行引擎已关闭；请启用或手动更改默认设置，不会自动改用其他引擎。"))
+                    .font(.caption).foregroundStyle(.orange)
             }
-            if result.program != nil {
-                Text(L10n("检测会发送最小测试请求，可能消耗额度；不会读取项目或加入聊天历史。"))
+            if let runtime = result.runtime {
+                ProviderRuntimeSettingsView(providerId: provider.id, runtime: runtime, busy: controlsBusy || testing,
+                    sourceDraft: settingsDraft?.values[provider.id]?.source,
+                    sourceEdited: settingsDraft.map { draft in { source in draft.edit(provider.id, source: source) } }) { row in
+                    result = row
+                    environmentMode = row.environment?.mode ?? environmentMode
+                    environmentHome = row.environment?.home ?? environmentHome
+                    updated(row)
+                }
+            }
+            if let checkedAt = result.lastCheckedAt {
+                Text(L10nFormat("最近检测：%@", checkedAt)).font(.caption).foregroundStyle(.secondary)
+            }
+            if settingsDraft != nil {
+                Text(L10n("执行程序、凭证来源和启用状态将在点击页面底部“保存设置”后一起生效；检测连接使用已保存的配置。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Group {
+                Text(L10n("检测会发送最小测试请求，可能消耗额度；不会读取项目或聊天记录，也不会加入聊天历史。"))
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let model = result.program?.effectiveModel {
                     Text(L10nFormat("已验证模型：%@", model)).font(.caption).foregroundStyle(.secondary)
@@ -496,62 +517,25 @@ struct FirstRunProviderCard: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
         .overlay {
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(available && result.enabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
+                .strokeBorder(available && displayEnabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
         }
         .onChange(of: selectionKey) { _, _ in
-            if testing, result.program != nil { cancelCheck() }
+            if testing { cancelCheck() }
             testing = false
             error = nil
+            settingsDraft?.edit(provider.id, path: path)
             pathChanged(!resultMatchesSelection)
-        }
-        .task(id: "\(selectionKey)|\(scanGeneration)|\(checkGeneration)") {
-            // Multi-installation discovery never triggers a paid reply test.
-            // Its explicit check action has a separate task identity below.
-            guard provider.program == nil else { return }
-            // Opening Settings must never start an implicit model reply test.
-            guard allowsAutomaticChecks || checkGeneration > 0 else { return }
-            let shouldCheck = provider.environment != nil
-                ? (!authenticationBusy && !path.isEmpty && (scanGeneration > 0 || checkGeneration > 0))
-                : !resultMatchesSelection || (!path.isEmpty && (result.checkState == "unknown"
-                || result.checkState == "checking" || scanGeneration > 0 || checkGeneration > 0))
-            guard shouldCheck else { return }
-            do {
-                if !resultMatchesSelection { try await Task.sleep(for: .milliseconds(600)) }
-                try Task.checkCancellation()
-                await check()
-            } catch { }
         }
         .task(id: scanGeneration) {
             guard provider.program != nil, scanGeneration > 0 else { return }
             await scanPrograms()
         }
         .task(id: checkGeneration) {
-            guard provider.program != nil, checkGeneration > 0 else { return }
+            guard checkGeneration > 0 else { return }
             await check()
         }
-        .onDisappear { if result.program != nil { cancelCheck() } }
-        .task(id: loginId) {
-            guard let id = loginId else { return }
-            let requested = selectionKey
-            let cancelBody = authenticationBody("cancel", login: id)
-            defer { if loginId == id { authenticationBusy = false; loginId = nil } }
-            do {
-                for _ in 0..<150 {
-                    try await Task.sleep(for: .seconds(2))
-                    try Task.checkCancellation()
-                    guard requested == selectionKey else { throw CancellationError() }
-                    let status: ProviderAuthenticationResult = try await FirstRunSetupAPI.request(
-                        "first-run/authentication", body: authenticationBody("status", login: id))
-                    if status.state == "completed" { checkGeneration += 1; return }
-                    if status.state != "pending" { throw NSError(domain: "ProviderLogin", code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: L10n("登录未完成，请重试。")]) }
-                }
-                error = L10n("登录超时，请重试。")
-            } catch {
-                if !Task.isCancelled && requested == selectionKey { self.error = error.localizedDescription }
-            }
-            Task { let _: ProviderAuthenticationResult? = try? await FirstRunSetupAPI.request("first-run/authentication", body: cancelBody) }
-        }
+        .onDisappear { cancelCheck() }
+
     }
 
     private func programSelection(_ program: ProviderProgramInventory) -> some View {
@@ -600,52 +584,7 @@ struct FirstRunProviderCard: View {
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 
-    private func environmentSelection(_ environment: ProviderRuntimeEnvironment) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L10n("使用本机已有配置和登录状态，认证由 Codex 管理。Codex 自身可能请求系统授权。"))
-                .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if !available {
-                HStack {
-                    Button(L10n("登录 Codex")) { Task { await authenticate("login") } }
-                        .disabled(authenticationBusy)
-                    if loginId != nil {
-                        Button(L10n("取消登录")) { loginId = nil; authenticationBusy = false }
-                    }
-                    Button(L10n("重新检测")) { checkGeneration += 1 }
-                        .disabled(authenticationBusy)
-                }
-                .disabled((controlsBusy && loginId == nil) || testing || path.isEmpty)
-            }
-        }
-    }
-
     private var environmentBody: [String: String] { ["mode": environmentMode, "home": environmentHome] }
-
-    private func authenticationBody(_ action: String, login: String? = nil) -> [String: Any] {
-        var body: [String: Any] = ["providerId": provider.id, "path": path, "environment": environmentBody,
-                                   "action": action, "confirmed": action == "import"]
-        if let login { body["loginId"] = login }
-        return body
-    }
-
-    private func authenticate(_ action: String) async {
-        guard !authenticationBusy else { return }
-        authenticationBusy = true
-        error = nil
-        let requested = selectionKey
-        defer { if loginId == nil { authenticationBusy = false } }
-        do {
-            let result: ProviderAuthenticationResult = try await FirstRunSetupAPI.request(
-                "first-run/authentication", body: authenticationBody(action))
-            guard requested == selectionKey else { return }
-            if let id = result.loginId, let address = result.authUrl, let url = URL(string: address),
-               url.scheme == "https", let host = url.host, host == "auth.openai.com" || host.hasSuffix(".openai.com") {
-                loginId = id
-                NSWorkspace.shared.open(url)
-            } else if result.state == "imported" { checkGeneration += 1 }
-            else { error = L10n("无法启动 Codex 登录，请在 Codex 中登录后重新检测。") }
-        } catch { if requested == selectionKey { self.error = error.localizedDescription } }
-    }
 
     private var providerIcon: some View {
         Group {
@@ -674,12 +613,32 @@ struct FirstRunProviderCard: View {
         HStack {
             Button(L10n("选择…")) { chooseBinary() }
                 .disabled(controlsBusy || result.program?.mode == "controlled")
-                Button(L10n(result.program != nil ? "检测并采用" : (provider.environment != nil ? "检测" : "重试"))) { checkGeneration += 1 }
-                .disabled(testing || controlsBusy || path.isEmpty)
-            if testing && result.program != nil {
+            if settingsDraft == nil {
+                Button(L10n("采用程序")) { Task { await adoptProgram() } }
+                    .disabled(controlsBusy || result.program?.mode == "controlled")
+            }
+                Button(L10n(settingsDraft != nil ? "检测连接" : (result.program != nil ? "检测并采用" : "检测连接"))) { checkGeneration += 1 }
+                .disabled(testing || controlsBusy || path.isEmpty || hasPendingSettings)
+            if testing {
                 Button(L10n("取消")) { cancelCheck() }
             }
         }
+    }
+
+    @MainActor private func adoptProgram() async {
+        saving = true
+        error = nil
+        defer { saving = false }
+        do {
+            let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/program", body: [
+                "providerId": provider.id, "path": path
+            ])
+            result = row
+            selectionMode = row.program?.mode ?? "manual"
+            checkModel = row.program?.model ?? ""
+            updated(row)
+            pathChanged(false)
+        } catch { self.error = error.localizedDescription }
     }
 
     private func check() async {
@@ -691,7 +650,7 @@ struct FirstRunProviderCard: View {
         error = nil
         pathChanged(true)
         do {
-            var body: [String: Any] = ["providerId": provider.id, "path": requestedPath]
+            var body: [String: Any] = ["providerId": provider.id, "path": requestedPath, "checkId": checkID]
             if result.program != nil {
                 body["selectionMode"] = selectionMode; body["model"] = checkModel; body["checkId"] = checkID
             }
@@ -751,36 +710,28 @@ struct FirstRunProviderCard: View {
 // Settings and onboarding deliberately share the exact same provider card.
 struct ProviderEnvironmentSettingsView: View {
     var defaultProviderId: String? = nil
-    @State private var status: FirstRunStatus?
-    @State private var error: String?
+    let draft: ProviderSettingsDraft
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L10n("Provider 专属配置")).font(WorkbenchTypography.font(for: .sectionTitle))
-            Text(L10n("各 Provider 的程序路径、可用状态与认证配置分别管理，不影响上方的共用模型设置。"))
+            Text(L10n("执行程序、凭证来源和启用状态统一通过页面底部“保存设置”提交。"))
                 .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
-            if let status {
-                ForEach(status.providers) { provider in
-                    FirstRunProviderCard(provider: provider, busy: false, scanGeneration: 0,
-                        isDefault: (defaultProviderId ?? status.defaultProviderId) == provider.id, pathChanged: { _ in },
-                        updated: { row in
-                            if let index = self.status?.providers.firstIndex(where: { $0.id == row.id }) {
-                                self.status?.providers[index] = row
-                            }
-                        }, allowsAutomaticChecks: false)
+            if draft.isLoaded {
+                ForEach(draft.providers) { provider in
+                    FirstRunProviderCard(provider: provider, busy: draft.isSaving, scanGeneration: 0,
+                        isDefault: defaultProviderId == provider.id, pathChanged: { _ in },
+                        updated: { _ in Task { await draft.load() } },
+                        allowsAutomaticChecks: false, settingsDraft: draft)
+                        .id("\(provider.id)|\(draft.refreshGeneration)")
                 }
-            } else if let error {
+            } else if let error = draft.loadError {
                 Text(error).font(.callout).foregroundStyle(.red)
-                Button(L10n("重试")) { Task { await load() } }
+                Button(L10n("重试")) { Task { await draft.load() } }
             } else {
                 ProgressView(L10n("正在加载运行环境…"))
             }
         }
-        .task { await load() }
-    }
-
-    private func load() async {
-        do { status = try await FirstRunSetupAPI.request("first-run"); error = nil }
-        catch { self.error = error.localizedDescription }
+        .task { if !draft.isLoaded { await draft.load() } }
     }
 }
