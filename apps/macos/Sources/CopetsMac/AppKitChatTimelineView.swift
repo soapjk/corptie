@@ -117,12 +117,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         tableView.backgroundColor = .clear
         tableView.gridStyleMask = []
         tableView.intercellSpacing = NSSize(width: 0, height: 6)
-        tableView.rowHeight = 30
-        // Every row has an exact cached height from the delegate. Automatic
-        // row heights make NSTableView assign its 120pt estimate to offscreen
-        // rows; a direct scrollbar jump can then land in an unmaterialized
-        // blank region before those estimates are corrected.
-        tableView.usesAutomaticRowHeights = false
+        tableView.rowHeight = 100 // SDK estimate for unmounted rows.
+        tableView.usesAutomaticRowHeights = true
         tableView.selectionHighlightStyle = .none
         tableView.allowsEmptySelection = true
         tableView.focusRingType = .none

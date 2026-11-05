@@ -28,7 +28,7 @@ final class SharedExecutionTextTests: XCTestCase {
                 nativeText: "", copyText: "", nativeStyle: .process,
                 title: "", metadata: "", expandableTurnId: "turn:plan", isExpanded: true,
                 processCount: 1, processSteps: [step], showsHeader: false)
-            return NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 360)
+            return LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 360)
         }
         let short = try plan(count: 3, completed: 1, revision: 1)
         let first = layout(for: short, revision: 1)
@@ -83,7 +83,7 @@ final class SharedExecutionTextTests: XCTestCase {
             var samples: [Double] = []
             for (index, row) in rows.enumerated() {
                 let start = ProcessInfo.processInfo.systemUptime
-                let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 360)
+                let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 360)
                 let elapsed = (ProcessInfo.processInfo.systemUptime - start) * 1_000
                 XCTAssertEqual(layout.processBlocks.count, 1)
                 XCTAssertLessThan(layout.rowHeight, 400)
@@ -109,8 +109,8 @@ final class SharedExecutionTextTests: XCTestCase {
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false, images: [image])
         XCTAssertTrue(MacSharedMessageTextCard.supports(mixed))
-        let plainLayout = NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 520)
-        let mixedLayout = NativeTimelineLayoutCache.shared.layout(for: mixed, columnWidth: 520)
+        let plainLayout = LegacyTimelineLayoutReference.shared.layout(for: plain, columnWidth: 520)
+        let mixedLayout = LegacyTimelineLayoutReference.shared.layout(for: mixed, columnWidth: 520)
         XCTAssertEqual(mixedLayout.richBlocks.count, 3)
         XCTAssertEqual(mixedLayout.rowHeight, plainLayout.rowHeight + 96, accuracy: 0.5)
     }
@@ -122,7 +122,7 @@ final class SharedExecutionTextTests: XCTestCase {
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false)
         XCTAssertTrue(MacSharedMessageTextCard.supports(row))
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 320)
         XCTAssertEqual(layout.richBlocks.count, 3)
         guard case .table(_, let table, let measured) = layout.richBlocks[1] else {
             return XCTFail("Table must use a rich block instead of raw text")
@@ -135,7 +135,7 @@ final class SharedExecutionTextTests: XCTestCase {
         var samples: [Double] = []
         for _ in 0..<100 {
             let start = ProcessInfo.processInfo.systemUptime
-            _ = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320)
+            _ = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 320)
             samples.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
         }
         samples.sort()
@@ -155,8 +155,8 @@ final class SharedExecutionTextTests: XCTestCase {
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false, actions: [action])
         XCTAssertTrue(MacSharedMessageTextCard.supports(actionable))
-        let plainLayout = NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 520)
-        let actionLayout = NativeTimelineLayoutCache.shared.layout(for: actionable, columnWidth: 520)
+        let plainLayout = LegacyTimelineLayoutReference.shared.layout(for: plain, columnWidth: 520)
+        let actionLayout = LegacyTimelineLayoutReference.shared.layout(for: actionable, columnWidth: 520)
         XCTAssertEqual(actionLayout.richBlocks.count, 3)
         XCTAssertEqual(actionLayout.rowHeight, plainLayout.rowHeight + 34, accuracy: 0.5)
     }
@@ -183,7 +183,7 @@ final class SharedExecutionTextTests: XCTestCase {
             showsHeader: false)
         XCTAssertTrue(MacSharedMessageTextCard.supports(row))
 
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 320)
         XCTAssertEqual(layout.richBlocks.count, 7)
         let kinds = layout.richBlocks.compactMap { block -> ConversationChartSpec.Kind? in
             guard case .chart(_, let spec, _) = block else { return nil }
@@ -191,7 +191,7 @@ final class SharedExecutionTextTests: XCTestCase {
         }
         XCTAssertEqual(kinds, [.bar, .line, .pie])
         XCTAssertEqual(layout.rowHeight,
-            NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320).rowHeight)
+            LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 320).rowHeight)
         XCTAssertGreaterThan(layout.rowHeight, 3 * ConversationChartView.contentHeight)
     }
 
@@ -202,10 +202,10 @@ final class SharedExecutionTextTests: XCTestCase {
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false)
         XCTAssertTrue(MacSharedMessageTextCard.supports(row))
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 520)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 520)
         XCTAssertEqual(layout.richBlocks.count, 3)
         XCTAssertGreaterThan(layout.textHeight, 150)
-        XCTAssertEqual(layout.rowHeight, NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 520).rowHeight)
+        XCTAssertEqual(layout.rowHeight, LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 520).rowHeight)
         if case .chart(_, let shortSpec, let shortHeight) = layout.richBlocks[1] {
             let shortHost = NSHostingView(rootView: ConversationChartView(spec: shortSpec)
                 .frame(width: layout.cardWidth - 20))
@@ -220,7 +220,7 @@ final class SharedExecutionTextTests: XCTestCase {
             nativeText: withNote, copyText: withNote, nativeStyle: .agent,
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false)
-        let noteLayout = NativeTimelineLayoutCache.shared.layout(for: noteRow, columnWidth: 300)
+        let noteLayout = LegacyTimelineLayoutReference.shared.layout(for: noteRow, columnWidth: 300)
         XCTAssertGreaterThan(noteLayout.rowHeight, layout.rowHeight)
         guard case .chart(_, let spec, let measuredHeight) = noteLayout.richBlocks.first(where: {
             if case .chart = $0 { return true }
@@ -252,7 +252,7 @@ final class SharedExecutionTextTests: XCTestCase {
                 contentRevision: 1, nativeText: text, copyText: text,
                 nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
                 isExpanded: false, showsHeader: false)
-            let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: columnWidth)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: columnWidth)
             guard case .chart(_, let spec, let allocated) = layout.richBlocks.first else {
                 XCTFail("Expected a chart at width \(columnWidth)")
                 continue
@@ -272,7 +272,7 @@ final class SharedExecutionTextTests: XCTestCase {
 
     func testCompletedChartHeightIsReusedWhileTrailingTextStreams() {
         let chart = "```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Height-cache-append-20260925\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```"
-        let cache = NativeTimelineLayoutCache.shared
+        let cache = LegacyTimelineLayoutReference.shared
         let before = cache.chartMeasurementCount
         func row(_ suffix: String) -> AppKitChatTimelineRow {
             let text = chart + suffix
@@ -292,7 +292,7 @@ final class SharedExecutionTextTests: XCTestCase {
     }
 
     func testChangingOnlyChartValuesDoesNotRemeasureItsUnchangedChrome() {
-        let cache = NativeTimelineLayoutCache.shared
+        let cache = LegacyTimelineLayoutReference.shared
         let baseline = cache.chartMeasurementCount
         func row(value: Int, title: String = "Value-cache-20260925") -> AppKitChatTimelineRow {
             let text = "```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"\(title)\",\"data\":[{\"label\":\"A\",\"value\":\(value)}]}\n```"
@@ -326,7 +326,7 @@ final class SharedExecutionTextTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["CORPTIE_CHART_BENCHMARK"] == "1" else {
             throw XCTSkip("Set CORPTIE_CHART_BENCHMARK=1 for 1/20/200-row chart layout measurements")
         }
-        let cache = NativeTimelineLayoutCache.shared
+        let cache = LegacyTimelineLayoutReference.shared
         for count in [1, 20, 200] {
             let rows: [AppKitChatTimelineRow] = (0..<count).map { index in
                 let title = "Benchmark-\(count)-\(index)"
@@ -382,7 +382,7 @@ final class SharedExecutionTextTests: XCTestCase {
             nativeText: "", copyText: "", nativeStyle: .process,
             title: "", metadata: "", expandableTurnId: "turn:one", isExpanded: true,
             processCount: 2, processSteps: steps, showsHeader: false)
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 480)
         XCTAssertEqual(layout.processBlocks.count, 2)
         XCTAssertEqual(layout.textHeight,
             layout.processBlocks[0].height + 6 + layout.processBlocks[1].height,
@@ -397,31 +397,31 @@ final class SharedExecutionTextTests: XCTestCase {
             title: "", metadata: "", expandableTurnId: "turn:current", isExpanded: false,
             processCount: 2, processState: .running,
             processCurrentStepTitle: "Verify the result", showsHeader: false)
-        let layout = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: collapsed, columnWidth: 480)
         XCTAssertGreaterThanOrEqual(layout.rowHeight, 48)
         XCTAssertEqual(collapsed.id, "process:current")
         XCTAssertFalse(collapsed.processPrimarySummary.contains("Verify the result"))
     }
 
-    func testCollapsedProcessSummaryWrapsWithinTheCachedNativeRow() {
+    func testCollapsedProcessSummaryKeepsItsSingleLinePreviewAtNarrowWidths() {
         var row = AppKitChatTimelineRow(id: "process:long-summary", contentRevision: 1,
             nativeText: "", copyText: "", nativeStyle: .process,
             title: "", metadata: "", expandableTurnId: "turn:long-summary", isExpanded: false,
             processCount: 999, processDuration: "123456h 59m 59.99s", showsHeader: false)
         row.processLanguageCode = "en"
-        let narrow = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 140)
-        XCTAssertGreaterThan(narrow.rowHeight, 32)
+        let narrow = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 140)
+        XCTAssertEqual(narrow.rowHeight, 32)
         XCTAssertEqual(narrow.rowHeight,
-            NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 140).rowHeight)
+            LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 140).rowHeight)
 
         var localized = AppKitChatTimelineRow(id: "process:localized-summary", contentRevision: 1,
             nativeText: "", copyText: "", nativeStyle: .process,
             title: "", metadata: "", expandableTurnId: "turn:localized-summary", isExpanded: false,
             processCount: 1, processDuration: "1m 12.00s", showsHeader: false)
         localized.processLanguageCode = "en"
-        let english = NativeTimelineLayoutCache.shared.layout(for: localized, columnWidth: 480)
+        let english = LegacyTimelineLayoutReference.shared.layout(for: localized, columnWidth: 480)
         localized.processLanguageCode = "zh-Hans"
-        let chinese = NativeTimelineLayoutCache.shared.layout(for: localized, columnWidth: 480)
+        let chinese = LegacyTimelineLayoutReference.shared.layout(for: localized, columnWidth: 480)
         XCTAssertNotEqual(english.cardWidth, chinese.cardWidth,
             "Changing language must invalidate the cached process summary geometry")
     }
@@ -437,7 +437,7 @@ final class SharedExecutionTextTests: XCTestCase {
             nativeText: "", copyText: "", nativeStyle: .process,
             title: "", metadata: "", expandableTurnId: "turn:long", isExpanded: true,
             processCount: 1, processSteps: [step], showsHeader: false)
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 480)
         XCTAssertEqual(layout.processBlocks.count, 1)
         XCTAssertTrue(layout.processBlocks[0].hasOverflow)
         XCTAssertEqual(layout.processBlocks[0].attributedText.length, 0,

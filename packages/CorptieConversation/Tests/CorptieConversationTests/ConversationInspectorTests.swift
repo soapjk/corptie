@@ -16,10 +16,10 @@ struct ConversationInspectorTests {
             "apps/macos/Sources/CopetsMac/Conversation/ConversationHeader.swift"), encoding: .utf8)
         let mobile = try String(contentsOf: root.appendingPathComponent(
             "apps/ipad/Sources/CorptieMobileApp.swift"), encoding: .utf8)
-        #expect(desktop.contains("guard let taskID = backendClient.selectedSession?.taskId else { return false }"))
-        #expect(desktop.contains("entityClient.tasks.first(where: { $0.id == taskID })?.hasPendingScheduledWake == true"))
+        #expect(desktop.contains("hasPendingScheduledWake: session?.taskId.flatMap"))
+        #expect(desktop.contains("entityClient.tasks.first { $0.id == id } }?.hasPendingScheduledWake == true"))
         #expect(desktop.contains("if hasPendingScheduledWake {"))
-        #expect(desktop.contains("ConsoleScheduledWakeIcon(isActive: scenePhase == .active)"))
+        #expect(desktop.contains("ConsoleScheduledWakeIcon(isActive: scenePhase == .active && isPresentationActive)"))
         #expect(mobile.contains("let task = workspace.tasks.first(where: { $0.id == session?.taskId })"))
         #expect(mobile.contains("if task?.hasPendingScheduledWake == true {"))
         #expect(mobile.contains("ScheduledWakeIcon(isActive: scenePhase == .active)"))

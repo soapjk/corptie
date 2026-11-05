@@ -161,8 +161,8 @@ private struct ReplyActions: NSViewRepresentable {
     }
 }
 
-/// Production adapter. It deliberately keeps the
-/// existing attributed-text cache, measured sizes and custom TextKit view.
+/// Production adapter: cached attributed content and the existing TextKit
+/// selection/link view, with SDK-owned intrinsic card and row heights.
 struct MacSharedMessageTextCard: View {
     var skin: ConversationSkin = .classic
     let row: AppKitChatTimelineRow
@@ -217,13 +217,44 @@ struct MacSharedMessageTextCard: View {
                         ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
                     }, openSession: { AppTabRouter.shared.openSession($0, source: .userSelection) })
                 }
-                else if let trigger = row.scheduledTrigger { scheduledTaskCard(trigger) }
-                else if let input = row.userInput { userInputCard(input) }
-                else if let plan = row.executionPlan { executionPlanCard(plan) }
-                else if row.nativeStyle == .process { processCard }
-                else { messageCard }
+                else if let trigger = row.scheduledTrigger {
+                    MacScheduledTriggerCard(trigger: trigger, title: row.title, metadata: row.metadata,
+                        cardWidth: layout.cardWidth,
+                        text: layout.attributedText,
+                        triggerText: layout.triggerText,
+                        triggerCanExpand: layout.triggerCanExpand, baseDirectory: baseDirectory, toggle: toggle)
+                }
+                else if let input = row.userInput {
+                    MacUserInputCard(request: input, status: row.userInputStatus, sessionID: row.sessionID,
+                        itemID: row.userInputItemID, cardWidth: layout.cardWidth, copy: copy)
+                }
+                else if let plan = row.executionPlan {
+                    MacExecutionPlanCard(plan: plan, cardWidth: layout.cardWidth,
+                        expanded: row.isExpanded, toggle: toggle, copy: copy)
+                }
+                else if row.nativeStyle == .process {
+                    MacProcessCardRegion(summary: row.processPrimarySummary, summaryOverride: processSummaryOverride,
+                        secondary: row.processCurrentStepTitle, state: row.processState, expanded: row.isExpanded,
+                        progress: row.processPlanProgress, progressLabel: row.processPlanProgressLabel,
+                        blocks: layout.processBlocks, text: layout.attributedText,
+                        rawStatusText: layout.rawStatusText,
+                        cardWidth: layout.cardWidth,
+                        baseDirectory: baseDirectory, toggle: toggle)
+                }
+                else {
+                    MacOrdinaryMessageCardRegion(messageID: row.id, style: row.nativeStyle,
+                        isCommentary: row.isCommentary, surfaceRole: row.contentSurfaceRole,
+                        cardWidth: layout.cardWidth, text: layout.attributedText, blocks: layout.richBlocks,
+                        imageLayout: layout.imageLayout, images: row.images, actions: row.actions,
+                        source: row.scheduledMessageSource,
+                        canCopy: row.copyText.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) },
+                        forkItemID: row.forkItemID, scrollsUserContent: layout.scrollsUserContent,
+                        presentedMessageStatus: presentedMessageStatus, baseDirectory: baseDirectory,
+                        copy: copy, performAction: performAction, selectText: selectText,
+                        contextMenu: contextMenu, onImageGeometryChanged: onImageGeometryChanged)
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity,
+            .frame(maxWidth: .infinity, maxHeight: nil,
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.leading, ReplyLeadingLayout.cardLeading(for: row, skin: skin))
             .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
@@ -238,165 +269,59 @@ struct MacSharedMessageTextCard: View {
         .environment(\.conversationSkin, skin)
     }
 
-    private func scheduledTaskCard(_ trigger: ScheduledTriggerPresentation) -> some View {
-        let width = layout.cardWidth - 20
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(row.title).font(.system(size: 13, weight: .bold)).lineLimit(1).layoutPriority(1)
-                Spacer(minLength: 0)
-                Text(row.metadata).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
-            }
-            .frame(height: 16)
-            if layout.textHeight > 0 {
-                MeasuredMessageText(text: layout.attributedText,
-                    size: .init(width: width, height: layout.textHeight), baseDirectory: baseDirectory)
-                    .frame(width: width, height: layout.textHeight)
-            }
-            if !trigger.text.isEmpty, let message = layout.triggerText {
-                Text(L10n("触发消息")).font(.system(size: 11, weight: .bold)).frame(height: 14)
-                MeasuredMessageText(text: message, size: .init(width: width, height: layout.triggerTextHeight),
-                    baseDirectory: baseDirectory, maximumLines: trigger.isExpanded ? 0 : 3)
-                    .frame(width: width, height: layout.triggerTextHeight)
-                if layout.triggerCanExpand {
-                    Button(L10n(trigger.isExpanded ? "收起消息" : "展开消息"), action: toggle)
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(.tint)
-                    .frame(height: 20)
-                    .accessibilityIdentifier("chat.timeline.scheduled-trigger-toggle")
-                }
-            }
-        }
-        .frame(width: width, alignment: .leading)
-        .padding(10)
-        .frame(width: layout.cardWidth, height: layout.cardHeight, alignment: .topLeading)
-        .modifier(ConversationContentSurface(cornerRadius: 14,
-            tint: Color(nsColor: MessageTextCardPalette.agentNativeBackground),
-            fallback: Color(nsColor: MessageTextCardPalette.agentNativeBackground),
-            isMessage: true, role: .interaction))
-        .accessibilityIdentifier("chat.timeline.scheduled-task")
-    }
+}
 
-    private func userInputCard(_ request: ConversationUserInput) -> some View {
-        ConversationInlineUserInput(request: request, status: row.userInputStatus) { answers, action in
-            guard let sessionID = row.sessionID else {
-                throw BackendError.message("会话不可用，无法提交答案。")
-            }
-            guard let itemID = row.userInputItemID else {
-                throw BackendError.message("问题标识不可用，无法提交答案。")
-            }
-            try await BackendClient.shared.respondToUserInput(
-                sessionID: sessionID, itemID: itemID, answers: answers, action: action)
-        }
-        .accessibilityActions {
-            Button(L10n("Copy Message"), action: copy)
-        }
-        .padding(14)
-        .frame(width: layout.cardWidth, alignment: .topLeading)
-        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .orange,
-            tintOpacity: row.userInputStatus == "pending" ? 0.06 : 0.025, isMessage: true, role: .interaction))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.orange.opacity(row.userInputStatus == "pending" ? 0.38 : 0.16), lineWidth: 1)
-        }
-    }
+private struct MacOrdinaryMessageCardRegion: View {
+    let messageID: String
+    let style: AppKitChatTimelineRow.NativeStyle
+    let isCommentary: Bool
+    let surfaceRole: ConversationSurfaceRole
+    let cardWidth: CGFloat
+    let text: NSAttributedString
+    let blocks: [NativeTimelineLayoutCache.Layout.RichBlock]
+    let imageLayout: MessageImageGalleryLayout.Layout
+    let images: [ChatTimelineImage]
+    let actions: [AppKitChatTimelineRow.Action]
+    let source: String?
+    let canCopy: Bool
+    let forkItemID: String?
+    let scrollsUserContent: Bool
+    let presentedMessageStatus: UserMessageStatusPresentation?
+    let baseDirectory: String?
+    let copy: () -> Void
+    let performAction: (AppKitChatTimelineRow.Action) -> Void
+    let selectText: () -> Void
+    let contextMenu: NSMenu?
+    let onImageGeometryChanged: () -> Void
 
-    private func executionPlanCard(_ plan: ConversationExecutionPlan) -> some View {
-        Group {
-            if let taskID = plan.taskId {
-                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: layout.cardWidth - 28,
-                    isExpanded: row.isExpanded, onToggleExpansion: toggle)
-            } else { ExecutionPlanChecklist(plan: plan) }
-        }
-            .accessibilityActions {
-                Button(L10n("Copy Message"), action: copy)
-            }
-            .padding(14)
-            .frame(width: layout.cardWidth, alignment: .topLeading)
-            .modifier(ConversationSkinSurface(role: .plan, radius: 14,
-                legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.2)))
-    }
-
-    private var processCard: some View {
-        ProcessCard(summary: row.processPrimarySummary, summaryOverride: processSummaryOverride, secondary: row.processCurrentStepTitle,
-                    symbol: row.processState.symbolName,
-                    tint: Color(nsColor: row.processState.color), expanded: row.isExpanded,
-                    progress: row.processPlanProgress, progressLabel: row.processPlanProgressLabel,
-                    toggle: toggle) {
-            VStack(alignment: .leading, spacing: 8) {
-                if layout.processBlocks.isEmpty {
-                    MeasuredMessageText(text: layout.attributedText,
-                        size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
-                        baseDirectory: baseDirectory)
-                        .frame(width: layout.cardWidth - 20, height: layout.textHeight)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(layout.processBlocks.indices, id: \.self) { index in
-                            let block = layout.processBlocks[index]
-                            MacProcessBlockView(block: block, cardWidth: layout.cardWidth,
-                                                baseDirectory: baseDirectory)
-                        }
-                    }
-                    .frame(width: layout.cardWidth - 20, height: layout.textHeight,
-                           alignment: .topLeading)
-                }
-                if layout.rawStatusHeight > 0 {
-                    ProcessRawStatusText(text: row.rawStatusText)
-                        .frame(width: layout.cardWidth - 20, height: layout.rawStatusHeight)
-                }
-            }
-        }
-        .frame(width: layout.cardWidth, height: layout.rowHeight - row.replyIdentityHeight - 2, alignment: .topLeading)
-    }
-
-    private var messageCard: some View {
-        MessageTextCard(messageID: row.id, role: row.nativeStyle == .user ? .user : (row.isCommentary ? .commentary : .agent),
+    var body: some View {
+        MessageTextCard(messageID: messageID, role: style == .user ? .user : (isCommentary ? .commentary : .agent),
             timestamp: "", showsActions: false,
-            actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
-            cardHeight: layout.cardHeight,
+            actionsAlwaysVisible: false, cardWidth: cardWidth,
+            cardHeight: nil,
             status: presentedMessageStatus, rendersStatusGlow: false,
-            surfaceRole: row.contentSurfaceRole, scrollsContent: layout.scrollsUserContent, copy: copy) {
+            surfaceRole: surfaceRole, scrollsContent: scrollsUserContent, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
-                if let source = row.scheduledMessageSource {
+                if let source = source {
                     Label(source, systemImage: "clock").font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary).lineLimit(1)
                         .frame(height: 19, alignment: .topLeading)
                 }
-                if row.nativeStyle == .user && !row.images.isEmpty {
-                    attachmentStrip.padding(.bottom, layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0)
+                if style == .user && !images.isEmpty {
+                    MacMessageAttachmentStrip(images: images, layout: imageLayout,
+                        geometryChanged: onImageGeometryChanged).padding(.bottom, (text.length > 0 || !blocks.isEmpty) ? MessageCardMetrics.contentSpacing : 0)
                 }
-                if layout.richBlocks.isEmpty && layout.textHeight > 0 {
-                    MeasuredMessageText(text: layout.attributedText,
-                        size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
-                        baseDirectory: baseDirectory, contextMenu: contextMenu)
-                        .frame(width: layout.cardWidth - 20, height: layout.textHeight)
-                } else if !layout.richBlocks.isEmpty {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(layout.richBlocks, id: \.id) { block in
-                            switch block {
-                            case .markdown(_, let text, let height):
-                                MeasuredMessageText(text: text,
-                                    size: CGSize(width: layout.cardWidth - 20, height: height),
-                                    baseDirectory: baseDirectory, contextMenu: contextMenu)
-                                    .frame(width: layout.cardWidth - 20, height: height)
-                            case .chart(_, let spec, let height):
-                                ConversationChartView(spec: spec)
-                                    .frame(width: layout.cardWidth - 20,
-                                           height: height)
-                            case .table(_, let table, let tableLayout):
-                                ConversationMarkdownTableView(table: table, layout: tableLayout,
-                                    openLink: { _ = MessageLinkOpener.handle($0, baseDirectory: baseDirectory) })
-                            }
-                        }
-                    }
-                    .frame(width: layout.cardWidth - 20, height: layout.textHeight,
-                           alignment: .topLeading)
+                MacMessageProseRegion(text: text, blocks: blocks,
+                    width: cardWidth - 20,
+                    baseDirectory: baseDirectory, contextMenu: contextMenu)
+                if style != .user && !images.isEmpty {
+                    MacMessageAttachmentStrip(images: images, layout: imageLayout,
+                        geometryChanged: onImageGeometryChanged).padding(.top, (text.length > 0 || !blocks.isEmpty) ? MessageCardMetrics.contentSpacing : 0)
                 }
-                if row.nativeStyle != .user && !row.images.isEmpty {
-                    attachmentStrip.padding(.top, layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0)
-                }
-                if !row.actions.isEmpty {
+                if !actions.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing: 6) {
-                            ForEach(row.actions, id: \.id) { action in
+                            ForEach(actions, id: \.id) { action in
                                 Button(action.label) { performAction(action) }
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
@@ -406,21 +331,26 @@ struct MacSharedMessageTextCard: View {
                         }
                     }
                     .scrollIndicators(.hidden)
-                    .frame(width: layout.cardWidth - 20, height: 30, alignment: .leading)
+                    .frame(width: cardWidth - 20, height: 30, alignment: .leading)
                     .padding(.top, 4)
                 }
             }
             .background {
-                if row.nativeStyle == .user && layout.scrollsUserContent {
+                if style == .user {
                     ConsoleOverlayScroller()
                 }
             }
         }
+        .background {
+            if let status = presentedMessageStatus {
+                IntrinsicMessageGlow(status: status)
+            }
+        }
         .accessibilityActions {
-            if !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if canCopy {
                 Button(L10n("Copy Message"), action: copy)
             }
-            if let itemID = row.forkItemID {
+            if let itemID = forkItemID {
                 Button(L10n("Create Branch")) {
                     performAction(.init(id: "fork:\(itemID)", label: L10n("Create Branch"),
                                         isDestructive: false, kind: .forkMessage(itemID: itemID)))
@@ -429,25 +359,233 @@ struct MacSharedMessageTextCard: View {
             Button(L10n("Select Text"), action: selectText)
         }
     }
+}
 
-    private var attachmentStrip: some View {
-        let frames = layout.imageLayout.frames
-        return ZStack(alignment: .topLeading) {
-            ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
-                MacMessageImageThumbnail(attachment: row.images[index], index: index,
+private struct MacMessageAttachmentStrip: View {
+    let images: [ChatTimelineImage]
+    let layout: MessageImageGalleryLayout.Layout
+    let geometryChanged: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(layout.frames.enumerated()), id: \.offset) { index, frame in
+                MacMessageImageThumbnail(displayURL: images[index].displayURL,
+                    initialGeometry: images[index].geometry, index: index,
                     size: frame.size, fits: true,
-                    extraCount: index == 3 ? max(0, row.images.count - 4) : 0,
-                    open: { ChatImageGalleryViewer.shared.show(row.images, selected: index) },
-                    geometryChanged: onImageGeometryChanged)
+                    extraCount: index == 3 ? max(0, images.count - 4) : 0,
+                    open: { ChatImageGalleryViewer.shared.show(images, selected: index) },
+                    geometryChanged: geometryChanged)
                     .offset(x: frame.minX, y: frame.minY)
             }
         }
-        .frame(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0, alignment: .topLeading)
+        .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
     }
 }
 
+private struct MacScheduledTriggerCard: View {
+    let trigger: ScheduledTriggerPresentation
+    let title: String
+    let metadata: String
+    let cardWidth: CGFloat
+    let text: NSAttributedString
+    let triggerText: NSAttributedString?
+    let triggerCanExpand: Bool
+    let baseDirectory: String?
+    let toggle: () -> Void
+
+    var body: some View {
+        let width = cardWidth - 20
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(title).font(.system(size: 13, weight: .bold)).lineLimit(1).layoutPriority(1)
+                Spacer(minLength: 0)
+                Text(metadata).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(height: 16)
+            if text.length > 0 {
+                MeasuredMessageText(text: text,
+                    size: nil, baseDirectory: baseDirectory)
+                    .frame(width: width, height: nil)
+            }
+            if !trigger.text.isEmpty, let message = triggerText {
+                Text(L10n("触发消息")).font(.system(size: 11, weight: .bold)).frame(minHeight: 14)
+                MeasuredMessageText(text: message, size: nil,
+                    baseDirectory: baseDirectory, maximumLines: trigger.isExpanded ? 0 : 3)
+                    .frame(width: width, height: nil)
+                if triggerCanExpand {
+                    Button(L10n(trigger.isExpanded ? "收起消息" : "展开消息"), action: toggle)
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(.tint)
+                    .frame(height: 20)
+                    .accessibilityIdentifier("chat.timeline.scheduled-trigger-toggle")
+                }
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .padding(10)
+        .frame(width: cardWidth, height: nil, alignment: .topLeading)
+        .modifier(ConversationContentSurface(cornerRadius: 14,
+            tint: Color(nsColor: MessageTextCardPalette.agentNativeBackground),
+            fallback: Color(nsColor: MessageTextCardPalette.agentNativeBackground),
+            isMessage: true, role: .interaction))
+        .accessibilityIdentifier("chat.timeline.scheduled-task")
+    }
+}
+
+private struct MacUserInputCard: View {
+    let request: ConversationUserInput
+    let status: String?
+    let sessionID: String?
+    let itemID: String?
+    let cardWidth: CGFloat
+    let copy: () -> Void
+
+    var body: some View {
+        ConversationInlineUserInput(request: request, status: status) { answers, action in
+            guard let sessionID = sessionID else {
+                throw BackendError.message("会话不可用，无法提交答案。")
+            }
+            guard let itemID = itemID else {
+                throw BackendError.message("问题标识不可用，无法提交答案。")
+            }
+            try await BackendClient.shared.respondToUserInput(
+                sessionID: sessionID, itemID: itemID, answers: answers, action: action)
+        }
+        .accessibilityActions {
+            Button(L10n("Copy Message"), action: copy)
+        }
+        .padding(14)
+        .frame(width: cardWidth, alignment: .topLeading)
+        .modifier(ConversationContentSurface(cornerRadius: 14, tint: .orange,
+            tintOpacity: status == "pending" ? 0.06 : 0.025, isMessage: true, role: .interaction))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.orange.opacity(status == "pending" ? 0.38 : 0.16), lineWidth: 1)
+        }
+    }
+}
+
+private struct MacExecutionPlanCard: View {
+    let plan: ConversationExecutionPlan
+    let cardWidth: CGFloat
+    let expanded: Bool
+    let toggle: () -> Void
+    let copy: () -> Void
+
+    var body: some View {
+        Group {
+            if let taskID = plan.taskId {
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: cardWidth - 28,
+                    isExpanded: expanded, onToggleExpansion: toggle)
+            } else {
+                IntrinsicCappedContent(maximumHeight: 300, content: ExecutionPlanChecklist(plan: plan))
+            }
+        }
+            .accessibilityActions {
+                Button(L10n("Copy Message"), action: copy)
+            }
+            .padding(14)
+            .frame(width: cardWidth, alignment: .topLeading)
+            .modifier(ConversationSkinSurface(role: .plan, radius: 14,
+                legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.2)))
+    }
+}
+
+private struct MacProcessCardRegion: View {
+    let summary: String
+    let summaryOverride: ProcessCardSummary?
+    let secondary: String?
+    let state: ConversationProcessState
+    let expanded: Bool
+    let progress: Double?
+    let progressLabel: String?
+    let blocks: [NativeTimelineLayoutCache.Layout.ProcessBlock]
+    let text: NSAttributedString
+    let rawStatusText: NSAttributedString?
+    let cardWidth: CGFloat
+    let baseDirectory: String?
+    let toggle: () -> Void
+
+    var body: some View {
+        ProcessCard(summary: summary, summaryOverride: summaryOverride, secondary: secondary,
+                    symbol: state.symbolName,
+                    tint: Color(nsColor: state.color), expanded: expanded,
+                    progress: progress, progressLabel: progressLabel,
+                    toggle: toggle) {
+            VStack(alignment: .leading, spacing: 8) {
+                if blocks.isEmpty {
+                    MeasuredMessageText(text: text,
+                        size: nil,
+                        baseDirectory: baseDirectory)
+                        .frame(width: cardWidth - 20, height: nil)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(blocks, id: \.step.id) { block in
+                            MacProcessBlockView(block: block, cardWidth: cardWidth,
+                                                baseDirectory: baseDirectory)
+                        }
+                    }
+                    .frame(width: cardWidth - 20, height: nil,
+                           alignment: .topLeading)
+                }
+                if let rawStatusText, rawStatusText.length > 0 {
+                    IntrinsicCappedContent(maximumHeight: 160, content:
+                        MeasuredMessageText(text: rawStatusText, identifier: .init("chat.timeline.raw-status"))
+                            .padding(4))
+                        .frame(width: cardWidth - 20).frame(minHeight: 48)
+                        .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+        }
+        .frame(width: cardWidth, height: nil, alignment: .topLeading)
+    }
+}
+
+/// Receives cached rendering inputs only; it never parses Markdown or measures text.
+private struct MacMessageProseRegion: View {
+    let text: NSAttributedString
+    let blocks: [NativeTimelineLayoutCache.Layout.RichBlock]
+    let width: CGFloat
+    let baseDirectory: String?
+    let contextMenu: NSMenu?
+    var body: some View {
+        if blocks.isEmpty && (text.length > 0) {
+            MeasuredMessageText(text: text,
+                size: nil,
+                baseDirectory: baseDirectory, contextMenu: contextMenu)
+                .frame(width: width, height: nil)
+        } else if !blocks.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(blocks, id: \.id) { block in
+                    switch block {
+                    case .markdown(_, let text, _):
+                        MeasuredMessageText(text: text,
+                            size: nil,
+                            baseDirectory: baseDirectory, contextMenu: contextMenu)
+                            .frame(width: width, height: nil)
+                    case .chart(_, let spec, _):
+                        ConversationChartView(spec: spec)
+                            .frame(width: width,
+                                   height: nil)
+                    case .table(_, let table, let tableLayout):
+                        ConversationMarkdownTableView(table: table, layout: tableLayout,
+                            openLink: { _ = MessageLinkOpener.handle($0, baseDirectory: baseDirectory) })
+                    }
+                }
+            }
+            .frame(width: width, height: nil,
+                   alignment: .topLeading)
+        }
+    }
+}
+
+private struct MessageImageLoadKey: Equatable {
+    let url: URL?
+    let retry: Int
+}
+
 private struct MacMessageImageThumbnail: View {
-    let attachment: ChatTimelineImage
+    let displayURL: URL?
+    let initialGeometry: MessageImageGeometry?
     let index: Int
     let size: CGSize
     let fits: Bool
@@ -467,13 +605,13 @@ private struct MacMessageImageThumbnail: View {
         .buttonStyle(.plain)
         .help("打开图片")
         .accessibilityLabel("附加图片 \(index + 1)")
-        .task(id: "\(attachment.displayURL?.absoluteString ?? ""):\(retry)") {
+        .task(id: MessageImageLoadKey(url: displayURL, retry: retry)) {
             let request = UUID()
             requestID = request
-            let oldGeometry = attachment.resolvedGeometry
+            let oldGeometry = displayURL.flatMap { ChatTimelineImageLoader.shared.geometry(for: $0) } ?? initialGeometry
             loadedImage = nil
             loadFailed = false
-            guard let url = attachment.displayURL else {
+            guard let url = displayURL else {
                 loadFailed = true
                 return
             }
@@ -481,7 +619,7 @@ private struct MacMessageImageThumbnail: View {
                 guard requestID == request else { return }
                 loadedImage = image
                 loadFailed = image == nil
-                if oldGeometry != attachment.resolvedGeometry { geometryChanged() }
+                if oldGeometry != (ChatTimelineImageLoader.shared.geometry(for: url) ?? initialGeometry) { geometryChanged() }
             }
         }
         .onDisappear { requestID = UUID() }
@@ -507,27 +645,17 @@ private struct MacProcessBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let plan = block.step.plan {
-                if block.textHeight >= 300 {
-                    ScrollView {
-                        ExecutionPlanChecklist(plan: plan)
-                            .frame(width: cardWidth - 36, alignment: .leading)
-                    }
-                    .scrollIndicators(.automatic)
-                    .frame(width: cardWidth - 36, height: block.textHeight)
-                } else {
-                    ExecutionPlanChecklist(plan: plan)
-                        .frame(width: cardWidth - 36, height: block.textHeight,
-                               alignment: .topLeading)
-                }
+                IntrinsicCappedContent(maximumHeight: 300, content:
+                    ExecutionPlanChecklist(plan: plan).frame(width: cardWidth - 36, alignment: .leading))
             } else if block.step.tool != nil || block.step.changeSet != nil {
                 ExecutionStructuredStepView(presentation: .init(step: block.step))
-                    .frame(width: cardWidth - 36, height: block.textHeight,
+                    .frame(width: cardWidth - 36, height: nil,
                            alignment: .topLeading)
             } else {
                 MeasuredMessageText(text: block.attributedText,
-                    size: CGSize(width: cardWidth - 36, height: block.textHeight),
+                    size: nil,
                     baseDirectory: baseDirectory)
-                    .frame(width: cardWidth - 36, height: block.textHeight)
+                    .frame(width: cardWidth - 36, height: nil)
             }
             if block.hasOverflow {
                 Button("查看完整内容") { showsFull = true }
@@ -541,7 +669,7 @@ private struct MacProcessBlockView: View {
         .padding(.vertical, 7)
         .modifier(ConversationSkinSurface(role: .structured, radius: 8,
             legacyFill: tint.opacity(0.045), legacyBorder: tint.opacity(0.16)))
-        .frame(width: cardWidth - 20, height: block.height)
+        .frame(width: cardWidth - 20, height: nil)
         .popover(isPresented: $showsFull) {
             ScrollView {
                 Text(ExecutionStepDetailPresentation.fullText(block.step))
@@ -572,8 +700,8 @@ protocol AppKitChatRowRendering: AnyObject {
 final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering {
     var onImageGeometryChanged: (() -> Void)?
     private var representedImageGeometries: [MessageImageGeometry?] = []
-    private var messageGlow: NativeMessageStatusGlow?
     private var host: NSHostingView<MacSharedMessageTextCard>?
+    private var messageGlow: NativeMessageStatusGlow?
     private var skin = ConversationSkin.classic
     private var row: AppKitChatTimelineRow?
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
@@ -600,7 +728,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         guard let row, let measuredWidth else { return }
         let typography = row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
         if measuredLayout?.typography != typography || measuredLayout?.timeSeparatorHeight != (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) {
-            measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: measuredWidth, typography: typography, skin: skin)
+            measuredLayout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: measuredWidth, skin: skin)
             updateHost()
         } else { updateHost(needsLayout: false) }
     }
@@ -623,16 +751,19 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         let trace = SessionSwitchTrace.shared.start(.cardContent, sessionID: row.sessionID)
         defer { SessionSwitchTrace.shared.finish(trace) }
         precondition(MacSharedMessageTextCard.supports(row))
+        // An identity-only update retains the same cached prose. Do not clear
+        // its selection as if the cell had been rebound to another message.
+        let resetTextSelection = self.row?.id != row.id || self.row?.contentRevision != row.contentRevision
         self.row = row; self.baseDirectory = baseDirectory
         representedImageGeometries = row.imageGeometries
         elapsedSummary.text = nil
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
-        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
+        measuredLayout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin)
         measuredWidth = availableWidth
         contentConfigurationCount += 1
         configureContextMenu(for: row)
-        updateHost(resetTextSelection: true)
+        updateHost(resetTextSelection: resetTextSelection)
     }
 
     @discardableResult
@@ -643,7 +774,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         guard measuredWidth != availableWidth || measuredLayout?.typography != row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
             || measuredLayout?.timeSeparatorHeight != (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) else { return true }
         measuredWidth = availableWidth
-        measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
+        measuredLayout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin, reusing: measuredLayout)
         widthLayoutUpdateCount += 1
         ChatPerformanceRecorder.shared.increment(.appKitRowWidthUpdates)
         updateHost()
@@ -668,21 +799,28 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         } else {
             SessionSwitchTrace.shared.recordCell(.hostCreated, sessionID: row.sessionID, rowID: row.id)
             let host = NSHostingView(rootView: root)
-            host.sizingOptions = [] // The cached native row height owns sizing.
-            host.frame = bounds
-            host.autoresizingMask = [.width, .height]
+            host.sizingOptions = [.intrinsicContentSize]
+            host.translatesAutoresizingMaskIntoConstraints = false
+            host.setContentHuggingPriority(.required, for: .vertical)
+            host.setContentCompressionResistancePriority(.required, for: .vertical)
             addSubview(host)
+            NSLayoutConstraint.activate([
+                host.leadingAnchor.constraint(equalTo: leadingAnchor),
+                host.trailingAnchor.constraint(equalTo: trailingAnchor),
+                host.topAnchor.constraint(equalTo: topAnchor),
+                host.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
             self.host = host
         }
         self.host?.menu = menu
-        if skin == .classic, row.nativeStyle == .user, let status = row.messageStatus {
-            if messageGlow == nil {
-                let glow = NativeMessageStatusGlow(frame: .zero)
-                addSubview(glow, positioned: .below, relativeTo: host)
-                messageGlow = glow
-            }
-            messageGlow?.configure(status)
-        } else {
+        // Reconcile the new width/content proposal before NSTableView asks
+        // its SDK-owned row height. Invalidate the host, not a second height
+        // cache; only a mounted cell's tree participates in this transaction.
+        host?.needsLayout = true
+        host?.invalidateIntrinsicContentSize()
+        invalidateIntrinsicContentSize()
+
+        if row.nativeStyle != .user || row.messageStatus == nil {
             messageGlow?.removeFromSuperview()
             messageGlow = nil
         }
@@ -693,30 +831,23 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if needsLayout { self.needsLayout = true }
     }
 
+    fileprivate func paintStatusGlow(_ status: UserMessageStatusPresentation, frame: NSRect) {
+        guard row?.nativeStyle == .user, row?.messageStatus == status else { return }
+        if messageGlow == nil {
+            let glow = NativeMessageStatusGlow(frame: frame)
+            addSubview(glow, positioned: .below, relativeTo: host)
+            messageGlow = glow
+        }
+        if messageGlow?.frame != frame { messageGlow?.frame = frame }
+        messageGlow?.configure(status)
+    }
+
     func refreshProcessElapsed(now: Date) {
         guard let row, row.nativeStyle == .process, row.processState == .running,
               row.processStartedAt != nil else { return }
         let summary = row.processSummaryText(now: now, advancing: true, includesCurrentStep: false)
         guard elapsedSummary.text != summary else { return }
         elapsedSummary.text = summary
-    }
-
-    override func layout() {
-        if host?.frame != bounds { host?.frame = bounds }
-        if let measuredLayout, let row {
-            let size = NSSize(width: measuredLayout.cardWidth,
-                              height: measuredLayout.cardHeight)
-            let topInset = measuredLayout.timeSeparatorHeight + row.replyIdentityHeight + measuredLayout.typography.rowInset
-            messageGlow?.frame = NSRect(x: bounds.width - size.width - ChatBubbleWidthPolicy.userTrailingInset,
-                y: isFlipped ? topInset : bounds.height - topInset - size.height,
-                width: size.width, height: size.height)
-        }
-        super.layout()
-    }
-
-    override func viewDidMoveToSuperview() {
-        super.viewDidMoveToSuperview()
-        messageGlow?.allowRowOverflow()
     }
 
     @objc func copyRepresentedMessage() {
@@ -847,46 +978,61 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     }
 }
 
-private struct ProcessRawStatusText: NSViewRepresentable {
-    let text: String
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.scrollerStyle = .overlay
-        scroll.backgroundColor = .black.withAlphaComponent(0.035)
-        scroll.wantsLayer = true
-        scroll.layer?.cornerRadius = 6
-        let view = NSTextView()
-        view.identifier = .init("chat.timeline.raw-status")
-        view.isEditable = false; view.isSelectable = true; view.isRichText = false
-        view.drawsBackground = false
-        view.font = .monospacedSystemFont(ofSize: 9.5, weight: .regular)
-        view.textColor = NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1)
-        view.textContainerInset = NSSize(width: 4, height: 4)
-        view.isHorizontallyResizable = false; view.isVerticallyResizable = true
-        view.autoresizingMask = [.width]
-        view.textContainer?.widthTracksTextView = true
-        view.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        scroll.documentView = view
-        return scroll
-    }
-    func updateNSView(_ view: NSScrollView, context: Context) {
-        guard let document = view.documentView as? NSTextView else { return }
-        if document.string != text { document.string = text }
+private struct IntrinsicCappedContent<Content: View>: View {
+    let maximumHeight: CGFloat
+    let content: Content
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content.fixedSize(horizontal: false, vertical: true)
+            ScrollView { content.frame(maxWidth: .infinity, alignment: .leading) }
+        }
+        .frame(maxHeight: maximumHeight)
     }
 }
 
-private struct MeasuredMessageText: NSViewRepresentable {
+/// The SDK supplies this background anchor's bounds. The paint-only glow
+/// stays outside the hosting tree, without publishing size or affecting layout.
+private struct IntrinsicMessageGlow: NSViewRepresentable {
+    let status: UserMessageStatusPresentation
+    func makeNSView(context: Context) -> MessageGlowAnchor { MessageGlowAnchor() }
+    func updateNSView(_ view: MessageGlowAnchor, context: Context) {
+        view.status = status
+        view.paint()
+    }
+}
+
+private final class MessageGlowAnchor: NSView {
+    var status: UserMessageStatusPresentation?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func layout() { super.layout(); paint() }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); paint() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); paint() }
+    func paint() {
+        guard let status, bounds.width > 0, bounds.height > 0 else { return }
+        var ancestor = superview
+        while let view = ancestor {
+            if let cell = view as? AppKitSharedMessageTextCell {
+                cell.paintStatusGlow(status, frame: convert(bounds, to: cell))
+                return
+            }
+            ancestor = view.superview
+        }
+    }
+}
+
+/// TextKit consumes the SDK width proposal and supplies the native text height.
+struct MeasuredMessageText: NSViewRepresentable {
     let text: NSAttributedString
-    let size: CGSize
-    let baseDirectory: String?
+    var size: CGSize? = nil
+    var baseDirectory: String? = nil
     var contextMenu: NSMenu? = nil
     var maximumLines = 0
+    var identifier = NSUserInterfaceItemIdentifier("chat.timeline.body")
     final class Coordinator { var text: NSAttributedString? }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeTimelineTextView { NativeTimelineTextView() }
     func updateNSView(_ view: NativeTimelineTextView, context: Context) {
+        view.identifier = identifier
         view.linkBaseDirectory = baseDirectory
         view.cardContextMenu = contextMenu
         view.textContainer?.maximumNumberOfLines = maximumLines
@@ -899,5 +1045,17 @@ private struct MeasuredMessageText: NSViewRepresentable {
             context.coordinator.text = text
         }
     }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeTimelineTextView, context: Context) -> CGSize? { size }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeTimelineTextView, context: Context) -> CGSize? {
+        if let size { return size }
+        guard let container = nsView.textContainer, let manager = nsView.layoutManager else { return nil }
+        let width = proposal.width.flatMap { $0.isFinite ? max(1, $0) : nil }
+        // The SDK also asks for a natural size with an unspecified proposal.
+        // Returning nil would collapse NSTextView's non-intrinsic height.
+        container.widthTracksTextView = false
+        container.containerSize = .init(width: width ?? .greatestFiniteMagnitude,
+            height: .greatestFiniteMagnitude)
+        manager.ensureLayout(for: container)
+        let used = manager.usedRect(for: container)
+        return .init(width: width ?? ceil(used.width), height: ceil(used.height))
+    }
 }

@@ -44,7 +44,16 @@ public struct ConversationDetailText: View {
         VStack(alignment: .leading, spacing: 5) {
             renderedText
                 .lineLimit(isExpanded ? nil : collapsedLineLimit)
-                .background(measurementViews)
+                .background(DetailTextHeightProbe(reportsFullHeight: isExpanded))
+                .background {
+                    // The visible text already measures the current state.
+                    // Only the other state needs a hidden SDK layout probe.
+                    renderedText
+                        .lineLimit(isExpanded ? collapsedLineLimit : nil)
+                        .background(DetailTextHeightProbe(reportsFullHeight: !isExpanded))
+                        .hidden()
+                        .accessibilityHidden(true)
+                }
 
             if isOverflowing {
                 Button {
@@ -81,31 +90,19 @@ public struct ConversationDetailText: View {
             .textSelection(.enabled)
     }
 
-    private var measurementViews: some View {
-        ZStack {
-            renderedText
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: FullDetailTextHeightPreferenceKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
+}
 
-            renderedText
-                .lineLimit(collapsedLineLimit)
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: CollapsedDetailTextHeightPreferenceKey.self,
-                            value: proxy.size.height
-                        )
-                    }
-                }
+private struct DetailTextHeightProbe: View {
+    let reportsFullHeight: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            if reportsFullHeight {
+                Color.clear.preference(key: FullDetailTextHeightPreferenceKey.self, value: proxy.size.height)
+            } else {
+                Color.clear.preference(key: CollapsedDetailTextHeightPreferenceKey.self, value: proxy.size.height)
+            }
         }
-        .hidden()
-        .accessibilityHidden(true)
     }
 }
 

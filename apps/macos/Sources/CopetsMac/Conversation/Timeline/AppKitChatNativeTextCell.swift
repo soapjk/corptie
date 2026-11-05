@@ -3,6 +3,41 @@ import SwiftUI
 import CorptieConversation
 import CorptieClientCore
 
+/// TextKit owns this bounded diagnostic leaf's height, not the timeline cache.
+private final class IntrinsicTimelineRawStatusView: NSScrollView {
+    var usesIntrinsicHeight = false
+    override var intrinsicContentSize: NSSize {
+        guard usesIntrinsicHeight, let text = documentView as? NSTextView,
+              let container = text.textContainer, let manager = text.layoutManager else {
+            return super.intrinsicContentSize
+        }
+        container.widthTracksTextView = false
+        container.containerSize = .init(width: max(1, bounds.width - 8), height: .greatestFiniteMagnitude)
+        manager.ensureLayout(for: container)
+        return .init(width: NSView.noIntrinsicMetric, height: min(160, max(48, ceil(manager.usedRect(for: container).height) + 8)))
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = frame.width != newSize.width
+        super.setFrameSize(newSize)
+        if usesIntrinsicHeight && widthChanged { invalidateIntrinsicContentSize() }
+    }
+}
+
+private final class IntrinsicTimelineProcessButton: NSButton {
+    var usesIntrinsicHeight = false
+    override var intrinsicContentSize: NSSize {
+        guard usesIntrinsicHeight, let cell else { return super.intrinsicContentSize }
+        let size = cell.cellSize(forBounds: .init(x: 0, y: 0,
+            width: max(1, bounds.width), height: .greatestFiniteMagnitude))
+        return .init(width: NSView.noIntrinsicMetric, height: max(22, ceil(size.height)))
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = frame.width != newSize.width
+        super.setFrameSize(newSize)
+        if usesIntrinsicHeight && widthChanged { invalidateIntrinsicContentSize() }
+    }
+}
+
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     var onImageGeometryChanged: (() -> Void)?
@@ -13,6 +48,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var renderedRow: AppKitChatTimelineRow?
     private var renderedWidth: CGFloat = 0
     private var measuredTypography = ConversationTypography.classic
+    private var measuredSkin = ConversationSkin.classic
     private var surfaceRole = ConversationSurfaceRole.structured
     private var messageGlow: NativeMessageStatusGlow?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
@@ -21,7 +57,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let messageStatusButton = NSButton()
     private let label = NativeTimelineTextView()
     private let imageStack = NSStackView()
-    private let rawStatusScrollView = NSScrollView()
+    private let rawStatusScrollView = IntrinsicTimelineRawStatusView()
     private let rawStatusTextView = NSTextView()
     private let disclosureButton = NSButton()
     private var forkItemID: String?
@@ -33,9 +69,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let collaborationSentStatus = NSStackView()
     private let collaborationSentStatusIcon = NSImageView()
     // This footer acknowledges confirmation, not transport delivery.
-    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已发送"))
+    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已确认 · 不代表消息已送达"))
     private let processSeparator = NSView()
-    private let processButton = NSButton()
+    private let processButton = IntrinsicTimelineProcessButton()
     private var processSeparatorHeight: NSLayoutConstraint!
     private var processButtonHeight: NSLayoutConstraint!
     private var processButtonTopConstraint: NSLayoutConstraint!
@@ -61,10 +97,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var labelBottomToSentStatusConstraint: NSLayoutConstraint!
     private var labelTopToProcessButtonConstraint: NSLayoutConstraint!
     private var labelBottomToCardConstraint: NSLayoutConstraint!
-    private var labelHeightConstraint: NSLayoutConstraint!
     private var rawStatusTopConstraint: NSLayoutConstraint!
     private var rawStatusBottomConstraint: NSLayoutConstraint!
-    private var rawStatusHeightConstraint: NSLayoutConstraint!
     private var collaborationSummaryView: NativeCollaborationRouteSummaryView?
     private var collaborationSummaryTopToTitleConstraint: NSLayoutConstraint?
     private var collaborationSummaryTopToCardConstraint: NSLayoutConstraint?
@@ -89,6 +123,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
+        label.usesIntrinsicHeight = true
+        rawStatusScrollView.usesIntrinsicHeight = true
         self.identifier = identifier
         clipsToBounds = false
         cardView.translatesAutoresizingMaskIntoConstraints = false
@@ -236,10 +272,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         )
         labelTopToProcessButtonConstraint = label.topAnchor.constraint(equalTo: processButton.bottomAnchor, constant: 8)
         labelBottomToCardConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10)
-        labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: 0)
         rawStatusTopConstraint = rawStatusScrollView.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8)
         rawStatusBottomConstraint = rawStatusScrollView.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -10)
-        rawStatusHeightConstraint = rawStatusScrollView.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             cardWidthConstraint,
             cardLeadingConstraint,
@@ -264,10 +298,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             imageStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             imageStack.trailingAnchor.constraint(lessThanOrEqualTo: cardView.trailingAnchor, constant: -10),
             imageStackHeightConstraint,
-            labelHeightConstraint,
             rawStatusScrollView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             rawStatusScrollView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
-            rawStatusHeightConstraint,
             labelTopToTitleConstraint,
             labelBottomToProcessConstraint,
             actionStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
@@ -286,6 +318,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             processButtonBottomConstraint,
             processButtonHeight
         ])
+        label.setContentHuggingPriority(.required, for: .vertical)
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+
         updateTrackingAreas()
     }
 
@@ -312,31 +347,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         }
     }
 
-    func setContent(
-        _ row: AppKitChatTimelineRow,
-        availableWidth: CGFloat,
-        baseDirectory: String? = nil,
-        onToggleExpansion: @escaping (String) -> Void,
-        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
-    ) {
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
-        // Retire the old topology before resizing a reused image canvas. Leaving
-        // its fixed width/height attached while shrinking the bubble generates
-        // intermediate Auto Layout conflicts before the new topology is installed.
-        NSLayoutConstraint.deactivate([
-            labelTopToTitleConstraint, labelTopToCardConstraint, imageTopToTitleConstraint,
-            imageTopToCardConstraint, labelTopToImagesConstraint, labelTopToProcessButtonConstraint,
-            labelBottomToCardConstraint, rawStatusTopConstraint, rawStatusBottomConstraint,
-            processButtonTopConstraint, processButtonBottomConstraint
-        ])
-        imageStack.arrangedSubviews.forEach { imageStack.removeArrangedSubview($0); $0.removeFromSuperview() }
-        label.endTextSelection()
-        renderedRow = row
-        renderedWidth = availableWidth
-        measuredTypography = layout.typography
-        representedRowID = row.id
-        representedReplyIdentity = row.replyIdentity
-        if let identity = row.replyIdentity {
+    private func updateReplyIdentityHeader(_ identity: ConversationReplyIdentity?) {
+        if let identity {
             if let replyHeader { replyHeader.rootView = MacReplyIdentityHeader(identity: identity, skin: skin) }
             else {
                 let header = NSHostingView(rootView: MacReplyIdentityHeader(identity: identity, skin: skin))
@@ -355,6 +367,49 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             replyHeader?.removeFromSuperview()
             replyHeader = nil
         }
+    }
+
+    func setContent(
+        _ row: AppKitChatTimelineRow,
+        availableWidth: CGFloat,
+        baseDirectory: String? = nil,
+        onToggleExpansion: @escaping (String) -> Void,
+        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
+    ) {
+        if representedRowID == row.id, representedContentRevision == row.contentRevision,
+           representedImageGeometries == row.imageGeometries,
+           representedReplyIdentity != row.replyIdentity {
+            // Identity updates are exterior chrome. Keep the native text
+            // storage, glyph layout, selection and attachment views untouched.
+            renderedRow = row
+            representedReplyIdentity = row.replyIdentity
+            updateReplyIdentityHeader(row.replyIdentity)
+            cardTopConstraint.constant = (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0)
+                + row.replyIdentityHeight + measuredTypography.rowInset
+            updateCallbacks(onToggleExpansion: onToggleExpansion, onAction: onAction)
+            updateLinkContext(baseDirectory: baseDirectory)
+            needsLayout = true
+            return
+        }
+        let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin)
+        // Retire the old topology before resizing a reused image canvas. Leaving
+        // its fixed width/height attached while shrinking the bubble generates
+        // intermediate Auto Layout conflicts before the new topology is installed.
+        NSLayoutConstraint.deactivate([
+            labelTopToTitleConstraint, labelTopToCardConstraint, imageTopToTitleConstraint,
+            imageTopToCardConstraint, labelTopToImagesConstraint, labelTopToProcessButtonConstraint,
+            labelBottomToCardConstraint, rawStatusTopConstraint, rawStatusBottomConstraint,
+            processButtonTopConstraint, processButtonBottomConstraint
+        ])
+        imageStack.arrangedSubviews.forEach { imageStack.removeArrangedSubview($0); $0.removeFromSuperview() }
+        label.endTextSelection()
+        renderedRow = row
+        renderedWidth = availableWidth
+        measuredTypography = layout.typography
+        measuredSkin = skin
+        representedRowID = row.id
+        representedReplyIdentity = row.replyIdentity
+        updateReplyIdentityHeader(row.replyIdentity)
         representedContentRevision = row.contentRevision
         representedProcessRow = row.nativeStyle == .process ? row : nil
         contentConfigurationCount += 1
@@ -459,12 +514,14 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             processButtonTopConstraint.isActive = true
             if row.isExpanded {
                 labelTopToProcessButtonConstraint.isActive = true
-                if layout.rawStatusHeight > 0 {
+                if !row.rawStatusText.isEmpty {
                     rawStatusTopConstraint.isActive = true
                     rawStatusBottomConstraint.isActive = true
                 } else {
                     labelBottomToCardConstraint.isActive = true
                 }
+            } else {
+                processButtonBottomConstraint.isActive = true
             }
         } else {
             if row.collaborationRoute == nil {
@@ -477,14 +534,21 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             }
             processButtonBottomConstraint.isActive = true
         }
+        if !isStandaloneProcess, !hasProcess, row.actions.isEmpty, !row.showsCollaborationSentStatus {
+            // A hidden zero-height process footer leaves only an 8pt gap.
+            // Ordinary bodies close directly against their 10pt card inset.
+            labelBottomToProcessConstraint.isActive = false
+            labelBottomToCardConstraint.isActive = true
+        }
         label.isHidden = isStandaloneProcess && !row.isExpanded
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
         processButton.isHidden = !hasProcess
         processButton.cell?.wraps = row.isExpanded
         processButton.cell?.lineBreakMode = row.isExpanded ? .byWordWrapping : .byClipping
         processSeparatorHeight.constant = hasProcess && !isStandaloneProcess ? 1 : 0
-        processButtonHeight.constant = hasProcess ? 22 + NativeTimelineLayoutCache.processSummaryExtraHeight(
-            for: row, cardWidth: layout.cardWidth, includesCurrentStep: true) : 0
+        processButton.usesIntrinsicHeight = hasProcess
+        processButtonHeight.isActive = !processButton.usesIntrinsicHeight
+        if !hasProcess { processButtonHeight.constant = 0 }
         if row.processCount != nil {
             processButton.image = NSImage(
                 systemSymbolName: row.processState.symbolName,
@@ -586,7 +650,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
               representedContentRevision == row.contentRevision,
               representedReplyIdentity == row.replyIdentity,
               representedImageGeometries == row.imageGeometries else { return false }
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth, typography: skin.typography(for: row.nativeStyle == .user ? .user : .assistant), skin: skin)
+        let typography = row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        guard renderedWidth != availableWidth || measuredTypography != typography || measuredSkin != skin else {
+            return true
+        }
+        measuredSkin = skin
+        let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin)
         renderedWidth = availableWidth
         if measuredTypography != layout.typography {
             let selection = label.selectedRanges
@@ -610,10 +679,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         cardTopConstraint.constant = layout.timeSeparatorHeight + (renderedRow?.replyIdentityHeight ?? 0) + layout.typography.rowInset
         cardBottomStandardConstraint.constant = -layout.typography.rowInset
         cardBottomWithMessageActionsConstraint.constant = -26 - layout.typography.rowInset
-        labelHeightConstraint.constant = layout.textHeight
-        labelTopToImagesConstraint.constant = layout.textHeight > 0 ? MessageCardMetrics.contentSpacing : 0
-        rawStatusHeightConstraint.constant = layout.rawStatusHeight
-        rawStatusScrollView.isHidden = layout.rawStatusHeight == 0
+        label.prepareIntrinsicWidth(max(20, layout.cardWidth - ChatBubbleWidthPolicy.horizontalPadding))
+        rawStatusScrollView.invalidateIntrinsicContentSize()
+        invalidateIntrinsicContentSize()
+
+        labelTopToImagesConstraint.constant = (layout.attributedText.length > 0) ? MessageCardMetrics.contentSpacing : 0
+        rawStatusScrollView.isHidden = renderedRow?.rawStatusText.isEmpty != false
         cardWidthConstraint.constant = layout.cardWidth
         needsLayout = true
     }

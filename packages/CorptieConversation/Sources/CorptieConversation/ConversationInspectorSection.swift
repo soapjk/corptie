@@ -80,14 +80,12 @@ public struct ConversationDetailModuleSurface: ViewModifier {
     public func body(content: Content) -> some View {
         Group {
             if let widgetSize {
-                ScrollView(.vertical) {
-                    // Preserve the viewport proposal for lazy collection rows.
-                    // An ideal-height override makes nested lazy layout keep
-                    // invalidating as paged content and scrollbars change.
-                    content.frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(widgetSize.columns == 1 || widgetSize == .strip ? 12 : 16)
+                DetailWidgetViewport(size: widgetSize) {
+                    ScrollView(.vertical) {
+                        content.frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(widgetSize.columns == 1 || widgetSize == .strip ? 12 : 16)
+                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             } else {
                 content

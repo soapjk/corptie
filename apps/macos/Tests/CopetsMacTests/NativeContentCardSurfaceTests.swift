@@ -5,7 +5,7 @@ import CorptieConversation
 
 @MainActor
 final class NativeContentCardSurfaceTests: XCTestCase {
-    func testUserCardIsOpaqueInEverySkinAndAppearance() throws {
+    func testUserCardFollowsEachSkinContractWithoutDimmingContent() throws {
         let card = NativeContentCardSurface(frame: NSRect(x: 0, y: 0, width: 120, height: 44))
         card.configure(tint: MessageTextCardPalette.userNativeBackground)
         for skin in ConversationSkin.allCases {
@@ -13,18 +13,23 @@ final class NativeContentCardSurfaceTests: XCTestCase {
             for name in [NSAppearance.Name.aqua, .darkAqua] {
                 card.appearance = try XCTUnwrap(NSAppearance(named: name))
                 for contrast in [false, true] {
+                    card.updateSkin(skin, role: .user)
                     card.refreshAppearance(reduceTransparency: false, increasedContrast: contrast)
-                    XCTAssertEqual(card.layer?.backgroundColor?.alpha, 1)
+                    XCTAssertEqual(card.layer?.backgroundColor?.alpha, skin == .classic ? 1 : 0.06)
                     XCTAssertEqual(card.alphaValue, 1)
                     let background = card.layer?.backgroundColor
                     let border = card.layer?.borderColor
                     let frame = card.frame
-                    card.updateSkin(skin == .classic ? .codexFlat : .classic, role: .user)
+                    let otherSkin: ConversationSkin = skin == .classic ? .codexFlat : .classic
+                    card.updateSkin(otherSkin, role: .user)
+                    card.refreshAppearance(reduceTransparency: false, increasedContrast: contrast)
+                    XCTAssertEqual(card.layer?.backgroundColor?.alpha, otherSkin == .classic ? 1 : 0.06)
+                    card.updateSkin(skin, role: .user)
                     card.refreshAppearance(reduceTransparency: false, increasedContrast: contrast)
                     XCTAssertEqual(card.layer?.backgroundColor, background)
                     XCTAssertEqual(card.layer?.borderColor, border)
                     XCTAssertEqual(card.frame, frame)
-                    XCTAssertEqual(card.layer?.borderWidth, contrast ? 1 : 0.5)
+                    XCTAssertEqual(card.layer?.borderWidth, contrast ? 1 : (skin == .classic ? 0.5 : 0))
                 }
             }
         }

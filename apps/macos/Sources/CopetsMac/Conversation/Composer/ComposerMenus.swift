@@ -18,8 +18,8 @@ struct CodexModelMenu: View {
         SessionModelMenuSurface(models: modelCatalog.models(for: session?.external?.provider),
             defaultModelID: modelCatalog.defaultModel(for: session?.external?.provider),
             defaultReasoningLevel: modelCatalog.defaultReasoning(for: session?.external?.provider),
-            loadingModels: modelCatalog.isLoadingCodexModels, switchingModel: backendClient.isSwitchingModel,
-            switchingReasoning: backendClient.isSwitchingReasoning, backendClient: backendClient,
+            loadingModels: modelCatalog.isLoadingCodexModels, switchingModel: commandState.isSwitchingModel,
+            switchingReasoning: commandState.isSwitchingReasoning, backendClient: backendClient,
             maxWidth: maxWidth, session: session, activity: activity)
     }
 }
@@ -273,9 +273,8 @@ enum ModelMenuLabel {
 }
 
 struct ComposerMentionMenu: View {
-    let candidates: [ComposerMentionCandidate]
-    let selectedIndex: Int
-    let onSelect: (ComposerMentionCandidate) -> Void
+    let search: ComposerMentionSearch
+    let select: ComposerMentionSelectionAction
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -288,10 +287,39 @@ struct ComposerMentionMenu: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                            Button {
-                                onSelect(candidate)
-                            } label: {
+                        ForEach(search.matches) { match in
+                            ComposerMentionResultRow(search: search, match: match, select: select)
+                                .id(match.id)
+                        }
+                        if search.isLoading { ProgressView().controlSize(.small).padding(8) }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 4)
+                }
+                .onChange(of: search.selectedIndex) { _, index in
+                    guard search.matches.indices.contains(index) else { return }
+                    proxy.scrollTo(search.matches[index].id, anchor: .center)
+                }
+            }
+        }
+        .frame(width: ComposerMentionMenuMetrics.width,
+               height: ComposerMentionMenuMetrics.height(candidateCount: search.matches.count))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n("Mention suggestions"))
+    }
+}
+
+/// Lookup and presentation happen behind the lazy row boundary, not while
+/// SwiftUI enumerates all result identifiers to establish list identity.
+private struct ComposerMentionResultRow: View {
+    let search: ComposerMentionSearch
+    let match: CorptieConversation.ComposerMentionCatalog.Index.Match
+    let select: ComposerMentionSelectionAction
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+        if let candidate = search.candidate(for: match) {
+            Button { select(candidate) } label: {
                                 HStack(spacing: 8) {
                                     Image(systemName: candidate.symbol)
                                         .frame(width: 18)
@@ -310,27 +338,20 @@ struct ComposerMentionMenu: View {
                                 .padding(.leading, candidate.mention.targetType == .session ? 12 : 0)
                                 .frame(height: 38)
                                 .background(
-                                    index == selectedIndex ? CorptiePalette.softBlue.opacity(0.12) : Color.clear,
+                                    isSelected ? CorptiePalette.softBlue.opacity(0.12) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 )
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .id(candidate.id)
                             .accessibilityLabel("\(candidate.mention.displayName), \(candidate.detail)")
-                            .accessibilityAddTraits(index == selectedIndex ? .isSelected : [])
-                        }
-                    }
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 4)
-                }
-                .onChange(of: selectedIndex) { _, index in
-                    guard candidates.indices.contains(index) else { return }
-                    proxy.scrollTo(candidates[index].id, anchor: .center)
-                }
-            }
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(L10n("Mention suggestions"))
+        }
+    }
+
+    private var isSelected: Bool {
+        search.matches.indices.contains(search.selectedIndex)
+            && search.matches[search.selectedIndex].id == match.id
     }
 }

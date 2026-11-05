@@ -123,7 +123,7 @@ final class NativeMessageStatusGlowTests: XCTestCase {
             nativeText: "Hello", copyText: "Hello", nativeStyle: .user,
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false, messageStatus: try status("processing"))
-        let measured = NativeTimelineLayoutCache.shared.layout(for: message, columnWidth: 400)
+        let measured = LegacyTimelineLayoutReference.shared.layout(for: message, columnWidth: 400)
         let cell = AppKitSharedMessageTextCell(identifier: .init("glow-shared"))
         cell.frame = NSRect(x: 0, y: 0, width: 400, height: measured.rowHeight)
         cell.setContent(message, availableWidth: 400, onToggleExpansion: { _ in })
@@ -135,7 +135,7 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         XCTAssertEqual(glow.frame.maxX, 398)
         for skin in [ConversationSkin.codexFlat, .classic] {
             cell.updateAppearance(skin: skin)
-            let layout = NativeTimelineLayoutCache.shared.layout(for: message, columnWidth: 400,
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: message, columnWidth: 400,
                 typography: skin.typography(for: .user))
             cell.frame.size.height = layout.rowHeight
             cell.needsLayout = true
@@ -151,7 +151,7 @@ final class NativeMessageStatusGlowTests: XCTestCase {
             nativeText: "Hello", copyText: "Hello", nativeStyle: .user,
             title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
             showsHeader: false)
-        XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 400).rowHeight,
+        XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: plain, columnWidth: 400).rowHeight,
                        measured.rowHeight)
         cell.setContent(plain, availableWidth: 400, onToggleExpansion: { _ in })
         XCTAssertNil(glow.superview)
