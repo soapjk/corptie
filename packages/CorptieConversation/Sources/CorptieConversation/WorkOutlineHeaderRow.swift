@@ -32,11 +32,7 @@ public struct WorkOutlineHeaderRow<Title: View, Discussion: View, Actions: View>
             Button(action: toggleExpanded) {
                 Color.clear.contentShape(Rectangle())
             }
-            #if os(macOS)
-            .buttonStyle(SessionSelectionPressStyle())
-            #else
             .buttonStyle(.plain)
-            #endif
             .accessibilityHidden(true)
         }
     }

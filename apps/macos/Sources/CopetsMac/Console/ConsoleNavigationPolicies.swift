@@ -282,7 +282,7 @@ struct ConsoleWorkOutlineHeader: View {
                 .padding(.vertical, 3)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(SessionSelectionPressStyle())
+            .buttonStyle(.plain)
             .accessibilityLabel(work.name)
             .accessibilityValue(accessibilityValue)
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
