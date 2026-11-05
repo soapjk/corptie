@@ -80,7 +80,7 @@ for (const dirty of [false,true]) test(`ready delivery binding and ${dirty ? "wo
     assert.notEqual(siblingBase.baseCommitOid,base.baseCommitOid);
     assert.equal(await git(repo,"rev-parse","HEAD"),dirty ? base.parentHeadOid : base.baseCommitOid);
     f.store.db.run("UPDATE task_delivery_worktrees SET binding_revision=binding_revision+1 WHERE task_id=?",[parent.id]);
-    await assert.rejects(hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"}),{code:"TASK_DELIVERY_BINDING_CHANGED"});
+    assert.deepEqual(await hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"}),base);
   } finally { await cleanup(f); }
 });
 
@@ -786,4 +786,23 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
       "SELECT COUNT(*) AS count FROM work_session_startup_audit WHERE event='startup.lease_taken_over'"
     ).count, 1);
   } finally { await cleanup(f); }
+});
+
+
+test("deletion interrupts startup before activation and waits for compensation",async()=>{
+  let entered,release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const waiting=new Promise(resolve=>{entered=resolve;});
+  const f=await fixture({inspectProviderBinding:async()=>{entered();await gate;return null;}});
+  try {
+    const start=f.service.start(input("start:delete"));
+    const rejected=assert.rejects(start,error=>error.code==="START_CANCELLED_FOR_DELETION");
+    await waiting;
+    f.store.markTaskDeletion(f.task.id,"deleting",null);
+    const cancelled=f.service.cancelForTaskDeletion(f.task.id);
+    release();
+    await Promise.all([rejected,cancelled]);
+    assert.equal(f.calls.activate,0);
+    assert.equal(f.store.selectOne("SELECT state FROM work_session_startup_operations WHERE task_id=?",[f.task.id]).state,"failed_compensated");
+  }finally{await cleanup(f);}
 });

@@ -179,14 +179,6 @@ export class ProjectIntegrationRepository {
       return this.runInTransaction(() => {
         const existing = this.getWorktreeIntegrationJobByIdempotencyKey(repositoryId, idempotencyKey);
         if (existing) return assertMatchingStartRequest(existing, startRequestFingerprint);
-        const active = this.selectOne(
-          `SELECT id FROM worktree_integration_jobs
-           WHERE repository_id = ?
-             AND status IN ('queued', 'running', 'paused', 'cancellation_requested', 'replanning')
-           LIMIT 1`,
-          [repositoryId]
-        );
-        if (active) throw integrationJobActiveError();
         return this.createWorktreeIntegrationJob(input);
       });
     } catch (error) {
@@ -221,6 +213,16 @@ export class ProjectIntegrationRepository {
         )
       : this.selectAll(`SELECT * FROM worktree_integration_jobs ORDER BY created_at DESC`);
     return rows.map(worktreeIntegrationJobFromRow);
+  }
+
+  listWorktreeIntegrationJobsForWorktree(repositoryId,worktreeId) {
+    return this.selectAll(`SELECT j.* FROM worktree_integration_jobs j WHERE repository_id=?
+      AND (status IN ('queued','running','paused','cancellation_requested','replanning')
+        OR status='canceled' AND phase='canceled_conflict_preserved')
+      AND (EXISTS(SELECT 1 FROM json_each(j.details_json,'$.plan.reservedWorktreeIds') WHERE value=?)
+        OR EXISTS(SELECT 1 FROM json_each(j.details_json,'$.plan.items') WHERE json_extract(value,'$.worktreeId')=?)
+        OR EXISTS(SELECT 1 FROM json_each(j.details_json,'$.dispatchSafety.blockedWorktreeIds') WHERE value=?))
+      ORDER BY created_at`,[repositoryId,worktreeId,worktreeId,worktreeId]).map(worktreeIntegrationJobFromRow);
   }
 
   getLatestWorktreeIntegrationJob(repositoryId) {

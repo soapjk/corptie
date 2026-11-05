@@ -1,9 +1,11 @@
-const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_mailbox"];
+const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_mailbox","read_resource","search_resources"];
 export const COORDINATION_READ_QUERY_SCHEMA={type:"object",additionalProperties:false,
   required:["tool","taskId","sessionId","query","cursor","messageId","offset","limit"],properties:{
     tool:{enum:tools},taskId:{type:["string","null"],maxLength:512},sessionId:{type:["string","null"],maxLength:512},
     query:{type:["string","null"],maxLength:200},cursor:{type:["string","null"],maxLength:2000},
     messageId:{type:["string","null"],maxLength:512},offset:{type:"integer",minimum:0,maximum:1000000},
+    targetType:{enum:["work","task","session","agent","artifact"]},targetId:{type:"string",maxLength:512},
+    section:{type:"string",maxLength:32},
     limit:{type:"integer",minimum:1,maximum:12}}};
 export const COORDINATION_READ_TOOLS=tools;
 const fail=code=>{throw Object.assign(new Error(code),{code,statusCode:403});};
@@ -20,14 +22,24 @@ const bounded=(value,n=2000)=>String(value??"").slice(0,n);
 // Application-owned read port of the authenticated parent Session. It has no
 // shell, Provider calls, lifecycle mutations, read acknowledgements or polling.
 export class CoordinationReadService {
-  constructor({store,mailbox}){Object.assign(this,{store,mailbox});}
+  constructor({store,mailbox,contextRead=null}){Object.assign(this,{store,mailbox,contextRead});}
   execute(reference,rootTaskId,input){
     const source=this.store.getSession(reference.sessionId),route=this.store.getLogicalSessionByLegacySessionId(reference.sessionId);
     const root=source?.taskId && this.store.getTask(source.taskId);
-    if(!root || root.id!==rootTaskId || root.parent_task_id || source.sessionKind!=="worker" || source.workId!==root.work_id
+    if(!root || root.id!==rootTaskId || source.sessionKind!=="worker" || source.workId!==root.work_id
       || root.archived || root.deletion_status || source.archived || source.deletedAt || route?.archived
       || route?.activeBinding?.state!=="active" || route.activeBinding.bindingId!==reference.bindingId)fail("COORDINATION_READ_SCOPE_INVALID");
     if(!tools.includes(input.tool))fail("COORDINATION_READ_TOOL_UNSUPPORTED");
+    if(input.tool==="read_resource" || input.tool==="search_resources") {
+      if(!this.contextRead)fail("COORDINATION_RESOURCE_READ_UNAVAILABLE");
+      return this.contextRead.execute({metadata:{sessionId:source.id,logicalSessionId:route.logicalSessionId},
+        tool:input.tool==="read_resource" ? "corptie_context_read" : "corptie_context_search",
+        arguments:input.tool==="read_resource" ? {target_type:input.targetType ?? "task",target_id:input.targetId ?? root.id,
+          ...(input.section ? {section:input.section} : {}),...(input.messageId ? {item_id:input.messageId} : {}),
+          ...(input.query ? {query:input.query} : {}),...(input.cursor ? {cursor:input.cursor} : {}),limit:Math.min(input.limit ?? 6,10)}
+          : {target_work_id:input.targetId ?? root.work_id,...(input.query ? {query:input.query} : {}),
+            ...(input.cursor ? {cursor:input.cursor} : {}),limit:Math.min(input.limit ?? 6,10)}});
+    }
     const task=this.task(root,input.taskId??root.id);
     const limit=Math.max(1,Math.min(12,input.limit??6));
     const before=input.tool === "read_mailbox" ? null : position(input.cursor);
@@ -39,7 +51,7 @@ export class CoordinationReadService {
         FROM tasks WHERE parent_task_id=? AND work_id=? AND COALESCE(deletion_status,'')<>'deleted'
         ${query?"AND title LIKE ? ESCAPE '\\'":""}
         ${before?"AND (created_at < ? OR (created_at=? AND id<?))":""}
-        ORDER BY created_at DESC,id DESC LIMIT ?`,[root.id,root.work_id,...(query?[`%${query}%`]:[]),
+        ORDER BY created_at DESC,id DESC LIMIT ?`,[task.id,root.work_id,...(query?[`%${query}%`]:[]),
         ...(before?[before.createdAt,before.createdAt,before.id]:[]),limit+1]),limit);
     }else if(input.tool==="read_task"){
       result={task:{id:task.id,parentTaskId:task.parent_task_id??null,title:task.title,
@@ -115,7 +127,14 @@ export class CoordinationReadService {
   }
   task(root,id){
     const task=this.store.getTask(id);
-    if(!task || task.work_id!==root.work_id || (task.id!==root.id && task.parent_task_id!==root.id))fail("COORDINATION_READ_TASK_OUTSIDE_SCOPE");
+    if(!task || task.work_id!==root.work_id)fail("COORDINATION_READ_TASK_OUTSIDE_SCOPE");
+    let current=task;
+    const seen=new Set();
+    while(current.id!==root.id) {
+      if(!current.parent_task_id || seen.has(current.id))fail("COORDINATION_READ_TASK_OUTSIDE_SCOPE");
+      seen.add(current.id);current=this.store.getTask(current.parent_task_id);
+      if(!current || current.work_id!==root.work_id)fail("COORDINATION_READ_TASK_OUTSIDE_SCOPE");
+    }
     return task;
   }
   session(root,task,id){

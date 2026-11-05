@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import CorptieClientCore
 
 extension UnifiedConsoleView {
     func setTaskArchived(_ archived: Bool, task: CorptieTask) async {
@@ -99,7 +100,8 @@ extension UnifiedConsoleView {
         _ task: CorptieTask,
         force: Bool,
         deleteWorktree: Bool,
-        artifactDisposition: CorptieTaskArtifactDisposition
+        artifactDisposition: CorptieTaskArtifactDisposition,
+        options: ClientTaskDeletionOptions
     ) {
         guard !pendingTaskDeletionIds.contains(task.id) else { return }
         taskDeletionPresentation = nil
@@ -112,7 +114,7 @@ extension UnifiedConsoleView {
                 taskId: task.id,
                 force: force,
                 deleteWorktree: deleteWorktree,
-                artifactDisposition: artifactDisposition
+                artifactDisposition: artifactDisposition, options: options
             )
             pendingTaskDeletionIds.remove(task.id)
             if deleted {

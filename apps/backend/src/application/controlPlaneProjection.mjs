@@ -115,7 +115,7 @@ export function createControlPlaneProjection({ store, environmentName, decorateS
     const hierarchy = hierarchySummaries?.get(task.id) ?? store.hierarchySummaries?.([task.id])?.get(task.id);
     return presentTaskAcceptance(task, {
       hierarchy,
-      coordinationDispatches: !task.parent_task_id && (task.coordination_enabled === 1 || hierarchy?.childCount > 0)
+      coordinationDispatches: (task.coordination_enabled === 1 || hierarchy?.childCount > 0)
         ? store.listTaskCoordinationDispatches?.(task.id) ?? [] : [],
       hasPendingScheduledWake: pendingScheduledWakeTaskIds
         ? pendingScheduledWakeTaskIds.has(task.id)

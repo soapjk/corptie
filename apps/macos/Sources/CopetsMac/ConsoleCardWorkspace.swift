@@ -17,6 +17,13 @@ private struct WorkCanvasDataRebuildInput: Equatable {
     let sessions: [CardSessionKey]
 }
 
+private struct CanvasTaskHierarchyProjection {
+    var roots: [String] = []
+    var rowsByRoot: [String: [CorptieTask]] = [:]
+    var depths: [String: Int] = [:]
+    var childCounts: [String: Int] = [:]
+}
+
 /// No transcript reads or per-card observers. Index on collection changes,
 /// derive attention membership without changing the selected conversation.
 struct ConsoleCardWorkspace<TaskMenu: View>: View {
@@ -40,6 +47,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let taskMenu: (CorptieTask) -> TaskMenu
     @State private var members: [String: [String]] = [:]
     @State private var expandedChildGroups: Set<String> = []
+    @State private var cardHierarchyByWork: [String: CanvasTaskHierarchyProjection] = [:]
     @ObservedObject private var displayPreferences = TaskCardDisplayPreferences.shared
     @State private var clickHistory = TaskCardClickHistory()
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
@@ -212,7 +220,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in canvasDrag.cancel() }
         .onChange(of: isActive ? Set(orderedWorks.map(\.id)) : []) { _, _ in canvasDrag.cancel() }
         .onChange(of: showsArchive) { _, _ in if isActive { rebuild() } }
-        .onChange(of: query) { _, _ in filteredCanvasPositions = nil }
+        .onChange(of: query) { _, _ in filteredCanvasPositions = nil; rebuildHierarchy() }
+        .onChange(of: sortMode) { _, _ in rebuildHierarchy() }
+        .onChange(of: expandedChildGroups) { _, _ in rebuildHierarchy() }
         .onChange(of: showsArchive) { _, _ in filteredCanvasPositions = nil }
         .onChange(of: browsing?.id) { _, next in
             if next == nil { viewportState.prepareForEntry() }
@@ -331,6 +341,32 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         if attentionCount != nextAttentionCount { attentionCount = nextAttentionCount }
         let retainedIDs = Set(members.values.flatMap { $0 })
         retainedTasks = retainedTasks.filter { retainedIDs.contains($0.key) }
+        rebuildHierarchy()
+    }
+
+    private func rebuildHierarchy() {
+        let byID=Dictionary(tasks.map { ($0.id,$0) },uniquingKeysWith: { _,last in last })
+        var result:[String:CanvasTaskHierarchyProjection]=[:]
+        for work in works {
+            var candidates=displayedTasks(for:work)
+            var seen=Set(candidates.map(\.id))
+            var offset=0
+            while offset<candidates.count {
+                if let id=candidates[offset].parentTaskId,seen.insert(id).inserted,let parent=byID[id],parent.workId==work.id {candidates.append(parent)}
+                offset+=1
+            }
+            let nodes=candidates.map {TaskHierarchyIndex.Node(id:$0.id,workId:$0.workId,parentTaskId:$0.parentTaskId)}
+            let index=TaskHierarchyIndex(nodes:nodes)
+            let values=Dictionary(candidates.map {($0.id,$0)},uniquingKeysWith: { _,last in last })
+            let visible=TaskHierarchyIndex.visibleOrder(nodes:nodes,expanded:query.isEmpty ? expandedChildGroups : seen)
+            var projection=CanvasTaskHierarchyProjection(roots:index.rootIDsByWork[work.id] ?? [],
+                depths:index.depthByTaskID,childCounts:index.childrenByParentID.mapValues(\.count))
+            for id in visible {
+                if let root=index.rootByTaskID[id],let task=values[id] {projection.rowsByRoot[root,default:[]].append(task)}
+            }
+            result[work.id]=projection
+        }
+        cardHierarchyByWork=result
     }
 
     private func displayedTasks(for work: Work) -> [CorptieTask] {
@@ -343,33 +379,32 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func group(_ work: Work, availableWidth: CGFloat) -> some View {
-        let visibleTasks = displayedTasks(for: work)
-        let children=Dictionary(grouping:visibleTasks.filter{$0.parentTaskId != nil},by:{$0.parentTaskId!})
-        var roots=visibleTasks.filter{$0.parentTaskId == nil}
-        let rootIDs=Set(roots.map(\.id))
-        let missing=Set(children.keys).subtracting(rootIDs)
-        roots.append(contentsOf:tasks.filter{missing.contains($0.id)})
+        let hierarchy=cardHierarchyByWork[work.id] ?? CanvasTaskHierarchyProjection()
         return
         CompactWorkCard(work: work, isChatRunning: runningDiscussionWorkIDs.contains(work.id),
                         isChatSelected: discussionSessionIDByWork[work.id].map { selectedSessionID == $0 } ?? false,
                         isActive: isActive, discuss: { discuss(work) }, createTask: { createTask(work) }) {
-            WorkTaskCardGrid(itemCount: roots.count, availableWidth: availableWidth) {
-                ForEach(roots) { task in
+            WorkTaskCardGrid(itemCount: hierarchy.roots.count, availableWidth: availableWidth) {
+                ForEach(hierarchy.roots,id: \.self) { rootID in
                     VStack(alignment:.leading,spacing:6) {
-                        card(task).frame(maxWidth: .infinity, alignment: .topLeading)
-                        if (task.hierarchy?.childCount ?? children[task.id]?.count ?? 0)>0 {
-                            Button {
-                                if !expandedChildGroups.insert(task.id).inserted {expandedChildGroups.remove(task.id)}
-                            } label:{Label("\(task.hierarchy?.childCount ?? children[task.id]?.count ?? 0) \(L10n("子任务"))",systemImage:expandedChildGroups.contains(task.id) ? "chevron.down" : "chevron.right")}
-                            .font(.caption).buttonStyle(.plain)
-                            if expandedChildGroups.contains(task.id) || !query.isEmpty {
-                                ForEach(children[task.id] ?? []) {child in card(child).padding(.leading,14)}
-                            }
+                        ForEach(hierarchy.rowsByRoot[rootID] ?? []) { task in
+                            VStack(alignment:.leading,spacing:6) {
+                                card(task).frame(maxWidth:.infinity,alignment:.topLeading)
+                                let count=max(task.hierarchy?.childCount ?? 0,hierarchy.childCounts[task.id] ?? 0)
+                                if count>0 {
+                                    Button {
+                                        if !expandedChildGroups.insert(task.id).inserted {expandedChildGroups.remove(task.id)}
+                                    } label:{Label("\(count) \(L10n("子任务"))",systemImage:expandedChildGroups.contains(task.id) ? "chevron.down" : "chevron.right")}
+                                    .font(.caption).buttonStyle(.plain)
+                                    .accessibilityLabel(L10n(expandedChildGroups.contains(task.id) ? "收起子任务" : "展开子任务"))
+                                }
+                            }.padding(.leading,CGFloat(min(hierarchy.depths[task.id] ?? 0,6))*14)
                         }
                     }
                 }
             }
         }
+
         .modifier(groupInteraction(for: work.id, availableWidth: availableWidth))
     }
 

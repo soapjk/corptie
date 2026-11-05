@@ -450,8 +450,8 @@ test("Task deletion HTTP errors preserve forbidden, missing, and association blo
     const deletion = {
       taskId: "task:blocked", status: "blocked", retryable: true,
       worktree: null, risks: [], blockers: [{
-        code: "TASK_HAS_BOUND_ARTIFACTS",
-        message: "Task remains bound to retained Artifact Required evidence."
+        code: "ACTIVE_WORKTREE_INTEGRATION_JOB",
+        message: "Integration job job:one is still stopping."
       }]
     };
     const blocked = await callApi({
@@ -460,13 +460,13 @@ test("Task deletion HTTP errors preserve forbidden, missing, and association blo
       body: { mode: "safe" },
       deleteTaskSafely: async () => {
         throw Object.assign(new Error(deletion.blockers[0].message), {
-          code: "TASK_DELETE_BLOCKED", statusCode: 409, deletion
+          code: "ACTIVE_WORKTREE_INTEGRATION_JOB", statusCode: 409, deletion
         });
       },
       ...services
     });
     assert.equal(blocked.statusCode, 409);
-    assert.equal(blocked.body.code, "TASK_DELETE_BLOCKED");
+    assert.equal(blocked.body.code, "ACTIVE_WORKTREE_INTEGRATION_JOB");
     assert.deepEqual(blocked.body.deletion, deletion);
   } finally {
     await services.store.close();

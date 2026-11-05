@@ -2,6 +2,7 @@ function tool(name, description, properties, required = []) {
   return Object.freeze({
     type: "function",
     name,
+    executionEffect: "read",
     description,
     deferLoading: false,
     inputSchema: { type: "object", properties, required, additionalProperties: false }
@@ -45,13 +46,14 @@ export const projectCodeDynamicTools = Object.freeze([
     "Read a bounded text window from a file contained by the persisted authoritative Snapshot.",
     {
       snapshot_receipt_id: snapshotId,
+      snapshot_policy: { type: "string", enum: ["reuse_current", "require_exact", "create_new"] },
       path: { type: "string", minLength: 1 },
       start_line: { type: "integer", minimum: 1 },
       line_count: { type: "integer", minimum: 1, maximum: 2000 },
       max_bytes: { type: "integer", minimum: 1, maximum: 65536 },
       max_scan_bytes: { type: "integer", minimum: 1, maximum: 67108864 }
     },
-    ["snapshot_receipt_id", "path"]
+    ["path"]
   ),
   tool(
     "corptie_project_code_receipt_get",
@@ -112,6 +114,7 @@ export async function callProjectCodeDynamicTool(service, input = {}) {
     return service.pointRead({
       logicalSessionId,
       snapshotReceiptId: args.snapshot_receipt_id,
+      snapshotPolicy: args.snapshot_policy,
       path: args.path,
       startLine: args.start_line,
       lineCount: args.line_count,

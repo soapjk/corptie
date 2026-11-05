@@ -133,7 +133,7 @@ export function createSessionApplicationComposition({
         );
         baseContext = buildWorkSessionContext({
           session, task, work,
-          coordination: task?.coordination_enabled === 1 && !task.parent_task_id ? {
+          coordination: task?.coordination_enabled === 1 ? {
             children: store.selectAll("SELECT id,substr(title,1,120) AS title,current_session_id AS sessionId,lifecycle_state AS state,execution_status AS executionStatus FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY updated_at DESC LIMIT 20", [task.id]),
             dispatches: store.selectAll("SELECT dispatch_id AS dispatchId,target_task_id AS taskId,status,error_code AS errorCode FROM task_coordination_dispatches WHERE parent_task_id=? ORDER BY created_at DESC LIMIT 20", [task.id])
           } : null,

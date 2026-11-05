@@ -145,11 +145,11 @@ struct CorptieTaskDetailView: View {
                             ? "Merge the Task Worktree into the target branch before deleting it."
                             : "可先将子分支合并到父分支，或重新选择强制删除。")
                     },
-                    onDelete: { force, deleteWorktree, artifactDisposition in
+                    onDelete: { force, deleteWorktree, artifactDisposition, options in
                         deleteTask(
                             force: force,
                             deleteWorktree: deleteWorktree,
-                            artifactDisposition: artifactDisposition
+                            artifactDisposition: artifactDisposition, options: options
                         )
                     }
                 )
@@ -197,7 +197,7 @@ struct CorptieTaskDetailView: View {
                         }
                         isUpdatingAutoTitle = false
                     }
-                }, coordinationEnabled: task.parentTaskId == nil ? (task.coordinationEnabled ?? false) : nil,
+                }, coordinationEnabled: task.coordinationEnabled ?? false,
                 coordinationUpdating: isUpdatingCoordination,
                 coordinationDispatches: task.coordinationDispatches ?? [],
                 onCoordinationChange: { enabled in
@@ -492,7 +492,8 @@ struct CorptieTaskDetailView: View {
     private func deleteTask(
         force: Bool,
         deleteWorktree: Bool,
-        artifactDisposition: CorptieTaskArtifactDisposition
+        artifactDisposition: CorptieTaskArtifactDisposition,
+        options: ClientTaskDeletionOptions
     ) {
         guard !isDeletingCorptieTask else { return }
         showDeletion = false
@@ -505,7 +506,7 @@ struct CorptieTaskDetailView: View {
                 taskId: task.id,
                 force: force,
                 deleteWorktree: deleteWorktree,
-                artifactDisposition: artifactDisposition
+                artifactDisposition: artifactDisposition, options: options
             )
             isDeletingCorptieTask = false
             if deleted {

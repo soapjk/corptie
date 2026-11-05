@@ -756,7 +756,7 @@ function normalizeObservation(input, authority, manifest) {
   } else if (operationRef?.kind === "isolated_run") {
     throw codedError("RUN_ISOLATION_RECEIPT_REQUIRED", "isolated_run requires runId and a Run Isolation receipt.", 409);
   }
-  const sourceIdentity = normalizeSourceIdentity(input.sourceIdentity, startup);
+  const sourceIdentity = normalizeSourceIdentity(input.sourceIdentity, startup, authority.repositorySourceSnapshotReceipt);
   const versions = normalizeVersions(input.versions, authority, receiptRefs, manifest, sourceIdentity);
   const safe = sanitizeAttributes(input.safeAttributes);
   const normalized = {
@@ -1204,12 +1204,18 @@ function requiredIdentity(input) {
     repositoryId: optionalId(input.repositoryId, "repositoryId"), worktreeId: optionalId(input.worktreeId, "worktreeId"),
     turnId: requiredId(input.turnId, "turnId") };
 }
-function normalizeSourceIdentity(input, startup) { if (input == null) return { sourceCommitOid: nullable(startup.sourceCommitOid), sourceTreeOid: nullable(startup.sourceTreeOid), snapshotReceiptId: null };
-  rejectUnknown(input, ["sourceCommitOid", "sourceTreeOid", "snapshotReceiptId"]);
-  exactNullable(input.sourceCommitOid, startup.sourceCommitOid, "OBSERVATION_IDENTITY_CHAIN_MISMATCH");
-  exactNullable(input.sourceTreeOid, startup.sourceTreeOid, "OBSERVATION_IDENTITY_CHAIN_MISMATCH");
-  return { sourceCommitOid: optionalId(input.sourceCommitOid, "sourceCommitOid"), sourceTreeOid: optionalId(input.sourceTreeOid, "sourceTreeOid"),
-    snapshotReceiptId: optionalId(input.snapshotReceiptId, "snapshotReceiptId") }; }
+function normalizeSourceIdentity(input, startup, snapshot) {
+  if(input==null) return {sourceCommitOid:nullable(startup.sourceCommitOid),sourceTreeOid:nullable(startup.sourceTreeOid),snapshotReceiptId:null};
+  rejectUnknown(input,["sourceCommitOid","sourceTreeOid","snapshotReceiptId"]);
+  const source=input.snapshotReceiptId && snapshot?.receiptId===input.snapshotReceiptId ? snapshot : startup;
+  // The Snapshot is the authority for current code. Startup remains the
+  // authority for the Session identity and for observations without a Snapshot.
+  exactNullable(input.sourceCommitOid,source.sourceCommitOid ?? startup.sourceCommitOid,"OBSERVATION_IDENTITY_CHAIN_MISMATCH");
+  exactNullable(input.sourceTreeOid,source.sourceTreeOid ?? startup.sourceTreeOid,"OBSERVATION_IDENTITY_CHAIN_MISMATCH");
+  return {sourceCommitOid:optionalId(input.sourceCommitOid,"sourceCommitOid"),sourceTreeOid:optionalId(input.sourceTreeOid,"sourceTreeOid"),
+    snapshotReceiptId:optionalId(input.snapshotReceiptId,"snapshotReceiptId")};
+}
+
 function normalizeReceiptRefs(input) { if (!Array.isArray(input) || input.length === 0 || input.length > 64) throw codedError("OBSERVATION_RECEIPT_REQUIRED", "receiptRefs are required.");
   return input.map((ref) => { rejectUnknown(ref, ["kind", "receiptId", "producer", "producerSchemaVersion"]); return {
     kind: requiredId(ref.kind, "receiptRef.kind"), receiptId: requiredId(ref.receiptId, "receiptRef.receiptId"),

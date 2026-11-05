@@ -80,7 +80,17 @@ export class TaskCoordinationService {
   acceptDispatch(metadata, actorId, input, progressContext = {}) {
     const scope = this.collaboration.coordinationScope(metadata, actorId);
     if (!input || Object.keys(input).some(key => key !== "items")) fail("INVALID_DISPATCH", "Only items may be supplied.", 400);
-    if (!Array.isArray(input?.items) || input.items.length < 1 || input.items.length > 10) fail("INVALID_TASK_BATCH_SIZE", "Dispatch accepts 1-10 items.", 400);
+    if (!Array.isArray(input?.items) || input.items.length < 1 || input.items.length > 100) fail("INVALID_TASK_BATCH_SIZE", "Dispatch accepts 1-100 items, internally admitted in groups of ten.", 400);
+    if(input.items.length>10) {
+      if(new Set(input.items.map(item=>item.idempotencyKey)).size!==input.items.length) fail("DUPLICATE_TASK_BATCH_KEY");
+      const sourceTurnId=progressContext.sourceTurnId ?? scope.session.external?.activeTurnId ?? `dispatch-admission:${randomUUID()}`;
+      const dispatches=[];let batchId=progressContext.batchId ?? null;
+      for(let offset=0;offset<input.items.length;offset+=10) {
+        const receipt=this.acceptDispatch(metadata,actorId,{items:input.items.slice(offset,offset+10)},{...progressContext,sourceTurnId,batchId});
+        batchId=receipt.batchId;dispatches.push(...receipt.dispatches);
+      }
+      return {accepted:true,batchId,dispatches,instruction:"受理完成。立即交还控制权；不要轮询。"};
+    }
     const prepared = input.items.map(item => this.collaboration.prepareCoordinationDispatch(scope, item, {
       replay: Boolean(this.store.selectOne("SELECT 1 FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, item?.idempotencyKey ?? null]))
     }));
@@ -211,7 +221,35 @@ export class TaskCoordinationService {
   retryDispatch(metadata, actorId, id) {
     const scope = this.collaboration.coordinationScope(metadata, actorId), row = this.get(id);
     if (!row || row.source_session_id !== scope.logicalSessionId || row.parent_task_id !== scope.parent.id) fail("TASK_PARENT_OUTSIDE_SCOPE");
-    if (row.status !== "failed" || row.mailbox_message_id) fail("DISPATCH_RETRY_UNSAFE", "Only a failed pre-delivery preparation can be retried. Inspect mailbox/Provider acceptance before sending another instruction.");
+    if(row.mailbox_message_id) {
+      const message=this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[row.mailbox_message_id]);
+      const operation=row.operation_id && this.store.getAgentTask(row.operation_id);
+      if(!message || !operation) fail("DISPATCH_RECEIPT_NOT_FOUND","原投递记录不存在，无法恢复原指令。");
+      const deliveryId=operation.deliveryId ?? operation.source?.deliveryId;
+      const delivery=deliveryId && this.store.getMessageDelivery?.(deliveryId);
+      const turnId=operation.targetTurnId ?? delivery?.providerTurnId ?? message.adopted_turn_id;
+      if(turnId || operation.status==="completed" || message.disposition==="adopted") {
+        this.update(id,{status:operation.status==="completed" ? "completed" : operation.status==="failed" ? "failed" : "running",error_code:null,error_message:null});
+        return {...this.receipt(this.get(id)),reused:true};
+      }
+      if(operation.status==="queued") {
+        this.update(id,{status:"queued",error_code:null,error_message:null});
+        this.mailbox.wake(operation.sessionId,operation.taskId);
+        return {...this.receipt(this.get(id)),reused:true};
+      }
+      const neverAttempted=operation.source?.mailboxDispatchAttempted!==true && !delivery;
+      const rejected=delivery && ["rejected","not_sent"].includes(delivery.status) && !delivery.providerTurnId;
+      if(message.disposition==="pending" && ["failed","cancelled"].includes(operation.status) && (neverAttempted || rejected)) {
+        this.store.updateAgentTask(operation.taskId,{status:"queued",lastError:null});
+        this.update(id,{status:"queued",error_code:null,error_message:null});
+        this.mailbox.wake(operation.sessionId,operation.taskId);
+      } else {
+        this.update(id,{status:"unknown",error_code:"DISPATCH_ACCEPTANCE_UNKNOWN",
+          error_message:"原指令是否已被接收尚未确认；已保留原消息，等待现有投递恢复核对，不重复发送。"});
+      }
+      return {...this.receipt(this.get(id)),reused:true};
+    }
+    if(row.status!=="failed") return {...this.receipt(row),reused:true};
     this.update(id, { status: "accepted", error_code: null, error_message: null, report_message_id: null });
     setImmediate(() => this.runDispatch(id));
     return this.receipt(this.get(id));

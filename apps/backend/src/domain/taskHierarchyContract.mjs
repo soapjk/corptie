@@ -5,7 +5,7 @@ const nullable = value => ({ anyOf: [value, { type: "null" }] });
 const object = properties => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
 const action = object({ available: { type: "boolean" }, reason: nullable(text) });
 export const taskHierarchySummarySchema = object({
-  version: { const: 1 }, rootTaskId: text, depth: { type: "integer", minimum: 0, maximum: 1 }, revision: count,
+  version: { const: 1 }, rootTaskId: text, depth: { type: "integer", minimum: 0 }, revision: count,
   childCount: count, completedChildCount: count, activeChildCount: count,
   deliveryWorktreeId: nullable(text), bindingRevision: nullable(count),
   actions: object({ createChild: action }),

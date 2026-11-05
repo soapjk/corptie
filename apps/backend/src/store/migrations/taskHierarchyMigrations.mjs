@@ -23,11 +23,12 @@ export function migrateTaskHierarchy({ db, ensureColumn }) {
       evidence_json TEXT NOT NULL, created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_task_integration_acceptances_task ON task_integration_acceptances(task_id);
-    CREATE TRIGGER IF NOT EXISTS task_parent_insert_guard BEFORE INSERT ON tasks
+    DROP TRIGGER IF EXISTS task_parent_insert_guard;
+    CREATE TRIGGER task_parent_insert_guard BEFORE INSERT ON tasks
       WHEN NEW.parent_task_id IS NOT NULL AND (
         NEW.id=NEW.parent_task_id OR NOT EXISTS (
           SELECT 1 FROM tasks p WHERE p.id=NEW.parent_task_id AND p.work_id=NEW.work_id
-            AND p.parent_task_id IS NULL AND COALESCE(p.deletion_status,'')=''
+            AND COALESCE(p.deletion_status,'')=''
         )
       ) BEGIN SELECT RAISE(ABORT, 'TASK_PARENT_INVALID'); END;
     CREATE TRIGGER IF NOT EXISTS task_parent_update_guard BEFORE UPDATE OF parent_task_id ON tasks

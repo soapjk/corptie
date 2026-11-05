@@ -61,19 +61,30 @@ export class ProjectCodeSearchApplicationService {
 
   async pointRead(input = {}) {
     const context = this.#context(input);
-    const resolved = await this.#resolveSnapshot({ ...input, snapshotPolicy: input.snapshotPolicy ?? "require_exact" }, context);
-    const snapshot = resolved.snapshot;
-    return this.searchService.pointRead({
-      snapshot,
-      validationLease: resolved.validationLease,
-      sessionContext: context.sessionContext,
-      path: input.path,
-      startLine: input.startLine,
-      lineCount: input.lineCount,
-      maxBytes: input.maxBytes,
-      maxScanBytes: input.maxScanBytes,
-      signal: input.signal
-    });
+    const snapshotPolicy = normalizeChoice(input.snapshotPolicy,
+      input.snapshotReceiptId ? "require_exact" : "reuse_current",
+      ["require_exact", "reuse_current", "create_new"], "snapshotPolicy");
+    let resolved;
+    try { resolved=await this.#resolveSnapshot({ ...input, snapshotPolicy }, context); }
+    catch(cause) {
+      if(cause.code!=="SOURCE_SNAPSHOT_STALE" || snapshotPolicy!=="require_exact") throw cause;
+      const stored=this.store.getProjectCodeReceipt(input.snapshotReceiptId,context.sessionContext.logicalSessionId);
+      if(!stored || stored.receiptType!=="RepositorySourceSnapshotReceipt") throw cause;
+      return this.snapshotBuilder.pointReadHistorical({...context,receipt:stored.receipt,...input});
+    }
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.searchService.pointRead({
+          snapshot: resolved.snapshot, validationLease: resolved.validationLease,
+          sessionContext: context.sessionContext, path: input.path,
+          startLine: input.startLine, lineCount: input.lineCount,
+          maxBytes: input.maxBytes, maxScanBytes: input.maxScanBytes, signal: input.signal
+        });
+      } catch (cause) {
+        if (cause?.code !== "SOURCE_SNAPSHOT_STALE" || snapshotPolicy !== "reuse_current" || attempt >= 1) throw cause;
+        resolved = await this.#createCurrentSnapshot(input, context);
+      }
+    }
   }
 
   prewarm(input = {}) {
@@ -188,6 +199,9 @@ export class ProjectCodeSearchApplicationService {
     await validateProjectCodeReceipt(stored.receipt, "RepositorySourceSnapshotReceipt");
     const cached = this.snapshotCache.get(receiptId);
     if (cached?.receipt?.receiptHash === stored.receipt.receiptHash) {
+      const lease=this.#validationLease(cached);
+      await lease.verifyBefore({signal});
+      await lease.verifyAfter({signal});
       this.snapshotCache.delete(receiptId);
       this.snapshotCache.set(receiptId, cached);
       return Object.freeze({ snapshot: cached, validationLease: this.#validationLease(cached), reused });

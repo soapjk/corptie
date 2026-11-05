@@ -84,6 +84,8 @@ public struct ClientTaskDeletionPlan: Decodable, Sendable {
     /// `blocked` / `risky` / `safe`.
     public let status: String
     public let associatedSessionCount: Int
+    public let associatedTaskIds: [String]?
+    public let childTaskIds: [String]?
     public let artifacts: [Artifact]
     public let worktree: Worktree?
     public let risks: [Risk]
@@ -167,6 +169,24 @@ public struct ClientTaskArchive: Codable, Sendable, Equatable {
     public let archived: Bool
     public init(requestId: String, archived: Bool) { self.requestId = requestId; self.archived = archived }
 }
+public struct ClientTaskDeletionOptions: Codable, Sendable, Equatable {
+    public var stopRunning = false
+    public var cancelStartup = false
+    public var deleteAssociatedTasks = false
+    public var cancelIntegration = false
+    public init() {}
+    public func resolves(_ code: String) -> Bool {
+        switch code {
+        case "SESSION_BUSY": return stopRunning
+        case "START_IN_PROGRESS": return cancelStartup
+        case "SHARED_WITH_ACTIVE_TASK": return deleteAssociatedTasks
+        case "ACTIVE_WORKTREE_INTEGRATION_JOB": return cancelIntegration
+        case "GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "WORKTREE_LOCKED": return true
+        default: return false
+        }
+    }
+}
+
 public struct ClientTaskDeletion: Codable, Sendable, Equatable {
     public let requestId: String
     /// `safe` or `force`.
@@ -175,6 +195,10 @@ public struct ClientTaskDeletion: Codable, Sendable, Equatable {
     /// `delete`, `work` or `retain`.
     public var artifactDisposition = "delete"
     public var acknowledgeDataLoss: Bool?
+    public var stopRunning = false
+    public var cancelStartup = false
+    public var deleteAssociatedTasks = false
+    public var cancelIntegration = false
     public init(requestId: String) { self.requestId = requestId }
 }
 public struct ClientWorkUpdate: Codable, Sendable, Equatable {

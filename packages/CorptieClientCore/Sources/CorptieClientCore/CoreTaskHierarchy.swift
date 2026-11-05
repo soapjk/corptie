@@ -2,12 +2,12 @@ import Foundation
 
 public struct TaskHierarchyCapabilities: Codable, Sendable, Hashable {
     public let version: Int
-    public let maxDepth: Int
+    public let maxDepth: Int?
     public let createChild: Bool
     public let worktreeOperations: Bool
     public let integrationAcceptance: Bool
 
-    public var supportsChildCreation: Bool { version == 1 && maxDepth == 1 && createChild }
+    public var supportsChildCreation: Bool { version == 1 && (maxDepth == nil || (maxDepth ?? 0) >= 1) && createChild }
 }
 
 public struct TaskHierarchyAction: Codable, Sendable, Hashable {
@@ -38,7 +38,7 @@ public struct TaskHierarchySummary: Codable, Sendable, Hashable {
     public let actions: Actions
     public let acceptance: Acceptance
 
-    public var canCreateChild: Bool { version == 1 && depth == 0 && actions.createChild.available }
+    public var canCreateChild: Bool { version == 1 && actions.createChild.available }
 }
 
 public struct ClientTaskHierarchyPage: Decodable, Sendable {
@@ -104,7 +104,9 @@ public struct WorktreeHierarchy: Codable, Sendable, Hashable {
     public let integratedChildCount: Int?
     public let actions: Actions
     public func scope(_ action: String, receiptId: String? = nil) -> TaskHierarchyScope {
-        .init(rootTaskId: rootTaskId, action: action, revision: hierarchyRevision, bindingRevision: bindingRevision, receiptId: receiptId)
+        let own = action == "merge_own_children" || action == "sync_own_children"
+        return .init(rootTaskId: own ? taskId : rootTaskId, action: action.replacingOccurrences(of: "_own_", with: "_"),
+                     revision: hierarchyRevision, bindingRevision: bindingRevision, receiptId: receiptId)
     }
 }
 
@@ -128,7 +130,7 @@ public struct TaskIntegrationAcceptanceStatus: Decodable, Sendable {
     public let hierarchyRevision: Int?
     public let bindingRevision: Int?
     public let manualAcceptance: Bool?
-    public var mayPromote: Bool { canPromote && ["passed", "not_required"].contains(state) }
+    public var mayPromote: Bool { canPromote }
 }
 
 public struct TaskIntegrationUserApproval: Decodable, Sendable, Identifiable {

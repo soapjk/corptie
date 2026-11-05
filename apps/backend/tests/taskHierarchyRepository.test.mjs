@@ -7,6 +7,7 @@ import { validateTaskInput } from "../src/domain/workTaskValidation.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { ClientDeviceGateway } from "../src/application/clientDeviceGateway.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
+import { worktreeDispatchBlocker } from "../src/application/worktreeExecutionBarrier.mjs";
 import { classifyTaskDeliveryParticipation, startupHasNoDeliveryResources } from "../src/store/repositories/taskHierarchyRepository.mjs";
 
 test("only a compensated child failure before parent-base capture proves no allocation",()=>{
@@ -62,13 +63,19 @@ async function fixture(t) {
   return {store,service,work,root,child};
 }
 
-test("child creation is atomic, one-level and same-Work without a parent version", async t => {
+test("child creation is atomic, multi-level and same-Work without a parent version", async t => {
   const f=await fixture(t);
   const child=f.store.createTask({workId:f.work.id,title:"No_version",parentTaskId:f.root.id});
   assert.equal(child.parent_task_id,f.root.id);
   assert.equal(f.store.getTask(f.root.id).hierarchy_revision,2);
   assert.equal(f.store.getTask(f.root.id).resource_version,f.root.resource_version);
-  assert.throws(()=>f.child("Grandchild",child),{code:"TASK_MAX_DEPTH_EXCEEDED"});
+  const grandchild=f.child("Grandchild",child);
+  assert.equal(grandchild.parent_task_id,child.id);
+  const summary=f.store.hierarchySummaries([grandchild.id]).get(grandchild.id);
+  assert.equal(summary.depth,2);assert.equal(summary.rootTaskId,f.root.id);
+  const page=readTaskHierarchyPage(f.store,f.work.id,new URLSearchParams({parentTaskId:child.id}));
+  assert.equal(page.tasks[0].id,grandchild.id);
+  assert.deepEqual(f.store.taskHierarchyAncestors([grandchild]).map(task=>task.id),[child.id,f.root.id]);
   const other=f.service.createWork({name:"Other",contributorAgentIds:f.work.contributorAgentIds});
   assert.throws(()=>f.store.createTask({workId:other.id,title:"Wrong",parentTaskId:f.root.id},{},{expectedParentResourceVersion:1}),{code:"TASK_PARENT_UNAVAILABLE"});
   const before=f.store.listTasks().length;
@@ -120,7 +127,7 @@ test("creation replay compares null parent as well as child parent",async t=>{
   const f=await fixture(t); const child=f.child();
   assert.throws(()=>f.service.createTask({id:child.id,workId:f.work.id,title:child.title}),{code:"ENTITY_CREATION_CONFLICT"});
   const summary=f.store.hierarchySummaries([f.root.id,child.id]);
-  assert.equal(summary.get(child.id).actions.createChild.available,false);
+  assert.equal(summary.get(child.id).actions.createChild.available,true);
   assert.equal(summary.get(f.root.id).childCount,1);
 });
 
@@ -158,12 +165,28 @@ test("Git parent completion requires integration acceptance but audit remains re
   const completion=new TaskCompletionService({store:f.store});
   assert.deepEqual(completion.listAudit(root.id),[]);
   const input={requestId:"test:hierarchy",interactionId:"interaction:hierarchy",uiSurface:"task_completion_confirmation",displayedTaskId:root.id,displayedTaskTitle:root.title};
-  await assert.rejects(()=>completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"}),{code:"PARENT_WORKTREE_REQUIRED"});
+
   const guard=completion.integrationAcceptance.assertCompletionAllowed;
   completion.integrationAcceptance.assertCompletionAllowed=async()=>{};
   const receipt=await completion.issueMacOSIntent(root.id,input,{type:"user",id:"user:local-macos"});
   completion.integrationAcceptance.assertCompletionAllowed=guard;
-  await assert.rejects(()=>completion.completeFromMacOS(root.id,{intentToken:receipt.intentToken,requestId:input.requestId,idempotencyKey:"complete:hierarchy"}),{code:"PARENT_WORKTREE_REQUIRED"});
+  await completion.completeFromMacOS(root.id,{intentToken:receipt.intentToken,requestId:input.requestId,idempotencyKey:"complete:hierarchy"});
   await assert.rejects(()=>completion.completeFromSession({targetTaskId:root.id},{}),{code:"WORK_ID_REQUIRED"});
-  assert.notEqual(f.store.getTask(root.id).lifecycle_state,"done");
+  assert.equal(f.store.getTask(root.id).lifecycle_state,"done");
+});
+
+
+test("Worktree-scoped scheduling inspects every matching active job, even behind a newer unrelated job",async t=>{
+ const f=await fixture(t);f.store.createWorkspace({workspaceId:"workspace:queue",kind:"linkedLocal",ownership:"userManaged",rootPath:"/queue-test"});
+ const now=new Date().toISOString();f.store.db.run("INSERT INTO git_repositories(repository_id,workspace_id,common_git_dir,discovered_at,last_validated_at) VALUES (?,?,?,?,?)",["repository:queue","workspace:queue","/queue-test/.git",now,now]);
+ const create=(id,tree)=>f.store.createWorktreeIntegrationJob({id,repositoryId:"repository:queue",status:"running",planFingerprint:id,details:{plan:{items:[{worktreeId:tree,isMain:false}],reservedWorktreeIds:[tree],taskScope:{version:1}},dispatchRevision:1}});
+ const older=create("job:older","wt:x");create("job:new-unrelated","wt:y");
+ const reference={logicalSession:{repositoryId:"repository:queue",activeWorkspaceId:"wt:x"}};
+ assert.equal(worktreeDispatchBlocker(f.store,reference).jobId,older.id);
+ const old=f.store.getWorktreeIntegrationJob(older.id);
+ f.store.updateWorktreeIntegrationJob(older.id,{status:"paused",details:{...old.details,dispatchSafety:{verifiedRevision:1,safeWorktrees:[{worktreeId:"wt:x"}],blockedWorktreeIds:[]}}});
+ assert.equal(worktreeDispatchBlocker(f.store,reference),null);
+ const third=create("job:same-tree","wt:x");
+ assert.equal(worktreeDispatchBlocker(f.store,reference).jobId,third.id);
+ assert.equal(f.store.listWorktreeIntegrationJobsForWorktree("repository:queue","wt:x").length,2);
 });

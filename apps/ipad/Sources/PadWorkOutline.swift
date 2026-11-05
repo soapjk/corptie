@@ -384,7 +384,7 @@ struct PadWorkOutline: View {
         )
         let hiddenTaskCount = roots.count - visibleTaskCount
         let visibleRootIDs = Set(roots.prefix(visibleTaskCount).map(\.id))
-        let visibleTasks = tasks.filter { visibleRootIDs.contains($0.parentTaskId ?? $0.id) }
+        let visibleTasks = tasks.filter { visibleRootIDs.contains(hierarchyProjection.rootByTaskID[$0.id] ?? $0.id) }
         return VStack(alignment: .leading, spacing: 2) {
             workHeader(work, isExpanded: isExpanded)
             if isExpanded {
@@ -538,7 +538,7 @@ struct PadWorkOutline: View {
 
     private func hierarchyTaskRow(_ task: ClientTask, sessionID: String?) -> some View {
         let count = max(task.hierarchy?.childCount ?? 0, hierarchyProjection.childCountByParent[task.id] ?? 0)
-        let parent = task.parentTaskId == nil && count > 0
+        let parent = count > 0
         let expanded = hasSearch || expandedParentIDs.contains(task.id)
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
@@ -572,7 +572,7 @@ struct PadWorkOutline: View {
                     .accessibilityIdentifier("task-children-disclosure-\(task.id)")
                 }
             }
-            .padding(.leading, task.parentTaskId == nil ? 0 : 44)
+            .padding(.leading, CGFloat(min(hierarchyProjection.depthByTaskID[task.id] ?? 0, 6)) * 24)
             if let parentID = hierarchyProjection.footerParentByRowID[task.id],
                let parentTask = hierarchyProjection.taskByID[parentID] {
                 childrenFooter(parentTask)

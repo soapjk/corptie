@@ -86,7 +86,7 @@ export function validateStartupBindingReceipt(receipt, reference, authority) {
   if (!receipt || Object.keys(receipt).some((key) => !required.includes(key)) || required.some((key) => !Object.hasOwn(receipt, key))) throw contractError("STARTUP_BINDING_IDENTITY_MISMATCH", "StartupBindingReceipt field set differs from the fixed contract projection.");
   if (receipt.schemaVersion !== 2 || receipt.status !== "ready" || receipt.error !== null) throw contractError("STARTUP_BINDING_NOT_READY", "StartupBindingReceipt must be schemaVersion 2 ready.");
   if (receipt.startupOperationId !== reference.startupOperationId || receipt.receiptHash !== reference.receiptHash || receipt.resourceVersion !== reference.resourceVersion || receiptHash(receipt) !== receipt.receiptHash) throw contractError("DEPENDENCY_CONTRACT_HASH_MISMATCH", "StartupBindingReceipt reference or canonical hash mismatches.");
-  for (const field of ["workId","taskId","logicalSessionId","repositoryId","worktreeId","providerBindingId","bindingGeneration","sourceCommitOid","sourceTreeOid","repositoryInventoryVersion","workspaceResourceVersion","resourceVersion"]) if (Object.hasOwn(authority, field) && authority[field] !== receipt[field]) throw contractError("STARTUP_BINDING_STALE", `${field} is stale against authoritative binding.`);
+  for (const field of ["workId","taskId","logicalSessionId","repositoryId","worktreeId","providerBindingId","bindingGeneration"]) if (Object.hasOwn(authority, field) && authority[field] !== receipt[field]) throw contractError("STARTUP_BINDING_STALE", `${field} is stale against authoritative binding.`);
   return receipt;
 }
 

@@ -1,6 +1,6 @@
-function tool(name, description, properties = {}, required = []) {
+function tool(name, description, properties = {}, required = [], executionEffect = "write") {
   return Object.freeze({
-    type: "function", name, description, deferLoading: false,
+    type: "function", name, description, executionEffect, deferLoading: false,
     inputSchema: { type: "object", properties, required, additionalProperties: false }
   });
 }
@@ -12,21 +12,21 @@ const contentHash = { type: "string", pattern: "^[a-f0-9]{64}$", description: "E
 export const artifactDynamicTools = Object.freeze([
   tool("corptie_artifact_list", "List project Artifacts readable by every authenticated Session, with per-Artifact management permissions derived from ownership.", {
     include_revoked: { type: "boolean", description: "Include logically deleted Artifacts that this Session is allowed to restore." }
-  }),
+  }, [], "read"),
   tool("corptie_artifact_get", "Read one immutable Artifact version from the current project. Every authenticated Session has inherent project-wide read access; artifact_id, version, and content_hash are mandatory, and raw-byte pages never drift to another version.", {
     artifact_id: artifactId, version, content_hash: contentHash,
     reference_id: { type: "string", pattern: "^artifact_reference:", description: "Exact active Reference authorizing this body read." },
     offset: { type: "integer", minimum: 0 },
     limit: { type: "integer", minimum: 1, maximum: 65536 },
     format: { type: "string", enum: ["text", "base64"] }
-  }, ["artifact_id", "version", "content_hash"]),
+  }, ["artifact_id", "version", "content_hash"], "read"),
   tool("corptie_artifact_search", "Search bounded Artifact metadata across only Artifacts authorized for the authenticated Session. Private bodies remain available only through fixed get pages.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 },
     scope: { type: "string", enum: ["work", "task", "session"] },
     kinds: { type: "array", items: { type: "string" } },
     category_prefix: { type: "string" },
     tags: { type: "array", items: { type: "string" } }
-  }, ["query"]),
+  }, ["query"], "read"),
   tool("corptie_artifact_patch", "Apply ordered exact text replacements to a current fixed Artifact version. Each old_text must match exactly once. Publishes an immutable version with concurrency protection and a durable idempotent receipt; Session and audit source are runtime-bound.", {
     artifact_id: artifactId, version, content_hash: contentHash,
     reference_id: { type: "string", pattern: "^artifact_reference:" },

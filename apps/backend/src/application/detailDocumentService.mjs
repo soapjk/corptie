@@ -797,9 +797,9 @@ export class DetailDocumentService {
     const logicalSessionId = logical?.logicalSessionId ?? this.store.getLogicalSessionByLegacySessionId?.(session.id)?.logicalSessionId ?? session.id;
     const rawTask = session.taskId ? this.store.getTask(session.taskId) : null;
     const task = rawTask ? { ...rawTask,
-      coordinationProgress: !rawTask.parent_task_id && this.store.db && this.store.selectOne ? coordinationProgressFor(this.store).latest(rawTask.id) : null,
-      coordinationExecution: !rawTask.parent_task_id ? this.coordinationState?.(session.id) ?? null : null,
-      coordinationDispatches: !rawTask.parent_task_id ? this.store.listTaskCoordinationDispatches?.(rawTask.id) ?? [] : [] } : null;
+      coordinationProgress: this.store.db && this.store.selectOne ? coordinationProgressFor(this.store).latest(rawTask.id) : null,
+      coordinationExecution: this.coordinationState?.(session.id) ?? null,
+      coordinationDispatches: this.store.listTaskCoordinationDispatches?.(rawTask.id) ?? [] } : null;
     const workId = task?.work_id ?? session.workId;
     const taskHierarchy = task ? this.store.hierarchySummaries?.([task.id]).get(task.id) ?? null : null;
     const parent = task?.parent_task_id ? this.store.getTask(task.parent_task_id) : null;

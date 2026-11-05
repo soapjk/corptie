@@ -14,6 +14,7 @@ export class ManagedSandboxStartupCoordinator {
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.root = resolve(options.root ?? join(this.store?.dataRoot ?? "", "execution-spaces"));
     this.inFlight = new Map();
+    this.startingTasks = new Map();
     if (!this.store || !this.providerWorkSessionPort) {
       throw new TypeError("ManagedSandboxStartupCoordinator requires store and ProviderWorkSessionPort.");
     }
@@ -24,10 +25,31 @@ export class ManagedSandboxStartupCoordinator {
     const operationId = managedOperationId(command.taskId, command.idempotencyKey);
     const running = this.inFlight.get(operationId);
     if (running) return running;
+    this.startingTasks.set(operationId, command.taskId);
     const operation = this.#drive(operationId, command, authorization)
-      .finally(() => this.inFlight.delete(operationId));
+      .finally(() => { this.inFlight.delete(operationId); this.startingTasks.delete(operationId); });
     this.inFlight.set(operationId, operation);
     return operation;
+  }
+
+  async cancelForTaskDeletion(taskId) {
+    const rows = this.store.selectAll("SELECT execution_space_id FROM execution_spaces WHERE task_id=? AND status IN ('preparing','binding')", [taskId]);
+    const ids = new Set([...rows.map(row => row.execution_space_id), ...[...this.startingTasks].filter(([, id]) => id === taskId).map(([id]) => id)]);
+    for (const id of ids) await this.inFlight.get(id)?.catch(() => {});
+  }
+
+  async cleanupForTaskDeletion(taskId) {
+    if (this.store.getTask(taskId)?.deletion_status !== "deleting") throw coded("TASK_DELETE_FORBIDDEN", "ExecutionSpace 清理需要正在执行的删除作业。", 403);
+    for (const row of this.store.selectAll("SELECT execution_space_id,root_path FROM execution_spaces WHERE task_id=? AND strategy='managedSandbox' AND status<>'released'", [taskId])) {
+      const root = resolve(row.root_path);
+      assertOwnedPath(this.root, root);
+      await rm(root, { recursive: true, force: true });
+      this.#update(row.execution_space_id, { status: "released" });
+    }
+  }
+
+  #assertNotDeleting(taskId) {
+    if (!this.store.getTask(taskId) || this.store.getTask(taskId).deletion_status === "deleting") throw coded("START_CANCELLED_FOR_DELETION", "启动已因删除任务而中断。", 409);
   }
 
   getReceipt({ startupOperationId, taskId = null } = {}) {
@@ -73,8 +95,10 @@ export class ManagedSandboxStartupCoordinator {
     assertOwnedPath(this.root, rootPath);
     let session = row.session_id ? this.store.getSession(row.session_id) : null;
     try {
+      this.#assertNotDeleting(command.taskId);
       if (!session) {
         await this.#prepareCopy(sourcePath, rootPath, operationId);
+        this.#assertNotDeleting(command.taskId);
         this.#update(operationId, { status: "preparing", preparedAt: this.clock(), errorCode: null, errorMessage: null });
         session = await this.providerWorkSessionPort.createSession({
           ...command,
@@ -95,6 +119,7 @@ export class ManagedSandboxStartupCoordinator {
         row = this.#row(operationId);
       }
 
+      this.#assertNotDeleting(command.taskId);
       const activation = await this.providerWorkSessionPort.activateSession({
         ...command,
         session,
@@ -105,6 +130,7 @@ export class ManagedSandboxStartupCoordinator {
         startupOperationId: operationId,
         dispatchInitialTurn: command.dispatchInitialTurn !== false
       });
+      this.#assertNotDeleting(command.taskId);
       const logical = this.store.getLogicalSessionByLegacySessionId(session.id);
       const now = this.clock();
       const unsignedReceipt = {

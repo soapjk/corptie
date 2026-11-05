@@ -116,8 +116,11 @@ test('snapshot synchronization replays child changes without replaying inherited
 test('dirty integration target is preserved',async t=>{
  const f=await fixture(t);await writeFile(join(f.path,'inherited.txt'),'inherited\n');const base=await f.capture(),c=await f.child(base);
  await writeFile(join(c,'child.txt'),'child\n');await git(c,['add','.']);await git(c,['commit','-m','Child']);
- await assert.rejects(mergeWorkspaceSnapshot(f.manager,{mainPath:f.path,sourceHead:await oid(c),expectedMainHead:f.initial,snapshotBase:base}),{code:'WORKTREE_RECHECK_DIRTY'});
- assert.equal(await readFile(join(f.path,'inherited.txt'),'utf8'),'inherited\n');assert.equal(await oid(f.path),f.initial);
+ await mergeWorkspaceSnapshot(f.manager,{mainPath:f.path,sourceHead:await oid(c),expectedMainHead:f.initial,snapshotBase:base});
+ assert.equal(await readFile(join(f.path,'inherited.txt'),'utf8'),'inherited\n');
+ assert.equal(await readFile(join(f.path,'child.txt'),'utf8'),'child\n');
+ assert.notEqual(await oid(f.path),f.initial);
+ assert.match(await git(f.path,['status','--porcelain=v1']),/inherited.txt/);
 });
 
 test('capture scopes permit unrelated branches and acceptance-only pauses, but fence actual parent writes',()=>{

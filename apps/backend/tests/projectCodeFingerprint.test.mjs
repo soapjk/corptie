@@ -86,3 +86,35 @@ async function createFixtureView(directory, sessionContext) {
   return { directory, identity, commitOid, treeOid, sessionContext, binding,
     startupReceipt: startupReceiptFor({ identity, commitOid, treeOid, sessionContext, binding }) };
 }
+
+
+test("normal child commits refresh source snapshots while fixed historical reads retain the old code", async t=>{
+  const f=await createProjectCodeFixture({files:{"code.js":"export const version = 1;\n"}});
+  t.after(()=>rm(f.directory,{recursive:true,force:true}));
+  const builder=new RepositorySourceSnapshotBuilder(),old=await builder.build(f);
+  await writeFile(join(f.directory,"code.js"),"export const version = 2;\n");
+  await git(f.directory,["add","code.js"]);await git(f.directory,["commit","-qm","normal child commit"]);
+  const current=await builder.build(f);
+  assert.notEqual(current.receipt.sourceCommitOid,old.receipt.sourceCommitOid);
+  assert.equal(current.receipt.sourceCommitOid,await git(f.directory,["rev-parse","HEAD"]));
+  await assert.rejects(()=>builder.assertCurrent(old),{code:"SOURCE_SNAPSHOT_STALE"});
+  await builder.assertCurrent(current);
+  const window=await builder.pointReadHistorical({...f,receipt:old.receipt,path:"code.js"});
+  assert.deepEqual(window.lines,["export const version = 1;"]);
+});
+
+test("unmerged working files remain readable snapshot input without duplicate catalog entries",async t=>{
+  const f=await createProjectCodeFixture({files:{"conflict.txt":"original\n"}});
+  t.after(()=>rm(f.directory,{recursive:true,force:true}));
+  await git(f.directory,["checkout","-qb","other"]);
+  await writeFile(join(f.directory,"conflict.txt"),"other\n");
+  await git(f.directory,["commit","-qam","other change"]);
+  await git(f.directory,["checkout","-q","-"]);
+  await writeFile(join(f.directory,"conflict.txt"),"ours\n");
+  await git(f.directory,["commit","-qam","our change"]);
+  await assert.rejects(()=>git(f.directory,["merge","other"]));
+  const snapshot=await new RepositorySourceSnapshotBuilder().build(f);
+  assert.equal(snapshot.candidates.filter(item=>item.path==="conflict.txt").length,1);
+  assert.equal(snapshot.overlayEntries.find(item=>item.path==="conflict.txt").stageState,"UU");
+  await new RepositorySourceSnapshotBuilder().assertCurrent(snapshot);
+});

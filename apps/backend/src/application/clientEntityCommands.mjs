@@ -118,10 +118,12 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
   }
   const risk = row => ({ code: String(row.code), message: typeof row.message === "string" ? row.message.slice(0, 512) : "",
     ...(Array.isArray(row.files) ? { files: row.files.filter(file => typeof file === "string").slice(0, 8).map(file => file.slice(0, 256)) } : {}),
-    ...(Number.isFinite(row.commitCount) ? { commitCount: row.commitCount } : {}) });
+    ...(Number.isFinite(row.commitCount) ? { commitCount: row.commitCount } : {}),
+    ...(row.jobId ? { jobId: row.jobId, status: row.status, phase: row.phase, canResolve: row.canResolve === true, action: row.action } : {}) });
   return { schemaVersion: 1, taskId: task.id, parentTaskId: plan?.parentTaskId ?? null,
     status: ["blocked", "risky", "safe"].includes(plan?.status) ? plan.status : "blocked",
     associatedSessionCount: Number(plan?.associatedSessionCount) || 0,
+    associatedTaskIds: plan?.associatedTaskIds ?? [], childTaskIds: plan?.childTaskIds ?? [],
     artifacts: (plan?.artifacts ?? []).map(row => ({ id: String(row.artifactId), title: typeof row.title === "string" ? row.title : "" })).slice(0, 50),
     worktree: plan?.worktree ? { branchName: typeof plan.worktree.branchName === "string" ? plan.worktree.branchName : null,
       dirty: plan.worktree.dirty === true, mergedIntoMain: plan.worktree.mergedIntoMain === true,
@@ -270,11 +272,17 @@ function validateTaskCommand(api, task, command, input) {
       knownFields(input, ["requestId"], code);
       return {};
     case "delete": {
-      knownFields(input, ["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss"], code);
+      knownFields(input, ["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss", "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration"], code);
       const fields = { mode: input.mode ?? "safe", deleteWorktree: input.deleteWorktree ?? true,
         artifactDisposition: input.artifactDisposition ?? "delete" };
       if (!["safe", "force"].includes(fields.mode) || typeof fields.deleteWorktree !== "boolean"
           || !["delete", "work", "retain"].includes(fields.artifactDisposition)) throw deviceError(code, 400);
+      for (const key of ["stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration"]) {
+        if (key in input) {
+          if (typeof input[key] !== "boolean") throw deviceError(code, 400);
+          fields[key] = input[key];
+        }
+      }
       if ("acknowledgeDataLoss" in input) {
         if (typeof input.acknowledgeDataLoss !== "boolean") throw deviceError(code, 400);
         fields.acknowledgeDataLoss = input.acknowledgeDataLoss;
