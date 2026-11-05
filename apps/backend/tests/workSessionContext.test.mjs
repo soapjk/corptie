@@ -19,7 +19,7 @@ test("checklist policy is required Worker context and the default startup uses t
   assert.equal(merged.contextBudget.memoryContextOmitted, true);
   assert.match(merged.prompt, /user does not need to explicitly request a checklist/);
   assert.match(merged.prompt, /simple one-step read-only requests may be answered directly/);
-  assert.match(merged.prompt, /Never resume a user-paused or cancelled run/);
+  assert.match(merged.prompt, /It does not schedule turns, impose a time or turn budget, or pause execution/);
   assert.match(merged.prompt, /a dispatch receipt does not prove implementation completed/);
 });
 

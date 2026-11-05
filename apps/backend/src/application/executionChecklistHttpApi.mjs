@@ -11,7 +11,8 @@ export function handleExecutionChecklistHttp({ request, response, url, service, 
     if (request.method === "GET") return sendJson(response, 200, { checklist: service.display(service.read(taskId)), writesAllowed: !preview });
     if (preview) throw Object.assign(new Error("DEVELOPMENT_PREVIEW_READ_ONLY"), { statusCode: 403 });
     if (request.method !== "POST") return sendJson(response, 405, { code: "METHOD_NOT_ALLOWED" });
-    return sendJson(response, 200, service.mutate(taskId, await readJson(request)));
+    const result = service.mutate(taskId, await readJson(request));
+    return sendJson(response, 200, { ...result, checklist: service.display(result.checklist) });
   }).catch(error => sendJson(response, error.statusCode ?? 400, { code: error.code ?? error.message, error: error.message }));
   return true;
 }

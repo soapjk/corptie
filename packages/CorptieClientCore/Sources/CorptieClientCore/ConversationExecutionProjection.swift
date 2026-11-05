@@ -2,6 +2,14 @@ import Foundation
 
 /// Provider-neutral, versioned checklist delivered with a timeline item.
 public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
+    public struct Assignment: Codable, Sendable, Hashable {
+        public let taskId: String?
+        public let dispatchId: String?
+        public let title: String?
+        public let status: String?
+        public let sessionId: String?
+        public let reason: String?
+    }
     public struct Step: Codable, Sendable, Hashable, Identifiable {
         public let stepId: String
         public let ordinal: Int
@@ -9,6 +17,7 @@ public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
         public let status: String
         public let condition: String?
         public let reason: String?
+        public let assignment: Assignment?
         public var id: String { stepId }
 
         public var marker: String {
