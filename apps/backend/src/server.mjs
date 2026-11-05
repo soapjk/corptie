@@ -1122,6 +1122,7 @@ const claudeNotificationReceiver = createClaudeNotificationReceiver({
 const firstRunSetup = new FirstRunSetupService({
   path: () => join(store.dataRoot, "first-run-setup.json"),
   hasWorks: () => store.listWorks().length > 0,
+  hasProviderUsage: (providerId) => store.listSessions().some((session) => session.external?.provider === providerId),
   firstWorkSession: () => {
     const work = store.listWorks()[0];
     return work ? store.getWorkChatSession(work.id) : null;
