@@ -9,7 +9,7 @@ function fixture() {
   const dependencies = {
     sessionApplicationService: { listModels: record("models") },
     agentProviderRegistry: { defaultProviderId: "test", descriptors: () => [{ id: "test" }], invoke: record("invoke") },
-    firstRunSetup: Object.fromEntries(["status", "check", "authentication", "setEnabled", "prepareAssistant", "complete"].map((name) => [name, record(name)])),
+    firstRunSetup: Object.fromEntries(["status", "check", "saveSettings", "saveCredentialSource", "setProgram", "authentication", "setEnabled", "prepareAssistant", "complete"].map((name) => [name, record(name)])),
     readJson: async (request) => { if (request.body instanceof Error) throw request.body; return request.body; },
     sendJson: (response, status, body) => response.resolve({ status, body }),
     errorStatus: (error, fallback) => Number.isInteger(error.statusCode) ? error.statusCode : fallback,
@@ -67,4 +67,13 @@ test("provider inventory and unmatched methods preserve response and fallthrough
   assert.equal(f.dispatch("/providers", "POST").handled, false);
   assert.equal(f.dispatch("/first-run/unknown", "POST").handled, false);
   assert.equal(f.dispatch("/other").handled, false);
+});
+
+test("credential source and local program adoption dispatch without invoking reply checks", async () => {
+  const f = fixture();
+  for (const [route, method] of [["settings", "saveSettings"], ["credentials", "saveCredentialSource"], ["program", "setProgram"]]) {
+    const input = { providerId: "test", kind: "file", path: "/custom/source" };
+    assert.equal((await f.dispatch(`/first-run/${route}`, "POST", input).result).status, 200);
+    assert.deepEqual(f.calls.at(-1), [method, input]);
+  }
 });

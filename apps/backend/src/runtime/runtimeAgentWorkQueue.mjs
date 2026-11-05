@@ -13,6 +13,7 @@ export function createRuntimeAgentWorkQueue({
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent: publishEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
   channelMailbox, sessionMailbox,
+  providerDispatchDecision = () => dispatchReady(),
   isWorkspaceMutationActive = () => false, inspectWorkspaceDispatchBlocker = null
 }) {
   const drainingAgentWorkSessionIds = new Set();
@@ -53,6 +54,8 @@ export function createRuntimeAgentWorkQueue({
   }
 
   function mailboxDecision(item) {
+    const providerDecision = providerDispatchDecision(item);
+    if (!providerDecision.allowed) return providerDecision;
     if(sessionMailbox?.dispatchDecision) return sessionMailbox.dispatchDecision(item);
     return !sessionMailbox || sessionMailbox.canDispatchOperation(item) ? dispatchReady()
       : dispatchBlocked("MAILBOX_DISPATCH_UNAVAILABLE","blocked","邮箱暂时不能派发这条消息。");
@@ -307,6 +310,8 @@ export function createRuntimeAgentWorkQueue({
     }
     const pendingTimer = mailboxTimers.get(sessionId);
     if (pendingTimer) { clearTimeout(pendingTimer); mailboxTimers.delete(sessionId); }
+    const admissionDecision = mailboxDecision(next);
+    if (!admissionDecision.allowed) { recordBlocked(next, admissionDecision); return; }
     let claimed = store.claimAgentTask(next.taskId);
     if (!claimed) {
       const current=store.getAgentTask(next.taskId);
@@ -371,6 +376,12 @@ export function createRuntimeAgentWorkQueue({
       }
       preDeliveryRetryCounts.delete(claimed.taskId);
     } catch (error) {
+      if (error.code === "PROVIDER_DISABLED" && error.dispatchState === "not_dispatched") {
+        const paused = store.updateAgentTask(claimed.taskId, { status: "queued", startedAt: null });
+        registerRuntimeQueuedWork(paused.sessionId, paused.taskId);
+        recordBlocked(paused, dispatchBlocked("PROVIDER_DISABLED", "paused", error.message));
+        return;
+      }
       const { retryCount, shouldRetry } = agentWorkPreDeliveryRetryDecision({
         errorCode: error.code,
         targetTurnId: claimed.targetTurnId,

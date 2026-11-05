@@ -211,11 +211,20 @@ struct BackgroundTaskStatusBar: View {
                 statusIcon(record.state)
                     .frame(width: 14, height: 14)
 
-                Text(record.title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(record.title)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(2)
+                    if record.state == .failed {
+                        Text(record.detail)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
 
                 if center.records.count > 1 {
                     Text("+\(center.records.count - 1)")

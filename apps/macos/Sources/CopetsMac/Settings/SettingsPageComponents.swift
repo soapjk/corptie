@@ -48,7 +48,7 @@ extension SettingsTab {
         switch self {
         case .appearance, .notifications: L10n("Changes on this page take effect immediately.")
         case .devices, .archivedSessions: L10n("Actions on this page are applied immediately.")
-        default: L10n("Save applies pending general, session defaults, proxy and trusted workspace settings. Other actions are saved separately.")
+        default: L10n("Save applies pending general, execution engine, session defaults, proxy and trusted workspace settings. Other actions are saved separately.")
         }
     }
 }

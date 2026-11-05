@@ -38,17 +38,27 @@ final class ComposerRegionIsolationTests: XCTestCase {
         var updates = 0
         let subscription = LegacyComposerInvalidation.commandUpdates(commands).sink { _ in updates += 1 }
         defer { subscription.cancel() }
-        XCTAssertEqual(updates, 1)
+        XCTAssertEqual(updates, 0)
         commands.projectWorktreeActionError = "Unrelated Git action"
         commands.isSwitchingModel = true
         commands.scheduledTaskError = "Unrelated schedule action"
+        XCTAssertEqual(updates, 0)
+        commands.isSendingMessage = true
         XCTAssertEqual(updates, 1)
         commands.isSendingMessage = true
-        XCTAssertEqual(updates, 2)
-        commands.isSendingMessage = true
-        XCTAssertEqual(updates, 2)
+        XCTAssertEqual(updates, 1)
         commands.isSendingMessage = false
-        XCTAssertEqual(updates, 3)
+        XCTAssertEqual(updates, 2)
+    }
+
+    func testRecreatingComposerSubscriptionsDoesNotInvalidateTheViewAgain() {
+        let commands = SessionCommandController()
+        var updates = 0
+        for _ in 0..<20 {
+            let subscription = LegacyComposerInvalidation.commandUpdates(commands).sink { _ in updates += 1 }
+            subscription.cancel()
+        }
+        XCTAssertEqual(updates, 0, "A body rebuild must not enqueue the next body rebuild")
     }
 
     private final class BodyCount { var value = 0 }

@@ -74,7 +74,7 @@ struct MessageComposer: View {
         .onReceive(Publishers.MergeMany([
             backendClient.objectWillChange.map { false }.eraseToAnyPublisher(),
             backendClient.appState.objectWillChange.map { true }.eraseToAnyPublisher(),
-            backendClient.archivedSessionController.$sessions.map { _ in false }.eraseToAnyPublisher(),
+            backendClient.archivedSessionController.$sessions.dropFirst().map { _ in false }.eraseToAnyPublisher(),
             LegacyComposerInvalidation.commandUpdates(backendClient.sessionCommandController)
         ])) { metadataChanged in
             revision &+= 1
@@ -87,7 +87,7 @@ struct MessageComposer: View {
 /// CodexModelMenu; Git/schedule/other command changes do not concern the editor.
 @MainActor enum LegacyComposerInvalidation {
     static func commandUpdates(_ commands: SessionCommandController) -> AnyPublisher<Bool, Never> {
-        commands.$isSendingMessage.removeDuplicates().map { _ in false }.eraseToAnyPublisher()
+        commands.$isSendingMessage.removeDuplicates().dropFirst().map { _ in false }.eraseToAnyPublisher()
     }
 }
 
