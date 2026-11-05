@@ -52,6 +52,13 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
 }
 
 final class IntrinsicHeightTableView: NSTableView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+
     override func keyDown(with event: NSEvent) {
         guard [UInt16(116), 121, 115, 119, 125, 126].contains(event.keyCode),
               let scroll = enclosingScrollView as? FirstLayoutRestoringScrollView else {

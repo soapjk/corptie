@@ -23,7 +23,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertFalse(row.nativeText.contains("private control"))
         XCTAssertFalse(row.nativeText.contains(ConversationEventText(languageCode: AppLanguageController.shared.languageCode).systemNotice))
         for skin in [ConversationSkin.classic, .codexFlat] {
-            XCTAssertLessThanOrEqual(NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 1000, skin: skin).cardWidth, 480)
+            XCTAssertLessThanOrEqual(LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 1000, skin: skin).cardWidth, 480)
         }
         let trigger = try item(["id": "trigger", "type": "userMessage", "presentationRole": "automation",
             "messageOrigin": "scheduled_task", "automationName": "定时检查", "automationRunId": "run:one",
@@ -57,7 +57,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertEqual(snapshotRow.processState, .running)
         XCTAssertEqual(snapshotRow.processCount, 0)
         for skin in [ConversationSkin.classic, .codexFlat] {
-            let layout = NativeTimelineLayoutCache.shared.layout(for: waiting, columnWidth: 600, skin: skin)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: waiting, columnWidth: 600, skin: skin)
             XCTAssertGreaterThan(layout.rowHeight, 0)
             let cell = AppKitSharedMessageTextCell(identifier: .init("early-process"))
             cell.frame = .init(x: 0, y: 0, width: 600, height: layout.rowHeight)
@@ -88,8 +88,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let expanded = builder().nativeAppKitRow(entry, expandedTurnIds: [id])
         XCTAssertNotEqual(expanded.contentRevision, collapsed.contentRevision)
         for width: CGFloat in [320, 1000, 2400] {
-            let preview = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width)
-            let full = NativeTimelineLayoutCache.shared.layout(for: expanded, columnWidth: width)
+            let preview = LegacyTimelineLayoutReference.shared.layout(for: collapsed, columnWidth: width)
+            let full = LegacyTimelineLayoutReference.shared.layout(for: expanded, columnWidth: width)
             XCTAssertEqual(preview.cardWidth, min(480, width - 14))
             XCTAssertTrue(preview.triggerCanExpand)
             XCTAssertEqual(preview.triggerTextHeight, NativeTextKitLayout.height(of: try XCTUnwrap(preview.triggerText),
@@ -97,10 +97,10 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
             XCTAssertGreaterThan(full.rowHeight, preview.rowHeight)
             XCTAssertEqual(full.triggerText?.string, message)
             XCTAssertTrue(preview.attributedText === full.attributedText)
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width).rowHeight, preview.rowHeight)
+            XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: collapsed, columnWidth: width).rowHeight, preview.rowHeight)
         }
         _ = NSApplication.shared
-        let layout = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: 1000)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: collapsed, columnWidth: 1000)
         let cell = AppKitSharedMessageTextCell(identifier: .init("scheduled-preview"))
         cell.frame = .init(x: 0, y: 0, width: 1000, height: layout.rowHeight)
         var toggled: String?
@@ -119,7 +119,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let short = ChatDisplayEntry(kind: .message(try item(["id": "short-scheduled", "type": "automationEvent",
             "presentationRole": "automation", "text": "Short trigger"])))
         let shortRow = builder().nativeAppKitRow(short, expandedTurnIds: [])
-        XCTAssertFalse(NativeTimelineLayoutCache.shared.layout(for: shortRow, columnWidth: 1000).triggerCanExpand)
+        XCTAssertFalse(LegacyTimelineLayoutReference.shared.layout(for: shortRow, columnWidth: 1000).triggerCanExpand)
     }
 
     func testFunctionalCardsStayCompactWhileReplyDocumentsUseTheWideLane() {
@@ -129,9 +129,9 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let card = AppKitChatTimelineRow(id: "functional-card", contentRevision: 0, nativeText: text, copyText: text,
             nativeStyle: .agent, title: "Event", metadata: "", expandableTurnId: nil, isExpanded: false, showsHeader: true)
         for typography in [ConversationTypography.classic, .codexReading] {
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: document, columnWidth: 1600, typography: typography).cardWidth, 1586)
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 1600, typography: typography).cardWidth, 480)
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: card, columnWidth: 320, typography: typography).cardWidth, 306)
+            XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: document, columnWidth: 1600, typography: typography).cardWidth, 1586)
+            XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: card, columnWidth: 1600, typography: typography).cardWidth, 480)
+            XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: card, columnWidth: 320, typography: typography).cardWidth, 306)
         }
     }
 
@@ -227,8 +227,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         ] {
             let model = builder().nativeAppKitRow(.init(kind: .message(try item(fields))), expandedTurnIds: [])
             XCTAssertEqual(model.contentSurfaceRole, .interaction)
-            let classic = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 640, typography: .classic)
-            let codex = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 640, typography: .codexReading)
+            let classic = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 640, typography: .classic)
+            let codex = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 640, typography: .codexReading)
             XCTAssertEqual(codex.typography, .classic)
             XCTAssertEqual(codex.rowHeight, classic.rowHeight)
             XCTAssertEqual(codex.cardWidth, classic.cardWidth)
@@ -256,8 +256,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertEqual(rows[2].replyIdentity, identity)
         XCTAssertEqual(rows.map(\.id), base.map(\.id))
         for index in [2, 7] {
-            let original = NativeTimelineLayoutCache.shared.layout(for: base[index], columnWidth: 640)
-            let decorated = NativeTimelineLayoutCache.shared.layout(for: rows[index], columnWidth: 640)
+            let original = LegacyTimelineLayoutReference.shared.layout(for: base[index], columnWidth: 640)
+            let decorated = LegacyTimelineLayoutReference.shared.layout(for: rows[index], columnWidth: 640)
             XCTAssertEqual(decorated.rowHeight, original.rowHeight + 44)
             XCTAssertEqual(decorated.cardHeight, original.cardHeight)
             XCTAssertEqual(decorated.cardWidth, original.cardWidth)
@@ -360,7 +360,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
                     if targetKind == "assistantChat" { XCTAssertEqual(route.targetWork, "Work · " + L10n("未关联 Work")) }
                     for skin in [ConversationSkin.classic, .codexFlat] {
                         XCTAssertEqual(skin.surface(for: row.contentSurfaceRole), .legacy)
-                        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 900,
+                        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 900,
                             typography: skin.typography(for: .assistant), skin: skin)
                         XCTAssertEqual(layout.typography, .classic)
                         XCTAssertLessThanOrEqual(layout.cardWidth, ChatBubbleWidthPolicy.functionalCardMaximumWidth)
@@ -479,8 +479,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         var without = final
         without.showsReplyActions = false
         for typography in [ConversationTypography.classic, .codexReading] {
-            let layout = NativeTimelineLayoutCache.shared.layout(for: final, columnWidth: 900, typography: typography)
-            let previous = NativeTimelineLayoutCache.shared.layout(for: without, columnWidth: 900, typography: typography)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: final, columnWidth: 900, typography: typography)
+            let previous = LegacyTimelineLayoutReference.shared.layout(for: without, columnWidth: 900, typography: typography)
             XCTAssertEqual(layout.rowHeight - previous.rowHeight, 26)
             XCTAssertEqual(layout.cardHeight, previous.cardHeight)
             XCTAssertEqual(layout.cardWidth, previous.cardWidth)
@@ -497,7 +497,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
                 ? AppKitSharedMessageTextCell(identifier: .init("shared-actions"))
                 : AppKitChatNativeTextCell(identifier: .init("native-actions"))
             let cell = try XCTUnwrap(renderer as? NSView)
-            let layout = NativeTimelineLayoutCache.shared.layout(for: final, columnWidth: 900)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: final, columnWidth: 900)
             cell.frame = .init(x: 0, y: 0, width: 900, height: layout.rowHeight)
             renderer.setContent(final, availableWidth: 900, baseDirectory: nil, onToggleExpansion: { _ in },
                 onAction: { acted = $0.id })
@@ -553,7 +553,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertTrue(row.copyText.contains("Choose route"))
         XCTAssertTrue(row.copyText.contains("A — Fast"))
         XCTAssertTrue(MacSharedMessageTextCard.supports(row))
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 600)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 600)
         XCTAssertGreaterThan(layout.rowHeight, 180)
         _ = NSApplication.shared
         let cell = AppKitSharedMessageTextCell(identifier: .init("user-input-copy"))
@@ -584,7 +584,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
                 let row = builder().nativeAppKitRow(.init(kind: .message(try item([
                     "type": "userInput", "status": status, "userInput": input]))), expandedTurnIds: [])
                 for skin in [ConversationSkin.classic, .codexFlat] {
-                    let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width,
+                    let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: width,
                         typography: skin.typography(for: .assistant))
                     let host = NSHostingView(rootView: MacSharedMessageTextCard(skin: skin, row: row, layout: layout)
                         .frame(width: width).fixedSize(horizontal: false, vertical: true))
@@ -593,7 +593,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
                     XCTAssertEqual(layout.rowHeight, ceil(host.fittingSize.height), accuracy: 1,
                         "Question row reserves unused space: status=\(status), width=\(width), skin=\(skin)")
                     XCTAssertEqual(layout.rowHeight, layout.cardHeight + 2 * layout.typography.rowInset)
-                    XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: width,
+                    XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: width,
                         typography: skin.typography(for: .assistant)).rowHeight, layout.rowHeight)
                 }
             }
@@ -616,8 +616,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
                 ["submittedAnswers": ["answer": [longAnswer]]]) { _, new in new }
         ]))), expandedTurnIds: [])
         XCTAssertNotEqual(short.contentRevision, long.contentRevision)
-        XCTAssertGreaterThan(NativeTimelineLayoutCache.shared.layout(for: long, columnWidth: 500).rowHeight,
-                             NativeTimelineLayoutCache.shared.layout(for: short, columnWidth: 500).rowHeight)
+        XCTAssertGreaterThan(LegacyTimelineLayoutReference.shared.layout(for: long, columnWidth: 500).rowHeight,
+                             LegacyTimelineLayoutReference.shared.layout(for: short, columnWidth: 500).rowHeight)
     }
 
     func testFinalAnswerForkAvailabilityChangesRevisionWithoutChangingIdentity() throws {

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CorptieConversation
+import Observation
 
 typealias ComposerMentionQuery = CorptieConversation.ComposerMentionQuery
 
@@ -111,6 +112,7 @@ final class ComposerDraftBuffer {
 @MainActor
 final class ComposerEditorController {
     let draft: ComposerDraftBuffer
+    let presentation = ComposerEditorPresentation()
     private weak var textView: NSTextView?
     private(set) var isPresentationEnabled = true
     private(set) var presentationGeneration: UInt64 = 0
@@ -199,11 +201,14 @@ final class ComposerEditorController {
         presentedDraftRevision = draft.revision
     }
 
-    func replaceMentionQuery(_ query: ComposerMentionQuery, with displayName: String) {
-        guard let textView, !textView.hasMarkedText() else { return }
+    @discardableResult
+    func replaceMentionQuery(_ query: ComposerMentionQuery, with displayName: String) -> Bool {
+        guard isPresentationEnabled, let textView, !textView.hasMarkedText(),
+              NSMaxRange(query.replacementRange) <= (textView.string as NSString).length else { return false }
         let replacement = "@\(displayName) "
         textView.insertText(replacement, replacementRange: query.replacementRange)
         recordEditorText(textView.string)
+        return true
     }
 
     func submission() -> ComposerDraftBuffer.Submission? {
@@ -226,6 +231,7 @@ final class ComposerEditorController {
             textView.needsDisplay = true
             presentedDraftRevision = draft.revision
         }
+        presentation.resetRevision &+= 1
         return true
     }
 
@@ -240,6 +246,14 @@ final class ComposerEditorController {
             textView.needsDisplay = true
             presentedDraftRevision = draft.revision
         }
+        presentation.resetRevision &+= 1
         return true
     }
+}
+
+/// The native editor owns programmatic clear/restore notifications. Only its
+/// SwiftUI leaf observes them; typing and selection never publish here.
+@MainActor @Observable
+final class ComposerEditorPresentation {
+    fileprivate(set) var resetRevision: UInt64 = 0
 }

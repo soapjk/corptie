@@ -250,7 +250,7 @@ private struct CandidateMetrics: Equatable {
             ScrollView {
                 LazyVStack(spacing: 6) {
                     ForEach(model.rows) { row in
-                        let layout = NativeTimelineLayoutCache.shared.layout(for: row,
+                        let layout = LegacyTimelineLayoutReference.shared.layout(for: row,
                             columnWidth: viewport.size.width, typography: .classic, skin: .classic)
                         MacSharedMessageTextCard(row: row, layout: layout)
                             .frame(height: layout.rowHeight)

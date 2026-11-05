@@ -27,9 +27,12 @@ final class ProcessCardMigrationTests: XCTestCase {
             XCTAssertTrue(cached === current, "In-place changes must move the cache key, not create a second cell")
             XCTAssertEqual(cached.contentConfigurationCount, count, "A valid cache hit must not reconfigure content")
             XCTAssertTrue(cached.updateLayoutIfContentUnchanged(model, availableWidth: table.tableColumns[0].width))
-            XCTAssertEqual(coordinator.tableView(table, heightOfRow: 0),
-                NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: table.tableColumns[0].width).rowHeight,
-                accuracy: 0.5)
+            table.layoutSubtreeIfNeeded()
+            XCTAssertFalse(coordinator.responds(to: #selector(NSTableViewDelegate.tableView(_:heightOfRow:))))
+            let height = table.rect(ofRow: 0).height
+            XCTAssertTrue(height.isFinite)
+            if model.isExpanded { XCTAssertGreaterThan(height, 600) }
+            else { XCTAssertLessThan(height, 100) }
         }
     }
 
@@ -62,7 +65,7 @@ final class ProcessCardMigrationTests: XCTestCase {
             isExpanded: false, showsHeader: false, messageStatus: queued
         )
         XCTAssertTrue(MacSharedMessageTextCard.supports(row))
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 400)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 400)
         let card = MacSharedMessageTextCard(row: row, layout: layout)
         XCTAssertEqual(card.presentedMessageStatus, queued)
         XCTAssertTrue(row.showsMessageStatusBar)
@@ -181,7 +184,9 @@ final class ProcessCardMigrationTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
         let expanded = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
-        XCTAssertEqual(descendants(expanded, as: NativeTimelineTextView.self).count, 1)
+        XCTAssertEqual(descendants(expanded, as: NativeTimelineTextView.self).filter {
+            $0.identifier?.rawValue == "chat.timeline.body"
+        }.count, 1)
         let raw = try XCTUnwrap(descendants(expanded, as: NSTextView.self).first { $0.identifier?.rawValue == "chat.timeline.raw-status" })
         XCTAssertTrue(raw.isSelectable)
         XCTAssertFalse(raw.isEditable)
@@ -216,7 +221,7 @@ final class ProcessCardMigrationTests: XCTestCase {
             var oldTimes: [Double] = [], newTimes: [Double] = []
             for index in 0..<80 {
                 let model = row(expanded: expanded, revision: index)
-                let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+                let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480)
                 func measure(_ cell: NSTableCellView & AppKitChatRowRendering) -> Double {
                     let start = ProcessInfo.processInfo.systemUptime
                     cell.frame = .init(x: 0, y: 0, width: 480, height: layout.rowHeight)

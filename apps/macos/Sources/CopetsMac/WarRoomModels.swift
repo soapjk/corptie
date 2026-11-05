@@ -4,7 +4,7 @@ import CorptieClientCore
 
 // 统一控制台数据模型，对齐后端 entityHttpApi 的 canonical camelCase DTO。
 
-struct Work: Identifiable, Codable, Hashable {
+struct Work: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let workspaceId: String
     var name: String

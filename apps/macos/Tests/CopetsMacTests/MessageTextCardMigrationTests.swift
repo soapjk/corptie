@@ -6,11 +6,110 @@ import CorptieConversation
 
 @MainActor
 final class MessageTextCardMigrationTests: XCTestCase {
+    func testIdentityAndActionHoverRetainCachedProseAndSelection() async throws {
+        _ = NSApplication.shared
+        func descendants(_ view: NSView) -> [NSView] {
+            [view] + view.subviews.flatMap { descendants($0) }
+        }
+        for skin in ConversationSkin.allCases {
+            var model = row("A **cached** reply with a link https://example.com", revision: 1)
+            model.showsReplyActions = true
+            model.replyIdentity = .init(roleID: "role", name: "Original", avatarPath: nil)
+            let initial = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480,
+                typography: skin.typography(for: .assistant), skin: skin)
+            let cell = AppKitSharedMessageTextCell(identifier: .init("identity-isolation"))
+            cell.frame = .init(x: 0, y: 0, width: 480, height: initial.rowHeight)
+            let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = cell
+            defer { window.contentView = nil }
+            cell.updateAppearance(skin: skin)
+            cell.setContent(model, availableWidth: 480, onToggleExpansion: { _ in })
+            cell.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(40))
+            let text = try XCTUnwrap(descendants(cell).compactMap { $0 as? NativeTimelineTextView }.first)
+            text.setSelectedRange(.init(location: 2, length: 3))
+            let button = try XCTUnwrap(descendants(cell).compactMap { $0 as? ReplyActionIconButton }.first)
+            let updates = cell.hostUpdateCount
+            for _ in 0..<30 { button.mouseEntered(with: NSEvent()); button.mouseExited(with: NSEvent()) }
+            XCTAssertEqual(cell.hostUpdateCount, updates, "Native hover must not reconstruct SwiftUI content")
+            for index in 0..<3 {
+                model.replyIdentity = .init(roleID: "role", name: "Renamed \(index)", avatarPath: "/tmp/missing-avatar-\(index).png")
+                let updated = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480,
+                    typography: skin.typography(for: .assistant), skin: skin)
+                XCTAssertTrue(initial.attributedText === updated.attributedText)
+                XCTAssertEqual(initial.textHeight, updated.textHeight)
+                cell.setContent(model, availableWidth: 480, onToggleExpansion: { _ in })
+                cell.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(40))
+                XCTAssertTrue(descendants(cell).contains { $0 === text })
+                XCTAssertEqual(text.selectedRange(), NSRange(location: 2, length: 3))
+            }
+        }
+    }
+
     private func row(_ text: String, revision: Int = 0, header: Bool = false, id: String = "shared-text") -> AppKitChatTimelineRow {
         AppKitChatTimelineRow(id: id, contentRevision: revision, nativeText: text,
             copyText: text, nativeStyle: .agent, title: "Corptie", metadata: "",
             expandableTurnId: nil, isExpanded: false,
             showsHeader: header, contextTimestamp: "12:34")
+    }
+
+    func testLiveResizeKeepsHostedWidthStableBetweenNativeReflowBudgetsAndUserEdgeExact() throws {
+        _ = NSApplication.shared
+        let text = String(repeating: "Long document 中文 Mixed English words for resizing.\n\n", count: 50)
+            + "| 项目 | 内容 |\n| --- | --- |\n"
+            + (0..<20).map { "| \($0) | 需要重新换行的表格内容 |\n" }.joined()
+        for skin in [ConversationSkin.classic, .codexFlat] {
+            for style in [AppKitChatTimelineRow.NativeStyle.agent, .user] {
+                let model = AppKitChatTimelineRow(id: "resize-host-\(skin)-\(style)", contentRevision: 0,
+                    nativeText: text, copyText: text, nativeStyle: style, title: "", metadata: "",
+                    expandableTurnId: nil, isExpanded: false, showsHeader: false)
+                let cell = AppKitSharedMessageTextCell(identifier: .init("resize-host"))
+                cell.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+                let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.contentView = cell
+                defer { window.contentView = nil }
+                cell.updateAppearance(skin: skin)
+                cell.setContent(model, availableWidth: 400, onToggleExpansion: { _ in })
+                cell.layoutSubtreeIfNeeded()
+                let host = try XCTUnwrap(cell.subviews.compactMap { $0 as? NSHostingView<MacSharedMessageTextCard> }.first)
+                let configurations = cell.contentConfigurationCount, hostUpdates = cell.hostUpdateCount
+                func firstText(in view: NSView) -> NativeTimelineTextView? {
+                    (view as? NativeTimelineTextView) ?? view.subviews.lazy.compactMap { firstText(in: $0) }.first
+                }
+                let body = try XCTUnwrap(firstText(in: host))
+                let bodyWidth = body.bounds.width
+                var frameChanges = 0
+                var lastWidth = host.frame.width
+                let start = ProcessInfo.processInfo.systemUptime
+                for step in 0..<120 {
+                    let width: CGFloat = 400 + CGFloat(step % 4)
+                    cell.setFrameSize(NSSize(width: width, height: 300))
+                    XCTAssertTrue(cell.updateLayoutIfContentUnchanged(model, availableWidth: 400))
+                    cell.layoutSubtreeIfNeeded()
+                    if host.frame.width != lastWidth { frameChanges += 1; lastWidth = host.frame.width }
+                    XCTAssertEqual(host.frame.width, cell.bounds.width)
+                    XCTAssertEqual(body.bounds.width, bodyWidth, accuracy: 0.5,
+                        "Only the SDK viewport changes between native text reflow budgets")
+                    XCTAssertEqual(style == .user ? host.frame.maxX : host.frame.minX, style == .user ? width : 0)
+                }
+                XCTAssertGreaterThan(frameChanges, 0, "The SDK host follows its containing row")
+                XCTAssertEqual(cell.contentConfigurationCount, configurations)
+                XCTAssertEqual(cell.hostUpdateCount, hostUpdates)
+                print("Hosted resize \(skin)/\(style): 120 native frame changes, \(frameChanges) SwiftUI width changes, CPU \((ProcessInfo.processInfo.systemUptime - start) * 1000)ms; not screen frame timing")
+                XCTAssertTrue(cell.updateLayoutIfContentUnchanged(model, availableWidth: 408))
+                cell.layoutSubtreeIfNeeded()
+                XCTAssertEqual(host.frame.width, cell.bounds.width)
+                XCTAssertGreaterThan(body.bounds.width, bodyWidth)
+                XCTAssertEqual(cell.hostUpdateCount, hostUpdates + 1)
+                // End-of-drag exact width reaches the same retained host.
+                XCTAssertTrue(cell.updateLayoutIfContentUnchanged(model, availableWidth: 403))
+                cell.layoutSubtreeIfNeeded()
+                XCTAssertEqual(host.frame.width, 403)
+                XCTAssertEqual(cell.contentConfigurationCount, configurations)
+            }
+        }
     }
 
     func testLongUserCardRetainsWidthCeilingAndScrollableBodyWithoutTruncation() throws {
@@ -21,8 +120,8 @@ final class MessageTextCardMigrationTests: XCTestCase {
             expandableTurnId: nil, isExpanded: false, showsHeader: false)
         let reply = row(text, id: "long-reply")
         for width: CGFloat in [320, 800] {
-            let measured = NativeTimelineLayoutCache.shared.layout(for: user, columnWidth: width)
-            let agent = NativeTimelineLayoutCache.shared.layout(for: reply, columnWidth: width)
+            let measured = LegacyTimelineLayoutReference.shared.layout(for: user, columnWidth: width)
+            let agent = LegacyTimelineLayoutReference.shared.layout(for: reply, columnWidth: width)
             XCTAssertEqual(ReplyLeadingLayout.cardLeading(for: reply, skin: .classic) + agent.cardWidth, width - 2)
             XCTAssertEqual(measured.cardWidth, min(width - 4, 640))
             XCTAssertEqual(measured.cardHeight, MessageCardMetrics.maximumUserCardHeight)
@@ -31,7 +130,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             XCTAssertFalse(agent.scrollsUserContent)
             XCTAssertGreaterThan(agent.cardHeight, measured.cardHeight)
         }
-        let measured = NativeTimelineLayoutCache.shared.layout(for: user, columnWidth: 800)
+        let measured = LegacyTimelineLayoutReference.shared.layout(for: user, columnWidth: 800)
         let cell = AppKitSharedMessageTextCell(identifier: .init("scrolling-user"))
         cell.frame = NSRect(x: 0, y: 0, width: 800, height: measured.rowHeight)
         let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -55,7 +154,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         let short = AppKitChatTimelineRow(id: "short-user", contentRevision: 1,
             nativeText: "Hi", copyText: "Hi", nativeStyle: .user, title: "", metadata: "",
             expandableTurnId: nil, isExpanded: false, showsHeader: false)
-        XCTAssertFalse(NativeTimelineLayoutCache.shared.layout(for: short, columnWidth: 800).scrollsUserContent)
+        XCTAssertFalse(LegacyTimelineLayoutReference.shared.layout(for: short, columnWidth: 800).scrollsUserContent)
     }
 
     func testFlatSkinKeepsSourceLabelledEventsFramedAndOrdinaryRepliesPlain() throws {
@@ -105,11 +204,11 @@ final class MessageTextCardMigrationTests: XCTestCase {
                 cell.layoutSubtreeIfNeeded()
                 RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
                 let typography = skin.typography(for: .assistant)
-                let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480,
+                let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480,
                     typography: typography, skin: skin)
                 var withoutSeparator = model
                 withoutSeparator.timeSeparatorText = nil
-                let plain = NativeTimelineLayoutCache.shared.layout(for: withoutSeparator, columnWidth: 480,
+                let plain = LegacyTimelineLayoutReference.shared.layout(for: withoutSeparator, columnWidth: 480,
                     typography: typography, skin: skin)
                 let expected: CGFloat = 0
                 XCTAssertEqual(layout.timeSeparatorHeight, expected)
@@ -132,7 +231,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
     func testSkinSwitchPreservesHostedTextIdentitySelectionAndReflowsTypography() throws {
         _ = NSApplication.shared
         let model = row("Shared selectable text", revision: 1)
-        let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480)
         let cell = AppKitSharedMessageTextCell(identifier: .init("skin-reuse"))
         cell.frame = NSRect(x: 0, y: 0, width: 480, height: layout.rowHeight)
         let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -154,12 +253,13 @@ final class MessageTextCardMigrationTests: XCTestCase {
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
             XCTAssertTrue(leaves(cell).first === text)
             XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 6))
-            XCTAssertEqual(cell.frame, frame)
+            XCTAssertEqual(cell.frame.width, frame.width)
+            XCTAssertGreaterThan(cell.fittingSize.height, 0)
             XCTAssertEqual(cell.contentConfigurationCount, configured)
             XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
             let expected = skin == .classic ? CGFloat(11) : 14
             XCTAssertEqual((text.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, expected)
-            let measured = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480,
+            let measured = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480,
                 typography: skin.typography(for: .assistant))
             if skin == .classic { XCTAssertEqual(measured.rowHeight, layout.rowHeight) }
             else { XCTAssertGreaterThan(measured.rowHeight, layout.rowHeight) }
@@ -212,7 +312,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
     func testSharedCardHeightSeparatesBodyPaddingFromRowInsets() {
         for text in ["好", "\n正文\n\n", "# 标题\n\n两行正文\n第二行", "```swift\nlet x = 1\n```"] {
             let model = row(text)
-            let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 320)
             XCTAssertEqual(layout.cardHeight, layout.textHeight + 20, accuracy: 0.001)
             XCTAssertEqual(layout.rowHeight, layout.cardHeight + 2, accuracy: 0.001)
         }
@@ -220,12 +320,12 @@ final class MessageTextCardMigrationTests: XCTestCase {
 
     func testSeparatorAndScheduledSourceHaveIndependentHeightAndCacheIdentity() {
         var model = row("来源与日期", id: "spacing-source")
-        let plain = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+        let plain = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 320)
         model.scheduledMessageSource = "计划任务"
-        let scheduled = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+        let scheduled = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 320)
         XCTAssertEqual(scheduled.cardHeight, plain.cardHeight + 19)
         model.timeSeparatorText = "今天"
-        let dated = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+        let dated = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 320)
         XCTAssertEqual(dated.cardHeight, scheduled.cardHeight)
         XCTAssertEqual(dated.rowHeight, scheduled.rowHeight) // Timeline date separators are suppressed in both skins.
     }
@@ -234,7 +334,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         _ = NSApplication.shared
         for text in ["好", "# 标题\n正文", "正文\n\n最后一段"] {
             let model = row(text)
-            let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 320)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 320)
             let host = NSHostingView(rootView: MacSharedMessageTextCard(row: model, layout: layout))
             let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 320, height: layout.rowHeight),
                 styleMask: [.borderless], backing: .buffered, defer: false)
@@ -320,7 +420,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
     func testSharedBodyRetainsActualTextKitLeafAndLinkContext() {
         _ = NSApplication.shared
         let model = row("**Bold** and [local file](file:///tmp/example.swift)")
-        let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480)
         let host = NSHostingView(rootView: MacSharedMessageTextCard(row: model, layout: layout, baseDirectory: "/tmp"))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: layout.rowHeight),
             styleMask: [.borderless], backing: .buffered, defer: false)
@@ -341,7 +441,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
     func testSharedBodyAndCardUseOneMenuAndSelectionResetsOnReuse() throws {
         _ = NSApplication.shared
         let first = row("Shared selectable text", revision: 1)
-        let layout = NativeTimelineLayoutCache.shared.layout(for: first, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: first, columnWidth: 480)
         let cell = AppKitSharedMessageTextCell(identifier: .init("shared-context-menu"))
         cell.frame = NSRect(x: 0, y: 0, width: 480, height: layout.rowHeight)
         let window = NSWindow(contentRect: cell.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -396,7 +496,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         let markdown = "## Heading 标题\n正文 **bold** [link](https://example.com)\n- one\n- two\n```swift\nlet x = 42\n```\n"
         for (name, text) in [("short", "Hello 你好"), ("rich-long", String(repeating: markdown, count: 70))] {
             let seed = row(text)
-            let seedLayout = NativeTimelineLayoutCache.shared.layout(for: seed, columnWidth: 480)
+            let seedLayout = LegacyTimelineLayoutReference.shared.layout(for: seed, columnWidth: 480)
             let native = AppKitChatNativeTextCell(identifier: .init("migration-baseline"))
             let host = NSHostingView(rootView: MacSharedMessageTextCard(row: seed, layout: seedLayout))
             let nativeWindow = NSWindow(contentRect: .init(x: 0, y: 0, width: 480, height: 700),
@@ -409,7 +509,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
             for iteration in 0..<80 {
                 let model = row(text + " \(iteration)", revision: iteration)
                 // Compare rendering with the same already-parsed/measured text.
-                let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+                let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480)
                 func measure(_ work: () -> Void) -> Double {
                     autoreleasepool {
                         let start = ProcessInfo.processInfo.systemUptime
@@ -476,7 +576,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         func coldReflow(_ target: (NSWindow, NSTableView, AppKitChatTimelineView.Coordinator)) -> Double {
             let opposite: ConversationSkin = skin == .classic ? .codexFlat : .classic
             for row in rows {
-                _ = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480,
+                _ = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 480,
                     typography: skin.typography(for: .assistant))
             }
             let start = ProcessInfo.processInfo.systemUptime
@@ -525,7 +625,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
         }
         _ = NSApplication.shared
         let model = row("## Heading 标题\n正文 **bold** 和 [link](https://example.com)\n- first item\n- second item\n```swift\nlet value = 42\n```")
-        let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480)
         let native = AppKitChatNativeTextCell(identifier: .init("snapshot-native"))
         native.setContent(model, availableWidth: 480, onToggleExpansion: { _ in })
         let shared = AppKitSharedMessageTextCell(identifier: .init("snapshot-shared"))

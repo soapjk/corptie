@@ -81,6 +81,7 @@ final class SessionPageRenderInputs {
     private(set) var workName: String?
     private(set) var roles: [Role] = []
     private(set) var mentionSessions: [TaskSession] = []
+    private(set) var mentionCatalogRevision: UInt64 = 0
     private(set) var searchTarget: UnifiedSearchNavigation.Target?
     private(set) var searchMatches: [UnifiedSearchHit] = []
     private(set) var searchError: String?
@@ -308,6 +309,7 @@ final class SessionPageRenderInputs {
             mentionSessions = backend.sessions
         }
         if changes.contains(.entities) || changes.contains(.metadata) {
+            mentionCatalogRevision &+= 1
             workName = session.workId.flatMap { sourceState.work($0)?.name }
         }
         if changes.contains(.search) {
