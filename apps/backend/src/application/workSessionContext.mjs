@@ -184,9 +184,9 @@ export function mergeWorkerSessionContexts({
   const completeRequiredPrompt = composeRequired(corePrompt);
   const requiredBytes = encoder.encode(completeRequiredPrompt).byteLength;
   // Internal continuations must leave room for the next real user turn. The
-  // current evidence consumes this reservation; it never competes with recall.
-  const reservedBytes = Math.max(0, userEvidenceReserveBytes
-    - (directUserIntentContext?.prompt ? sectionBytes["direct-user-evidence"] + 2 : 0));
+  // A real user turn already includes its complete evidence in requiredBytes;
+  // only internal continuations need space reserved for a future user turn.
+  const reservedBytes = directUserIntentContext?.prompt ? 0 : userEvidenceReserveBytes;
   assertSessionContextBudget(completeRequiredPrompt, maxContextBytes,
     { sectionBytes, reservedUtf8Bytes: reservedBytes });
   const softMaximum = Math.min(maxContextBytes - reservedBytes,
