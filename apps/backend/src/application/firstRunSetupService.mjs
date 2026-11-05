@@ -5,8 +5,8 @@ import { executableFingerprint } from "./providerExecutableDiscovery.mjs";
 // Provider-independent setup state. Only adapter reply tests can mark a binary
 // available; enabling a row never substitutes for a successful test.
 export class FirstRunSetupService {
-  constructor({ path, providers, hasWorks, firstWorkSession = () => null, findAssistantSession, createAssistantSession, ensureAssistantGreeting = async () => {}, onDefaultChanged = () => {} }) {
-    Object.assign(this, { path, providers, hasWorks, firstWorkSession, findAssistantSession, createAssistantSession, ensureAssistantGreeting, onDefaultChanged });
+  constructor({ path, providers, hasWorks, hasProviderUsage = () => false, firstWorkSession = () => null, findAssistantSession, createAssistantSession, ensureAssistantGreeting = async () => {}, onDefaultChanged = () => {} }) {
+    Object.assign(this, { path, providers, hasWorks, hasProviderUsage, firstWorkSession, findAssistantSession, createAssistantSession, ensureAssistantGreeting, onDefaultChanged });
     this.state = { providers: {}, completed: false };
     this.pending = Promise.resolve();
     this.checks = new Map();
@@ -21,6 +21,20 @@ export class FirstRunSetupService {
     // Existing installations must never re-enter onboarding on restart, even
     // if an older build left an incomplete first-run marker behind.
     if (!this.state.completed && this.hasWorks()) await this.save({ ...this.state, completed: true });
+    // Older installations already execute sessions without an onboarding row.
+    // Carry that existing use forward as intent, without fabricating reply proof.
+    if (this.state.completed) {
+      const providers = { ...this.state.providers };
+      let changed = false;
+      for (const provider of this.providers) {
+        const saved = providers[provider.id];
+        if (typeof saved?.enabled === "boolean" || saved?.userDisabled === true
+          || !this.hasProviderUsage(provider.id)) continue;
+        providers[provider.id] = { ...saved, enabled: true };
+        changed = true;
+      }
+      if (changed) await this.save({ ...this.state, providers });
+    }
     await Promise.all(this.providers.filter(p => p.programDiscovery).map(p =>
       p.programDiscovery.scan({ additionalPaths: [this.state.providers[p.id]?.configuredPath,
         this.state.providers[p.id]?.path].filter(Boolean) })));
@@ -48,7 +62,7 @@ export class FirstRunSetupService {
     const checkState = check ? "checking" : (!fingerprint ? "missing" : (available ? "available"
       : (environmentMatches && saved?.probe?.fingerprint === fingerprint ? saved.probe.state : "unknown")));
     return { id: provider.id, name: provider.name, path: fingerprint || saved || check ? path : "",
-      executable: Boolean(fingerprint), enabled: !check && available && saved.enabled === true,
+      executable: Boolean(fingerprint), enabled: saved?.enabled === true && saved?.userDisabled !== true,
       checkState, message: checkState === "failed" ? saved.probe.message : null,
       ...(environment ? { environment } : {}),
       ...(program ? { program: { ...program, running: provider.runningPrograms?.() ?? [] } } : {}),
@@ -121,7 +135,7 @@ export class FirstRunSetupService {
     const preserveWorking = Boolean(provider.programDiscovery && previous?.probe?.state === "available");
     await this.serialize(async () => {
       if (this.checks.get(provider.id) !== check) return;
-      if (!environment && !preserveWorking) await this.saveRow(provider.id, { path: check.path, enabled: false, userDisabled, configuredPath });
+      if (!environment && !preserveWorking) await this.saveRow(provider.id, { path: check.path, enabled: previous?.enabled === true, userDisabled, configuredPath });
     });
     try {
       if (!fingerprint) throw new Error("请选择可执行文件。");
@@ -151,9 +165,9 @@ export class FirstRunSetupService {
         this.checks.delete(provider.id);
         // A failed candidate never replaces the working default environment.
         if ((environment || preserveWorking) && !available) return { ...(await this.row(provider)), path: check.path,
-          executable: Boolean(fingerprint), enabled: false, checkState: "failed", message, errorCode: code,
+          executable: Boolean(fingerprint), checkState: "failed", message, errorCode: code,
           ...(environment ? { environment: provider.environmentDescriptor(environment) } : {}) };
-        await this.saveRow(provider.id, { path: check.path, enabled: available && !userDisabled, userDisabled,
+        await this.saveRow(provider.id, { path: check.path, enabled: !userDisabled && (available || previous?.enabled === true), userDisabled,
           configuredPath: available && (!userDisabled || provider.programDiscovery) ? check.path : configuredPath,
           ...(provider.programDiscovery ? { selectionMode: provider.programDiscovery.controlledPath() ? "controlled" : check.selectionMode } : {}),
           probe: { state: available ? "available" : "failed", fingerprint, environmentFingerprint, model: check.model, effectiveModel, message, code, checkedAt: new Date().toISOString() } });
@@ -163,7 +177,7 @@ export class FirstRunSetupService {
         try { return await provider.withProgramTransition(check.path, { fingerprint }, commit); }
         catch (error) {
           this.checks.delete(provider.id);
-          return { ...(await this.row(provider)), path: check.path, enabled: false,
+          return { ...(await this.row(provider)), path: check.path,
             checkState: "failed", message: error.message, errorCode: error.code ?? "PROVIDER_BUSY" };
         }
       }
@@ -248,8 +262,8 @@ export class FirstRunSetupService {
   // route share this operation without nesting queue promises.
   async prepareAssistantWithinOperation(language) {
     const status = await this.status();
-    const selected = status.providers.find((p) => p.id === status.defaultProviderId && p.enabled)
-      ?? status.providers.find((p) => p.enabled);
+    const selected = status.providers.find((p) => p.id === status.defaultProviderId && p.enabled && p.checkState === "available")
+      ?? status.providers.find((p) => p.enabled && p.checkState === "available");
     if (!selected) throw new Error("请先启用至少一个可用 Provider。");
     if (selected.id !== this.state.defaultProviderId) {
       await this.save({ ...this.state, defaultProviderId: selected.id });
@@ -272,7 +286,7 @@ export class FirstRunSetupService {
       // Revalidate after initialization: the binary or enabled choice may have
       // changed while the Provider was preparing its Session.
       const status = await this.status();
-      if (!status.providers.some((p) => p.enabled)) {
+      if (!status.providers.some((p) => p.enabled && p.checkState === "available")) {
         throw new Error("请先启用至少一个可用 Provider。");
       }
       await this.save({ ...this.state, completed: true });
