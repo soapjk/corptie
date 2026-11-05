@@ -14,6 +14,7 @@ test("account changes invalidate connection proof without replacing provider or 
   await f.service.invalidateConnectionTest(id);
   const saved = f.service.state.providers[id];
   assert.equal(saved.probe.state, "unknown");
+  assert.equal((await f.service.status()).providers[0].enabled, true);
   assert.equal(saved.probe.code, "PROVIDER_ACCOUNT_CHANGED");
   assert.equal(saved.configuredPath, previous.providers[id].configuredPath);
   assert.equal(saved.enabled, previous.providers[id].enabled);
@@ -129,6 +130,7 @@ test("environment checks commit only successful candidates and invalidate on Hom
   provider.probe = async () => { throw Object.assign(new Error("needs login"), { code: "PROVIDER_LOGIN_REQUIRED" }); };
   const failed = await f.service.check({ ...input, environment: candidate });
   assert.equal(failed.errorCode, "PROVIDER_LOGIN_REQUIRED");
+  assert.equal(failed.enabled, true);
   assert.equal(failed.environment.profileId, "new");
   assert.equal(current.profileId, "old");
   assert.equal((await f.service.status()).providers[0].enabled, true);
@@ -136,7 +138,8 @@ test("environment checks commit only successful candidates and invalidate on Hom
   assert.equal((await f.service.check({ ...input, environment: candidate })).enabled, true);
   assert.equal(current.profileId, "new");
   configRevision++;
-  assert.equal((await f.service.status()).providers[0].enabled, false);
+  assert.equal((await f.service.status()).providers[0].enabled, true);
+  assert.equal((await f.service.status()).providers[0].checkState, "unknown");
 });
 
 test("same CLI with different environments does not coalesce or commit stale results", async t => {
@@ -184,7 +187,8 @@ for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
     assert.equal((await restored.status()).providers.find(p => p.id === providerId).enabled, true);
     assert.equal(restored.command(providerId, () => "wrong"), f.binary);
     await chmod(f.binary, 0o600);
-    assert.equal((await restored.status()).providers.find(p => p.id === providerId).enabled, false);
+    assert.equal((await restored.status()).providers.find(p => p.id === providerId).enabled, true);
+    assert.equal((await restored.status()).providers.find(p => p.id === providerId).checkState, "missing");
     await assert.rejects(restored.prepareAssistant());
   });
 }
@@ -248,7 +252,7 @@ test("replaced executable invalidates persisted success", async t => {
   await writeFile(f.binary, "#!/bin/sh\nexit 1\n# different build\n");
   const row = (await f.service.status()).providers[2];
   assert.equal(row.checkState, "unknown");
-  assert.equal(row.enabled, false);
+  assert.equal(row.enabled, true);
 });
 
 test("concurrent Chat preparation and restart reuse the same Session", async t => {
@@ -345,4 +349,39 @@ test("completion rechecks binary availability after Session creation", async t =
   f.options.providers[0].prepare = async () => chmod(f.binary, 0o600);
   await assert.rejects(f.service.complete());
   assert.equal((await f.service.status()).completed, false);
+});
+
+for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
+  test(`${providerId}: migrate existing use without claiming a successful reply test`, async t => {
+    const f = await fixture(t);
+    await writeFile(f.options.path(), JSON.stringify({ completed: true, providers: {} }));
+    const options = { ...f.options, hasProviderUsage: id => id === providerId };
+    const migrated = new FirstRunSetupService(options);
+    await migrated.initialize();
+    const row = (await migrated.status()).providers.find(p => p.id === providerId);
+    assert.equal(row.enabled, true);
+    assert.equal(row.checkState, "unknown");
+    assert.equal(f.probes.length, 0);
+    assert.equal(f.configured.length, 0);
+    await assert.rejects(migrated.prepareAssistant());
+    assert.ok((await migrated.status()).providers.filter(p => p.id !== providerId).every(p => !p.enabled));
+    await migrated.setEnabled({ providerId, path: f.binary, enabled: false });
+    const restarted = new FirstRunSetupService(options);
+    await restarted.initialize();
+    assert.equal((await restarted.status()).providers.find(p => p.id === providerId).enabled, false);
+    assert.equal(restarted.state.providers[providerId].userDisabled, true);
+  });
+}
+
+test("failed rechecks and account invalidation retain enabled intent", async t => {
+  const f = await fixture(t);
+  const providerId = "claude-sdk";
+  await f.service.check({ providerId, path: f.binary });
+  f.options.providers[1].probe = async () => { throw new Error("disconnected"); };
+  const row = await f.service.check({ providerId, path: f.binary });
+  assert.equal(row.enabled, true);
+  assert.equal(row.checkState, "failed");
+  await assert.rejects(f.service.prepareAssistant());
+  await f.service.setEnabled({ providerId, path: f.binary, enabled: false });
+  assert.equal((await f.service.status()).providers[1].enabled, false);
 });
