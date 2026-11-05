@@ -152,6 +152,7 @@ struct ComposerInputTextView: NSViewRepresentable {
         private var pendingPresentation: DispatchWorkItem?
         private var hasReportedMention = false
         private var lastMentionQuery: ComposerMentionQuery?
+        private var lastMentionDraftRevision: UInt64?
         private var lastMentionAnchor: UnitPoint?
         private var lastContentHeight: CGFloat?
         private var lastHeightKey: ComposerHeightLayoutKey?
@@ -296,9 +297,11 @@ struct ComposerInputTextView: NSViewRepresentable {
                 in: textView.string,
                 selection: textView.selectedRange()
             )
-            if !hasReportedMention || lastMentionQuery != query {
+            if !hasReportedMention || lastMentionQuery != query
+                || (query != nil && lastMentionDraftRevision != controller.draft.revision) {
                 hasReportedMention = true
                 lastMentionQuery = query
+                lastMentionDraftRevision = controller.draft.revision
                 onMentionQueryChange(query)
             }
             guard let query,

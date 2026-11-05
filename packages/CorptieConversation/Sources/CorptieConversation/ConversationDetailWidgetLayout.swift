@@ -135,15 +135,20 @@ struct DetailWidgetLayout: Layout {
     // Reorderable containers wrap each row and don't forward LayoutValueKey
     // traits. Keep the bounded size directory alongside the ordered card data.
     let sizes: [DetailWidgetSize]
-    struct Cache { var widgets: [DetailWidgetSize] = []; var placement: DetailWidgetPlacement? }
+    struct Cache { var widgets: [DetailWidgetSize] = []; var placements: [DetailWidgetPlacement] = [] }
     func makeCache(subviews: Subviews) -> Cache { Cache() }
-    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.placement = nil }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        let widgets = subviews.indices.map { $0 < sizes.count ? sizes[$0] : .medium }
+        if cache.widgets != widgets { cache.widgets = widgets; cache.placements.removeAll(keepingCapacity: true) }
+    }
     private func plan(width: CGFloat?, subviews: Subviews, cache: inout Cache) -> DetailWidgetPlacement {
         let width = width.flatMap { $0.isFinite ? $0 : nil } ?? ConversationDetailWidgetMetrics.railWidth - 24
         let widgets = subviews.indices.map { $0 < sizes.count ? sizes[$0] : .medium }
-        if let value = cache.placement, value.size.width == max(1, width), cache.widgets == widgets { return value }
+        if cache.widgets != widgets { cache.widgets = widgets; cache.placements.removeAll(keepingCapacity: true) }
+        if let value = cache.placements.first(where: { $0.size.width == max(1, width) }) { return value }
         let value = DetailWidgetPlacement.make(width: width, widgets: widgets)
-        cache.widgets = widgets; cache.placement = value
+        if cache.placements.count == 3 { cache.placements.removeFirst() }
+        cache.placements.append(value)
         return value
     }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
@@ -155,6 +160,22 @@ struct DetailWidgetLayout: Layout {
             subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
                 anchor: .topLeading, proposal: ProposedViewSize(frame.size))
         }
+    }
+}
+
+/// A dashboard card is a viewport of known height, not content-sized. Parent
+/// layout probes must stop here rather than measure its nested scrolling tree.
+struct DetailWidgetViewport: Layout {
+    let size: DetailWidgetSize
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let fallback = CGFloat(size.columns) * ConversationDetailWidgetMetrics.referenceUnit
+            + CGFloat(size.columns - 1) * ConversationDetailWidgetMetrics.spacing
+        let width = proposal.width.flatMap { $0.isFinite ? max(1, $0) : nil } ?? fallback
+        return CGSize(width: width, height: size.height)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        content.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
     }
 }
 

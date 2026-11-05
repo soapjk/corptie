@@ -77,16 +77,16 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
         for width: CGFloat in [260, 620, 900] {
             let key = ScheduledTriggerPresentation.expansionID(for: item.id)
             let collapsed = builder.nativeAppKitRow(entry, expandedTurnIds: [])
-            let compact = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width)
+            let compact = LegacyTimelineLayoutReference.shared.layout(for: collapsed, columnWidth: width)
             let expanded = builder.nativeAppKitRow(entry, expandedTurnIds: [key])
-            let full = NativeTimelineLayoutCache.shared.layout(for: expanded, columnWidth: width)
+            let full = LegacyTimelineLayoutReference.shared.layout(for: expanded, columnWidth: width)
             XCTAssertGreaterThan(full.rowHeight, compact.rowHeight)
             XCTAssertLessThanOrEqual(full.cardWidth + 14, width + 1)
             let host = NSHostingView(rootView: MacSharedMessageTextCard(row: expanded, layout: full).frame(width: width))
             host.frame = NSRect(x: 0, y: 0, width: width, height: full.rowHeight)
             host.layoutSubtreeIfNeeded()
             XCTAssertEqual(host.fittingSize.height, full.rowHeight, accuracy: 1)
-            XCTAssertEqual(NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: width).rowHeight, compact.rowHeight)
+            XCTAssertEqual(LegacyTimelineLayoutReference.shared.layout(for: collapsed, columnWidth: width).rowHeight, compact.rowHeight)
             if width > 600 { XCTAssertGreaterThan(TaskExecutionChecklist.columns(for: full.cardWidth - 28), 1) }
         }
     }

@@ -15,7 +15,7 @@ final class ChatImageModelTests: XCTestCase {
         }
         let portrait = row(MessageImageGeometry(pixelWidth: 900, pixelHeight: 1600))
         XCTAssertTrue(MacSharedMessageTextCard.supports(portrait))
-        let layout = NativeTimelineLayoutCache.shared.layout(for: portrait, columnWidth: 500)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: portrait, columnWidth: 500)
         XCTAssertEqual(layout.imageLayout.size, CGSize(width:146.25,height:260))
         let cell = AppKitSharedMessageTextCell(identifier: .init("rich-image"))
         cell.setContent(portrait, availableWidth: 500, onToggleExpansion: { _ in })
@@ -31,7 +31,7 @@ final class ChatImageModelTests: XCTestCase {
             let builder = ConversationNativeRowBuilder(sessionTitle: nil, workingDirectory: nil,
                 allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in nil })
             let row = builder.nativeAppKitRow(.init(kind: .message(item)), expandedTurnIds: [])
-            let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 500)
+            let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 500)
             XCTAssertEqual(layout.cardWidth, 166.25, accuracy: 0.01)
             XCTAssertEqual(layout.imageLayout.size, CGSize(width:146.25,height:260))
             XCTAssertEqual(layout.textHeight, 0)
@@ -40,6 +40,8 @@ final class ChatImageModelTests: XCTestCase {
             let cell = AppKitChatNativeTextCell(identifier: .init(type))
             cell.frame = .init(x: 0, y: 0, width: 500, height: layout.rowHeight)
             cell.setContent(row, availableWidth: 500, onToggleExpansion: { _ in })
+            cell.layoutSubtreeIfNeeded()
+            cell.frame.size.height = cell.fittingSize.height
             cell.layoutSubtreeIfNeeded()
             func images(_ view: NSView) -> [NSButton] {
                 view.subviews.flatMap { child -> [NSButton] in
@@ -82,7 +84,7 @@ final class ChatImageModelTests: XCTestCase {
         let row = builder.nativeAppKitRow(.init(kind: .message(item)), expandedTurnIds: [])
         XCTAssertEqual(row.images.count, 1)
         XCTAssertEqual(row.nativeText, "")
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 400)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 400)
         XCTAssertEqual(layout.cardWidth, 108)
         XCTAssertGreaterThanOrEqual(layout.rowHeight,
             88 + 20)

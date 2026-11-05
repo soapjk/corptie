@@ -88,7 +88,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             showsHeader: false
         )
 
-        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480)
+        let layout = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 480)
 
         XCTAssertEqual(layout.processBlocks.count, 2)
         XCTAssertTrue(layout.processBlocks[0].attributedText.string.contains(L10n("Execution Context").uppercased()))

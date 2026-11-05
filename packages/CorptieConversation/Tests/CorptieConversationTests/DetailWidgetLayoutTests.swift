@@ -8,6 +8,31 @@ import AppKit
 #endif
 
 @MainActor struct DetailWidgetLayoutTests {
+    private final class MeasureCounts { var measurements = 0 }
+    private struct ExpensiveContent: Layout {
+        let counts: MeasureCounts
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            counts.measurements += 1
+            return CGSize(width: proposal.width ?? 100, height: 10_000)
+        }
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {}
+    }
+
+    #if os(macOS)
+    @Test func viewportIdealSizeProbesDoNotMeasureScrollingContent() {
+        let counts = MeasureCounts()
+        let host = NSHostingView(rootView: DetailWidgetViewport(size: .small) {
+            ExpensiveContent(counts: counts) { Color.clear }
+        })
+        // AppKit/SwiftUI ideal-size probes happen before actual placement.
+        for _ in 0..<100 {
+            let size = host.fittingSize
+            #expect(size.width == 144 && size.height == 144)
+        }
+        #expect(counts.measurements == 0)
+    }
+    #endif
+
     @Test func referenceSizesComposeSquaresIncludingTheirGaps() {
         let pair = DetailWidgetPlacement.make(width: 300, widgets: [.small, .small])
         #expect(pair.frames == [CGRect(x: 0, y: 0, width: 144, height: 144), CGRect(x: 156, y: 0, width: 144, height: 144)])

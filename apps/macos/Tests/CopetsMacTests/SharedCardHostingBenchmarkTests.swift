@@ -238,7 +238,7 @@ final class SharedCardHostingBenchmarkTests: XCTestCase {
                 let nativeWork: () -> Void = {
                     cell.setContent(row, availableWidth: 480, onToggleExpansion: { _ in })
                     cell.layoutSubtreeIfNeeded()
-                    _ = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480).rowHeight
+                    _ = LegacyTimelineLayoutReference.shared.layout(for: row, columnWidth: 480).rowHeight
                 }
                 let sharedWork: () -> Void = {
                     host.rootView = SharedMessageCard(row: probe, toggle: {}, copy: { _ in }).frame(width: 476)
@@ -292,7 +292,7 @@ final class SharedCardHostingBenchmarkTests: XCTestCase {
         }
         let fixture = "## 标题 Heading\n正文 **bold** 中文 mixed text and [link](https://example.com).\n- first\n- second\n> quote\n```swift\nlet value = 42\n```\n"
         for (name, base) in [("rich-short", fixture), ("rich-long", String(repeating: fixture, count: 70)), ("process-toggle", String(repeating: "工具执行结果 中文 mixed words\n", count: 20))] {
-            let sharedCache = NativeTimelineLayoutCache()
+            let sharedCache = LegacyTimelineLayoutReference()
             let cell = AppKitChatNativeTextCell(identifier: .init("same-pipeline"))
             let seed = sharedCache.layout(for: row("seed", 0), columnWidth: 480)
             let host = NSHostingView(rootView: MeasuredSharedCard(layout: seed, expanded: false))
@@ -312,7 +312,7 @@ final class SharedCardHostingBenchmarkTests: XCTestCase {
                 let nativeWork: () -> Void = {
                     // Cell setContent uses the production singleton layout cache.
                     // Its first call for this text is a miss.
-                    let layout = NativeTimelineLayoutCache.shared.layout(for: model, columnWidth: 480)
+                    let layout = LegacyTimelineLayoutReference.shared.layout(for: model, columnWidth: 480)
                     cell.setContent(model, availableWidth: 480, onToggleExpansion: { _ in })
                     cell.frame = NSRect(x: 0, y: 0, width: 480, height: layout.rowHeight)
                     cell.layoutSubtreeIfNeeded()
@@ -363,7 +363,7 @@ final class SharedCardHostingBenchmarkTests: XCTestCase {
         }
         // Both paths use the same warm parsed-content and height cache here.
         // This isolates visible-cell reuse/layout/drawing, not cold history load.
-        let layouts = rows.map { NativeTimelineLayoutCache.shared.layout(for: $0, columnWidth: 480) }
+        let layouts = rows.map { LegacyTimelineLayoutReference.shared.layout(for: $0, columnWidth: 480) }
         func setup(_ driver: ProbeTableDriver) -> (NSWindow, NSTableView) {
             let table = NSTableView(frame: .init(x: 0, y: 0, width: 480, height: 600))
             let column = NSTableColumn(identifier: .init("body")); column.width = 480
