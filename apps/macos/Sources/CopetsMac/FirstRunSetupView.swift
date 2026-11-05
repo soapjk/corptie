@@ -373,10 +373,10 @@ struct FirstRunProviderCard: View {
         let automatic = provider.program.map { !["manual", "controlled"].contains($0.mode) } ?? false
         _path = State(initialValue: automatic ? (provider.program?.recommendedPath ?? provider.path) : provider.path)
         _result = State(initialValue: provider)
-        _environmentMode = State(initialValue: "native")
-        _environmentHome = State(initialValue: provider.environment?.options.first(where: { $0.mode == "native" })?.home ?? "")
+        _environmentMode = State(initialValue: provider.environment?.mode ?? "native")
+        _environmentHome = State(initialValue: provider.environment?.home ?? "")
         _selectionMode = State(initialValue: automatic ? "auto" : (provider.program?.mode ?? "manual"))
-        _checkModel = State(initialValue: "")
+        _checkModel = State(initialValue: provider.program?.model ?? "")
     }
 
     private var available: Bool {
@@ -435,12 +435,12 @@ struct FirstRunProviderCard: View {
                 }
                 Spacer(minLength: 8)
                 Toggle(L10n("启用"), isOn: Binding(
-                    get: { available && result.enabled },
+                    get: { result.enabled },
                     set: { enabled in Task { await setEnabled(enabled) } }
                 ))
                 .toggleStyle(.switch)
                 .accessibilityLabel(L10nFormat("启用 %@", provider.name))
-                .disabled(!available || controlsBusy)
+                .disabled(controlsBusy || testing || !resultMatchesSelection || (!result.enabled && !available))
             }
             if available && !editingPath && result.program == nil {
                 HStack {
