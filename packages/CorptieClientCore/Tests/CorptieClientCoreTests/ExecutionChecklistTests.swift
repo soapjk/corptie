@@ -32,4 +32,16 @@ struct ExecutionChecklistTests {
         #expect(firstObject["expectedRevision"] as? Int == 7)
         #expect(firstObject["taskId"] == nil)
     }
+    @Test func childAssignmentDecodesAndCommandsReuseTheExistingEndpointShape() throws {
+        let data = Data(#"{"schemaVersion":1,"planId":"plan:one","revision":1,"lifecycle":"active","updatedAt":"now","steps":[{"stepId":"one","ordinal":0,"text":"API","status":"pending","assignment":{"taskId":"task:child","dispatchId":"dispatch:one","title":"API child","status":"running"}},{"stepId":"two","ordinal":1,"text":"Verify","status":"pending"}]}"#.utf8)
+        let plan = try JSONDecoder().decode(ConversationExecutionPlan.self, from: data)
+        #expect(plan.steps[0].assignment?.taskId == "task:child")
+        #expect(plan.steps[1].assignment == nil)
+        let command = ExecutionChecklistCommand(action: "assign", revision: 1, itemIDs: ["one", "two"], dispatchID: "dispatch:one")
+        let fields = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(command)) as? [String: Any])
+        #expect(fields["itemIds"] as? [String] == ["one", "two"])
+        #expect(fields["dispatchId"] as? String == "dispatch:one")
+        #expect(fields["taskId"] == nil)
+    }
+
 }

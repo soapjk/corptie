@@ -3,6 +3,7 @@ import CorptieClientCore
 import CorptieConversation
 
 extension Notification.Name {
+    static let executionChecklistAssignmentChanged = Notification.Name("executionChecklistAssignmentChanged")
     static let executionChecklistChanged = Notification.Name("executionChecklistChanged")
 }
 
@@ -70,7 +71,7 @@ struct TaskExecutionChecklistDetailCard: View {
     var body: some View {
         Group {
             if let plan {
-                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width, canEdit: writesAllowed)
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width, canEdit: writesAllowed, observesAssignments: false)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
@@ -87,6 +88,11 @@ struct TaskExecutionChecklistDetailCard: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged)) { event in
             guard active, event.object as? String == taskID else { return }
+            refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged)) { event in
+            guard active, event.object as? String == taskID,
+                  plan?.steps.contains(where: { $0.assignment != nil }) == true else { return }
             refresh()
         }
         .onDisappear { requestGeneration = UUID(); refreshTask?.cancel() }
@@ -117,10 +123,15 @@ struct DesktopExecutionChecklistContent: View {
     var canEdit = true
     var isExpanded: Bool? = nil
     var onToggleExpansion: (() -> Void)? = nil
+    var observesAssignments = true
+    @State private var assignmentRefresh: Task<Void, Never>?
     @State private var savedPlan: ConversationExecutionPlan?
     var body: some View {
         TaskExecutionChecklist(plan: currentPlan, width: width, canEdit: canEdit,
-                               isExpanded: isExpanded, onToggleExpansion: onToggleExpansion) { command in
+                               isExpanded: isExpanded, onToggleExpansion: onToggleExpansion, openAssignment: { assignment in
+                                   guard let childID = assignment.taskId, let childSessionID = assignment.sessionId else { return }
+                                   AppTabRouter.shared.openTaskSession(taskId: childID, sessionId: childSessionID, source: .userSelection)
+                               }) { command in
             do {
                 let response = try await desktopExecutionChecklistAPI().update(taskID: taskID, command: command)
                 accept(response.checklist)
@@ -132,6 +143,21 @@ struct DesktopExecutionChecklistContent: View {
         .id(plan.planId)
         .onChange(of: plan.planId) { _, _ in savedPlan = nil }
         .onChange(of: plan.revision) { _, _ in accept(plan) }
+        .task(id: plan.revision) {
+            if observesAssignments && plan.steps.contains(where: { $0.assignment != nil }) { await loadAssignments() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged)) { event in
+            guard observesAssignments, event.object as? String == taskID,
+                  currentPlan.steps.contains(where: { $0.assignment != nil }) else { return }
+            assignmentRefresh?.cancel()
+            assignmentRefresh = Task { await loadAssignments() }
+        }
+        .onDisappear { assignmentRefresh?.cancel() }
+    }
+    private func loadAssignments() async {
+        if let response = try? await desktopExecutionChecklistAPI().read(taskID: taskID), !Task.isCancelled {
+            accept(response.checklist)
+        }
     }
     private var currentPlan: ConversationExecutionPlan { savedPlan?.planId == plan.planId ? savedPlan ?? plan : plan }
     private func accept(_ next: ConversationExecutionPlan?) {

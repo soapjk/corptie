@@ -8,7 +8,7 @@ export function createSessionInteractionCommands({
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
   interruptTimeoutMs = 15_000, onInterruptRequested = () => {}
 }) {
-  async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
+  async function interruptUnifiedSession(sessionId, source = { type: "desktop" }, options = {}) {
     const reference = requireSessionReference(sessionId);
     const summary = reference.metadata.session;
     const activeTurnId = summary?.external?.activeTurnId
@@ -16,7 +16,7 @@ export function createSessionInteractionCommands({
       ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
       ?? null;
     let session;
-    onInterruptRequested({ ...reference, turnId: activeTurnId });
+    onInterruptRequested({ ...reference, turnId: activeTurnId, reason: options.reason ?? "user_interrupt" });
     let timeout;
     console.info(`[session-interrupt] requested session=${reference.sessionId} binding=${reference.bindingId} turn=${activeTurnId}`);
     try {
@@ -146,6 +146,14 @@ export function createSessionInteractionCommands({
       if (item.userInput?.responseMode === "message") {
         if (!cancelling) {
           const text = [`回答消息 ${item.id} 中的问题：`, ...item.userInput.questions.map(q => `${q.question}\n${input.answers[q.id].join("；")}`)].join("\n\n");
+          // Async questions do not suspend the Provider. Stop the obsolete
+          // branch before admitting the answer to the ordinary work queue.
+          // Never claim a submitted answer when stopping was not confirmed.
+          const session = store.getSession(reference.sessionId);
+          if (session?.external?.activeTurnId || session?.rawStatus?.activeTurnId
+            || session?.turnState === "running" || session?.status === "running") {
+            await interruptUnifiedSession(sessionId, source, { reason: "user_input_answer" });
+          }
           await sendUnifiedSessionMessage(sessionId, text, source);
         }
         result = store.getSession(reference.sessionId);

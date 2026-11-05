@@ -10,11 +10,15 @@ public struct ExecutionChecklistCommand: Encodable, Sendable {
     public var status: String?
     public var reason: String?
     public var position: Int?
+    public var itemIds: [String]?
+    public var taskId: String?
+    public var dispatchId: String?
     public init(action: String, revision: Int, itemID: String? = nil, text: String? = nil,
-                condition: String? = nil, status: String? = nil, reason: String? = nil, position: Int? = nil) {
+                condition: String? = nil, status: String? = nil, reason: String? = nil, position: Int? = nil, itemIDs: [String]? = nil, taskID: String? = nil, dispatchID: String? = nil) {
         self.action = action; expectedRevision = revision; operationId = UUID().uuidString
         itemId = itemID; self.text = text; self.condition = condition; self.status = status
         self.reason = reason; self.position = position
+        self.itemIds = itemIDs; self.taskId = taskID; self.dispatchId = dispatchID
     }
 }
 

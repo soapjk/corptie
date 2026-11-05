@@ -47,6 +47,14 @@ final class BackendEventRouter {
     init(ports: Ports) { self.ports = ports }
 
     func handle(_ eventName: String, data: String) async {
+        if eventName == "TaskChanged", let bytes = data.data(using: .utf8),
+           let event = try? JSONDecoder().decode(ChecklistTaskChangedEnvelope.self, from: bytes) {
+            let taskID = event.payload.taskId ?? event.payload.entity?.id
+            if let taskID { NotificationCenter.default.post(name: .executionChecklistAssignmentChanged, object: taskID) }
+            if let parentID = event.payload.entity?.parentTaskId ?? event.payload.entity?.parent_task_id, parentID != taskID {
+                NotificationCenter.default.post(name: .executionChecklistAssignmentChanged, object: parentID)
+            }
+        }
         if eventName == "ExecutionChecklistChanged" {
             if let bytes = data.data(using: .utf8),
                let event = try? JSONDecoder().decode(ExecutionChecklistChangedEnvelope.self, from: bytes) {
@@ -189,4 +197,17 @@ final class BackendEventRouter {
 private struct ExecutionChecklistChangedEnvelope: Decodable {
     let payload: Payload
     struct Payload: Decodable { let taskId: String }
+}
+
+private struct ChecklistTaskChangedEnvelope: Decodable {
+    let payload: Payload
+    struct Payload: Decodable {
+        let taskId: String?
+        let entity: Entity?
+    }
+    struct Entity: Decodable {
+        let id: String?
+        let parentTaskId: String?
+        let parent_task_id: String?
+    }
 }

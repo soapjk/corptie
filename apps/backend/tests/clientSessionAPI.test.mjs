@@ -913,3 +913,21 @@ test("paired cleanup reads remain available after the Task is gone and reject in
   assert.throws(() => read(""), { code: "INVALID_OPERATION_ID" });
   assert.throws(() => read("x".repeat(513)), { code: "INVALID_OPERATION_ID" });
 });
+
+test("device keeps checklist child links and strips undeclared assignment fields", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 2, hasEarlier: false, items: [
+        { id: "checklist:parent", turnId: "turn:one", type: "executionChecklist", text: "Checklist",
+          executionPlan: { schemaVersion: 1, taskId: "task:parent", planId: "checklist:parent", revision: 2,
+            lifecycle: "active", steps: [{ stepId: "step:one", text: "API", status: "inProgress",
+              assignment: { taskId: "task:child", dispatchId: "dispatch:one", title: "API child", status: "running",
+                sessionId: "session:child", secret: "private" } }] } }
+      ] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    const link = page.items[0].executionPlan.steps[0].assignment;
+    assert.equal(link.taskId, "task:child"); assert.equal(link.status, "running");
+    assert.equal(link.secret, undefined);
+  } finally { await f.close(); }
+});
