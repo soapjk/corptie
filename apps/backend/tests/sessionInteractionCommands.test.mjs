@@ -120,3 +120,28 @@ test("invalid-answer failures restore pending status and release the dispatch gu
   await f.commands.respondUnifiedSessionUserInput("public", { itemId: "question", action: "cancel" });
   assert.equal(f.calls.at(-1)[2].status, "cancelled");
 });
+
+test("async answer stops the active branch before sending instead of waiting behind it", async () => {
+  const order = [];
+  const f = fixture({ sendUnifiedSessionMessage: async () => { order.push("send"); } });
+  f.setItem({ ...f.getItem(), userInput: { schemaVersion: 1, responseMode: "message", canCancel: true, questions: [{ id: "q", question: "Choose", options: null }] } });
+  let stopped;
+  f.service.interrupt = () => new Promise(resolve => { stopped = () => { order.push("stop"); resolve(f.session); }; });
+  const answer = f.commands.respondUnifiedSessionUserInput("public", { itemId: "question", answers: { q: ["B"] } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, []);
+  stopped();
+  await answer;
+  assert.deepEqual(order, ["stop", "send"]);
+  assert.equal(f.getItem().status, "submitted");
+});
+
+test("failed stop cannot submit or queue an async answer", async () => {
+  let sent = false;
+  const f = fixture({ sendUnifiedSessionMessage: async () => { sent = true; } });
+  f.setItem({ ...f.getItem(), userInput: { schemaVersion: 1, responseMode: "message", canCancel: true, questions: [{ id: "q", question: "Choose", options: null }] } });
+  f.service.interrupt = async () => { throw Object.assign(new Error("unknown"), { code: "TRANSPORT_FAILED" }); };
+  await assert.rejects(f.commands.respondUnifiedSessionUserInput("public", { itemId: "question", answers: { q: ["B"] } }), { code: "TRANSPORT_FAILED" });
+  assert.equal(sent, false);
+  assert.notEqual(f.getItem().status, "submitted");
+});
