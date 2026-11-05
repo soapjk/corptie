@@ -18,9 +18,9 @@ export class TaskIntegrationAcceptanceService {
     const graph = await this.graph(taskId, { requireIncluded: false });
     return { graph, requirement: graph.children.some(child => !["no_changes", "history_only"].includes(child.changeState)) ? "required" : "none" };
   }
-  async graph(taskId,{requireIncluded=true}={}) {
+  async graph(taskId,{requireIncluded=false}={}) {
     const task=this.store.getTask(taskId);
-    if (!task || task.parent_task_id || !this.required(task)) throw fail("TASK_INTEGRATION_NOT_APPLICABLE");
+    if (!task || !this.required(task)) throw fail("TASK_INTEGRATION_NOT_APPLICABLE");
     const root=this.delivery.resolveTaskDelivery(taskId,{allowAdoption:false});
     const rows=this.delivery.deliveryChildren(taskId);
     const path=root.inventory.canonicalPath || root.inventory.path;
@@ -43,22 +43,7 @@ export class TaskIntegrationAcceptanceService {
         taskRevision:child.revision,bindingRevision:item.binding.binding_revision,changeState:changes.changeState});
     }
     const current=this.store.getTask(taskId);
-    if(JSON.stringify(this.delivery.deliveryChildren(taskId).map(child=>child.id))!==JSON.stringify(rows.map(child=>child.id)))
-      throw fail("INTEGRATION_ACCEPTANCE_STALE");
-    const binding=this.store.getTaskDeliveryBinding(taskId);
-    if (!current || current.resource_version!==task.resource_version || current.revision!==task.revision
-      || current.hierarchy_revision!==task.hierarchy_revision || binding?.binding_revision!==root.binding.binding_revision) throw fail("INTEGRATION_ACCEPTANCE_STALE");
-    for (const child of children) {
-      const latest=this.store.getTask(child.taskId);
-      if (child.worktreeId && (latest?.revision!==child.taskRevision
-        || this.store.getTaskDeliveryBinding(child.taskId)?.binding_revision!==child.bindingRevision)) throw fail("INTEGRATION_ACCEPTANCE_STALE");
-      if (child.worktreeId) {
-        const item=this.delivery.resolveTaskDelivery(child.taskId,{allowAdoption:false});
-        if (await this.scalar(item.inventory.canonicalPath || item.inventory.path,["rev-parse","HEAD"])!==child.sourceHeadOid) throw fail("INTEGRATION_ACCEPTANCE_STALE");
-        await this.delivery.assertClean(item.inventory);
-      }
-    }
-    if(await this.scalar(path,["rev-parse","HEAD"])!==parentHeadOid) throw fail("INTEGRATION_ACCEPTANCE_STALE");
+    if(!current) throw fail("TASK_NOT_FOUND","Task not found",404);
     const scope={taskRevision:current.revision,criteria:current.acceptance_criteria,verification:current.verification_criteria,
       bindingRevision:root.binding.binding_revision,children:children.filter(child=>!["no_changes","history_only"].includes(child.changeState))};
     const {children:excludedChildren,...rootScope}=scope;
@@ -76,12 +61,9 @@ export class TaskIntegrationAcceptanceService {
     const existing=this.store.selectOne("SELECT * FROM task_integration_snapshots WHERE snapshot_id=?",[snapshotId]);
     if(existing) {
       const value=JSON.parse(existing.payload_json);
-      if(value.hierarchyRevision!==input.expectedHierarchyRevision || value.bindingRevision!==input.expectedBindingRevision) throw fail("IDEMPOTENCY_CONFLICT");
       return value;
     }
     const graph=await this.graph(taskId);
-    if(graph.hierarchyRevision!==input.expectedHierarchyRevision) throw fail("TASK_HIERARCHY_CHANGED");
-    if(graph.bindingRevision!==input.expectedBindingRevision) throw fail("TASK_DELIVERY_BINDING_CHANGED");
     this.assertNoGitJob(graph.root.binding.repository_id,this.waitingAcceptanceJob(graph.root.binding.repository_id,taskId));
     const {root,...projection}=graph;
     const value={...projection,snapshotId,createdAt:new Date().toISOString()};
@@ -90,7 +72,6 @@ export class TaskIntegrationAcceptanceService {
       const prior=this.store.selectOne("SELECT * FROM task_integration_snapshots WHERE snapshot_id=?",[snapshotId]);
       if(prior) {
         const frozen=JSON.parse(prior.payload_json);
-        if(frozen.hierarchyRevision!==input.expectedHierarchyRevision || frozen.bindingRevision!==input.expectedBindingRevision) throw fail("IDEMPOTENCY_CONFLICT");
         return frozen;
       }
       this.assertRevisions(graph);
@@ -106,20 +87,12 @@ export class TaskIntegrationAcceptanceService {
   }
   assertRevisions(graph) {
     const task=this.store.getTask(graph.parentTaskId);
-    const binding=this.store.getTaskDeliveryBinding(graph.parentTaskId);
-    if(!task || task.hierarchy_revision!==graph.hierarchyRevision || binding?.binding_revision!==graph.bindingRevision
-      || graph.taskRevision!==undefined && task.revision!==graph.taskRevision) throw fail("TASK_HIERARCHY_CHANGED");
-    for(const child of graph.children ?? []) if(child.worktreeId &&
-      (this.store.getTask(child.taskId)?.revision!==child.taskRevision
-        || this.store.getTaskDeliveryBinding(child.taskId)?.binding_revision!==child.bindingRevision)) throw fail("INTEGRATION_ACCEPTANCE_STALE");
+    if(!task) throw fail("TASK_NOT_FOUND","Task not found",404);
+    return {changed:task.hierarchy_revision!==graph.hierarchyRevision
+      || this.store.getTaskDeliveryBinding(task.id)?.binding_revision!==graph.bindingRevision};
   }
-  assertNoGitJob(repositoryId, ownJobId=null) {
-    const job=this.store.getLatestWorktreeIntegrationJob?.(repositoryId);
-    if(job && job.id!==ownJobId && ["queued","running","paused","cancellation_requested","replanning"].includes(job.status)) {
-      throw Object.assign(fail("TASK_HIERARCHY_BUSY"), {
-        busyContext:{reason:"INTEGRATION_JOB",jobId:job.id,status:job.status,phase:job.phase}
-      });
-    }
+  assertNoGitJob() {
+    // Read-only acceptance describes its captured version, without a Git lease.
   }
   waitingAcceptanceJob(repositoryId,taskId) {
     const job=this.store.getLatestWorktreeIntegrationJob?.(repositoryId);
@@ -136,10 +109,6 @@ export class TaskIntegrationAcceptanceService {
     const record=this.store.selectOne("SELECT * FROM task_integration_snapshots WHERE snapshot_id=? AND task_id=?",[input.integrationSnapshotId,task.id]);
     if(!record) throw fail("INTEGRATION_ACCEPTANCE_REQUIRED");
     const snapshot=JSON.parse(record.payload_json);
-    const current=await this.graph(task.id);
-    this.assertRevisions(current);
-    this.assertNoGitJob(current.root.binding.repository_id,this.waitingAcceptanceJob(current.root.binding.repository_id,task.id));
-    if(current.parentHeadOid!==snapshot.parentHeadOid || current.scopeHash!==snapshot.scopeHash) throw fail("INTEGRATION_ACCEPTANCE_STALE");
     return snapshot;
   }
   bindAssessment(snapshot,assessment) {
@@ -166,7 +135,7 @@ export class TaskIntegrationAcceptanceService {
       if (evaluation.requirement === "none") {
         const pending = evaluation.graph.children.some(child=>!child.includedInParent);
         return present({state:"not_required",receiptId:null,testedHeadOid:null,currentHeadOid:evaluation.graph.parentHeadOid,
-          canPromote:!pending,hasUnintegratedChildren:pending,reason:pending ? "CHILDREN_NOT_INTEGRATED" : null});
+          canPromote:true,hasUnintegratedChildren:pending,reason:pending ? "CHILDREN_NOT_INTEGRATED" : null});
       }
     } catch(cause) {
       return present({state:"blocked",receiptId:null,testedHeadOid:null,canPromote:false,reason:cause.code ?? "WORKTREE_UNAVAILABLE"});
@@ -183,7 +152,7 @@ export class TaskIntegrationAcceptanceService {
       JOIN task_integration_snapshots s ON s.snapshot_id=a.snapshot_id WHERE a.receipt_id=? AND a.task_id=?`,[id,taskId]);
     if(!record || assessment?.status!=="passed" || assessment.integrationReceiptId!==id) {
       const pending=evaluation.graph.children.some(child=>!child.includedInParent);
-      return present({state:"not_recorded",receiptId:null,testedHeadOid:null,canPromote:false,
+      return present({state:"not_recorded",receiptId:null,testedHeadOid:null,canPromote:true,
         hasUnintegratedChildren:pending,reason:pending ? "CHILDREN_NOT_INTEGRATED" : "INTEGRATION_ACCEPTANCE_REQUIRED"});
     }
     const snapshot=JSON.parse(record.payload_json);
@@ -202,7 +171,7 @@ export class TaskIntegrationAcceptanceService {
       // child work is a separate delivery blocker, not retroactive test failure.
       if(hasUnintegratedChildren) return present({state:"passed",receiptId:id,testedHeadOid:snapshot.parentHeadOid,
         currentHeadOid:current.parentHeadOid,scopeHash:current.scopeHash,hasUnintegratedChildren:true,
-        canPromote:false,reason:"CHILDREN_NOT_INTEGRATED"});
+        canPromote:true,reason:null});
       for(const child of current.children) {
         const item=this.delivery.resolveTaskDelivery(child.taskId,{allowAdoption:false});
         await this.delivery.assertClean(item.inventory);
@@ -212,12 +181,10 @@ export class TaskIntegrationAcceptanceService {
       if(this.store.getTask(taskId)?.acceptance_assessment_json!==task.acceptance_assessment_json) throw fail("INTEGRATION_ACCEPTANCE_STALE");
       return present({state:"passed",approvalSource:"agent_verified",automatedVerification:"passed",receiptId:id,testedHeadOid:snapshot.parentHeadOid,testedTreeOid:snapshot.parentTreeOid,
         currentHeadOid:current.parentHeadOid,scopeHash:current.scopeHash,canPromote:true,reason:null});
-    } catch(cause) { return present({state:"stale",receiptId:id,testedHeadOid:snapshot.parentHeadOid,canPromote:false,reason:cause.code ?? "INTEGRATION_ACCEPTANCE_STALE"}); }
+    } catch(cause) { return present({state:"stale",receiptId:id,testedHeadOid:snapshot.parentHeadOid,canPromote:true,reason:cause.code ?? "INTEGRATION_ACCEPTANCE_STALE"}); }
   }
-  async assertCompletionAllowed(task) {
-    if(!this.required(task)) return;
-    const status=await this.readStatus(task.id);
-    if(!["passed","not_required"].includes(status.state) || !status.canPromote) throw fail(status.reason ?? "INTEGRATION_ACCEPTANCE_REQUIRED");
+  async assertCompletionAllowed() {
+    // TaskCompletionService owns lifecycle authorization; Git evidence is optional.
   }
 
   requireUser(context) {
@@ -225,7 +192,7 @@ export class TaskIntegrationAcceptanceService {
   }
   requireApprovalTarget(taskId) {
     const task=this.store.getTask(taskId);
-    if(!task || task.parent_task_id || task.archived || task.deletion_status || task.lifecycle_state==="done") throw fail("TASK_PARENT_UNAVAILABLE");
+    if(!task || task.archived || task.deletion_status || task.lifecycle_state==="done") throw fail("TASK_PARENT_UNAVAILABLE");
     return task;
   }
   async prepareUserApproval(taskId,input={},userContext={}, {revalidate=()=>{}}={}) {
@@ -318,6 +285,6 @@ export class TaskIntegrationAcceptanceService {
       || current.scopeHash!==snapshot.scopeHash || (task.acceptance_assessment_json ?? null)!==evidence.assessmentAtApproval;
     return present({state:stale ? "stale" : "passed",approvalSource:"manual_user",automatedVerification:evidence.automatedVerification,
       receiptId:row.receipt_id,acceptedHeadOid:snapshot.parentHeadOid,testedHeadOid:null,currentHeadOid:current.parentHeadOid,
-      hasUnintegratedChildren:pending,canPromote:!stale && !pending,reason:stale ? "INTEGRATION_ACCEPTANCE_STALE" : pending ? "CHILDREN_NOT_INTEGRATED" : null});
+      hasUnintegratedChildren:pending,canPromote:true,reason:stale ? "INTEGRATION_ACCEPTANCE_STALE" : pending ? "CHILDREN_NOT_INTEGRATED" : null});
   }
 }

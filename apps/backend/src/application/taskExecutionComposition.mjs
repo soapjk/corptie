@@ -5,10 +5,30 @@ export function createTaskExecutionComposition({
   store, inspectTaskWorktree, removeTaskDeletionWorktree,
   sessionApplicationService, artifactService, emitEvent,
   workService, sessionRuntimeReleaseService, sessionWorktrees,
-  ensureTaskWorkspace
+  ensureTaskWorkspace, cancelTaskStartup, cancelTaskIntegration, cleanupTaskExecutionSpaces
 }) {
   const taskDeletionService = new TaskDeletionService({
     store,
+    cancelStartup: cancelTaskStartup,
+    cleanupExecutionSpaces: cleanupTaskExecutionSpaces,
+    cancelIntegration: cancelTaskIntegration,
+    stopSession: async sessionId => {
+      const deliveries = store.selectAll("SELECT delivery_id,status FROM message_deliveries WHERE session_id=? AND status IN ('queued','dispatching','accepted','processing','delivery_unknown')", [sessionId]);
+      for (const delivery of deliveries.filter(d => d.status === "queued")) store.updateMessageDelivery(delivery.delivery_id, { status: "cancelled" });
+      for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["queued"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled" });
+      const session = store.getSession(sessionId);
+      const active = ["running", "blocked"].includes(session?.status) || (store.listUnsettledSessionTurns?.(sessionId).length ?? 0) > 0;
+      if (active) {
+        await sessionApplicationService.interrupt(sessionId, { source: "task-deletion" });
+        await sessionApplicationService.disconnectSession(sessionId, { source: "task-deletion" });
+      }
+      // Only a completed Provider stop/disconnect permits settling accepted work.
+      for (const delivery of deliveries.filter(d => d.status !== "queued")) {
+        if (!active) throw Object.assign(new Error("投递是否已执行尚未确认，需先恢复投递状态。"), { code: "SESSION_STATE_UNAVAILABLE" });
+        store.updateMessageDelivery(delivery.delivery_id, { status: "cancelled" });
+      }
+      for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["running"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled" });
+    },
     inspectWorktree: (taskId) => inspectTaskWorktree(taskId),
     removeWorktree: (input) => removeTaskDeletionWorktree(input),
     deleteSession: async (sessionId, context) => {
@@ -20,8 +40,10 @@ export function createTaskExecutionComposition({
       }
       return result;
     },
-    handleArtifacts: ({ task, disposition, actor }) => {
-      if (actor?.type === "parent_session") return { disposition: "retain", preserved: true };
+    handleArtifacts: ({ task, artifacts, disposition, actor, operationId }) => {
+      if (actor?.type === "parent_session" && (disposition === "retain" || !artifacts.length)) return { disposition, preserved: true };
+      if (actor?.type === "parent_session") return artifactService.disposeBoundArtifactsForTaskDeletion(
+        { kind: "parent_task_deletion", operationId, actorId: actor.id, workId: task.work_id }, task.id, disposition);
       const delivery=actor?.type==="child_delivery" ? workService.childTaskDeliveryService.assertAuthority(actor.id) : null;
       return artifactService.disposeBoundArtifactsForTaskDeletion({
         kind:"local_user",actorId:delivery?.actor.id ?? actor?.id,workId:task.work_id,
@@ -92,7 +114,14 @@ function authorizesParentDeletion(store, logicalSessionId, child) {
   const logical = store.getLogicalSession(logicalSessionId);
   const session = logical && store.getSession(logical.legacySessionId);
   const parent = session?.taskId && store.getTask(session.taskId);
+  let ancestor = child, withinParent = false;
+  const seen = new Set();
+  while (ancestor?.parent_task_id && !seen.has(ancestor.id)) {
+    seen.add(ancestor.id);
+    if (ancestor.parent_task_id === parent?.id) { withinParent = true; break; }
+    ancestor = store.getTask(ancestor.parent_task_id);
+  }
   return Boolean(logical?.activeBinding?.state === "active" && !logical.archived && session && !session.archived && !session.deletedAt
     && session.sessionKind === "worker" && parent && !parent.parent_task_id && !parent.archived && !parent.deletion_status
-    && parent.lifecycle_state !== "done" && child.parent_task_id === parent.id && child.work_id === parent.work_id);
+    && parent.lifecycle_state !== "done" && withinParent && child.work_id === parent.work_id);
 }

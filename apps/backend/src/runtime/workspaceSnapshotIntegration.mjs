@@ -35,7 +35,6 @@ export async function computeSnapshotMerge(manager,{path,base,ours,theirs}) {
 
 async function apply(manager,{path,base,ours,theirs,jobId,recovery=false}) {
   if(await manager.integrationOperationState(path)) throw coded("GIT_OPERATION_IN_PROGRESS");
-  if(await scalar(manager,path,["status","--porcelain=v1"])) throw coded("WORKTREE_RECHECK_DIRTY");
   const resultTree=await computeSnapshotMerge(manager,{path,base,ours,theirs});
   const current=await scalar(manager,path,["rev-parse","HEAD"]);
   if(current!==ours) {
@@ -49,9 +48,9 @@ async function apply(manager,{path,base,ours,theirs,jobId,recovery=false}) {
     "-m",`Corptie snapshot integration ${jobId ?? ""}`]);
   // FF checks HEAD and refuses local overwrites. No reset/stash is used.
   if(await scalar(manager,path,["rev-parse","HEAD"])!==ours) throw coded("MAIN_HEAD_CHANGED");
-  await manager.runGit(path,["merge","--ff-only",head]);
+  await manager.runGit(path,["merge","--autostash","--ff-only",head]);
   if(await scalar(manager,path,["rev-parse","HEAD"])!==head
-    || await scalar(manager,path,["status","--porcelain=v1"])) throw coded("INTEGRATION_POSTCONDITION_DIRTY");
+    || await scalar(manager,path,["diff","--name-only","--diff-filter=U"])) throw coded("MERGE_CONFLICT");
   return {head,resultTree,recovered:false};
 }
 
@@ -63,8 +62,7 @@ export async function mergeWorkspaceSnapshot(manager,input) {
   }
   if(await scalar(manager,input.mainPath,["rev-parse",`${input.sourceHead}^{tree}`])===input.snapshotBase.baseTreeOid) {
     if(await scalar(manager,input.mainPath,["rev-parse","HEAD"])!==input.expectedMainHead) throw coded("MAIN_HEAD_CHANGED");
-    if(await manager.integrationOperationState(input.mainPath)
-      || await scalar(manager,input.mainPath,["status","--porcelain=v1"])) throw coded("WORKTREE_RECHECK_DIRTY");
+    if(await manager.integrationOperationState(input.mainPath)) throw coded("GIT_OPERATION_IN_PROGRESS");
     return {merged:false,alreadyMerged:true,mainHead:input.expectedMainHead,
       snapshotReceipt:{version:1,baseCommitOid:base,childHead:input.sourceHead,parentBefore:input.expectedMainHead,
         parentAfter:input.expectedMainHead,noChanges:true}};
@@ -106,22 +104,21 @@ export async function synchronizeWorkspaceSnapshot(manager,input) {
     if(error.code==="MERGE_CONFLICT") error.code="REBASE_CONFLICT";
     throw error;
   }
-  if(await manager.integrationOperationState(input.path)
-    || await scalar(manager,input.path,["status","--porcelain=v1"])) throw coded("WORKTREE_RECHECK_DIRTY");
+  if(await manager.integrationOperationState(input.path)) throw coded("GIT_OPERATION_IN_PROGRESS");
   const current=await scalar(manager,input.path,["rev-parse","HEAD"]);
   let head=current;
   if(current===input.expectedSourceHead) {
     await manager.assertIntegrationTreePolicy(input.path,tree,current);
     head=await scalar(manager,input.path,[...identity,"commit-tree",tree,"-p",current,"-p",input.targetHead,
       "-m",`Corptie snapshot synchronization ${input.jobId ?? ""}`]);
-    await manager.runGit(input.path,["merge","--ff-only",head]);
+    await manager.runGit(input.path,["merge","--autostash","--ff-only",head]);
   } else {
     const parents=(await scalar(manager,input.path,["rev-list","--parents","-n","1",head])).split(/\s+/).slice(1);
     if(!input.allowResolvedRebase || parents[0]!==input.expectedSourceHead || parents[1]!==input.targetHead
       || await scalar(manager,input.path,["rev-parse",`${head}^{tree}`])!==tree) throw coded("WORKTREE_HEAD_CHANGED");
   }
   if(await scalar(manager,input.path,["rev-parse","HEAD"])!==head
-    || await scalar(manager,input.path,["status","--porcelain=v1"])) throw coded("INTEGRATION_POSTCONDITION_DIRTY");
+    || await scalar(manager,input.path,["diff","--name-only","--diff-filter=U"])) throw coded("REBASE_CONFLICT");
   const targetTree=await scalar(manager,input.path,["rev-parse",`${input.targetHead}^{tree}`]);
   manager.store.runInTransaction(()=>{
     const binding=manager.store.getTaskDeliveryBinding(base.taskId);

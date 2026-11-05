@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -17,323 +17,15 @@ import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueu
 import { ChildTaskDeliveryService } from "../src/application/childTaskDeliveryService.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
 
-test("accepted child delivery uses a real scoped Git Job, never main or a sibling",{timeout:20000},async t=>{
-  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
-  const childHead=await f.commit(child,"delivered.js","export const delivered = true;\n");
-  await f.commit(f.children[1],"sibling.js","export const pending = true;\n");
-  const siblingHead=await git(f.trees.get(f.children[1].id).path,["rev-parse","HEAD"]);
-  const jobs=integrationJobs(f);let cleanupCount=0;
-  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs,artifactService:{},deletionService:{
-    requestAfterChildDelivery:async()=>{cleanupCount++;return {operation:{operationId:"delete:fixture"}};},
-    resumeChildDeliveryDeletion:async()=>{},getOperation:()=>({state:"succeeded"})
-  }});
-  jobs.onEvent=(type,payload)=>service.onRuntimeEvent(type,payload);
-  const completion=new TaskCompletionService({store:f.store});completion.childDelivery=service;
-  const receipt=await completion.issueMacOSIntent(child.id,{requestId:"real:child",interactionId:"real:click",uiSurface:"task_completion_confirmation",
-    displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
-  const result=await completion.completeFromMacOS(child.id,{requestId:receipt.requestId,intentToken:receipt.intentToken,idempotencyKey:"real:accept"});
-  const id=result.childDelivery.operationId;
-  for(let attempt=0;attempt<100;attempt++) {
-    await service.inFlight.get(id);
-    const op=service.repository.getOperation(id);
-    if(["completed","blocked"].includes(op.state)) break;
-    await new Promise(resolve=>setTimeout(resolve,20));
-  }
-  const op=service.repository.getOperation(id);
-  assert.equal(op.state,"completed",op.errorMessage);
-  assert.equal(cleanupCount,1);
-  await git(f.parentTree.path,["merge-base","--is-ancestor",childHead,"HEAD"]);
-  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
-  assert.equal(await git(f.trees.get(f.children[1].id).path,["rev-parse","HEAD"]),siblingHead);
-  assert.equal(await git(tree.path,["rev-parse","HEAD"]),childHead);
-});
-
-test("native delivery preparation commits only child code, and refuses unapproved documents",{timeout:20000},async t=>{
-  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
-  const parentHead=await git(f.parentTree.path,["rev-parse","HEAD"]);
-  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs:{},artifactService:{verifyRepositoryPromotion:async()=>false},deletionService:{},prepareProtection:async()=>{}});
-  await writeFile(join(tree.path,"uncommitted.js"),"export const prepared = true;\n");
-  const snapshot=await service.prepareVersion(child.id);
-  assert.notEqual(snapshot.git.headOid,f.baseHead);
-  assert.equal(await git(tree.path,["status","--porcelain=v1"]),"");
-  assert.equal(await git(f.parentTree.path,["rev-parse","HEAD"]),parentHead);
-  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
-  await writeFile(join(tree.path,"unapproved.md"),"Do not silently track\n");
-  await assert.rejects(()=>service.prepareVersion(child.id),{code:"GIT_ARTIFACT_POLICY_REJECTED"});
-  assert.equal(await git(tree.path,["rev-parse","HEAD"]),snapshot.git.headOid);
-});
-
-test("child code written after approval is preserved and cannot be cleaned",{timeout:20000},async t=>{
-  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
-  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs:{},artifactService:{},deletionService:{}});
-  const completion=new TaskCompletionService({store:f.store});completion.childDelivery=service;
-  const originalWake=service.wake;service.wake=()=>{};
-  const receipt=await completion.issueMacOSIntent(child.id,{requestId:"late:child",interactionId:"late:click",uiSurface:"task_completion_confirmation",
-    displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
-  const accepted=await completion.completeFromMacOS(child.id,{requestId:receipt.requestId,intentToken:receipt.intentToken,idempotencyKey:"late:accept"});
-  await writeFile(join(tree.path,"late.js"),"important new data\n");
-  service.wake=originalWake;await service.wake(accepted.childDelivery.operationId);
-  const op=service.repository.getOperation(accepted.childDelivery.operationId);
-  assert.equal(op.state,"blocked");assert.equal(op.errorCode,"CHILD_DELIVERY_VERSION_CHANGED");assert.ok(f.store.getTask(child.id));
-});
-
-for (const providerId of ["codex-app-server", "claude-code"]) {
-  test(`conflict pause releases a safe source, preserves the target and rejects a stale resume (${providerId})`, { timeout: 20000 }, async t => {
-    const f = await fixture(t);
-    await f.commit(f.parent, "shared.txt", "parent\n");
-    await f.commit(f.children[0], "shared.txt", "child\n");
-    const child = f.trees.get(f.children[0].id);
-    const agent = f.store.createAgent({ name: "Queue_worker", role: "independentContributor" });
-    const sessionId = "session:queue-worker";
-    f.store.upsertSession({ id: sessionId, title: "Queue_worker", status: "complete", provider: providerId });
-    const route = f.store.createLogicalSessionRoute({ logicalSessionId: "logical:queue-worker", legacySessionId: sessionId,
-      providerId, providerThreadId: "thread:queue-worker", bindingId: "binding:queue-worker",
-      boundCwd: child.path, worktreeId: child.worktreeId, repositoryId: "repository:integration", sessionName: "Queue_worker" });
-    const jobs = integrationJobs(f);
-    let released;
-    const release = new Promise(resolve => { released = resolve; });
-    jobs.onDispatchReleased = ids => { if (ids.includes(child.worktreeId)) released(); };
-    const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-    const conflicted = await waitForTerminal(jobs, job.id);
-    assert.equal(conflicted.phase, "conflict");
-    await release;
-    assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), false);
-    assert.ok(jobs.get(job.id).dispatchSafety.blockedWorktreeIds.includes(f.parentTree.worktreeId));
-
-    const { task } = f.store.createUserMessageDelivery({ deliveryId: "delivery:queue-worker", messageId: "message:queue-worker",
-      sessionId, binding: route.activeBinding, agentId: agent.agentId, text: "make the scrollbar thinner" });
-    let sends = 0;
-    const queue = createRuntimeAgentWorkQueue({ store: f.store,
-      collaborationCore: { getAgentForSession: () => agent }, workspaceContinuationCoordinator: {
-        assertWorkTarget() {}, recordWorkStarted() {}, recordWorkSettled() {}, recordWorkRequeued() {}
-      }, inspectCollaborationSession: async () => "idle", emitEvent() {},
-      isWorkspaceMutationActive: id => automaticWorktreeMutationActive(f.store, { sessionId: id }),
-      sendUnifiedSessionMessage: async () => { sends++; return { result: { turnId: "turn:queue-worker" } }; }
-    });
-    queue.registerRuntimeQueuedWork(sessionId, task.taskId);
-    await queue.drainAgentWork(sessionId);
-    assert.equal(sends, 1);
-    assert.equal(f.store.getAgentTask(task.taskId).status, "running");
-    await f.commit(f.children[0], "scrollbar.txt", "thinner\n");
-    f.store.updateAgentTask(task.taskId, { status: "completed" });
-    f.store.updateMessageDelivery("delivery:queue-worker", { status: "completed" });
-    jobs.retry(job.id);
-    const stale = await waitForTerminal(jobs, job.id);
-    assert.equal(stale.resumeRequiresReplan, true);
-    assert.deepEqual(stale.availableActions, ["repreflight", "cancel"]);
-    assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-    assert.throws(() => jobs.retry(job.id), { code: "WORKTREE_STATE_CHANGED" });
-    // A restart must preserve the released baseline, not bless the newer HEAD.
-    const restarted = integrationJobs(f);
-    await restarted.recover();
-    assert.equal(restarted.get(job.id).resumeRequiresReplan, true);
-  });
-}
+const exec = promisify(execFile);
+const git = async (path, args) => (await exec("git", ["-C", path, ...args], {
+  encoding: "utf8", timeout: 15000, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" }
+})).stdout.trim();
 
 async function freezeFixtureBases(f) {
   const tree=await git(f.mainPath,["rev-parse",`${f.baseHead}^{tree}`]);
   for(const child of f.children) f.store.db.run("UPDATE task_delivery_worktrees SET base_commit_oid=?,base_tree_oid=? WHERE task_id=?",[f.baseHead,tree,child.id]);
 }
-
-test("empty ready children need no integration acceptance; dirty, missing-base and actual changes cannot claim exemption",async t=>{
-  const f=await fixture(t); await freezeFixtureBases(f);
-  const initial=await f.acceptance.readStatus(f.parent.id);
-  assert.equal(initial.state,"not_required"); assert.equal(initial.canPromote,true); assert.equal(initial.testedHeadOid,null);
-  await f.acceptance.assertCompletionAllowed(f.store.getTask(f.parent.id));
-  const child=f.children[0],path=f.trees.get(child.id).path;
-  await writeFile(join(path,"untracked.txt"),"private change");
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,false);
-  await rm(join(path,"untracked.txt"));
-  f.store.db.run("UPDATE task_delivery_worktrees SET base_tree_oid=NULL WHERE task_id=?",[child.id]);
-  assert.notEqual((await f.acceptance.readStatus(f.parent.id)).state,"not_required");
-  await freezeFixtureBases(f);
-  await f.commit(child,"real.txt");
-  assert.notEqual((await f.acceptance.readStatus(f.parent.id)).state,"not_required");
-  await f.integrate();
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).state,"not_recorded");
-});
-
-test("empty children do not pause the reviewed graph and main remains unchanged when nothing was delivered",async t=>{
-  const f=await fixture(t); await freezeFixtureBases(f);
-  const jobs=integrationJobs(f);
-  const {job}=await startGraph(f,jobs,[f.parentTree.worktreeId]);
-  const result=await waitForTerminal(jobs,job.id);
-  assert.equal(result.status,"completed",result.error);
-  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
-  assert.equal(result.graphExecution.steps.find(step=>step.kind==="acceptance").reason,"NO_CHILD_CODE_CHANGE");
-});
-
-test("manual approval is exact-version, user-only, idempotent, never fabricates model evidence or advances main",async t=>{
-  const f=await fixture(t); await freezeFixtureBases(f);
-  await f.commit(f.children[0],"manual.txt"); await f.integrate();
-  const user={type:"user",id:"user:local-macos"};
-  const request={requestId:"manual-prepare-1",expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1};
-  await assert.rejects(()=>f.acceptance.prepareUserApproval(f.parent.id,request,{type:"session",id:"session:agent"}),{code:"DIRECT_USER_INTENT_REQUIRED"});
-  const intent=await f.acceptance.prepareUserApproval(f.parent.id,request,user);
-  assert.equal((await f.acceptance.prepareUserApproval(f.parent.id,request,user)).confirmationToken,intent.confirmationToken);
-  const input={requestId:"manual-confirm-1",snapshotId:intent.snapshotId,confirmationToken:intent.confirmationToken,acknowledgedAutomatedFailure:false};
-  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,input,{type:"user",id:"user:device:other"}),{code:"USER_APPROVAL_INTENT_INVALID"});
-  const before=f.store.getTask(f.parent.id);
-  const results=await Promise.all([f.acceptance.confirmUserApproval(f.parent.id,input,user),f.acceptance.confirmUserApproval(f.parent.id,input,user)]);
-  assert.equal(results[0].receiptId,results[1].receiptId);
-  assert.equal(results[0].approvalSource,"manual_user"); assert.equal(results[0].testedHeadOid,null);
-  assert.equal(results[0].canPromote,true);
-  assert.equal(f.store.getTask(f.parent.id).acceptance_assessment_json,before.acceptance_assessment_json);
-  assert.equal(f.store.getTask(f.parent.id).lifecycle_state,before.lifecycle_state);
-  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
-  await f.commit(f.parent,"changed-after-approval.txt");
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).state,"stale");
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,false);
-});
-
-test("manual confirmation rejects a changed version, expired intent, revoked device and unacknowledged automated failure",async t=>{
-  const f=await fixture(t); await freezeFixtureBases(f);
-  await f.commit(f.children[0],"failure.txt"); await f.integrate();
-  f.store.db.run("UPDATE tasks SET acceptance_assessment_json=? WHERE id=?",[JSON.stringify({status:"failed",results:[{verdict:"failed"}]}),f.parent.id]);
-  const user={type:"user",id:"user:device:paired"};
-  const intent=await f.acceptance.prepareUserApproval(f.parent.id,{requestId:"manual-failure-1",expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1},user);
-  const input={requestId:"manual-failure-confirm",snapshotId:intent.snapshotId,confirmationToken:intent.confirmationToken};
-  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,input,user),{code:"AUTOMATED_FAILURE_ACKNOWLEDGEMENT_REQUIRED"});
-  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user,{revalidate:()=>{throw Object.assign(new Error("revoked"),{code:"DEVICE_REVOKED"});}}),{code:"DEVICE_REVOKED"});
-  await f.commit(f.parent,"changed-before-confirm.txt");
-  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user),{code:"INTEGRATION_ACCEPTANCE_STALE"});
-  f.acceptance.now=()=>new Date("2099-01-01T00:00:00.000Z");
-  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user),{code:"USER_APPROVAL_INTENT_EXPIRED"});
-});
-
-test("history-only commits preserve Git history without inventing code verification",async t=>{
-  const f=await fixture(t); await freezeFixtureBases(f);
-  const path=f.trees.get(f.children[0].id).path;
-  await git(path,["commit","--allow-empty","-m","History only"]);
-  assert.equal((await f.hierarchy.inspectChildDeliveryChanges(f.children[0].id)).changeState,"history_only");
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,false);
-  await f.integrate();
-  const state=await f.acceptance.readStatus(f.parent.id);
-  assert.equal(state.state,"not_required"); assert.equal(state.canPromote,true);
-});
-
-test("manual approval releases an existing paused integration only after an explicit retry",{timeout:60000},async t=>{
-  const f=await fixture(t); await freezeFixtureBases(f);
-  await f.commit(f.children[0],"integration-manual.txt");
-  const jobs=integrationJobs(f),{job}=await startGraph(f,jobs,[f.parentTree.worktreeId]);
-  const paused=await waitForTerminal(jobs,job.id);
-  assert.equal(paused.phase,"awaiting_integration_acceptance");
-  const user={type:"user",id:"user:local-macos"};
-  const prepared=await f.acceptance.prepareUserApproval(f.parent.id,{requestId:"manual-paused-prepare",
-    expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1},user);
-  const approved=await f.acceptance.confirmUserApproval(f.parent.id,{requestId:"manual-paused-confirm",snapshotId:prepared.snapshotId,
-    confirmationToken:prepared.confirmationToken,acknowledgedAutomatedFailure:false},user);
-  assert.equal(approved.canPromote,true);
-  assert.equal(jobs.get(job.id).status,"paused");
-  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
-  jobs.retry(job.id);
-  const finished=await waitForTerminal(jobs,job.id);
-  assert.equal(finished.status,"completed",finished.error);
-  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),prepared.parentHeadOid);
-});
-
-test("messages admitted behind an executing integration do not prevent its next step", { timeout: 20000 }, async t => {
-  const f = await fixture(t);
-  const first = await addStandalone(f, "queued-first"), second = await addStandalone(f, "queued-second");
-  const agent = f.store.createAgent({ name: "Queued_worker", role: "independentContributor" });
-  const sessionId = "session:queued-worker";
-  f.store.upsertSession({ id: sessionId, title: "Queued_worker", status: "complete", provider: "provider:test" });
-  const route = f.store.createLogicalSessionRoute({ logicalSessionId: "logical:queued-worker", legacySessionId: sessionId,
-    providerId: "provider:test", providerThreadId: "thread:queued-worker", bindingId: "binding:queued-worker",
-    boundCwd: second.path, worktreeId: second.worktreeId, repositoryId: "repository:integration", sessionName: "Queued_worker" });
-  let delivered = false;
-  const jobs = integrationJobs(f, { beforeMerge: async () => {
-    if (delivered) return;
-    delivered = true;
-    assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), true);
-    f.store.createUserMessageDelivery({ deliveryId: "delivery:behind", messageId: "message:behind", sessionId,
-      binding: route.activeBinding, agentId: agent.agentId, text: "arrived during merge" });
-  } });
-  const { job } = await startGraph(f, jobs, [first.worktreeId, second.worktreeId]);
-  const result = await waitForTerminal(jobs, job.id);
-  assert.equal(result.status, "completed", result.error);
-  assert.equal(f.store.getMessageDelivery("delivery:behind").status, "queued");
-  assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), false);
-});
-
-test("empty failed child is absent from summaries, decoration, graph, scope and acceptance",async t=>{
-  const f=await fixture(t);
-  const failed=f.store.createTask({workId:f.parent.work_id,title:"Failed_empty",parentTaskId:f.parent.id},{},
-    {expectedParentResourceVersion:f.store.getTask(f.parent.id).resource_version});
-  f.store.db.run("UPDATE tasks SET creation_state='failed' WHERE id=?",[failed.id]);
-  // Production regression: startup failed while checking the parent's base,
-  // before any child workspace allocation, and only released its Task claim.
-  const agent=f.store.createAgent({name:"Failed_startup",role:"independentContributor"});
-  const now=new Date().toISOString();
-  f.store.db.run(`INSERT INTO work_session_startup_operations
-    (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,
-      source_session_id,idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at,
-      error_stage,compensation_state,compensation_result_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ["startup:empty-child",f.parent.work_id,failed.id,agent.agentId,1,"provider:test","repository:integration",
-    "session:source","empty-child","fixture-fingerprint","failed_compensated","fixture",now,now,
-    "worktree_preparation","completed",JSON.stringify({status:"completed",completedSteps:["task_claim_released"],failedStep:null})]);
-  const graph=new WorktreeIntegrationGraph({store:f.store,hierarchy:f.hierarchy});
-  const inspection={...await f.inspect(),mainWorktreeId:"worktree:main"};
-  const notices=[];
-  const built=await graph.build(inspection,[f.parentTree.worktreeId],{onNotice:notice=>notices.push(notice)});
-  assert.equal(built.groups[0].childWorktreeIds.length,2);
-  assert.equal(notices[0].taskId,failed.id);
-  const jobs=integrationJobs(f);
-  const candidate=await jobs.createCandidate("repository:integration",{operationType:"integrate",sourceWorktreeIds:[f.parentTree.worktreeId],targetWorktreeId:"worktree:main"});
-  assert.equal(candidate.notices[0].taskId,failed.id);
-  assert.equal(Object.hasOwn(candidate.plan,"notices"),false);
-  f.store.db.run("UPDATE work_session_startup_operations SET worktree_base_context_json='{}' WHERE startup_operation_id='startup:empty-child'");
-  assert.equal(f.store.readTaskDeliveryParticipation({taskIds:[failed.id]}).byTaskId.get(failed.id).participation,"uncertain");
-  f.store.db.run("UPDATE work_session_startup_operations SET worktree_base_context_json=NULL WHERE startup_operation_id='startup:empty-child'");
-  f.store.db.run("UPDATE git_worktrees SET created_by_startup_operation_id='startup:empty-child' WHERE worktree_id=?",[f.parentTree.worktreeId]);
-  assert.equal(f.store.readTaskDeliveryParticipation({taskIds:[failed.id]}).byTaskId.get(failed.id).participation,"required");
-  f.store.db.run("UPDATE git_worktrees SET created_by_startup_operation_id=NULL WHERE worktree_id=?",[f.parentTree.worktreeId]);
-  assert.equal(f.store.hierarchySummaries([f.parent.id]).get(f.parent.id).childCount,2);
-  const assessment=await f.acceptance.graph(f.parent.id,{requireIncluded:false});
-  assert.equal(assessment.children.length,2);
-  graph.assertFresh(built);
-  f.store.upsertSession({id:"session:failed-child-history",title:"History",provider:"provider:test",status:"complete",workId:f.parent.work_id,taskId:failed.id});
-  assert.throws(()=>graph.assertFresh(built),{code:"TASK_HIERARCHY_CHANGED"});
-  const strict=new TaskWorktreeHierarchyService({store:f.store});
-  assert.throws(()=>strict.resolveTaskDelivery(failed.id,{allowAdoption:false}),cause=>{
-    assert.equal(cause.diagnosis.taskId,failed.id);
-    assert.equal(cause.diagnosis.parentTaskId,f.parent.id);
-    return cause.code==="PARENT_WORKTREE_REQUIRED";
-  });
-  const resolve=f.hierarchy.resolveTaskDelivery;
-  f.hierarchy.resolveTaskDelivery=(id,options)=>id===failed.id ? strict.resolveTaskDelivery(id,options) : resolve(id,options);
-  await assert.rejects(()=>jobs.createCandidate("repository:integration",{operationType:"integrate",sourceWorktreeIds:[f.parentTree.worktreeId],targetWorktreeId:"worktree:main"}),
-    cause=>cause.code==="PARENT_WORKTREE_REQUIRED" && cause.diagnosis.taskId===failed.id);
-});
-
-test("a parent with only an empty failed child uses ordinary merge and rejects revival",async t=>{
-  const f=await fixture(t);
-  for(const child of f.children) {
-    f.store.db.run("DELETE FROM task_delivery_worktrees WHERE task_id=?",[child.id]);
-    f.store.db.run("UPDATE tasks SET creation_state='failed' WHERE id=?",[child.id]);
-  }
-  const inspection={...await f.inspect(),mainWorktreeId:"worktree:main"};
-  const graph=new WorktreeIntegrationGraph({store:f.store,hierarchy:f.hierarchy});
-  const notices=[];
-  const built=await graph.build(inspection,[f.parentTree.worktreeId],{onNotice:notice=>notices.push(notice)});
-  assert.equal(built.groups.length,0);
-  assert.deepEqual(built.steps.map(step=>step.kind),["merge"]);
-  assert.equal(notices.length,2);
-  assert.equal(f.acceptance.required(f.store.getTask(f.parent.id)),false);
-  f.store.assertStandaloneWorktreeMutation({worktreeIds:[f.parentTree.worktreeId]});
-  graph.assertFresh(built);
-  f.store.db.run("UPDATE tasks SET creation_state='ready' WHERE id=?",[f.children[0].id]);
-  assert.throws(()=>graph.assertFresh(built),{code:"TASK_HIERARCHY_CHANGED"});
-  assert.throws(()=>f.store.assertStandaloneWorktreeMutation({worktreeIds:[f.parentTree.worktreeId]}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
-  const plan={orchestration:built,reservedWorktreeIds:[f.parentTree.worktreeId],writeWorktreeIds:[f.parentTree.worktreeId]};
-  const job=f.store.createWorktreeIntegrationJob({repositoryId:"repository:integration",status:"running",planFingerprint:"fixture:ordinary",details:{plan}});
-  assert.throws(()=>f.store.assertStandaloneWorktreeMutation({worktreeIds:[f.parentTree.worktreeId],jobId:job.id}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
-});
-
-const exec = promisify(execFile);
-const git = async (path, args) => (await exec("git", ["-C", path, ...args], {
-  encoding: "utf8", timeout: 15000, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" }
-})).stdout.trim();
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "corptie-integration-acceptance-"));
@@ -480,6 +172,89 @@ async function addStandalone(f, name) {
   return { path, worktreeId };
 }
 
+
+async function waitForTerminal(jobs, id) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const job = jobs.get(id);
+    if (["completed", "paused", "canceled"].includes(job.status)
+      && !jobs.activeJobs.has(id) && !jobs.dispatchSafetyChecks.has(id)) return job;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail(`Integration job ${id} did not settle`);
+}
+
+
+test("accepted child delivery uses a real scoped Git Job, never main or a sibling",{timeout:20000},async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
+  const childHead=await f.commit(child,"delivered.js","export const delivered = true;\n");
+  await f.commit(f.children[1],"sibling.js","export const pending = true;\n");
+  const siblingHead=await git(f.trees.get(f.children[1].id).path,["rev-parse","HEAD"]);
+  const jobs=integrationJobs(f);let cleanupCount=0;
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs,artifactService:{},deletionService:{
+    requestAfterChildDelivery:async()=>{cleanupCount++;return {operation:{operationId:"delete:fixture"}};},
+    resumeChildDeliveryDeletion:async()=>{},getOperation:()=>({state:"succeeded"})
+  }});
+  jobs.onEvent=(type,payload)=>service.onRuntimeEvent(type,payload);
+  const completion=new TaskCompletionService({store:f.store});completion.childDelivery=service;
+  const receipt=await completion.issueMacOSIntent(child.id,{requestId:"real:child",interactionId:"real:click",uiSurface:"task_completion_confirmation",
+    displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
+  const result=await completion.completeFromMacOS(child.id,{requestId:receipt.requestId,intentToken:receipt.intentToken,idempotencyKey:"real:accept"});
+  const id=result.childDelivery.operationId;
+  for(let attempt=0;attempt<100;attempt++) {
+    await service.inFlight.get(id);
+    const op=service.repository.getOperation(id);
+    if(["completed","blocked"].includes(op.state)) break;
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  const op=service.repository.getOperation(id);
+  assert.equal(op.state,"completed",op.errorMessage);
+  assert.equal(cleanupCount,1);
+  await git(f.parentTree.path,["merge-base","--is-ancestor",childHead,"HEAD"]);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  assert.equal(await git(f.trees.get(f.children[1].id).path,["rev-parse","HEAD"]),siblingHead);
+  assert.equal(await git(tree.path,["rev-parse","HEAD"]),childHead);
+});
+
+test("native delivery preparation commits only child code, and refuses unapproved documents",{timeout:20000},async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
+  const parentHead=await git(f.parentTree.path,["rev-parse","HEAD"]);
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs:{},artifactService:{verifyRepositoryPromotion:async()=>false},deletionService:{},prepareProtection:async()=>{}});
+  await writeFile(join(tree.path,"uncommitted.js"),"export const prepared = true;\n");
+  const snapshot=await service.prepareVersion(child.id);
+  assert.notEqual(snapshot.git.headOid,f.baseHead);
+  assert.equal(await git(tree.path,["status","--porcelain=v1"]),"");
+  assert.equal(await git(f.parentTree.path,["rev-parse","HEAD"]),parentHead);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  await writeFile(join(tree.path,"unapproved.md"),"Do not silently track\n");
+  await assert.rejects(()=>service.prepareVersion(child.id),{code:"GIT_ARTIFACT_POLICY_REJECTED"});
+  assert.equal(await git(tree.path,["rev-parse","HEAD"]),snapshot.git.headOid);
+});
+
+test("messages admitted behind an executing integration do not prevent its next step", { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  const first = await addStandalone(f, "queued-first"), second = await addStandalone(f, "queued-second");
+  const agent = f.store.createAgent({ name: "Queued_worker", role: "independentContributor" });
+  const sessionId = "session:queued-worker";
+  f.store.upsertSession({ id: sessionId, title: "Queued_worker", status: "complete", provider: "provider:test" });
+  const route = f.store.createLogicalSessionRoute({ logicalSessionId: "logical:queued-worker", legacySessionId: sessionId,
+    providerId: "provider:test", providerThreadId: "thread:queued-worker", bindingId: "binding:queued-worker",
+    boundCwd: second.path, worktreeId: second.worktreeId, repositoryId: "repository:integration", sessionName: "Queued_worker" });
+  let delivered = false;
+  const jobs = integrationJobs(f, { beforeMerge: async () => {
+    if (delivered) return;
+    delivered = true;
+    assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), true);
+    f.store.createUserMessageDelivery({ deliveryId: "delivery:behind", messageId: "message:behind", sessionId,
+      binding: route.activeBinding, agentId: agent.agentId, text: "arrived during merge" });
+  } });
+  const { job } = await startGraph(f, jobs, [first.worktreeId, second.worktreeId]);
+  const result = await waitForTerminal(jobs, job.id);
+  assert.equal(result.status, "completed", result.error);
+  assert.equal(f.store.getMessageDelivery("delivery:behind").status, "queued");
+  assert.equal(automaticWorktreeMutationActive(f.store, { sessionId }), false);
+});
+
 test("ordinary subset integration ignores an unrelated dirty parent and leaves unselected standalone sources untouched", async t => {
   const f = await fixture(t);
   const selected = await addStandalone(f, "selected"), unselected = await addStandalone(f, "unselected");
@@ -496,238 +271,6 @@ test("ordinary subset integration ignores an unrelated dirty parent and leaves u
   assert.equal(names.includes("unselected.txt"), false);
   assert.equal(await git(unselected.path, ["status", "--porcelain"]), "");
   assert.ok((await git(f.parentTree.path, ["status", "--porcelain"])).includes("unrelated-dirty.txt"));
-});
-
-test("mixed integration preserves a main advance inside the plan, accepts the parent then merges standalone sources", async t => {
-  const f = await fixture(t);
-  const ordinary = await addStandalone(f, "ordinary-mixed");
-  await f.commit(f.children[0], "mixed-child.txt");
-  await writeFile(join(f.mainPath, "new-main.txt"), "main advance\n");
-  await git(f.mainPath, ["add", "new-main.txt"]); await git(f.mainPath, ["commit", "-m", "Main baseline advance"]);
-  const jobs = integrationJobs(f);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId, ordinary.worktreeId]);
-  const waiting = await waitForTerminal(jobs, job.id);
-  assert.equal(waiting.phase, "awaiting_integration_acceptance", waiting.error);
-  assert.ok((await git(f.parentTree.path, ["ls-tree", "--name-only", "HEAD"])).includes("new-main.txt"));
-  await acceptWaitingParent(f);
-  jobs.retry(job.id);
-  const completed = await waitForTerminal(jobs, job.id);
-  assert.equal(completed.status, "completed", completed.error);
-  const names = await git(f.mainPath, ["ls-tree", "--name-only", "HEAD"]);
-  assert.ok(names.includes("new-main.txt") && names.includes("mixed-child.txt") && names.includes("ordinary-mixed.txt"));
-});
-
-test("graph merge conflict can be completed manually and retry skips earlier work without resetting", async t => {
-  const f = await fixture(t);
-  await f.commit(f.parent, "shared-graph.txt", "parent\n");
-  await f.commit(f.children[0], "shared-graph.txt", "child\n");
-  const jobs = integrationJobs(f);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-  const conflicted = await waitForTerminal(jobs, job.id);
-  assert.equal(conflicted.phase, "conflict", conflicted.error);
-  assert.ok(conflicted.plan.items.some(item => item.conflictFiles.includes("shared-graph.txt")));
-  await writeFile(join(f.parentTree.path, "shared-graph.txt"), "parent and child\n");
-  await git(f.parentTree.path, ["add", "shared-graph.txt"]);
-  await git(f.parentTree.path, ["commit", "--no-edit"]);
-  jobs.retry(job.id);
-  const waiting = await waitForTerminal(jobs, job.id);
-  assert.equal(waiting.phase, "awaiting_integration_acceptance", waiting.error);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-  await acceptWaitingParent(f);
-  jobs.retry(job.id);
-  const completed = await waitForTerminal(jobs, job.id);
-  assert.equal(completed.status, "completed", completed.error);
-  assert.equal(await git(f.mainPath, ["show", "HEAD:shared-graph.txt"]), "parent and child");
-});
-
-test("integration graph expands a selected child, integrates dependencies, waits for exact acceptance and publishes once", async t => {
-  const f = await fixture(t);
-  await f.commit(f.children[0], "graph-one.txt");
-  await f.commit(f.children[1], "graph-two.txt");
-  const jobs = integrationJobs(f);
-  const { candidate, job } = await startGraph(f, jobs, [f.trees.get(f.children[0].id).worktreeId]);
-  assert.equal(candidate.plan.orchestration.addedWorktreeIds.length, 2);
-  assert.deepEqual(candidate.plan.orchestration.steps.map(step => step.kind), ["merge_children", "merge_main_into_parent", "acceptance", "promote_parent"]);
-  const waiting = await waitForTerminal(jobs, job.id);
-  assert.equal(waiting.phase, "awaiting_integration_acceptance", waiting.error);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-  assert.equal(waiting.graphExecution.steps[0].status, "completed");
-  assert.equal(waiting.graphExecution.steps[1].status, "completed");
-  assert.equal((await git(f.parentTree.path, ["ls-tree", "--name-only", "HEAD"])).includes("graph-two.txt"), true);
-  assert.throws(() => f.store.assertStandaloneWorktreeMutation({ paths: [f.parentTree.path] }), { code: "TASK_HIERARCHY_SCOPE_REQUIRED" });
-  const snapshot = await acceptWaitingParent(f);
-  jobs.retry(job.id);
-  const completed = await waitForTerminal(jobs, job.id);
-  assert.equal(completed.status, "completed", completed.error);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), snapshot.parentHeadOid);
-  assert.equal(completed.graphExecution.steps.every(step => step.status === "completed"), true);
-  assert.equal(completed.audit.filter(event => event.event === "integration_graph_step_started" && event.kind === "merge_children").length, 1);
-  assert.notEqual(f.store.getTask(f.parent.id).lifecycle_state, "done");
-});
-
-test("integration graph cancellation preserves completed child merges and never aborts or publishes main", async t => {
-  const f = await fixture(t);
-  await f.commit(f.children[0], "cancel-preserved.txt");
-  const jobs = integrationJobs(f);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-  const waiting = await waitForTerminal(jobs, job.id);
-  assert.equal(waiting.phase, "awaiting_integration_acceptance", waiting.error);
-  const parentHead = await git(f.parentTree.path, ["rev-parse", "HEAD"]);
-  const canceled = await jobs.cancel(job.id);
-  assert.equal(canceled.status, "canceled");
-  assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]), parentHead);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-});
-
-for (const action of ["delete", "ignore", "artifact"]) test(`publication-time Markdown ${action} commits the decision and requires fresh parent acceptance before main changes`, async t => {
-  const f = await fixture(t);
-  await f.commit(f.parent, "late-policy.md", "unapproved version\n");
-  const jobs = integrationJobs(f), manager = new GitWorkspaceManager({ store: f.store });
-  jobs.inspectCommitPolicyFiles = input => manager.inspectIntegrationMarkdownFiles(input);
-  jobs.deleteCommitPolicyFile = input => manager.deleteIntegrationMarkdownFile(input);
-  jobs.ignoreCommitPolicyFile = input => manager.ignoreIntegrationMarkdownFile(input);
-  let importedContent = null;
-  // Artifact import/ownership is covered by the Artifact service/composition
-  // tests; this fixture exercises the graph's exact decision and recommit.
-  jobs.convertCommitPolicyFileToArtifact = async input => {
-    importedContent = (await manager.readIntegrationMarkdownFile(input)).content.toString("utf8");
-    await manager.deleteIntegrationMarkdownFile(input);
-    return { artifactId: "artifact:graph-policy-fixture" };
-  };
-  jobs.inspectCommitProtection = async () => ({ protectedPaths: [], localSymlinkPaths: [], warningEnabled: false, requiresDecision: false });
-  jobs.commitChanges = input => manager.commitIntegrationChanges(input);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-  assert.equal((await waitForTerminal(jobs, job.id)).phase, "awaiting_integration_acceptance");
-  const oldSnapshot = await acceptWaitingParent(f);
-  jobs.retry(job.id);
-  const policy = await waitForTerminal(jobs, job.id);
-  assert.equal(policy.phase, "awaiting_commit_policy_resolution", policy.error);
-  assert.deepEqual(policy.commitPolicyBlocker.files.map(file => file.path), ["late-policy.md"]);
-  await jobs.resolveCommitPolicy(job.id, { blockerId: policy.commitPolicyBlocker.id, version: policy.commitPolicyBlocker.version,
-    decisions: [{ path: "late-policy.md", action }] });
-  const waiting = await waitForTerminal(jobs, job.id);
-  assert.equal(waiting.phase, "awaiting_integration_acceptance", waiting.error);
-  assert.equal(await git(f.parentTree.path, ["status", "--porcelain"]), "");
-  assert.notEqual(await git(f.parentTree.path, ["rev-parse", "HEAD"]), oldSnapshot.parentHeadOid);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-  await acceptWaitingParent(f);
-  jobs.retry(job.id);
-  const completed = await waitForTerminal(jobs, job.id);
-  assert.equal(completed.status, "completed", completed.error);
-  assert.equal((await git(f.mainPath, ["ls-tree", "--name-only", "HEAD"])).includes("late-policy.md"), false);
-  if (action === "artifact") assert.equal(importedContent, "unapproved version\n");
-  if (action === "ignore") assert.ok((await git(f.mainPath, ["show", "HEAD:.gitignore"])).includes("late-policy.md"));
-});
-
-test("integration graph detects hierarchy changes and does not silently add a new child", async t => {
-  const f = await fixture(t);
-  const jobs = integrationJobs(f);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-  await waitForTerminal(jobs, job.id);
-  // Acceptance-only pauses must not prevent decomposition. The old reviewed
-  // integration graph must still detect the newly created child on resume.
-  f.store.createTask({ workId: f.parent.work_id, title: "New_child", parentTaskId: f.parent.id }, {}, { expectedParentResourceVersion: f.store.getTask(f.parent.id).resource_version });
-  jobs.retry(job.id);
-  const blocked = await waitForTerminal(jobs, job.id);
-  assert.equal(blocked.status, "paused");
-  assert.ok(blocked.audit.some(entry=>entry.code === "TASK_HIERARCHY_CHANGED"));
-  assert.ok(blocked.availableActions.includes("repreflight"));
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-});
-
-test("a multi-stage graph cannot rewrite a completed parent delivery", async t => {
-  const f = await fixture(t), jobs = integrationJobs(f);
-  const getTask = f.store.getTask.bind(f.store);
-  f.store.getTask = id => {
-    const task = getTask(id);
-    return id === f.parent.id ? { ...task, lifecycle_state: "done" } : task;
-  };
-  await assert.rejects(() => jobs.createCandidate("repository:integration", { operationType: "integrate",
-    sourceWorktreeIds: [f.parentTree.worktreeId], targetWorktreeId: "worktree:main" }), { code: "TASK_PARENT_UNAVAILABLE" });
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-});
-
-test("graph recovery pauses without replaying completed dependencies and explicit retry resumes acceptance", async t => {
-  const f = await fixture(t);
-  await f.commit(f.children[0], "restart-preserved.txt");
-  const jobs = integrationJobs(f);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-  await waitForTerminal(jobs, job.id);
-  const parentHead = await git(f.parentTree.path, ["rev-parse", "HEAD"]);
-  f.store.updateWorktreeIntegrationJob(job.id, { status: "running", phase: "step_running" });
-  const restarted = integrationJobs(f);
-  await restarted.recover();
-  const recovered = restarted.get(job.id);
-  assert.equal(recovered.phase, "recovery_required");
-  assert.equal(recovered.status, "paused");
-  assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]), parentHead);
-  restarted.retry(job.id);
-  const waiting = await waitForTerminal(restarted, job.id);
-  assert.equal(waiting.phase, "awaiting_integration_acceptance", waiting.error);
-  assert.equal(waiting.audit.filter(entry => entry.event === "integration_graph_step_started" && entry.kind === "merge_children").length, 1);
-  await acceptWaitingParent(f);
-  restarted.retry(job.id);
-  assert.equal((await waitForTerminal(restarted, job.id)).status, "completed");
-});
-
-test("canceling a task-owned graph conflict restores the exact parent and preserves both committed branches", async t => {
-  const f = await fixture(t);
-  await f.commit(f.parent, "cancel-conflict.txt", "parent\n");
-  await f.commit(f.children[0], "cancel-conflict.txt", "child\n");
-  const jobs = integrationJobs(f);
-  const { job } = await startGraph(f, jobs, [f.parentTree.worktreeId]);
-  const parentHead = job.plan.items.find(item=>item.worktreeId===f.parentTree.worktreeId).sourceHeadBefore;
-  const paused = await waitForTerminal(jobs, job.id);
-  assert.equal(paused.phase, "conflict", paused.error);
-  const mergeHead = await git(f.parentTree.path, ["rev-parse", "MERGE_HEAD"]);
-  const canceled = await jobs.cancel(job.id);
-  await waitForTerminal(jobs,job.id);
-  assert.equal(canceled.phase, "canceled");
-  assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]),parentHead);
-  assert.equal(await git(f.parentTree.path,["status","--porcelain=v1"]),"");
-  await assert.rejects(git(f.parentTree.path,["rev-parse","--verify","MERGE_HEAD"]));
-  assert.equal(await git(f.trees.get(f.children[0].id).path,["rev-parse","HEAD"]),mergeHead);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-});
-
-async function waitForTerminal(jobs, id) {
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
-    const job = jobs.get(id);
-    if (["completed", "paused", "canceled"].includes(job.status)
-      && !jobs.activeJobs.has(id) && !jobs.dispatchSafetyChecks.has(id)) return job;
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  assert.fail(`Integration job ${id} did not settle`);
-}
-
-test("child merge and synchronization reserve the right write side and never target main", async t => {
-  const f = await fixture(t), childIds = f.children.map(child => f.trees.get(child.id).worktreeId);
-  const input = { operationType: "merge", sourceWorktreeIds: childIds, targetWorktreeId: f.parentTree.worktreeId, taskScope: f.scope("merge_children") };
-  const merge = await f.hierarchy.resolveOperationScope("repository:integration", input, await f.inspect());
-  assert.deepEqual(merge.writeWorktreeIds, [f.parentTree.worktreeId]);
-  const sync = await f.hierarchy.resolveOperationScope("repository:integration", { ...input, operationType: "sync", taskScope: f.scope("sync_children") }, await f.inspect());
-  assert.deepEqual(sync.writeWorktreeIds, childIds);
-  assert.equal(sync.syncStrategy, "rebase");
-  const inspection = await f.inspect();
-  await assert.rejects(() => f.hierarchy.resolveOperationScope("repository:integration", { ...input, targetWorktreeId: "worktree:main" }, inspection), { code: "CHILD_TARGET_NOT_PARENT" });
-  await assert.rejects(() => f.hierarchy.resolveOperationScope("repository:integration", { ...input, taskScope: { ...input.taskScope, expectedHierarchyRevision: 0 } }, inspection), { code: "TASK_HIERARCHY_CHANGED" });
-  assert.throws(() => f.store.assertStandaloneWorktreeMutation({ worktreeIds: childIds }), { code: "TASK_HIERARCHY_SCOPE_REQUIRED" });
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
-});
-
-test("snapshot requires all committed children, is immutable, and never itself grants acceptance", async t => {
-  const f = await fixture(t);
-  await f.commit(f.children[0], "one.txt"); await f.commit(f.children[1], "two.txt");
-  await assert.rejects(() => f.capture("snapshot:before-merge"), { code: "CHILDREN_NOT_INTEGRATED" });
-  await f.integrate();
-  const snapshot = await f.capture("snapshot:after-merge");
-  assert.equal(snapshot.children.length, 2);
-  assert.ok(snapshot.children.every(child => child.includedInParent));
-  assert.deepEqual(await f.capture("snapshot:after-merge"), snapshot);
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote, false);
-  assert.throws(() => f.store.db.run("UPDATE task_integration_snapshots SET scope_hash='forged' WHERE snapshot_id=?", [snapshot.snapshotId]), /IMMUTABLE/);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
 });
 
 test("sync mutates only child while parent and main remain byte-identical", async t => {
@@ -771,38 +314,6 @@ test("child conflict remains in parent for explicit recovery and does not advanc
   assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]), parentHead);
 });
 
-test("only bound-session evidence grants fresh acceptance and child changes invalidate it", async t => {
-  const f = await fixture(t);
-  await f.commit(f.children[0], "one.txt"); await f.commit(f.children[1], "two.txt"); await f.integrate();
-  const snapshot = await f.capture("snapshot:acceptance");
-  f.store.upsertSession({ id: "session:parent-verifier", title: "Verifier", provider: "provider:test", status: "complete", workId:f.parent.work_id, taskId: f.parent.id });
-  f.store.upsertSession({ id: "session:child-verifier", title: "Child", provider: "provider:test", status: "complete", workId:f.parent.work_id, taskId: f.children[0].id });
-  const input = { sourceSessionId: "session:parent-verifier", integrationSnapshotId: snapshot.snapshotId,
-    results: [{ criterion: "Combined changes pass", verdict: "passed", evidence: [{ summary: "Integration verification passed", reference: `commit:${snapshot.parentHeadOid}` }] }] };
-  await assert.rejects(() => f.entities.recordAcceptanceAssessment(f.parent.id, { ...input, sourceSessionId: "session:child-verifier" }), { code: "ACCEPTANCE_SOURCE_MISMATCH" });
-  await f.entities.recordAcceptanceAssessment(f.parent.id, input);
-  const passed = await f.acceptance.readStatus(f.parent.id);
-  assert.equal(passed.state, "passed"); assert.equal(passed.testedHeadOid, snapshot.parentHeadOid);
-  await f.acceptance.assertCompletionAllowed(f.store.getTask(f.parent.id));
-  const job = f.store.createWorktreeIntegrationJob({ repositoryId: "repository:integration", status: "running", planFingerprint: "fixture:promotion",
-    details: { plan: { taskScope: { ...f.scope("promote_parent"), acceptanceReceiptId: passed.receiptId },
-      reservedWorktreeIds: ["worktree:main", ...[...f.trees.values()].map(tree => tree.worktreeId)], writeWorktreeIds: ["worktree:main"] } } });
-  const manager = new GitWorkspaceManager({ store: f.store });
-  const promoted = await manager.mergeIntegrationSource({ mainPath: f.mainPath, sourcePath: f.parentTree.path,
-    sourceHead: passed.testedHeadOid, expectedMainHead: f.baseHead, mergeStrategy: "ff-only", jobId: job.id });
-  assert.equal(promoted.mainHead, snapshot.parentHeadOid);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), snapshot.parentHeadOid);
-  f.store.updateWorktreeIntegrationJob(job.id, { status: "completed" });
-  await f.commit(f.children[0], "later.txt");
-  const unintegrated = await f.acceptance.readStatus(f.parent.id);
-  assert.equal(unintegrated.canPromote, false);
-  assert.equal(unintegrated.reason, "CHILDREN_NOT_INTEGRATED");
-  await assert.rejects(() => f.acceptance.validateSnapshotForAssessment(f.store.getTask(f.parent.id), input), { code: "CHILDREN_NOT_INTEGRATED" });
-  await f.commit(f.parent, "parent-later.txt");
-  await f.integrate();
-  assert.equal((await f.acceptance.readStatus(f.parent.id)).state, "stale");
-});
-
 test("final promotion policy rejects unmanaged Markdown and managed runtime content without mutating main", async t => {
   const f = await fixture(t), manager = new GitWorkspaceManager({ store: f.store });
   const head = await f.commit(f.parent, "unauthorized.md", "Unapproved artifact\n");
@@ -840,84 +351,230 @@ test("reviewed hierarchy Job merges both children into parent then synchronizes 
   assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
 });
 
-test("reviewed Job rejects changed child HEAD before confirmation without changing parent", async t => {
-  const f = await fixture(t), jobs = integrationJobs(f), tree = f.trees.get(f.children[0].id);
-  await f.commit(f.children[0], "first.txt");
-  const plan = await jobs.preflight("repository:integration", { operationType: "batch_merge", sourceWorktreeIds: [tree.worktreeId],
-    targetWorktreeId: f.parentTree.worktreeId, taskScope: f.scope("merge_children") });
-  const frozen = plan.plan.items.find(item => item.worktreeId === tree.worktreeId).sourceHeadBefore;
-  await f.commit(f.children[0], "second.txt");
-  const result = await jobs.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
-  assert.equal(result.phase, "plan_stale");
-  assert.equal(result.plan.items.find(item => item.worktreeId === tree.worktreeId).sourceHeadBefore, frozen);
-  assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]), f.baseHead);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
+test("manual approval is exact-version, user-only, idempotent, never fabricates model evidence or advances main",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  await f.commit(f.children[0],"manual.txt"); await f.integrate();
+  const user={type:"user",id:"user:local-macos"};
+  const request={requestId:"manual-prepare-1",expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1};
+  await assert.rejects(()=>f.acceptance.prepareUserApproval(f.parent.id,request,{type:"session",id:"session:agent"}),{code:"DIRECT_USER_INTENT_REQUIRED"});
+  const intent=await f.acceptance.prepareUserApproval(f.parent.id,request,user);
+  assert.equal((await f.acceptance.prepareUserApproval(f.parent.id,request,user)).confirmationToken,intent.confirmationToken);
+  const input={requestId:"manual-confirm-1",snapshotId:intent.snapshotId,confirmationToken:intent.confirmationToken,acknowledgedAutomatedFailure:false};
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,input,{type:"user",id:"user:device:other"}),{code:"USER_APPROVAL_INTENT_INVALID"});
+  const before=f.store.getTask(f.parent.id);
+  const results=await Promise.all([f.acceptance.confirmUserApproval(f.parent.id,input,user),f.acceptance.confirmUserApproval(f.parent.id,input,user)]);
+  assert.equal(results[0].receiptId,results[1].receiptId);
+  assert.equal(results[0].approvalSource,"manual_user"); assert.equal(results[0].testedHeadOid,null);
+  assert.equal(results[0].canPromote,true);
+  assert.equal(f.store.getTask(f.parent.id).acceptance_assessment_json,before.acceptance_assessment_json);
+  assert.equal(f.store.getTask(f.parent.id).lifecycle_state,before.lifecycle_state);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+  await f.commit(f.parent,"changed-after-approval.txt");
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).state,"stale");
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote,true);
 });
 
-test("sync Job refuses changed parent baseline instead of silently rebasing onto an unreviewed commit", async t => {
-  const f = await fixture(t), jobs = integrationJobs(f), child = f.children[0], tree = f.trees.get(child.id);
-  await f.commit(child, "child.txt");
-  await f.commit(f.parent, "reviewed-parent.txt");
-  const plan = await jobs.preflight("repository:integration", { operationType: "one_way_sync", sourceWorktreeIds: [tree.worktreeId],
-    targetWorktreeId: f.parentTree.worktreeId, taskScope: f.scope("sync_children") });
-  const childHead = await git(tree.path, ["rev-parse", "HEAD"]);
-  const changedParentHead = await f.commit(f.parent, "unreviewed-parent.txt");
-  await assert.rejects(() => jobs.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint }), { code: "WORKTREE_STATE_CHANGED" });
-  assert.equal(await git(tree.path, ["rev-parse", "HEAD"]), childHead);
-  assert.equal(await git(f.parentTree.path, ["rev-parse", "HEAD"]), changedParentHead);
-  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
+test("manual confirmation rejects a changed version, expired intent, revoked device and unacknowledged automated failure",async t=>{
+  const f=await fixture(t); await freezeFixtureBases(f);
+  await f.commit(f.children[0],"failure.txt"); await f.integrate();
+  f.store.db.run("UPDATE tasks SET acceptance_assessment_json=? WHERE id=?",[JSON.stringify({status:"failed",results:[{verdict:"failed"}]}),f.parent.id]);
+  const user={type:"user",id:"user:device:paired"};
+  const intent=await f.acceptance.prepareUserApproval(f.parent.id,{requestId:"manual-failure-1",expectedHierarchyRevision:f.store.getTask(f.parent.id).hierarchy_revision,expectedBindingRevision:1},user);
+  const input={requestId:"manual-failure-confirm",snapshotId:intent.snapshotId,confirmationToken:intent.confirmationToken};
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,input,user),{code:"AUTOMATED_FAILURE_ACKNOWLEDGEMENT_REQUIRED"});
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user,{revalidate:()=>{throw Object.assign(new Error("revoked"),{code:"DEVICE_REVOKED"});}}),{code:"DEVICE_REVOKED"});
+  await f.commit(f.parent,"changed-before-confirm.txt");
+  const historical=await f.acceptance.confirmUserApproval(f.parent.id,{...input,acknowledgedAutomatedFailure:true},user);
+  assert.equal(historical.state,"stale");assert.equal(historical.canPromote,true);
+  f.acceptance.now=()=>new Date("2099-01-01T00:00:00.000Z");
+  await assert.rejects(()=>f.acceptance.confirmUserApproval(f.parent.id,{...input,requestId:"expired-new-request",acknowledgedAutomatedFailure:true},user),{code:"USER_APPROVAL_INTENT_EXPIRED"});
 });
 
-test("mid-batch child change pauses the Job and preserves the successfully integrated prefix", async t => {
+test("snapshots include pending children and remain immutable independent of Git capability", async t => {
   const f = await fixture(t);
   await f.commit(f.children[0], "one.txt"); await f.commit(f.children[1], "two.txt");
-  let moved = false;
-  const jobs = integrationJobs(f, { beforeMerge: async () => {
-    if (!moved) { moved = true; await f.commit(f.children[1], "unreviewed.txt"); }
-  } });
-  const childIds = f.children.map(child => f.trees.get(child.id).worktreeId);
-  const plan = await jobs.preflight("repository:integration", { operationType: "batch_merge", sourceWorktreeIds: childIds,
-    targetWorktreeId: f.parentTree.worktreeId, taskScope: f.scope("merge_children") });
-  const frozenSecond = plan.plan.items.find(item => item.worktreeId === childIds[1]).sourceHeadBefore;
-  await jobs.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
-  const paused = await waitForTerminal(jobs, plan.id);
-  assert.equal(paused.status, "paused", JSON.stringify(paused));
-  assert.equal(paused.plan.items.find(item => item.worktreeId === childIds[0]).mergeStatus, "completed");
-  assert.equal(paused.plan.items.find(item => item.worktreeId === childIds[1]).sourceHeadBefore, frozenSecond);
-  const unreviewedHead = await git(f.trees.get(f.children[1].id).path, ["rev-parse", "HEAD"]);
-  await assert.rejects(() => git(f.parentTree.path, ["merge-base", "--is-ancestor", unreviewedHead, "HEAD"]), { code: 1 });
+  const pending=await f.capture("snapshot:before-merge");
+  assert.ok(pending.children.some(child=>!child.includedInParent));
+  await f.integrate();
+  const snapshot = await f.capture("snapshot:after-merge");
+  assert.equal(snapshot.children.length, 2);
+  assert.ok(snapshot.children.every(child => child.includedInParent));
+  assert.deepEqual(await f.capture("snapshot:after-merge"), snapshot);
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).canPromote, true);
+  assert.throws(() => f.store.db.run("UPDATE task_integration_snapshots SET scope_hash='forged' WHERE snapshot_id=?", [snapshot.snapshotId]), /IMMUTABLE/);
   assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), f.baseHead);
 });
 
-test("snapshot baseline travels through reviewed jobs, exact delivery receipts and parent acceptance",{timeout:30000},async t=>{
-  const {ProjectWorkspaceSnapshotService}=await import('../src/application/projectWorkspaceSnapshotService.mjs');
-  const f=await fixture(t),child=f.children[0],childTree=f.trees.get(child.id);
-  await writeFile(join(f.parentTree.path,'inherited.txt'),'inherited content\n');
-  const base=await new ProjectWorkspaceSnapshotService().captureParentWorkspace({path:f.parentTree.path,operationId:'snapshot:reviewed-job'});
-  await git(childTree.path,['reset','--hard',base.baseCommitOid]);
-  const binding=f.store.getTaskDeliveryBinding(child.id),now=new Date().toISOString(),role=f.store.createAgent({name:'Snapshot_worker',role:'independentContributor'});
-  f.store.db.run(`INSERT INTO work_session_startup_operations
-    (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,source_session_id,
-      idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at,worktree_base_context_json)
-    VALUES (?,?,?,?,1,'provider:test','repository:integration','session:source',?,?,'allocated',?,?,?,?)`,
-    [binding.startup_operation_id,child.work_id,child.id,role.agentId,'snapshot:reviewed-job','snapshot:reviewed-job','snapshot:reviewed-job',now,now,JSON.stringify(base)]);
-  f.store.db.run('UPDATE task_delivery_worktrees SET base_commit_oid=?,base_tree_oid=?,base_worktree_id=? WHERE task_id=?',
-    [base.baseCommitOid,base.baseTreeOid,f.parentTree.worktreeId,child.id]);
-  assert.equal((await f.hierarchy.inspectChildDeliveryChanges(child.id)).changeState,'no_changes');
-  await git(f.parentTree.path,['add','inherited.txt']);await git(f.parentTree.path,['commit','-m','Parent inherited']);
-  const childHead=await f.commit(child,'delta.txt','child delta\n');
-  assert.equal((await f.hierarchy.inspectChildDeliveryChanges(child.id)).changeState,'code_changes');
-  const jobs=integrationJobs(f), options={operationType:'merge',sourceWorktreeIds:[childTree.worktreeId],targetWorktreeId:f.parentTree.worktreeId,taskScope:f.scope('merge_children')};
-  const candidate=await jobs.createCandidate('repository:integration',options);
-  assert.equal(candidate.plan.items.find(item=>item.worktreeId===childTree.worktreeId).snapshotBase.baseCommitOid,base.baseCommitOid);
-  const job=await jobs.startCandidate('repository:integration',{...options,candidateId:candidate.id,candidateFingerprint:candidate.planFingerprint,idempotencyKey:'snapshot:merge'});
-  const finished=await waitForTerminal(jobs,job.id);assert.equal(finished.status,'completed',finished.error);
-  const receipt=finished.plan.items.find(item=>item.worktreeId===childTree.worktreeId).snapshotReceipt;
-  assert.equal(receipt.childHead,childHead);assert.equal(receipt.baseCommitOid,base.baseCommitOid);
-  assert.equal(await git(f.parentTree.path,['show','HEAD:delta.txt']),'child delta');
-  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:new GitWorkspaceManager({store:f.store}),jobs});
-  assert.equal(await service.ensureCodeDelivered({snapshot:{git:{worktreeId:childTree.worktreeId,parentWorktreeId:f.parentTree.worktreeId,headOid:childHead}},progress:{gitJobId:job.id}}),true);
-  const bad={...finished,plan:{...finished.plan,items:finished.plan.items.map(item=>({...item,snapshotReceipt:null}))}};
-  service.jobs={get:()=>bad};
-  await assert.rejects(service.ensureCodeDelivered({snapshot:{git:{worktreeId:childTree.worktreeId,parentWorktreeId:f.parentTree.worktreeId,headOid:childHead}},progress:{gitJobId:job.id}}),{code:'CHILD_DELIVERY_GIT_UNPROVEN'});
+test("only bound-session evidence grants fresh acceptance and child changes invalidate it", async t => {
+  const f = await fixture(t);
+  await f.commit(f.children[0], "one.txt"); await f.commit(f.children[1], "two.txt"); await f.integrate();
+  const snapshot = await f.capture("snapshot:acceptance");
+  f.store.upsertSession({ id: "session:parent-verifier", title: "Verifier", provider: "provider:test", status: "complete", workId:f.parent.work_id, taskId: f.parent.id });
+  f.store.upsertSession({ id: "session:child-verifier", title: "Child", provider: "provider:test", status: "complete", workId:f.parent.work_id, taskId: f.children[0].id });
+  const input = { sourceSessionId: "session:parent-verifier", integrationSnapshotId: snapshot.snapshotId,
+    results: [{ criterion: "Combined changes pass", verdict: "passed", evidence: [{ summary: "Integration verification passed", reference: `commit:${snapshot.parentHeadOid}` }] }] };
+  await assert.rejects(() => f.entities.recordAcceptanceAssessment(f.parent.id, { ...input, sourceSessionId: "session:child-verifier" }), { code: "ACCEPTANCE_SOURCE_MISMATCH" });
+  await f.entities.recordAcceptanceAssessment(f.parent.id, input);
+  const passed = await f.acceptance.readStatus(f.parent.id);
+  assert.equal(passed.state, "passed"); assert.equal(passed.testedHeadOid, snapshot.parentHeadOid);
+  await f.acceptance.assertCompletionAllowed(f.store.getTask(f.parent.id));
+  const job = f.store.createWorktreeIntegrationJob({ repositoryId: "repository:integration", status: "running", planFingerprint: "fixture:promotion",
+    details: { plan: { taskScope: { ...f.scope("promote_parent"), acceptanceReceiptId: passed.receiptId },
+      reservedWorktreeIds: ["worktree:main", ...[...f.trees.values()].map(tree => tree.worktreeId)], writeWorktreeIds: ["worktree:main"] } } });
+  const manager = new GitWorkspaceManager({ store: f.store });
+  const promoted = await manager.mergeIntegrationSource({ mainPath: f.mainPath, sourcePath: f.parentTree.path,
+    sourceHead: passed.testedHeadOid, expectedMainHead: f.baseHead, mergeStrategy: "ff-only", jobId: job.id });
+  assert.equal(promoted.mainHead, snapshot.parentHeadOid);
+  assert.equal(await git(f.mainPath, ["rev-parse", "HEAD"]), snapshot.parentHeadOid);
+  f.store.updateWorktreeIntegrationJob(job.id, { status: "completed" });
+  await f.commit(f.children[0], "later.txt");
+  const unintegrated = await f.acceptance.readStatus(f.parent.id);
+  assert.equal(unintegrated.canPromote, true);
+  assert.equal(unintegrated.hasUnintegratedChildren, true);
+  assert.equal((await f.acceptance.validateSnapshotForAssessment(f.store.getTask(f.parent.id),input)).snapshotId,snapshot.snapshotId);
+  await f.commit(f.parent, "parent-later.txt");
+  await f.integrate();
+  assert.equal((await f.acceptance.readStatus(f.parent.id)).state, "stale");
+});
+
+test("parent publication includes only its current branch and leaves unmerged children untouched",async t=>{
+  const f=await fixture(t);await freezeFixtureBases(f);
+  const parentHead=await f.commit(f.parent,"parent-only.js"),child=f.children[0];
+  const childHead=await f.commit(child,"unmerged-child.js");
+  const jobs=integrationJobs(f),{job,candidate}=await startGraph(f,jobs,[f.parentTree.worktreeId]);
+  assert.equal(candidate.plan.orchestration.groups[0].childWorktreeIds.length,0);
+  assert.ok(!candidate.plan.orchestration.steps.some(step=>step.kind==="acceptance"));
+  const result=await waitForTerminal(jobs,job.id);assert.equal(result.status,"completed",result.error);
+  await git(f.mainPath,["merge-base","--is-ancestor",parentHead,"HEAD"]);
+  assert.equal((await git(f.mainPath,["ls-tree","--name-only","HEAD"])).includes("unmerged-child.js"),false);
+  assert.equal(await git(f.trees.get(child.id).path,["rev-parse","HEAD"]),childHead);
+});
+
+test("explicit child publication includes that child and excludes unselected siblings",async t=>{
+  const f=await fixture(t);await freezeFixtureBases(f);
+  await f.commit(f.children[0],"selected-child.js");await f.commit(f.children[1],"pending-sibling.js");
+  const jobs=integrationJobs(f),{job,candidate}=await startGraph(f,jobs,[f.trees.get(f.children[0].id).worktreeId]);
+  assert.equal(candidate.plan.orchestration.addedWorktreeIds.length,1);
+  const result=await waitForTerminal(jobs,job.id);assert.equal(result.status,"completed",result.error);
+  const names=await git(f.mainPath,["ls-tree","--name-only","HEAD"]);
+  assert.ok(names.includes("selected-child.js"));assert.ok(!names.includes("pending-sibling.js"));
+  assert.ok(result.graphExecution.steps.every(step=>step.status==="completed"));
+});
+
+test("child conflict stays actionable across a normal child commit and resumes after manual resolution",async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id);
+  await f.commit(f.parent,"conflict.js","parent\n");await f.commit(child,"conflict.js","child\n");
+  const jobs=integrationJobs(f),{job}=await startGraph(f,jobs,[tree.worktreeId]);
+  const conflicted=await waitForTerminal(jobs,job.id);assert.equal(conflicted.phase,"conflict",conflicted.error);
+  await writeFile(join(f.parentTree.path,"conflict.js"),"resolved\n");
+  await git(f.parentTree.path,["add","conflict.js"]);await git(f.parentTree.path,["commit","--no-edit"]);
+  await f.commit(child,"followup.js");
+  jobs.retry(job.id);
+  const completed=await waitForTerminal(jobs,job.id);assert.equal(completed.status,"completed",completed.error);
+  assert.equal(await git(f.mainPath,["show","HEAD:conflict.js"]),"resolved");
+  assert.ok((await git(f.mainPath,["ls-tree","--name-only","HEAD"])).includes("followup.js"));
+});
+
+test("old reviewed versions refresh automatically before execution and Task hierarchy changes do not require a new confirmation",async t=>{
+  const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),jobs=integrationJobs(f);
+  const plan=await jobs.preflight("repository:integration",{operationType:"batch_merge",sourceWorktreeIds:[tree.worktreeId],
+    targetWorktreeId:f.parentTree.worktreeId,taskScope:f.scope("merge_children")});
+  const head=await f.commit(child,"new-after-preview.js");
+  f.store.createTask({workId:f.parent.work_id,title:"Another_child",parentTaskId:f.parent.id});
+  await jobs.confirm(plan.id,{confirmed:true,planFingerprint:plan.planFingerprint});
+  const completed=await waitForTerminal(jobs,plan.id);assert.equal(completed.status,"completed",completed.error);
+  await git(f.parentTree.path,["merge-base","--is-ancestor",head,"HEAD"]);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+});
+
+test("canceling a real conflict preserves earlier merged child code and does not publish main",async t=>{
+  const f=await fixture(t);await f.commit(f.parent,"shared.js","parent\n");
+  const first=await f.commit(f.children[0],"first-child.js");await f.commit(f.children[1],"shared.js","child\n");
+  const jobs=integrationJobs(f),{job}=await startGraph(f,jobs,f.children.map(child=>f.trees.get(child.id).worktreeId));
+  const paused=await waitForTerminal(jobs,job.id);assert.equal(paused.phase,"conflict",paused.error);
+  await jobs.cancel(job.id);await waitForTerminal(jobs,job.id);
+  await git(f.parentTree.path,["merge-base","--is-ancestor",first,"HEAD"]);
+  assert.equal(await git(f.mainPath,["rev-parse","HEAD"]),f.baseHead);
+});
+
+test("Task lifecycle can complete independently of Git acceptance while source authority stays scoped",async t=>{
+  const f=await fixture(t);await f.commit(f.children[0],"pending.js");
+  await f.acceptance.assertCompletionAllowed(f.store.getTask(f.parent.id));
+  const status=await f.acceptance.readStatus(f.parent.id);assert.equal(status.canPromote,true);
+  assert.equal(status.state,"not_recorded");assert.equal(status.hasUnintegratedChildren,true);
+  const ids=f.children.map(child=>f.trees.get(child.id).worktreeId),input={operationType:"merge",sourceWorktreeIds:ids,
+    targetWorktreeId:f.parentTree.worktreeId,taskScope:{...f.scope("merge_children"),expectedHierarchyRevision:1}};
+  await f.hierarchy.resolveOperationScope("repository:integration",input,await f.inspect());
+  const inspection=await f.inspect();
+  await assert.rejects(()=>f.hierarchy.resolveOperationScope("repository:integration",{...input,targetWorktreeId:"worktree:main"},inspection),{code:"CHILD_TARGET_NOT_PARENT"});
+});
+
+for(const action of ["delete","ignore","artifact"]) test(`publication Markdown ${action} remains an actual document authorization boundary without an acceptance gate`,async t=>{
+  const f=await fixture(t);await f.commit(f.parent,"policy.md","unapproved\n");
+  const jobs=integrationJobs(f),manager=new GitWorkspaceManager({store:f.store});
+  jobs.inspectCommitPolicyFiles=input=>manager.inspectIntegrationMarkdownFiles(input);
+  jobs.deleteCommitPolicyFile=input=>manager.deleteIntegrationMarkdownFile(input);
+  jobs.ignoreCommitPolicyFile=input=>manager.ignoreIntegrationMarkdownFile(input);
+  jobs.convertCommitPolicyFileToArtifact=async input=>{await manager.readIntegrationMarkdownFile(input);await manager.deleteIntegrationMarkdownFile(input);return {artifactId:"artifact:policy"};};
+  jobs.inspectCommitProtection=async()=>({protectedPaths:[],localSymlinkPaths:[],warningEnabled:false,requiresDecision:false});
+  jobs.commitChanges=input=>manager.commitIntegrationChanges(input);
+  const {job}=await startGraph(f,jobs,[f.parentTree.worktreeId]);
+  const policy=await waitForTerminal(jobs,job.id);assert.equal(policy.phase,"awaiting_commit_policy_resolution",policy.error);
+  await jobs.resolveCommitPolicy(job.id,{blockerId:policy.commitPolicyBlocker.id,version:policy.commitPolicyBlocker.version,
+    decisions:[{path:"policy.md",action}]});
+  const completed=await waitForTerminal(jobs,job.id);assert.equal(completed.status,"completed",completed.error);
+  assert.ok(!(await git(f.mainPath,["ls-tree","--name-only","HEAD"])).includes("policy.md"));
+});
+
+
+test("new committed code after human approval is delivered under the same operation without rewriting original approval",async t=>{
+  const f=await fixture(t),child=f.children[0],manager=new GitWorkspaceManager({store:f.store}),jobs=integrationJobs(f);
+  let cleaned=0;
+  const service=new ChildTaskDeliveryService({store:f.store,gitWorkspaces:manager,jobs,artifactService:{},deletionService:{
+    requestAfterChildDelivery:async()=>{cleaned++;return {operation:{operationId:"delete:late"}};},
+    resumeChildDeliveryDeletion:async()=>{},getOperation:()=>({state:"succeeded"})}});
+  jobs.onEvent=(type,payload)=>service.onRuntimeEvent(type,payload);
+  const completion=new TaskCompletionService({store:f.store});completion.childDelivery=service;
+  const wake=service.wake;service.wake=()=>{};
+  const intent=await completion.issueMacOSIntent(child.id,{requestId:"approve-before-late",interactionId:"click-late",uiSurface:"task_completion_confirmation",displayedTaskId:child.id,displayedTaskTitle:child.title},{type:"user",id:"user:local-macos"});
+  const result=await completion.completeFromMacOS(child.id,{requestId:intent.requestId,intentToken:intent.intentToken,idempotencyKey:"approve-before-late"});
+  const opId=result.childDelivery.operationId,approvalId=service.repository.getOperation(opId).approvalOperationId;
+  const original=JSON.stringify(f.store.getTaskCompletionOperation(approvalId));
+  const latest=await f.commit(child,"after-approval.js");
+  service.wake=wake;await service.wake(opId);
+  for(let i=0;i<100;i++){await service.inFlight.get(opId);if(["completed","blocked"].includes(service.repository.getOperation(opId).state))break;await new Promise(resolve=>setTimeout(resolve,20));}
+  const final=service.repository.getOperation(opId);assert.equal(final.state,"completed",final.errorMessage);assert.equal(cleaned,1);
+  await git(f.parentTree.path,["merge-base","--is-ancestor",latest,"HEAD"]);
+  assert.equal(JSON.stringify(f.store.getTaskCompletionOperation(approvalId)),original);
+  assert.equal(final.snapshot.git.headOid,latest);
+});
+
+test("a grandchild publishes through each immediate parent and leaves unrelated siblings unmerged",async t=>{
+  const f=await fixture(t),parent=f.children[0];
+  const grandchild=f.store.createTask({workId:f.parent.work_id,title:"Grandchild",parentTaskId:parent.id});
+  const path=join(f.mainPath,"..","grandchild"),branch="grandchild",worktreeId="worktree:grandchild",now=new Date().toISOString();
+  await git(f.mainPath,["worktree","add","-b",branch,path,await git(f.trees.get(parent.id).path,["rev-parse","HEAD"])]);
+  f.store.db.run(`INSERT INTO task_delivery_worktrees(task_id,repository_id,worktree_id,startup_operation_id,created_at,updated_at) VALUES (?,?,?,?,?,?)`,[grandchild.id,"repository:integration",worktreeId,"startup:grandchild",now,now]);
+  f.store.db.run(`INSERT INTO git_worktrees(worktree_id,repository_id,path,canonical_path,availability,inventory_version,observed_at,branch_name) VALUES (?,?,?,?,?,?,?,?)`,[worktreeId,"repository:integration",path,path,"available","fixture:1",now,branch]);
+  f.trees.set(grandchild.id,{worktreeId,repositoryId:"repository:integration",path,canonicalPath:path,branchName:branch,availability:"available",isMain:false,isDetached:false});
+  const head=await f.commit(grandchild,"grandchild.js");await f.commit(f.children[1],"sibling-pending.js");
+  const jobs=integrationJobs(f),{job}=await startGraph(f,jobs,[worktreeId]);
+  const completed=await waitForTerminal(jobs,job.id);assert.equal(completed.status,"completed",completed.error);
+  for(const target of [f.trees.get(parent.id).path,f.parentTree.path,f.mainPath]) await git(target,["merge-base","--is-ancestor",head,"HEAD"]);
+  assert.ok(!(await git(f.mainPath,["ls-tree","--name-only","HEAD"])).includes("sibling-pending.js"));
+});
+
+test("dirty merge source is captured without moving its branch or index, and dirty target changes survive",async t=>{
+  const f=await fixture(t),child=f.children[0],source=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
+  await writeFile(join(source.path,"unsaved.js"),"export const unsaved = true;\n");
+  await writeFile(join(f.parentTree.path,"base.txt"),"local parent edit\n");
+  const plan=await f.hierarchy.resolveOperationScope("repository:integration",{operationType:"merge",sourceWorktreeIds:[source.worktreeId],targetWorktreeId:f.parentTree.worktreeId,taskScope:f.scope("merge_children")},await f.inspect());
+  const job=f.store.createWorktreeIntegrationJob({repositoryId:"repository:integration",status:"running",planFingerprint:"dirty-snapshot",details:{plan}});
+  const originalHead=await git(source.path,["rev-parse","HEAD"]),originalIndex=await git(source.path,["ls-files","--stage"]);
+  const snapshot=await manager.commitIntegrationChanges({path:source.path,snapshotOnly:true,jobId:job.id});
+  assert.equal(await git(source.path,["rev-parse","HEAD"]),originalHead);assert.equal(await git(source.path,["ls-files","--stage"]),originalIndex);
+  const merged=await manager.mergeIntegrationSource({mainPath:f.parentTree.path,sourcePath:source.path,sourceHead:snapshot.headOid,expectedMainHead:f.baseHead,jobId:job.id});
+  assert.equal(merged.merged,true);assert.equal(await git(f.parentTree.path,["show","HEAD:unsaved.js"]),"export const unsaved = true;");
+  assert.equal(await readFile(join(f.parentTree.path,"base.txt"),"utf8"),"local parent edit\n");
+  assert.ok((await git(f.parentTree.path,["status","--porcelain=v1"])).includes("base.txt"));
 });

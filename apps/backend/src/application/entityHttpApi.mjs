@@ -990,7 +990,7 @@ export function handleEntityHttpRequest({
         const input = await readJson(request);
         rejectUnknownFields(input, new Set([
           "mode", "acknowledgeDataLoss", "deleteWorktree", "artifactDisposition",
-          "idempotencyKey"
+          "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration", "idempotencyKey"
         ]));
         return sendJson(response, 202, await deleteTaskSafely(
           decodeURIComponent(deleteTaskMatch[1]), input, localMacUserActor()
@@ -1810,7 +1810,7 @@ function presentTaskWithScheduledWake(workService, task, hierarchy = null) {
   const summary = (hierarchy ?? workService.store.hierarchySummaries?.([task.id]))?.get(task.id);
   return presentTaskAcceptance(task, {
     hierarchy: summary,
-    coordinationDispatches: !task.parent_task_id && (task.coordination_enabled === 1 || summary?.childCount > 0)
+    coordinationDispatches: (task.coordination_enabled === 1 || summary?.childCount > 0)
       ? workService.store.listTaskCoordinationDispatches?.(task.id) ?? [] : [],
     hasPendingScheduledWake: workService.store.hasPendingScheduledWakeForTask(task.id)
   });

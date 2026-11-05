@@ -1597,7 +1597,16 @@ const {
   store, inspectTaskWorktree, removeTaskDeletionWorktree,
   sessionApplicationService, artifactService, emitEvent,
   workService, sessionRuntimeReleaseService, sessionWorktrees,
-  ensureTaskWorkspace
+  ensureTaskWorkspace,
+  cancelTaskStartup: taskId => workSessionStartApplicationService.cancelForTaskDeletion(taskId),
+  cleanupTaskExecutionSpaces: taskId => workSessionStartApplicationService.managedSandboxCoordinator?.cleanupForTaskDeletion(taskId),
+  cancelTaskIntegration: async (jobId, { actor, taskId }) => {
+    const job = store.getWorktreeIntegrationJob(jobId);
+    if (!job) return;
+    const task = store.getTask(taskId);
+    if (actor?.type === "parent_session" && job.workId && job.workId !== task?.work_id) throw Object.assign(new Error("集成作业不在当前 Work。"), { code: "TASK_DELETE_FORBIDDEN" });
+    return worktreeIntegrationJobService.cancel(jobId);
+  }
 });
 taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
 taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService, emitEvent,
@@ -1607,7 +1616,7 @@ taskCoordinationService = new TaskCoordinationService({ store, collaboration: se
 sessionCollaborationService.taskCoordinationService = taskCoordinationService;
 sessionApplicationService.coordinationTurns = new CoordinationTurnService({
   store, registry: agentProviderRegistry, planner: backgroundAgentService,
-  dispatch: taskCoordinationService, emitEvent, resolveReference: requireSessionReference,
+  dispatch: taskCoordinationService, contextRead: contextReadService, emitEvent, resolveReference: requireSessionReference,
   onTerminal: ({ reference, turnId, status }) => handleCommittedProviderTerminalLifecycle({
     event: { type: `turn.${status}`, turnId, source: "host-coordination" },
     projection: { session: store.getSession(reference.sessionId), terminalStatus: status },
@@ -1618,9 +1627,9 @@ workService.assertCoordinationCanEnable = task => sessionApplicationService.coor
 workService.onCoordinationChanged = taskId => sessionApplicationService.coordinationTurns.policyChanged(taskId);
 toolHostService.assertExecutionAllowed = input => {
   const id = input.metadata?.logicalSessionId;
-  if (id && sessionApplicationService.coordinationTurns.enabled(requireSessionReference(id))) {
-    throw Object.assign(new Error("强协调模式禁止父会话调用原生工具；开发必须由子任务执行。"), {
-      code: "COORDINATION_NATIVE_TOOL_DENIED", statusCode: 403
+  if (id && input.executionEffect !== "read" && sessionApplicationService.coordinationTurns.enabled(requireSessionReference(id))) {
+    throw Object.assign(new Error("协调会话可以执行已声明的只读查询；开发写入请派发给子任务。"), {
+      code: "COORDINATION_WRITE_REQUIRES_DISPATCH", statusCode: 403
     });
   }
 };
@@ -2511,6 +2520,7 @@ function startBackendRuntime() {
   channelMailbox.recoverInterruptedBatches();
   sessionMailbox.importQueuedAutomations();
   executionChecklistService.recover(registerRuntimeQueuedWork);
+  sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();

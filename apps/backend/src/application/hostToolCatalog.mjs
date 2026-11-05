@@ -129,6 +129,8 @@ export class HostToolCatalog {
         domainRevision: requiredText(rawDefinition?.domainRevision ?? domainRevision, "tool.domainRevision"),
         exposure: normalizedExposure(rawDefinition?.exposure ?? exposure),
         definition: Object.freeze(definition),
+        // Explicit resource capability, not inferred from a tool's name.
+        executionEffect: rawDefinition.executionEffect === "read" ? "read" : "write",
         aliases: Object.freeze(aliases),
         source: normalizedSource(rawDefinition?.source ?? source),
         eligibleSurfaces: normalizedSurfaces(rawDefinition?.eligibleSurfaces ?? eligibleSurfaces),
@@ -407,8 +409,9 @@ function normalizedDefinition(input) {
   const inputSchema = input?.inputSchema && typeof input.inputSchema === "object"
     ? { ...input.inputSchema, additionalProperties: false }
     : strictObject();
+  const {executionEffect, ...providerDefinition}=input;
   return {
-    ...input,
+    ...providerDefinition,
     name,
     inputSchema: Object.freeze(inputSchema),
     deferLoading: input?.deferLoading === true

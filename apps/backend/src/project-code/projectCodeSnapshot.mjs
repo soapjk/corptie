@@ -47,9 +47,6 @@ export class StartupBindingReceiptConsumer {
     const [commitOid, treeOid] = parseSourceIdentity(await this.runGit(
       receipt.canonicalWorktreePath, ["rev-parse", "HEAD", "HEAD^{tree}"], options
     ));
-    if (commitOid !== receipt.sourceCommitOid || treeOid !== receipt.sourceTreeOid) {
-      throw contractError("STARTUP_SOURCE_CHANGED", "The authoritative Worktree HEAD changed after StartupBindingReceipt was issued.");
-    }
     return Object.freeze({ receipt, workspace: checked, commitOid, treeOid });
   }
 
@@ -59,10 +56,7 @@ export class StartupBindingReceiptConsumer {
     const [commitOid, treeOid] = parseSourceIdentity(await this.runGit(
       receipt.canonicalWorktreePath, ["rev-parse", "HEAD", "HEAD^{tree}"], options
     ));
-    if (commitOid !== receipt.sourceCommitOid || treeOid !== receipt.sourceTreeOid) {
-      throw contractError("STARTUP_SOURCE_CHANGED", "The authoritative Worktree HEAD changed after StartupBindingReceipt was issued.");
-    }
-    return true;
+    return Object.freeze({ commitOid, treeOid });
   }
 }
 
@@ -91,8 +85,8 @@ export class RepositorySourceSnapshotBuilder {
       schemaVersion: "source-fingerprint/v2",
       repositoryId: input.startupReceipt.repositoryId,
       worktreeId: input.startupReceipt.worktreeId,
-      commitOid: input.startupReceipt.sourceCommitOid,
-      treeOid: input.startupReceipt.sourceTreeOid,
+      commitOid: verified.commitOid,
+      treeOid: verified.treeOid,
       overlayManifest: overlay.entries,
       ignoreConfigRevision: ignoreConfig.payload
     };
@@ -108,8 +102,8 @@ export class RepositorySourceSnapshotBuilder {
       logicalSessionId: input.startupReceipt.logicalSessionId,
       repositoryId: input.startupReceipt.repositoryId,
       worktreeId: input.startupReceipt.worktreeId,
-      sourceCommitOid: input.startupReceipt.sourceCommitOid,
-      sourceTreeOid: input.startupReceipt.sourceTreeOid,
+      sourceCommitOid: verified.commitOid,
+      sourceTreeOid: verified.treeOid,
       dirtyOverlayRef: {
         schemaVersion: 1,
         manifestHash: hashCanonical(overlay.entries),
@@ -145,15 +139,52 @@ export class RepositorySourceSnapshotBuilder {
     });
   }
 
+  async pointReadHistorical(input) {
+    await validateProjectCodeReceipt(input.receipt,"RepositorySourceSnapshotReceipt");
+    verifyReceiptHash(input.receipt,"SOURCE_SNAPSHOT_HASH_MISMATCH");
+    for(const field of ["workId","taskId","logicalSessionId"]) if(input.receipt[field]!==input.sessionContext[field])
+      throw contractError("STARTUP_BINDING_MISMATCH","Historical Snapshot belongs to another Session.",403);
+    const verified=await this.startupConsumer.verify(input.startupReceipt,input.binding,input.sessionContext,{signal:input.signal});
+    if(input.receipt.worktreeId!==input.startupReceipt.worktreeId || input.receipt.repositoryId!==input.startupReceipt.repositoryId)
+      throw contractError("STARTUP_BINDING_MISMATCH","Historical Snapshot belongs to another Worktree.",403);
+    // Dirty overlay bytes were never archived by this contract. Do not return
+    // current bytes and pretend they are an exact historical snapshot.
+    if(input.receipt.dirtyOverlayRef.entryCount>0) throw contractError("SNAPSHOT_CONTENT_UNAVAILABLE","This historical dirty overlay was not retained.",404);
+    const path=normalizeRelativePath(input.path);
+    if(defaultExclusionReason(path)) throw contractError("PATH_OUTSIDE_SCOPE","Excluded source path.",403);
+    const root=verified.workspace.canonicalPath,oid=input.receipt.sourceCommitOid;
+    const entry=await this.runGit(root,["ls-tree","-z",oid,"--",path],{signal:input.signal});
+    if(!/^100[0-7]{3} blob [0-9a-f]+\t/.test(entry)) throw contractError("PATH_OUTSIDE_SCOPE","Historical source is missing or not a regular file.",404);
+    const bounded=(value,fallback,max)=>{
+      const result=value ?? fallback;
+      if(!Number.isSafeInteger(result) || result<1 || result>max) throw contractError("QUERY_INVALID","Invalid read window.",400);
+      return result;
+    };
+    const startLine=bounded(input.startLine,1,Number.MAX_SAFE_INTEGER),lineCount=bounded(input.lineCount,200,2000);
+    const maxBytes=bounded(input.maxBytes,65536,65536),maxScan=bounded(input.maxScanBytes,8*1024*1024,64*1024*1024);
+    const size=Number((await this.runGit(root,["cat-file","-s",`${oid}:${path}`],{signal:input.signal})).trim());
+    if(size>maxScan) throw contractError("SOURCE_READ_SCAN_LIMIT","Historical source exceeds the requested scan window.");
+    const text=await this.runGit(root,["show",`${oid}:${path}`],{signal:input.signal,maxBuffer:maxScan+1024});
+    const all=text.split(/\r?\n/);if(all.at(-1)==="")all.pop();
+    const lines=[];let bytes=0;
+    for(const line of all.slice(startLine-1,startLine-1+lineCount)) {
+      const n=Buffer.byteLength(line)+1;if(bytes+n>maxBytes)break;lines.push(line);bytes+=n;
+    }
+    const eof=startLine-1+lines.length>=all.length;
+    return Object.freeze({path,startLine,lines:Object.freeze(lines),nextStartLine:startLine+lines.length,eof,
+      truncated:!eof,truncatedReason:eof ? null : lines.length<lineCount ? "max_bytes" : "line_count"});
+  }
+
   async assertCurrent(snapshot, options = {}) {
-    const [, overlay, ignoreConfig] = await Promise.all([
+    const [source, overlay, ignoreConfig] = await Promise.all([
       this.startupConsumer.verifyCurrent(
         snapshot.startupReceipt, snapshot.binding, snapshot.sessionContext, snapshot.workspaceIdentity, { signal: options.signal }
-      ).then(() => null),
+      ),
       collectDirtyOverlay(snapshot.canonicalWorktreePath, { runGit: this.runGit, signal: options.signal, declarations: snapshot.declarations }),
       collectCurrentIgnoreConfigRevision(snapshot.ignoreConfigSources, snapshot.declarations)
     ]);
-    if (hashCanonical(overlay.entries) !== snapshot.receipt.dirtyOverlayRef.manifestHash
+    if (source.commitOid !== snapshot.receipt.sourceCommitOid || source.treeOid !== snapshot.receipt.sourceTreeOid
+      || hashCanonical(overlay.entries) !== snapshot.receipt.dirtyOverlayRef.manifestHash
       || overlay.ignoreConfigChanges.some((path) => !snapshot.ignoreConfigSources.some((source) => source.relativePath === path))
       || hashCanonical(ignoreConfig.payload) !== snapshot.receipt.ignoreConfigRevisionRef.revisionHash) {
       throw contractError("SOURCE_SNAPSHOT_STALE", "Worktree overlay or project-code configuration changed after Snapshot preflight.");
@@ -164,7 +195,7 @@ export class RepositorySourceSnapshotBuilder {
 
 export async function resolveCandidateCatalog(root, options = {}) {
   const raw = await options.runGit(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], options);
-  const paths = raw.split("\0").filter(Boolean).sort(compareUtf8);
+  const paths = [...new Set(raw.split("\0").filter(Boolean))].sort(compareUtf8);
   const candidates = [];
   const rejectedPaths = [];
   for (const value of paths) {
@@ -221,8 +252,13 @@ export async function collectDirtyOverlay(root, options = {}) {
     } else if (item.state === "delete") {
       entries.push(tombstoneEntry(item.path, item.stageState, null));
     } else {
-      const content = await hashVisiblePath(root, item.path);
-      entries.push(overlayEntry({ ...item, ...content, oldPath: null, renameGroupId: null }));
+      try {
+        const content = await hashVisiblePath(root, item.path);
+        entries.push(overlayEntry({ ...item, ...content, oldPath: null, renameGroupId: null }));
+      } catch(cause) {
+        if(cause.code!=="ENOENT") throw cause;
+        entries.push(tombstoneEntry(item.path,item.stageState,null));
+      }
     }
   }
   entries.sort((left, right) => compareUtf8(left.path, right.path));
@@ -302,7 +338,12 @@ export function parsePorcelainV2(raw) {
       if (!match || !fields[index + 1]) throw contractError("SOURCE_SNAPSHOT_STALE", "Git returned an invalid porcelain v2 rename entry.");
       entries.push({ path: normalizeRelativePath(match[9]), oldPath: normalizeRelativePath(fields[++index]), state: "rename", stageState: match[1] });
     } else if (line.startsWith("u ")) {
-      throw contractError("SOURCE_SNAPSHOT_STALE", "Unmerged source state cannot produce an authoritative Snapshot.");
+      const match = line.match(/^u (\S{2}) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (.+)$/s);
+      if (!match) throw contractError("GIT_STATUS_INVALID", "Git returned an invalid unmerged entry.");
+      const path = normalizeRelativePath(match[10]);
+      // Keep the existing overlay contract: stageState carries UU/DU/etc.;
+      // the visible conflict markers are ordinary readable source content.
+      entries.push({ path, state: "modify", stageState: match[1] });
     }
   }
   return entries;
@@ -394,8 +435,7 @@ function assertStartupAuthority(receipt, binding, sessionContext) {
       throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} does not match the authenticated Session binding.`);
     }
   }
-  for (const field of ["repositoryId", "worktreeId", "providerBindingId", "bindingGeneration",
-    "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion"]) {
+  for (const field of ["repositoryId", "worktreeId", "providerBindingId", "bindingGeneration"]) {
     if (binding && receipt[field] !== binding[field]) {
       throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} is stale.`);
     }
@@ -452,7 +492,7 @@ async function assertKnownWorkspaceIdentity(receipt, workspace) {
 function parseSourceIdentity(raw) {
   const values = String(raw).split(/\r?\n/).filter(Boolean);
   if (values.length !== 2 || values.some((value) => !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(value))) {
-    throw contractError("STARTUP_SOURCE_CHANGED", "Git returned an invalid authoritative HEAD/tree identity.");
+    throw contractError("GIT_SOURCE_IDENTITY_INVALID", "Git returned an invalid HEAD/tree identity.");
   }
   return values;
 }

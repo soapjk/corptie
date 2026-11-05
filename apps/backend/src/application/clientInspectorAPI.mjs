@@ -84,7 +84,7 @@ export class ClientInspectorAPI {
         title: task.title, revision: task.revision, priority: task.priority, mainAgentId: task.main_agent_id, lifecycleState: task.lifecycle_state,
         autoTitleEnabled: task.auto_title_enabled !== 0,
         coordinationEnabled: task.coordination_enabled === 1,
-        coordinationDispatches: !task.parent_task_id ? this.store.listTaskCoordinationDispatches?.(task.id) ?? [] : [],
+        coordinationDispatches: this.store.listTaskCoordinationDispatches?.(task.id) ?? [],
         parentTaskId: task.parent_task_id ?? null,
         hierarchy: this.store.hierarchySummaries?.([task.id]).get(task.id) ?? null,
         agents: (this.store.getWork(workId)?.contributorAgentIds ?? []).map(id => {

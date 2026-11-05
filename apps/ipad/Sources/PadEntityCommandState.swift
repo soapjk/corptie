@@ -173,9 +173,6 @@ final class PadEntityCommandState {
         case "TASK_ARCHIVE_BUSY": return "请先停止 Task 执行，再归档。"
         case "TASK_ARCHIVE_PENDING_WAKE": return "请先取消等待执行的计划任务，再归档。"
         case "TASK_SESSION_NOT_FOUND", "SESSION_NOT_AVAILABLE": return "该 Task 没有可重启的会话。"
-        case "TASK_DELETE_BLOCKED": return "当前无法安全删除该 Task，请先处理阻止项。"
-        case "TASK_DELETE_RISK_CONFIRMATION_REQUIRED", "TASK_FORCE_DELETE_CONFIRMATION_REQUIRED":
-            return "删除需要重新确认风险，请再次打开删除确认。"
         case "TASK_DELETE_FORBIDDEN": return "Mac 端拒绝了此设备的删除请求。"
         case "IDEMPOTENCY_CONFLICT": return "请求与已有记录冲突，未执行；请刷新后重试。"
         case "INVALID_TASK_COMMAND", "INVALID_WORK_COMMAND": return "输入不符合要求，未执行。"

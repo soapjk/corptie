@@ -82,10 +82,8 @@ export function createProjectWorktreeStatusReader({
     const blockedReason = worktree.isMain ? "MAIN_WORKTREE"
       : worktree.availability !== "available" || !baseline || baseline.availability !== "available" ? "WORKTREE_UNAVAILABLE"
       : worktree.operationState || baseline.operationState || worktree.conflictFiles?.length || baseline.conflictFiles?.length ? "GIT_OPERATION_IN_PROGRESS"
-      : worktree.isLocked || baseline.isLocked ? "WORKTREE_LOCKED"
       : worktree.isDetached || !worktree.branchName || !baseline.branchName ? "DETACHED_HEAD"
       : busy ? "SESSION_BUSY"
-      : worktree.dirty !== false || baseline.dirty !== false ? "UNCOMMITTED_CHANGES"
       : null;
     const latest = readLatestJob(logical.repositoryId);
     const job = ["awaiting_confirmation", "queued", "running", "paused", "failed", "cancellation_requested", "replanning"].includes(latest?.status)

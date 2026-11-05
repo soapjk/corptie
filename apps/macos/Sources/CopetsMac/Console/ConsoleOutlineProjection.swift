@@ -134,8 +134,14 @@ struct ConsoleOutlineSnapshot: Sendable {
             for (workID, direct) in Dictionary(grouping: matching, by: \.workID) {
                 if Task.isCancelled { break }
                 let ids = Set(direct.map(\.id))
-                let missing = Set(direct.compactMap(\.parentID)).subtracting(ids)
-                let parents = missing.isEmpty ? [] : tasks.filter { missing.contains($0.id) }
+                var included = ids
+                var parents: [ConsoleOutlineTaskRecord] = []
+                var pending = direct
+                while let item = pending.popLast() {
+                    if let id = item.parentID, included.insert(id).inserted, let parent = byID[id], parent.workID == workID {
+                        parents.append(parent); pending.append(parent)
+                    }
+                }
                 let records = direct + parents
                 let recordIDs = Set(records.map(\.id))
                 let activity: [String: String] = key.sort == .updated
@@ -148,13 +154,13 @@ struct ConsoleOutlineSnapshot: Sendable {
                 rebuilt.insert(workID)
                 let ordered = key.sort.ordered(direct, id: { $0.id }, title: { $0.title }, updatedAt: { $0.updatedAt },
                     activityAt: { activity[$0.id] }, prioritizesActivity: true) + parents
-                let orderedIDs = TaskHierarchyIndex.visibleOrder(nodes: ordered.map {
-                    .init(id: $0.id, workId: $0.workID, parentTaskId: $0.parentID)
-                }, expanded: source.expanded)
+                let nodes = ordered.map { TaskHierarchyIndex.Node(id: $0.id, workId: $0.workID, parentTaskId: $0.parentID) }
+                let hierarchy = TaskHierarchyIndex(nodes: nodes)
+                let orderedIDs = TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: source.expanded)
                 let roots = orderedIDs.filter { byID[$0]?.parentID == nil }
                 let initial = Set(roots.prefix(WorkOutlineTaskDisclosurePolicy.defaultVisibleCount))
                 result[workID] = ConsoleOutlineComputedGroup(source: source, rootCount: roots.count,
-                    initialIDs: orderedIDs.filter { initial.contains(byID[$0]?.parentID ?? $0) }, allIDs: orderedIDs, nativeIDs: TaskHierarchyIndex.visibleOrder(nodes: ordered.map {
+                    initialIDs: orderedIDs.filter { initial.contains(hierarchy.rootByTaskID[$0] ?? $0) }, allIDs: orderedIDs, nativeIDs: TaskHierarchyIndex.visibleOrder(nodes: ordered.map {
                         .init(id: $0.id, workId: $0.workID, parentTaskId: $0.parentID)
                     }, expanded: recordIDs))
             }

@@ -116,7 +116,7 @@ export function toolDiscoveryContract(entry, domainProfile = domainDiscoveryProf
     recommended: entry.canonicalName === domainProfile.recommendedTool,
     stability: compatibility?.status ?? "canonical",
     compatibility,
-    sideEffect: sideEffect(entry.canonicalName),
+    sideEffect: entry.executionEffect === "read" ? false : sideEffect(entry.canonicalName),
     inputSchema: schema,
     fieldDescriptions: fieldDescriptions(schema),
     constraints: Object.freeze({

@@ -10,8 +10,9 @@ export class ChildTaskDeliveryService {
     this.hierarchy = new TaskWorktreeHierarchyService({store});
     this.inFlight = new Map(); this.pending = new Set();
     this.prepareProtection=prepareProtection;
+    this.deletionService.prepareChildDelivery = id => this.prepareCleanup(id);
   }
-  async prepareVersion(taskId,{revalidate=()=>{}}={}) {
+  async prepareVersion(taskId,{revalidate=()=>{},operationId=null}={}) {
     revalidate();
     const binding=this.store.getTaskDeliveryBinding(taskId);
     if(binding) {
@@ -23,7 +24,7 @@ export class ChildTaskDeliveryService {
         if(!task?.parent_task_id) throw failure("CHILD_DELIVERY_SCOPE_INVALID","只有子任务可以准备交付版本。");
         await this.gitWorkspaces.prepareChildDeliveryCommit({taskId,parentTaskId:task.parent_task_id,
           repositoryId:binding.repository_id,worktreeId:binding.worktree_id,bindingRevision:binding.binding_revision,
-          path,prepareProtection:this.prepareProtection,
+          path,prepareProtection:this.prepareProtection,operationId,
           verifyPromotion:fixed=>this.artifactService.verifyRepositoryPromotion(fixed),
           revalidate:()=>{revalidate();this.hierarchy.assertIdle([binding.worktree_id],true);}});
       }
@@ -32,7 +33,7 @@ export class ChildTaskDeliveryService {
   }
   async captureVersion(taskId) {
     const task = this.store.getTask(taskId), parent = task?.parent_task_id && this.store.getTask(task.parent_task_id);
-    if (!task || !parent || parent.work_id !== task.work_id || parent.parent_task_id || parent.deletion_status || parent.archived
+    if (!task || !parent || parent.work_id !== task.work_id || parent.deletion_status || parent.archived
       || task.deletion_status || task.archived) throw failure("CHILD_DELIVERY_SCOPE_INVALID","子任务或父任务已不可用。");
     const sessions = this.store.listSessionsByTask(taskId);
     const sessionIds = sessions.flatMap(session => [session.id,this.store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId]).filter(Boolean);
@@ -50,7 +51,7 @@ export class ChildTaskDeliveryService {
         path, branchName: (await this.gitWorkspaces.gitOutput(path,["symbolic-ref","--short","HEAD"])).trim(),
         headOid: (await this.gitWorkspaces.gitOutput(path,["rev-parse","--verify","HEAD"])).trim() };
     } else if (workspace?.repository) throw failure("TASK_DELIVERY_BINDING_CHANGED","仓库任务缺少可证明的交付绑定。");
-    const artifacts = this.ownedArtifacts(taskId,sessionIds).map(artifact => ({ artifactId: artifact.artifactId,
+    const artifacts = this.ownedArtifacts(taskId,sessionIds).filter(artifact=>artifact?.status==="active").map(artifact => ({ artifactId: artifact.artifactId,
       title: artifact.title, resourceVersion: artifact.resourceVersion, currentVersion: artifact.currentVersion,
       status: artifact.status, boundTaskId: artifact.boundTaskId, boundSessionId: artifact.boundSessionId,
       versions: this.store.listArtifactVersions(artifact.artifactId).map(version => ({ version:version.version,contentHash:version.contentHash })) }));
@@ -82,60 +83,51 @@ export class ChildTaskDeliveryService {
     this.inFlight.set(operationId,promise); return promise;
   }
   advance(operation,patch) {
+    const current = this.repository.getOperation(operation.operationId);
+    if (current?.state === "superseded") return current;
     const next=this.repository.advanceOperation(operation,patch);
     this.onEvent("TaskChanged",{action:"child-delivery-state",entity:this.store.getTask(operation.taskId)
       ?? {id:operation.taskId,parentTaskId:operation.parentTaskId,workId:operation.workId},delivery:this.present(next)});
     return next;
   }
   async assertVersion(operation) {
-    const snapshot=operation.snapshot, task=this.store.getTask(operation.taskId), parent=this.store.getTask(operation.parentTaskId);
-    const approval=this.store.getTaskCompletionOperation(operation.approvalOperationId);
-    if(!approval || approval.result!=="succeeded" || approval.taskId!==operation.taskId
-      || approval.details?.childDelivery?.taskId!==operation.taskId) throw failure("CHILD_DELIVERY_APPROVAL_INVALID","找不到有效用户验收凭据。");
-    if(!task || !parent || parent.deletion_status || parent.archived || task.parent_task_id!==parent.id
-      || task.work_id!==snapshot.workId || task.revision!==snapshot.taskRevision
-      || (task.acceptance_criteria ?? "")!==snapshot.acceptanceCriteria || (task.verification_criteria ?? "")!==snapshot.verificationCriteria) {
-      throw failure("CHILD_DELIVERY_VERSION_CHANGED","任务或验收要求已变化，请验收新版本。");
-    }
-    const currentSessions=this.store.listSessionsByTask(task.id);
-    if(currentSessions.some(session=>!snapshot.sessionIds.includes(session.id))) throw failure("CHILD_DELIVERY_VERSION_CHANGED","子任务新增了会话，已保留资源。");
-    const cleanupCheckpoint=operation.progress.previousDeletionOperationId
-      && this.deletionService.getOperation(operation.progress.previousDeletionOperationId)?.result?.cleanup?.worktreeRemoved;
-    if(snapshot.git && !task.deletion_worktree_removed_at && !operation.progress.deletionOperationId && !cleanupCheckpoint) {
-      const binding=this.store.getTaskDeliveryBinding(task.id), parentBinding=this.store.getTaskDeliveryBinding(parent.id);
-      if(binding?.worktree_id!==snapshot.git.worktreeId || binding.binding_revision!==snapshot.git.bindingRevision
-        || parentBinding?.worktree_id!==snapshot.git.parentWorktreeId || parentBinding.binding_revision!==snapshot.git.parentBindingRevision) {
-        throw failure("TASK_DELIVERY_BINDING_CHANGED","父子工作区绑定已变化。");
-      }
-      const head=(await this.gitWorkspaces.gitOutput(snapshot.git.path,["rev-parse","HEAD"])).trim();
-      const dirty=(await this.gitWorkspaces.gitOutput(snapshot.git.path,["status","--porcelain=v1"])).trim();
-      if(head!==snapshot.git.headOid || dirty) throw failure("CHILD_DELIVERY_VERSION_CHANGED","子分支出现新提交或文件，已保留资源。");
-    }
-    const moved=new Map((operation.progress.artifacts ?? []).map(item=>[item.artifactId,item]));
-    for(const pin of snapshot.artifacts) {
+    this.assertAuthority(operation.operationId);
+    return this.refreshDeliveryInputs(operation);
+  }
+  async refreshDeliveryInputs(operation) {
+    const task=this.store.getTask(operation.taskId),parent=this.store.getTask(operation.parentTaskId);
+    if(!task || !parent || task.parent_task_id!==parent.id || task.work_id!==operation.workId
+      || parent.work_id!==operation.workId || parent.archived || parent.deletion_status)
+      throw failure("CHILD_DELIVERY_SCOPE_INVALID","父子任务已不存在或不在当前交付范围。");
+    if(task.deletion_status && operation.progress.previousDeletionOperationId || task.deletion_status==="deleting" || task.deletion_worktree_removed_at || operation.progress.deletionOperationId
+      || operation.progress.previousDeletionOperationId && this.deletionService.getOperation(operation.progress.previousDeletionOperationId)?.result?.cleanup?.worktreeRemoved) return operation;
+    this.assertChildIdle(task.id);
+    const current=await this.prepareVersion(task.id,{operationId:operation.operationId});
+    const progress={...operation.progress};
+    const moved=new Map((progress.artifacts ?? []).map(item=>[item.artifactId,item]));
+    // A transfer receipt already owns all versions at the destination. Keep its
+    // original input for idempotent replay; never claim a resource moved elsewhere.
+    for(const pin of operation.snapshot.artifacts) {
       const artifact=this.store.getArtifact(pin.artifactId);
-      let receipt=moved.get(pin.artifactId);
-      if(!receipt && artifact?.boundTaskId===parent.id) {
-        const recorded=this.store.selectOne("SELECT receipt_json FROM artifact_ownership_operations WHERE session_id=? AND idempotency_key=?",
-          [`local-actor:${operation.actor.id}`,`child-delivery:${operation.operationId}:${pin.artifactId}`]);
-        if(recorded) {
-          const value=JSON.parse(recorded.receipt_json);
-          receipt={artifactId:pin.artifactId,resourceVersion:value.resourceVersion};
-          operation=this.advance(operation,{progress:{...operation.progress,artifacts:[...(operation.progress.artifacts ?? []),receipt]}});
-          moved.set(pin.artifactId,receipt);
+      const saved=this.store.selectOne("SELECT receipt_json FROM artifact_ownership_operations WHERE session_id=? AND idempotency_key=?",
+        [`local-actor:${operation.actor.id}`,`child-delivery:${operation.operationId}:${pin.artifactId}`]);
+      if(artifact?.boundTaskId===parent.id && (moved.has(pin.artifactId) || saved)) {
+        if(!moved.has(pin.artifactId)) {
+          const receipt=JSON.parse(saved.receipt_json);moved.set(pin.artifactId,{artifactId:pin.artifactId,resourceVersion:receipt.resourceVersion});
         }
-      }
-      const versions=this.store.listArtifactVersions(pin.artifactId).map(v=>({version:v.version,contentHash:v.contentHash}));
-      if(!artifact || artifact.status!==pin.status || artifact.currentVersion!==pin.currentVersion
-        || JSON.stringify(versions)!==JSON.stringify(pin.versions)
-        || (receipt ? artifact.boundTaskId!==parent.id || artifact.resourceVersion!==receipt.resourceVersion
-          : artifact.resourceVersion!==pin.resourceVersion || artifact.boundTaskId!==pin.boundTaskId || artifact.boundSessionId!==pin.boundSessionId)) {
-        throw failure("CHILD_DELIVERY_ARTIFACT_CHANGED","Artifact 版本或归属已变化，已停止清理。");
+        if(!current.artifacts.some(item=>item.artifactId===pin.artifactId)) current.artifacts.push(pin);
       }
     }
-    if(this.ownedArtifacts(task.id,snapshot.sessionIds).some(artifact=>!snapshot.artifacts.some(pin=>pin.artifactId===artifact.artifactId))) {
-      throw failure("CHILD_DELIVERY_VERSION_CHANGED","子任务产生了新的 Artifact，已保留资源。");
-    }
+    progress.artifacts=[...moved.values()].filter(item=>current.artifacts.some(pin=>pin.artifactId===item.artifactId));
+    const gitChanged=JSON.stringify(current.git)!==JSON.stringify(operation.snapshot.git);
+    const artifactsChanged=JSON.stringify(current.artifacts)!==JSON.stringify(operation.snapshot.artifacts);
+    if(gitChanged) progress.codeDelivered=false;
+    if(artifactsChanged) progress.artifactsDelivered=false;
+    if(JSON.stringify(current)===JSON.stringify(operation.snapshot) && JSON.stringify(progress)===JSON.stringify(operation.progress)) return operation;
+    // snapshot_json is the existing mutable delivery input; approval_operation_id
+    // still points to the immutable original human completion evidence.
+    return this.advance(operation,{snapshot:current,progress,
+      phase:gitChanged ? "code" : artifactsChanged ? "artifacts" : operation.phase});
   }
   async ensureCodeDelivered(operation) {
     if(!operation.snapshot.git) return true;
@@ -155,6 +147,11 @@ export class ChildTaskDeliveryService {
     if(!snapshotBase && await this.gitWorkspaces.gitSucceeds(path,["merge-base","--is-ancestor",git.headOid,"HEAD"])) return true;
 
     let job=operation.progress.gitJobId && this.jobs.get(operation.progress.gitJobId);
+    if(job && ["queued","running","cancellation_requested","replanning"].includes(job.status)) return false;
+    if(job?.status==="completed") {
+      const source=job.plan?.items?.find(item=>item.worktreeId===git.worktreeId);
+      if((source?.commitHead ?? source?.sourceHeadBefore)!==git.headOid) job=null;
+    }
     if(!job) {
       this.hierarchy.assertIdle([git.worktreeId,git.parentWorktreeId],true);
       job=await this.jobs.createAcceptedChildDelivery(operation);
@@ -186,12 +183,44 @@ export class ChildTaskDeliveryService {
   authorizesCleanup(taskId,id) {
     try { const op=this.assertAuthority(id); return op.taskId===taskId && op.phase==="cleanup"; } catch { return false; }
   }
+  async prepareCleanup(id, { insideDrive = false } = {}) {
+    let operation = this.repository.getOperation(id);
+    if (!operation || operation.state === "superseded") throw failure("CHILD_DELIVERY_APPROVAL_INVALID", "自动交付记录不存在或已被替代。");
+    if (!insideDrive && this.inFlight.has(id)) return operation;
+    if (!["running", "waiting"].includes(operation.state)) operation = this.repository.claimOperation(operation);
+    operation=await this.assertVersion(operation);
+    this.assertChildIdle(operation.taskId);
+    if (!operation.progress.codeDelivered) {
+      operation = this.advance(operation, { phase: "code" });
+      if (!await this.ensureCodeDelivered(operation)) {
+        operation = this.repository.getOperation(id);
+        return this.advance(operation, { state: "waiting" });
+      }
+      operation = this.repository.getOperation(id);
+      operation = this.advance(operation, { progress: { ...operation.progress, codeDelivered: true } });
+    }
+    if (!operation.progress.artifactsDelivered) {
+      operation = this.advance(operation, { phase: "artifacts" });
+      operation = await this.ensureArtifactsDelivered(operation);
+      operation=await this.assertVersion(operation);
+      if(operation.phase==="code" || operation.snapshot.artifacts.some(pin=>!operation.progress.artifacts?.some(receipt=>receipt.artifactId===pin.artifactId))) {
+        this.pending.add(operation.operationId);return this.advance(operation,{state:"waiting"});
+      }
+      operation = this.advance(operation, { progress: { ...operation.progress, artifactsDelivered: true } });
+    }
+    return this.advance(operation, { phase: "cleanup" });
+  }
+
   async ensureCleanup(operation) {
     const existing=operation.progress.deletionOperationId && this.deletionService.getOperation(operation.progress.deletionOperationId);
     if(existing?.state==="succeeded") return operation;
     if(existing?.state==="failed") throw failure("CHILD_DELIVERY_CLEANUP_FAILED",existing.errorMessage || "资源清理失败。");
     const accepted=existing ? {operation:existing} : await this.deletionService.requestAfterChildDelivery(operation);
-    if(!existing) operation=this.advance(operation,{progress:{...operation.progress,deletionOperationId:accepted.operation.operationId}});
+    if (accepted.pendingDelivery) return null;
+    if(!existing) {
+      operation=this.repository.getOperation(operation.operationId);
+      operation=this.advance(operation,{progress:{...operation.progress,deletionOperationId:accepted.operation.operationId}});
+    }
     await this.deletionService.resumeChildDeliveryDeletion(accepted.operation.operationId, operation.operationId);
     const result=this.deletionService.getOperation(accepted.operation.operationId);
     if(result.state!=="succeeded") throw failure("CHILD_DELIVERY_CLEANUP_FAILED",result.errorMessage || "资源清理尚未完成。");
@@ -215,13 +244,24 @@ export class ChildTaskDeliveryService {
       }
       if(operation.phase==="artifacts") {
         operation=await this.ensureArtifactsDelivered(operation);
-        await this.assertVersion(operation);
+        operation=await this.assertVersion(operation);
+        if(operation.phase==="code" || operation.snapshot.artifacts.some(pin=>!operation.progress.artifacts?.some(receipt=>receipt.artifactId===pin.artifactId))) {
+        this.pending.add(operation.operationId);return this.advance(operation,{state:"waiting"});
+      }
         operation=this.advance(operation,{phase:"cleanup",progress:{...operation.progress,artifactsDelivered:true}});
       }
-      if(operation.phase==="cleanup") operation=await this.ensureCleanup(operation);
+      if (operation.phase === "cleanup" && (!operation.progress.codeDelivered || !operation.progress.artifactsDelivered)) {
+        operation = await this.prepareCleanup(id, { insideDrive: true });
+        if (operation.phase !== "cleanup") return operation;
+      }
+      if(operation.phase==="cleanup") {
+        operation=await this.ensureCleanup(operation);
+        if (!operation) return this.repository.getOperation(id);
+      }
       return this.advance(operation,{state:"completed",phase:"completed",progress:{...operation.progress,completedAt:new Date().toISOString()}});
     } catch(error) {
       operation=this.repository.getOperation(id);
+      if (operation?.state === "superseded") return operation;
       return this.advance(operation,{state:error.code==="TASK_HIERARCHY_BUSY" ? "waiting" : "blocked",
         errorCode:error.code ?? "CHILD_DELIVERY_FAILED",errorMessage:String(error.message).slice(0,1000)});
     }
@@ -248,12 +288,14 @@ export class ChildTaskDeliveryService {
     // Never scan durable deliveries for token deltas or timeline updates.
     if(!["WorktreeIntegrationJobChanged","SessionRunCompleted","SessionRunFailed","SessionRunInterrupted",
       "SessionTurnCompleted","TurnCompleted","AgentTurnCompleted","CodexThreadCompleted","AgentTurnFailed",
-      "AgentWorkCompleted","MessageDeliveryChanged"].includes(type)) return;
+      "AgentWorkCompleted","MessageDeliveryChanged","ArtifactChanged"].includes(type)) return;
     const id=payload?.job?.id ?? payload?.entity?.id ?? payload?.jobId ?? payload?.id;
     const sessionId=payload?.sessionId ?? payload?.session?.id ?? id;
     const session=sessionId ? this.store.getSession(sessionId) : null;
+    const resource=payload?.artifact ?? payload?.entity;
+    const artifactTaskId=resource?.boundTaskId ?? (resource?.boundSessionId ? this.store.getSession(resource.boundSessionId)?.taskId : null);
     for(const op of this.repository.listRecoverableOperations()) {
-      if((id && op.progress.gitJobId===id) || session?.taskId===op.taskId || session?.taskId===op.parentTaskId) void this.wake(op.operationId);
+      if((id && op.progress.gitJobId===id) || session?.taskId===op.taskId || session?.taskId===op.parentTaskId || artifactTaskId===op.taskId) void this.wake(op.operationId);
     }
   }
   read(id) { const op=this.repository.getOperation(id); return op && this.present(op); }
@@ -264,7 +306,7 @@ export class ChildTaskDeliveryService {
   present(op) {
     return {operationId:op.operationId,taskId:op.taskId,parentTaskId:op.parentTaskId,title:op.snapshot.title,
       state:op.state,phase:op.phase,errorCode:op.errorCode,errorMessage:op.errorMessage,createdAt:op.createdAt,updatedAt:op.updatedAt,
-      gitJobId:op.progress.gitJobId ?? null,acceptedHeadOid:op.snapshot.git?.headOid ?? null,
+      gitJobId:op.progress.gitJobId ?? null,acceptedHeadOid:this.store.getTaskCompletionOperation(op.approvalOperationId)?.details?.childDelivery?.git?.headOid ?? null,
       artifacts:op.snapshot.artifacts.map(pin=>({artifactId:pin.artifactId,title:pin.title,version:pin.currentVersion})),
       canRetry:op.state==="blocked" || op.state==="waiting"};
   }

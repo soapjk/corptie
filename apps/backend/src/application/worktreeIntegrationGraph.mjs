@@ -39,50 +39,58 @@ export class WorktreeIntegrationGraph {
     const included = new Set();
     const groups = new Map();
     const ordinary = [];
-    for (const id of requested) {
-      const tree = byId.get(id);
-      if (!tree || tree.isMain) throw fail("WORKTREE_NOT_FOUND", `Invalid source Worktree: ${id}.`);
-      const h = tree.hierarchy;
-      if (!h) { included.add(id); ordinary.push(id); continue; }
-      if (groups.has(h.rootTaskId)) continue;
-      const root = this.hierarchy.resolveTaskDelivery(h.rootTaskId, { allowAdoption: false });
-      if (root.task.lifecycle_state === "done") throw fail("TASK_PARENT_UNAVAILABLE", "Reopen the completed parent before changing its integration code, or use its existing accepted publication action.");
-      const parent = byId.get(root.binding.worktree_id);
-      if (!parent || root.binding.repository_id !== inspection.repositoryId) throw fail("TASK_PARENT_INVALID", "The parent Worktree is unavailable.");
-      const children = this.hierarchy.deliveryChildren(root.task.id);
-      const bindings = [root];
-      for (const child of children) {
-        const delivery = this.hierarchy.resolveTaskDelivery(child.id, { allowAdoption: false });
-        if (child.work_id !== root.task.work_id || delivery.binding.repository_id !== inspection.repositoryId
-          || !byId.has(delivery.binding.worktree_id)) throw fail("TASK_PARENT_INVALID", "A child delivery is missing or belongs to another repository.");
-        bindings.push(delivery);
+    const ensureGroup = taskId => {
+      if(groups.has(taskId)) return groups.get(taskId);
+      const root=this.hierarchy.resolveTaskDelivery(taskId,{allowAdoption:false});
+      if(root.task.archived || root.task.deletion_status || root.binding.repository_id!==inspection.repositoryId)
+        throw fail("TASK_PARENT_INVALID","The Task delivery is unavailable in this repository.");
+      const parent=byId.get(root.binding.worktree_id);
+      if(!parent) throw fail("WORKTREE_NOT_FOUND","The Task Worktree is unavailable.");
+      const group={rootTaskId:root.task.id,parentWorktreeId:parent.worktreeId,childWorktreeIds:[],
+        scope:{version:1,rootTaskId:root.task.id,expectedHierarchyRevision:root.task.hierarchy_revision,
+          expectedBindingRevision:root.binding.binding_revision},
+        bindings:[{taskId:root.task.id,worktreeId:root.binding.worktree_id,bindingRevision:root.binding.binding_revision,
+          parentTaskId:root.task.parent_task_id ?? null}]};
+      groups.set(taskId,group);included.add(parent.worktreeId);return group;
+    };
+    for(const id of requested) {
+      const tree=byId.get(id);
+      if(!tree || tree.isMain) throw fail("WORKTREE_NOT_FOUND",`Invalid source Worktree: ${id}.`);
+      included.add(id);
+      if(!tree.hierarchy) {ordinary.push(id);continue;}
+      let delivery=this.hierarchy.resolveTaskDelivery(tree.hierarchy.taskId,{allowAdoption:false});
+      const seen=new Set();
+      while(delivery.task.parent_task_id) {
+        if(seen.has(delivery.task.id)) throw fail("TASK_PARENT_INVALID","Cyclic Task hierarchy.");
+        seen.add(delivery.task.id);
+        const group=ensureGroup(delivery.task.parent_task_id);
+        if(!group.childWorktreeIds.includes(delivery.binding.worktree_id)) {
+          group.childWorktreeIds.push(delivery.binding.worktree_id);
+          group.bindings.push({taskId:delivery.task.id,worktreeId:delivery.binding.worktree_id,
+            bindingRevision:delivery.binding.binding_revision,parentTaskId:delivery.task.parent_task_id});
+        }
+        delivery=this.hierarchy.resolveTaskDelivery(delivery.task.parent_task_id,{allowAdoption:false});
       }
-      const scope = { version: 1, rootTaskId: root.task.id, expectedHierarchyRevision: root.task.hierarchy_revision,
-        expectedBindingRevision: root.binding.binding_revision };
-      const childIds = bindings.slice(1).map(value => value.binding.worktree_id);
-      const group = { rootTaskId: root.task.id, parentWorktreeId: parent.worktreeId, childWorktreeIds: childIds, scope,
-        bindings: bindings.map(value => ({ taskId: value.task.id, worktreeId: value.binding.worktree_id,
-          bindingRevision: value.binding.binding_revision, parentTaskId: value.task.parent_task_id ?? null })) };
-      groups.set(root.task.id, group);
-      included.add(parent.worktreeId);
-      childIds.forEach(value => included.add(value));
+      ensureGroup(delivery.task.id);
     }
     const steps = [];
     const add = step => steps.push({ id: `step:${steps.length + 1}`, dependsOn: steps.at(-1)?.id ?? null,
       sourceBranchNames: step.sourceWorktreeIds.map(id => byId.get(id)?.branchName ?? id),
       targetBranchName: byId.get(step.targetWorktreeId)?.branchName ?? step.targetWorktreeId, ...step });
-    for (const group of [...groups.values()].sort((a, b) => a.rootTaskId.localeCompare(b.rootTaskId))) {
-      const changedSources=group.childWorktreeIds.filter(id=>byId.get(id)?.hierarchy?.changeState!=="no_changes");
-      if (changedSources.length) add({ kind: "merge_children", rootTaskId: group.rootTaskId,
-        sourceWorktreeIds: changedSources, targetWorktreeId: group.parentWorktreeId });
-      // Parent publication is ff-only. Bring the current main baseline into the
-      // parent BEFORE assessing its exact integrated code, never after testing.
-      add({ kind: "merge_main_into_parent", rootTaskId: group.rootTaskId,
-        sourceWorktreeIds: [main.worktreeId], targetWorktreeId: group.parentWorktreeId });
-      add({ kind: "acceptance", rootTaskId: group.rootTaskId, sourceWorktreeIds: [], targetWorktreeId: group.parentWorktreeId,
-        acceptanceSessionId: this.store.getTask(group.rootTaskId)?.current_session_id ?? null });
-      add({ kind: "promote_parent", rootTaskId: group.rootTaskId,
-        sourceWorktreeIds: [group.parentWorktreeId], targetWorktreeId: main.worktreeId });
+    const depth=group=>{
+      let n=0,current=this.store.getTask(group.rootTaskId);const seen=new Set();
+      while(current?.parent_task_id && !seen.has(current.id)) {seen.add(current.id);n++;current=this.store.getTask(current.parent_task_id);}
+      return n;
+    };
+    for(const group of [...groups.values()].sort((a,b)=>depth(b)-depth(a) || a.rootTaskId.localeCompare(b.rootTaskId))) {
+      if(group.childWorktreeIds.length) add({kind:"merge_children",rootTaskId:group.rootTaskId,
+        sourceWorktreeIds:group.childWorktreeIds,targetWorktreeId:group.parentWorktreeId});
+      if(!this.store.getTask(group.rootTaskId)?.parent_task_id) {
+        add({kind:"merge_main_into_parent",rootTaskId:group.rootTaskId,
+          sourceWorktreeIds:[main.worktreeId],targetWorktreeId:group.parentWorktreeId});
+        add({kind:"promote_parent",rootTaskId:group.rootTaskId,
+          sourceWorktreeIds:[group.parentWorktreeId],targetWorktreeId:main.worktreeId});
+      }
     }
     if (ordinary.length) add({ kind: "merge", sourceWorktreeIds: ordinary, targetWorktreeId: main.worktreeId });
     for(const notice of decorated.deliveryNotices ?? []) if(included.has(notice.parentWorktreeId)) onNotice(notice);
@@ -93,27 +101,17 @@ export class WorktreeIntegrationGraph {
 
   assertFresh(graph) {
     if (graph.version !== 1) throw fail("TASK_HIERARCHY_CHANGED", "Unsupported integration graph version.");
-    const grouped=new Set(graph.groups.flatMap(group=>group.bindings.map(item=>item.worktreeId)));
-    const ordinary=graph.includedWorktreeIds.filter(id=>!grouped.has(id));
-    if(ordinary.length) {
-      const tasks=this.store.selectAll(`SELECT task_id FROM task_delivery_worktrees WHERE worktree_id IN (${ordinary.map(()=>"?").join(",")})`,ordinary);
-      const participation=this.store.readTaskDeliveryParticipation({parentTaskIds:tasks.map(row=>row.task_id)});
-      if([...participation.byTaskId.values()].some(child=>child.participates))
-        throw fail("TASK_HIERARCHY_CHANGED","A previously empty failed child now participates in delivery. Review a new plan.");
-    }
-    for (const group of graph.groups) {
-      const root = this.store.getTask(group.rootTaskId);
-      if (!root || root.parent_task_id || root.archived || root.deletion_status || root.lifecycle_state === "done"
-        || root.hierarchy_revision !== group.scope.expectedHierarchyRevision) throw fail("TASK_HIERARCHY_CHANGED", "The reviewed task hierarchy changed. Preserve progress and review a new plan.");
-      const children = this.hierarchy.deliveryChildren(root.id);
-      if (JSON.stringify(children.map(child => child.id)) !== JSON.stringify(group.bindings.slice(1).map(child => child.taskId))) throw fail("TASK_HIERARCHY_CHANGED", "The reviewed child tasks changed.");
-      for (const item of group.bindings) {
-        const binding = this.store.getTaskDeliveryBinding(item.taskId);
-        const task = this.store.getTask(item.taskId);
-        if (!binding || !task || binding.worktree_id !== item.worktreeId || binding.binding_revision !== item.bindingRevision
-          || (task.parent_task_id ?? null) !== item.parentTaskId || task.work_id !== root.work_id) throw fail("TASK_DELIVERY_BINDING_CHANGED", "A reviewed Task delivery changed.");
+    for(const group of graph.groups) {
+      const root=this.store.getTask(group.rootTaskId);
+      if(!root || root.archived || root.deletion_status) throw fail("TASK_PARENT_UNAVAILABLE","The Task was removed or archived.");
+      for(const item of group.bindings) {
+        const binding=this.store.getTaskDeliveryBinding(item.taskId),task=this.store.getTask(item.taskId);
+        if(!binding || !task || binding.worktree_id!==item.worktreeId
+          || (task.parent_task_id ?? null)!==item.parentTaskId || task.work_id!==root.work_id)
+          throw fail("TASK_DELIVERY_BINDING_CHANGED","A delivery target is no longer owned by this Task.");
       }
     }
+    return graph;
   }
 
   async acceptanceStatus(step, jobId) {

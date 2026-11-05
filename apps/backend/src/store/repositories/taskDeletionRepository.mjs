@@ -58,32 +58,6 @@ export class TaskDeletionRepository {
         operation = activeDeletion;
         return;
       }
-      const activeStart = this.selectOne(
-        `SELECT startup_operation_id FROM work_session_startup_operations
-         WHERE task_id=? AND state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating') LIMIT 1`,
-        [id]
-      );
-      if (activeStart) {
-        const error = new Error("Task is starting. Wait for startup to finish before deletion.");
-        error.code = "TASK_DELETE_BLOCKED";
-        error.statusCode = 409;
-        throw error;
-      }
-      if (this.selectOne("SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' LIMIT 1", [id])) {
-        throw Object.assign(new Error("该任务仍有子任务，请先逐个处理。"), { code: "TASK_DELETE_BLOCKED", statusCode: 409 });
-      }
-      const target = input.target;
-      if (target?.worktreeId) {
-        const binding = this.selectOne("SELECT * FROM task_delivery_worktrees WHERE task_id=?", [id]);
-        if (target.bindingRevision != null && (binding?.worktree_id !== target.worktreeId
-          || binding.binding_revision !== target.bindingRevision || binding.repository_id !== target.repositoryId)) {
-          throw Object.assign(new Error("删除目标绑定已变化，请重新确认。"), { code: "TASK_DELETE_TARGET_CHANGED", statusCode: 409 });
-        }
-        if (input.deleteWorktree !== false && this.selectOne(`SELECT 1 FROM worktree_integration_jobs
-          WHERE repository_id=? AND status IN ('queued','running','cancellation_requested','replanning') LIMIT 1`, [target.repositoryId])) {
-          throw Object.assign(new Error("仓库正执行 Git 作业，请稍后重试。"), { code: "ACTIVE_WORKTREE_INTEGRATION_JOB", statusCode: 409 });
-        }
-      }
       const timestamp = createdAtFromOrNow();
       const operationId = `task-deletion:${randomUUID()}`;
       this.db.run(
@@ -105,6 +79,8 @@ export class TaskDeletionRepository {
         ) VALUES (?, ?, ?, 'queued', 'freezing', ?, ?, ?)`,
         [operationId, id, key, JSON.stringify(input), timestamp, timestamp]
       );
+      if (input.actor?.type !== "child_delivery") this.db.run(
+        "UPDATE child_task_delivery_operations SET state='superseded',revision=revision+1 WHERE child_task_id=? AND state IN ('queued','running','waiting','blocked')", [id]);
       operation = this.selectOne(
         "SELECT * FROM task_deletion_operations WHERE operation_id=?", [operationId]
       );

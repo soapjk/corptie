@@ -706,6 +706,7 @@ export class SessionApplicationService {
     }
     // This check precedes native tool preparation and ordinary Provider send.
     // The host owns the route: a failed restricted turn never falls back.
+    this.coordinationTurns?.continuationFor?.(reference, context);
     if (this.coordinationTurns?.enabled(reference)) {
       return this.coordinationTurns.send(reference, message, context);
     }

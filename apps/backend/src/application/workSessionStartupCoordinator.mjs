@@ -61,6 +61,22 @@ export class WorkSessionStartupCoordinator {
     return promise;
   }
 
+  async cancelForTaskDeletion(taskId) {
+    const operations = this.store.selectAll("SELECT startup_operation_id FROM work_session_startup_operations WHERE task_id=? AND state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating')", [taskId]);
+    for (const row of operations) {
+      const running = this.inFlight.get(row.startup_operation_id);
+      if (running) await running.catch(() => {});
+      const operation = this.#operation(row.startup_operation_id);
+      if (operation && ACTIVE_STATES.has(operation.state)) await this.#failAndCompensate(operation,
+        coded("START_CANCELLED_FOR_DELETION", "启动已因删除任务而中断。", 409, false));
+    }
+  }
+
+  #assertNotDeleting(operation) {
+    const task = this.store.getTask(operation.task_id);
+    if (!task || task.deletion_status === "deleting") throw coded("START_CANCELLED_FOR_DELETION", "启动已因删除任务而中断。", 409, false);
+  }
+
   getReceipt({ startupOperationId, taskId = null } = {}) {
     const operation = this.#operation(requiredText(startupOperationId, "startupOperationId"));
     if (!operation || (taskId && operation.task_id !== taskId)) {
@@ -178,6 +194,7 @@ export class WorkSessionStartupCoordinator {
     try {
       if (!operation) throw coded("START_REFERENCE_INVALID", "Startup operation disappeared.", 404, false);
       if (!this.#leaseOwned(operation) && !this.#takeLease(operation)) return this.#pendingView(this.#operation(operationId));
+      this.#assertNotDeleting(operation);
       const context = await timing.measure("startup.authorize", () => this.authorizeStart(this.#inputFor(operation)));
       operation = this.#operation(operationId);
 
@@ -200,6 +217,7 @@ export class WorkSessionStartupCoordinator {
         allocation = await timing.measure("startup.worktree.reverify", span => this.#verifiedAllocation(operation, allocation, span));
       }
 
+      this.#assertNotDeleting(operation);
       let session = operation.legacy_session_id ? this.store.getSession(operation.legacy_session_id) : null;
       if (operation.state === "worktree_prepared") {
         let logical;
@@ -228,6 +246,7 @@ export class WorkSessionStartupCoordinator {
         this.#verifiedLogicalSession(operation, session, allocation);
       }
 
+      this.#assertNotDeleting(operation);
       let binding = this.#binding(operationId);
       if (operation.state === "session_bound") {
         try {
@@ -254,6 +273,7 @@ export class WorkSessionStartupCoordinator {
       }
 
       if (operation.state === "provider_bound") {
+        this.#assertNotDeleting(operation);
         try {
           operation = await timing.measure("startup.provider.activate", span => this.#ensureProviderActivated(operation, allocation, span));
         } catch (error) {
@@ -261,6 +281,7 @@ export class WorkSessionStartupCoordinator {
             ? phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_activation")
             : phaseFailure(error, "START_INITIAL_TURN_FAILED", "initial_turn");
         }
+        this.#assertNotDeleting(operation);
         const ready = this.#commitReady(operation, allocation);
         this.#notifyReady(ready);
         return this.#finishReady(this.#operation(operationId), ready.idempotentReplay);

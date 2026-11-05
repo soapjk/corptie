@@ -196,6 +196,7 @@ export function createWorktreeIntegrationServices({
     resolveCommitPolicyResidueFile: (input) => gitWorkspaces.resolveIntegrationMarkdownResidue(input),
     commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
       ...input,
+      snapshotOnly:true,
       prepare: () => gitCommitProtection.resolve(input.path, {
         decision: input.protectionDecision,
         neverRemind: input.neverRemindPrivateFiles === true
