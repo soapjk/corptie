@@ -1,4 +1,5 @@
 import test from "node:test";
+import { ExecutionChecklistService } from "../src/application/executionChecklistService.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1397,3 +1398,42 @@ test('continuations stay behind an already queued direct-user instruction',async
   priority:50,text:'新的指令',source:{type:'desktop'}});
  assert.deepEqual(f.store.listQueuedAgentTasksForSession(ref.sessionId).map(row=>row.taskId),['new-user-instruction',continuation.taskId]);
 });
+for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
+  test(`${provider}: dispatch separate checklist items to concurrent children without completing parent items`, async t => {
+    const f = await fixture(t, provider);
+    const checklist = new ExecutionChecklistService({ store: f.store });
+    const logical = f.store.getLogicalSessionByLegacySessionId(f.source.sessionId);
+    const context = { logicalSessionId: logical.logicalSessionId, bindingId: f.source.providerBindingId, turnId: "parent-turn" };
+    let serial = 0;
+    const update = input => checklist.mutate(f.parent.id, { operationId: `link:${++serial}`,
+      expectedRevision: checklist.read(f.parent.id)?.revision ?? 0, ...input }, context);
+    update({ action: "create", steps: [{ text: "API" }, { text: "UI" }, { text: "Final verification" }] });
+    const steps = checklist.read(f.parent.id).steps;
+    const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("api"), f.item("ui")] });
+    for (const [index, dispatch] of receipt.dispatches.entries()) {
+      update({ action: "assign", itemIds: [steps[index].stepId], dispatchId: dispatch.dispatchId });
+    }
+    assert.equal(checklist.read(f.parent.id).completedCount, 0);
+    await Promise.all(receipt.dispatches.map(d => f.coordinator.runDispatch(d.dispatchId)));
+    for (const dispatch of receipt.dispatches) {
+      const row = f.coordinator.get(dispatch.dispatchId);
+      assert.equal(row.status, "queued");
+      f.coordinator.onRuntimeEvent("AgentWorkStarted", { task: { taskId: row.operation_id } });
+    }
+    let shown = checklist.display(checklist.read(f.parent.id));
+    assert.deepEqual(shown.steps.slice(0, 2).map(s => s.assignment.status), ["running", "running"]);
+    assert.notEqual(shown.steps[0].assignment.taskId, shown.steps[1].assignment.taskId);
+    const first = f.coordinator.get(receipt.dispatches[0].dispatchId);
+    const firstChild = f.store.getTask(first.target_task_id);
+    const firstSession = f.store.getSession(firstChild.current_session_id);
+    f.store.upsertSession({ ...firstSession, status: "completed", executionStatus: "completed" });
+    f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: { taskId: first.operation_id, status: "completed" } });
+    shown = checklist.display(checklist.read(f.parent.id));
+    assert.equal(shown.steps[0].assignment.status, "completed");
+    assert.equal(shown.steps[1].assignment.status, "running");
+    assert.equal(shown.completedCount, 0);
+    update({ action: "status", itemId: steps[0].stepId, status: "completed" });
+    assert.equal(checklist.read(f.parent.id).completedCount, 1);
+    assert.equal(f.starts.length, 2);
+  });
+}

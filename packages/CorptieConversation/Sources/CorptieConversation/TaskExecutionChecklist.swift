@@ -9,6 +9,7 @@ public struct TaskExecutionChecklist: View {
     public var canEdit: Bool
     public var isExpanded: Bool?
     public var onToggleExpansion: (() -> Void)?
+    public var openAssignment: ((ConversationExecutionPlan.Assignment) -> Void)?
     public var submit: (ExecutionChecklistCommand) async throws -> Void
     @State private var showsAll = false
     @State private var editor: Editor?
@@ -23,9 +24,9 @@ public struct TaskExecutionChecklist: View {
         var condition: String
     }
     public init(plan: ConversationExecutionPlan, width: CGFloat, canEdit: Bool = true,
-                isExpanded: Bool? = nil, onToggleExpansion: (() -> Void)? = nil, submit: @escaping (ExecutionChecklistCommand) async throws -> Void) {
+                isExpanded: Bool? = nil, onToggleExpansion: (() -> Void)? = nil, openAssignment: ((ConversationExecutionPlan.Assignment) -> Void)? = nil, submit: @escaping (ExecutionChecklistCommand) async throws -> Void) {
         self.plan = plan; self.width = width; self.canEdit = canEdit; self.submit = submit
-        self.isExpanded = isExpanded; self.onToggleExpansion = onToggleExpansion
+        self.isExpanded = isExpanded; self.onToggleExpansion = onToggleExpansion; self.openAssignment = openAssignment
     }
     public static func columns(for width: CGFloat) -> Int { max(1, min(3, Int((width + 12) / 252))) }
     public static func previewHeight(plan: ConversationExecutionPlan, width: CGFloat) -> CGFloat {
@@ -49,7 +50,7 @@ public struct TaskExecutionChecklist: View {
         return (chrome + max(20, preview), chrome + max(20, full))
     }
     private static func itemHeight(_ item: ConversationExecutionPlan.Step) -> CGFloat {
-        item.reason?.isEmpty == false ? 34 : 20
+        (item.reason?.isEmpty == false ? 34 : 20) + (item.assignment == nil ? 0 : 14)
     }
     private var expanded: Bool { isExpanded ?? showsAll }
     private var columns: Int { Self.columns(for: width) }
@@ -64,12 +65,6 @@ public struct TaskExecutionChecklist: View {
                 if canEdit {
                     Button { editor = Editor(itemID: nil, text: "", condition: "") } label: { Image(systemName: "plus") }
                         .help("添加事项").accessibilityLabel("添加事项")
-                    Menu {
-                        Button("暂停推进") { send(.init(action: "pause", revision: plan.revision)) }
-                        Button("继续推进（额外 5 轮 / 30 分钟）") { send(.init(action: "resume", revision: plan.revision)) }.disabled(plan.executionAvailable == false)
-                        Button("取消推进", role: .destructive) { send(.init(action: "cancel", revision: plan.revision)) }
-                    } label: { Image(systemName: "ellipsis") }
-                    .menuStyle(.automatic).fixedSize().accessibilityLabel("执行清单操作")
                 }
             }
             .frame(height: 20)
@@ -110,6 +105,9 @@ public struct TaskExecutionChecklist: View {
         .confirmationDialog("删除此事项？进行中的操作可能仍在执行。", isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })) {
             if let item = pendingRemoval {
+                if item.assignment != nil {
+                    Button("解除子任务关联") { send(.init(action: "unassign", revision: plan.revision, itemID: item.stepId)) }
+                }
                 Button("删除事项", role: .destructive) { send(.init(action: "remove", revision: plan.revision, itemID: item.stepId)); pendingRemoval = nil }
             }
             Button("取消", role: .cancel) { pendingRemoval = nil }
@@ -117,28 +115,10 @@ public struct TaskExecutionChecklist: View {
         .accessibilityIdentifier("task-execution-checklist")
     }
     private var stateLabel: String {
-        if plan.executionAvailable == false { return "当前 Provider 暂不支持自动推进，清单可继续编辑" }
-        return switch plan.lifecycle {
-        case "active": "执行中"
-        case "completed": "清单已完成 · Task 验收独立进行"
-        case "paused": "已暂停 · \(stopLabel)"
-        case "blocked": "已停止 · \(stopLabel)"
-        case "cancelled": "已取消推进"
-        default: "等待模型建立执行清单"
+        if !plan.steps.isEmpty && completed == plan.steps.count {
+            return "清单已完成 · Task 验收独立进行"
         }
-    }
-    private var stopLabel: String {
-        switch plan.stopReason {
-        case "user_interrupted", "pause": "用户已暂停"
-        case "checklist_reopened": "清单已重新打开，等待继续"
-        case "no_progress": "本轮没有完成新事项"
-        case "turn_budget_exhausted": "已达到本次推进轮数"
-        case "CHECKLIST_EXPIRED": "本次推进时间已到期"
-        case "CHECKLIST_MAILBOX_PAUSED": "会话信箱已暂停"
-        case "item_blocked": "有事项需要补充条件"
-        case "restart_requires_reconciliation", "turn_not_confirmed", "dispatch_result_unknown": "需要先核对上次执行结果"
-        default: "执行条件已变化，请核对后继续"
-        }
+        return "事项进度"
     }
     private func itemRow(_ item: ConversationExecutionPlan.Step) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -155,6 +135,16 @@ public struct TaskExecutionChecklist: View {
                 Text("\(item.ordinal + 1). \(item.text)")
                     .font(.system(size: 12)).lineLimit(1)
                     .foregroundStyle(item.status == "completed" ? .secondary : .primary)
+                if let assignment = item.assignment {
+                    Button {
+                        openAssignment?(assignment)
+                    } label: {
+                        Text("↳ \(assignment.title ?? "子任务") · \(assignmentLabel(assignment.status))")
+                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .disabled(assignment.taskId == nil || assignment.sessionId == nil || openAssignment == nil)
+                    .help(assignment.reason ?? assignment.title ?? "子任务")
+                }
                 if let reason = item.reason, !reason.isEmpty {
                     Text(reason).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(1)
                 }
@@ -168,11 +158,28 @@ public struct TaskExecutionChecklist: View {
                 Button("编辑事项（已完成项将撤销完成）") { editor = Editor(itemID: item.stepId, text: item.text, condition: item.condition ?? "") }
                 if item.ordinal > 0 { Button("上移") { send(.init(action: "move", revision: plan.revision, itemID: item.stepId, position: item.ordinal - 1)) } }
                 if item.ordinal + 1 < plan.steps.count { Button("下移") { send(.init(action: "move", revision: plan.revision, itemID: item.stepId, position: item.ordinal + 1)) } }
+                if item.assignment != nil {
+                    Button("解除子任务关联") { send(.init(action: "unassign", revision: plan.revision, itemID: item.stepId)) }
+                }
                 Button("删除事项", role: .destructive) { pendingRemoval = item }
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(statusLabel(item.status))，\(item.text)\(item.reason.map { "，\($0)" } ?? "")")
+    }
+    private func assignmentLabel(_ status: String?) -> String {
+        switch status {
+        case "running", "processing", "in_progress": "执行中"
+        case "completed", "complete": "本轮已结束"
+        case "done": "任务已完成"
+        case "failed": "执行失败"
+        case "blocked": "等待条件"
+        case "cancelled": "已取消"
+        case "unknown": "状态待确认"
+        case "unavailable": "不可用"
+        case "preparing", "accepted", "waiting_workspace": "准备中"
+        default: "待执行"
+        }
     }
     private func symbol(_ status: String) -> String {
         switch status { case "completed": "checkmark.circle.fill"; case "inProgress": "record.circle"; case "blocked": "exclamationmark.circle"; default: "circle" }

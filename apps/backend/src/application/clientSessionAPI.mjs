@@ -62,7 +62,10 @@ function publicExecutionPlan(value) {
       status: typeof step?.status === "string" ? step.status : "unknown",
       ...(typeof value.taskId === "string" ? {
         condition: typeof step?.condition === "string" ? boundedUnicodeText(step.condition, 2000) : null,
-        reason: typeof step?.reason === "string" ? boundedUnicodeText(step.reason, 2000) : null
+        reason: typeof step?.reason === "string" ? boundedUnicodeText(step.reason, 2000) : null,
+        ...(step?.assignment && typeof step.assignment === "object" ? { assignment: Object.fromEntries(
+          ["taskId", "dispatchId", "title", "status", "sessionId", "reason"].map(key =>
+            [key, typeof step.assignment[key] === "string" ? boundedUnicodeText(step.assignment[key], key === "reason" ? 2000 : 400) : null])) } : {})
       } : {})
     }))
   };

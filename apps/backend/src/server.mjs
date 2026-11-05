@@ -522,9 +522,7 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
   validateExternal: (row, authorization) => {
     if (authorization.checklistTaskId) {
-      const operation = store.getAgentTask(row.operation_id);
-      if (!operation || authorization.ownerLogicalSessionId !== row.recipient_session_id) throw Object.assign(new Error("CHECKLIST_SCOPE_REQUIRED"), { code: "CHECKLIST_SCOPE_REQUIRED" });
-      return executionChecklistService.validateOperation(operation);
+      throw Object.assign(new Error("Legacy checklist continuation retired"), { code: "CHECKLIST_CONTINUATION_RETIRED" });
     }
     if (authorization.coordinationDispatchId) {
       if (!taskCoordinationService) throw Object.assign(new Error("Coordination unavailable."), { code: "CAPABILITY_UNAVAILABLE" });
@@ -551,12 +549,7 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   }
 });
 channelMailbox.sessionMailbox = sessionMailbox;
-const executionChecklistService = new ExecutionChecklistService({ store, mailbox: sessionMailbox,
-  wake: (sessionId, operationId) => scheduleAgentWorkDrain(sessionId, null, operationId),
-  canExecute: logical => {
-    const descriptor = agentProviderRegistry.get(logical.activeBinding.providerId).descriptor;
-    return ["conversation.send", "conversation.interrupt", "tools.attach"].every(cap => descriptor.capabilities.includes(cap));
-  },
+const executionChecklistService = new ExecutionChecklistService({ store,
   changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision },
     { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId })
 });
@@ -605,7 +598,6 @@ const taskSessionProjection = createTaskSessionProjection({
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
 const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
-  onChecklistTerminal: input => executionChecklistService.onTerminal(input),
   store, emitEvent, sessionMailbox,
   recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
   settleEntityTaskFromSession, collaborationCore,
@@ -1333,7 +1325,6 @@ const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService(
   ])
 });
 const sessionApplicationService = createSessionApplicationComposition({
-  validateChecklistDispatch: context => { if (context?.options?.agentTask) executionChecklistService.validateOperation(context.options.agentTask); },
   store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
   requiredToolDomainsForSession,
   assertForkDispatchAllowed: (sessionId) => sessionForkService.assertCanDispatch(sessionId),
@@ -1350,7 +1341,9 @@ observeSessionContextEvent = (context) => sessionApplicationService.observeSessi
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
-  onInterruptRequested: (entry) => { executionChecklistService.pauseSession(entry.sessionId); if (entry.turnId) turnExecutionProbe?.request(entry); }
+  onInterruptRequested: (entry) => {
+    if (entry.turnId) turnExecutionProbe?.request(entry);
+  }
 });
 const { handleProviderResponseDelayed, handleProviderResponseTimeout } = createProviderResponseHandlers({
   store, providerEventIngestion, sessionApplicationService,
@@ -1742,7 +1735,6 @@ const {
   registerRuntimeQueuedWork, forgetRuntimeQueuedWork, moveRuntimeQueuedWork,
   runtimeQueuePosition, drainAgentWork, tickAgentWorkQueue
 } = createRuntimeAgentWorkQueue({
-  checklist: executionChecklistService,
   store, collaborationCore, sessionChannelService, collaborationDispatcher, channelMailbox, sessionMailbox,
   workspaceContinuationCoordinator, inspectCollaborationSession, resolveCollaborationDeliveryRoute,
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
@@ -2519,7 +2511,7 @@ function startBackendRuntime() {
   }
   channelMailbox.recoverInterruptedBatches();
   sessionMailbox.importQueuedAutomations();
-  executionChecklistService.recover(registerRuntimeQueuedWork);
+  executionChecklistService.retireLegacyContinuations();
   sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();

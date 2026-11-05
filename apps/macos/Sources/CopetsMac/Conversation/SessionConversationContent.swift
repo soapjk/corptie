@@ -101,7 +101,10 @@ struct SessionConversationSurface: View {
     @State private var appKitScrollToBottomRevision = 0
     @State private var quickMessagePresentation = ComposerQuickMessagePresentation()
     private var quickMessageClearance: CGFloat {
-        showsFloatingQuickMessages ? ConversationQuickMessages.rowHeight + 10 : 0
+        showsFloatingQuickMessages && !hasPinnedChecklist ? ConversationQuickMessages.rowHeight + 10 : 0
+    }
+    private var hasPinnedChecklist: Bool {
+        !showsWelcome && cachedSessionId == sessionId && cachedChecklistDock.checklist != nil
     }
     private var showsFloatingQuickMessages: Bool {
         usesComposerJumpToLatest && !showsWelcome
@@ -548,7 +551,7 @@ struct SessionConversationSurface: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if showsFloatingQuickMessages {
+                if showsFloatingQuickMessages && !hasPinnedChecklist {
                     floatingQuickMessages
                         .frame(maxWidth: WorkbenchStyle.readingWidth)
                         .padding(.horizontal, WorkbenchStyle.readingInset)
@@ -558,11 +561,20 @@ struct SessionConversationSurface: View {
             }
             // One editor at one structural position: placement changes must
             // not recreate the native text view, attachments or draft owner.
-            if !showsWelcome, cachedSessionId == sessionId, let plan = cachedChecklistDock.checklist {
+            if hasPinnedChecklist, let plan = cachedChecklistDock.checklist {
                 PinnedExecutionChecklistCard(plan: plan)
                     .id(sessionId + ":" + plan.planId)
-                    .padding(.horizontal, WorkbenchStyle.readingInset)
+                    .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
+                    .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
+                    .frame(maxWidth: .infinity)
                     .padding(.bottom, 6)
+            }
+            if hasPinnedChecklist && showsFloatingQuickMessages {
+                floatingQuickMessages
+                    .frame(maxWidth: WorkbenchStyle.readingWidth)
+                    .padding(.horizontal, WorkbenchStyle.readingInset)
+                    .padding(.bottom, 4)
+                    .frame(maxWidth: .infinity)
             }
             VStack(spacing: 24) {
                 if showsWelcome {

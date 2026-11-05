@@ -11,8 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { handleExecutionChecklistHttp } from "../src/application/executionChecklistHttpApi.mjs";
-import { createRuntimeAgentWorkQueue } from "../src/runtime/runtimeAgentWorkQueue.mjs";
-import { createProviderTerminalLifecycle } from "../src/application/providerTerminalLifecycle.mjs";
 
 async function fixture(t, providerId = "codex-app-server", dbPath = ":memory:") {
   const store = new CorptieStore({ dbPath, configPath: "/unused-checklist-config", manageProcessEnvironment: false });
@@ -34,31 +32,8 @@ async function fixture(t, providerId = "codex-app-server", dbPath = ":memory:") 
   let serial = 0;
   const update = (input, ctx = context) => service.mutate(task.id, { operationId: `op:${++serial}`, expectedRevision: service.read(task.id)?.revision ?? 0, ...input }, ctx);
   const create = () => update({ action: "create", steps: [{ text: "Inspect" }, { text: "Implement" }, { text: "Validate" }] });
-  const terminal = turnId => service.onTerminal({ event: { type: "turn.completed", turnId, bindingId: context.bindingId, payload: {} }, projection: { session: store.getSession(sessionId), terminalStatus: "completed" } });
-  return { store, service, task, logical, context, mailbox, wakes, changes, update, create, terminal,
+  return { store, service, task, logical, context, mailbox, wakes, changes, update, create,
     setDate: value => { date = value; }, unsupported: () => { supported = false; } };
-}
-
-for (const provider of ["codex-app-server", "claude-agent-sdk", "openclacky"]) {
-test(`${provider}: three finite items continue across turns and stop when complete`, async t => {
-  const f = await fixture(t, provider); f.create();
-  let plan = f.service.read(f.task.id);
-  f.update({ action: "status", itemId: plan.steps[0].stepId, status: "completed" });
-  f.terminal("initial"); assert.equal(f.wakes.length, 1);
-  f.terminal("initial"); assert.equal(f.wakes.length, 1);
-  let operation = f.store.getAgentTask(f.wakes[0][1]);
-  f.store.claimAgentTask(operation.taskId); f.service.onStarted(operation, "second");
-  f.update({ action: "status", itemId: plan.steps[1].stepId, status: "completed" }, { ...f.context, turnId: "second" });
-  f.terminal("second"); assert.equal(f.wakes.length, 2);
-  f.store.updateAgentTask(operation.taskId, { status: "completed" });
-  operation = f.store.getAgentTask(f.wakes[1][1]); f.store.claimAgentTask(operation.taskId); f.service.onStarted(operation, "third");
-  f.update({ action: "status", itemId: plan.steps[2].stepId, status: "completed" }, { ...f.context, turnId: "third" });
-  f.terminal("third"); assert.equal(f.wakes.length, 2);
-  assert.equal(f.service.read(f.task.id).lifecycle, "completed");
-  const items = f.store.getItems(f.logical.legacySessionId).filter(item => item.id === plan.planId);
-  assert.equal(items.length, 1); assert.equal(items[0].executionPlan.completedCount, 3);
-  assert.equal(items[0].executionPlan.authorizationRef, undefined);
-});
 }
 
 test("CRUD, undo, stable IDs, stale revisions and idempotency never overwrite competing changes", async t => {
@@ -77,42 +52,6 @@ test("CRUD, undo, stable IDs, stale revisions and idempotency never overwrite co
   assert.equal(f.service.read(f.task.id).steps[2].text, "Final verification");
 });
 
-test("user pause fences queued work and models cannot resume it", async t => {
-  const f = await fixture(t); f.create(); f.terminal("initial");
-  const operation = f.store.getAgentTask(f.wakes[0][1]);
-  f.service.pauseSession(f.logical.legacySessionId);
-  assert.equal(f.service.read(f.task.id).lifecycle, "paused");
-  assert.throws(() => f.service.validateOperation(operation), /GENERATION/);
-  assert.equal(f.store.getAgentTask(operation.taskId).status, "cancelled");
-  assert.throws(() => f.update({ action: "resume" }), /USER_CONTROL/);
-  f.terminal("initial"); assert.equal(f.wakes.length, 1);
-});
-
-test("no progress, blocked item, expiry and missing Provider capability stop without polling", async t => {
-  for (const mode of ["no_progress", "blocked", "expiry", "unsupported", "mailbox"]) {
-    const f = await fixture(t); f.create();
-    if (mode === "blocked") f.update({ action: "status", itemId: f.service.read(f.task.id).steps[0].stepId, status: "blocked", reason: "Missing credential from user" });
-    if (mode === "expiry") f.setDate("2026-11-03T01:00:00.000Z");
-    if (mode === "unsupported") f.unsupported();
-    if (mode === "mailbox") f.mailbox.setPaused(f.logical.logicalSessionId, true);
-    f.terminal("initial");
-    if (mode === "no_progress") {
-      const operation = f.store.getAgentTask(f.wakes[0][1]); f.service.onStarted(operation, "second"); f.terminal("second");
-    }
-    assert.equal(f.service.read(f.task.id).lifecycle, "blocked");
-    assert.equal(f.wakes.length, mode === "no_progress" ? 1 : 0);
-  }
-});
-
-test("recovery admits only confirmed unsent work, never unknown dispatched work", async t => {
-  const f = await fixture(t); f.create(); f.terminal("initial");
-  const operation = f.store.getAgentTask(f.wakes[0][1]), registered = [];
-  f.service.recover((...args) => registered.push(args)); assert.equal(registered.length, 1);
-  f.store.updateAgentTask(operation.taskId, { status: "failed", source: { ...operation.source, mailboxDispatchAttempted: true } });
-  f.service.recover(() => assert.fail("must not replay"));
-  assert.equal(f.service.read(f.task.id).stopReason, "restart_requires_reconciliation");
-});
-
 test("Session scope and model tool schema cannot target another Task or create without current scope", async t => {
   const f = await fixture(t);
   const metadata = { sessionId: f.logical.logicalSessionId, providerBindingId: f.context.bindingId, taskId: f.task.id };
@@ -126,83 +65,24 @@ test("Session scope and model tool schema cannot target another Task or create w
   assert.equal(callExecutionChecklistTool(f.service, { metadata, arguments: { action: "get" } }).checklist.revision, 0);
 });
 
-test("admission failure rolls back budget, continuation receipt and mailbox writes", async t => {
-  const f = await fixture(t); f.create(); const before = f.service.read(f.task.id);
-  f.service.mailbox = { settings: () => ({ paused: false }), enqueueExternalOperation: () => { throw new Error("injected queue failure"); } };
-  assert.throws(() => f.terminal("initial"), /injected/);
-  assert.deepEqual(f.service.read(f.task.id), before);
-  assert.equal(f.store.selectAll("SELECT * FROM execution_checklist_continuations").length, 0);
-});
-
-test("terminal to mailbox to shared queue actually dispatches the next authorized turn once", async t => {
-  const f = await fixture(t);
-  const sends = [];
-  const noop = () => {};
-  const queue = createRuntimeAgentWorkQueue({ store: f.store, sessionMailbox: f.mailbox, checklist: f.service,
-    collaborationCore: { getAgentForSession: () => ({ agentId: f.store.getSession(f.logical.legacySessionId).agentId }) },
-    workspaceContinuationCoordinator: { assertWorkTarget: noop, recordWorkStarted: noop, recordWorkSettled: noop },
-    inspectCollaborationSession: async () => f.store.getRunningAgentTaskForSession(f.logical.legacySessionId) ? "running" : "idle", emitEvent: noop,
-    sendUnifiedSessionMessage: async (...args) => { sends.push(args); return { result: { turnId: `continued:${sends.length}`, delivery: "accepted" } }; },
-    syncSessionChannelDeliveriesIntoAgentWorkQueue: async () => {}, syncCollaborationDeliveriesIntoAgentWorkQueue: async () => {} });
-  f.service.wake = (sessionId, operationId) => queue.registerRuntimeQueuedWork(sessionId, operationId);
-  const terminal = createProviderTerminalLifecycle({ store: f.store, sessionMailbox: f.mailbox, emitEvent: noop,
-    recordWorkSettled: noop, settleEntityTaskFromSession: noop, collaborationCore: { getAgentForSession: noop },
-    refreshWorkspaceInventoryAfterTurn: noop, continuePendingWorkspaceTransition: noop, continuePendingProviderSwitch: noop,
-    resumeWorkAfterTransition: noop, scheduleAgentWorkDrain: noop, onChecklistTerminal: input => f.service.onTerminal(input) });
-  f.create(); const plan = f.service.read(f.task.id);
-  f.update({ action: "status", itemId: plan.steps[0].stepId, status: "completed" });
-  const event = { type: "turn.completed", bindingId: f.context.bindingId, turnId: "initial", payload: {} };
-  terminal({ event, projection: { session: f.store.getSession(f.logical.legacySessionId) } });
-  await queue.drainAgentWork(f.logical.legacySessionId);
-  assert.equal(sends.length, 1); assert.match(sends[0][1], /Implement/);
-  assert.equal(sends[0][3].fromAgentWorkQueue, true);
-  assert.equal(f.service.read(f.task.id).observedTurnId, "continued:1");
-  terminal({ event, projection: { session: f.store.getSession(f.logical.legacySessionId) } });
-  await queue.drainAgentWork(f.logical.legacySessionId); assert.equal(sends.length, 1);
-});
-
-test("definition changes cancel a queued stale message; paused undo never resumes execution", async t => {
-  const f = await fixture(t); f.create(); f.terminal("initial");
-  const old = f.store.getAgentTask(f.wakes[0][1]);
-  f.update({ action: "edit", itemId: f.service.read(f.task.id).steps[0].stepId, text: "New instruction" }, {});
-  assert.equal(f.store.getAgentTask(old.taskId).status, "cancelled");
-  assert.throws(() => f.service.validateOperation(old), /GENERATION/);
-  assert.match(f.store.getAgentTask(f.wakes.at(-1)[1]).text, /New instruction/);
-  f.update({ action: "pause" }, {});
-  const count = f.wakes.length, itemId = f.service.read(f.task.id).steps[0].stepId;
-  f.update({ action: "status", itemId, status: "completed" }, {});
-  f.update({ action: "status", itemId, status: "pending" }, {});
-  assert.equal(f.service.read(f.task.id).lifecycle, "paused"); assert.equal(f.wakes.length, count);
-});
-
-test("finite budget and binding or Task definition changes fence automatic dispatch", async t => {
-  for (const field of ["remainingTurns", "taskRevision", "observedBindingId"]) {
-    const f = await fixture(t); f.create(); const value = f.service.read(f.task.id);
-    if (field === "remainingTurns") value.remainingTurns = 0;
-    if (field === "taskRevision") value.taskRevision = -1;
-    if (field === "observedBindingId") value.observedBindingId = "old-binding";
-    f.service.save(value); f.terminal("initial");
-    assert.equal(f.wakes.length, 0);
-    if (field !== "observedBindingId") assert.equal(f.service.read(f.task.id).lifecycle, "blocked");
-  }
-});
-
-test("SQLite reopen retains progress, dedup receipts and only unsent continuation admission", async t => {
+test("SQLite reopen retains progress and dedup receipts without any continuation", async t => {
   const dir = await mkdtemp(join(tmpdir(), "corptie-checklist-restart-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const dbPath = join(dir, "state.sqlite");
   const f = await fixture(t, "codex-app-server", dbPath); f.create();
+  const child = f.store.createTask({ workId: f.task.work_id, parentTaskId: f.task.id, mainAgentId: f.task.main_agent_id, title: "Durable_child" });
+  f.update({ action: "assign", itemIds: [f.service.read(f.task.id).steps[0].stepId], taskId: child.id });
   const value = f.service.read(f.task.id), command = { action: "status", itemId: value.steps[0].stepId,
     status: "completed", operationId: "durable-completion", expectedRevision: value.revision };
-  f.update(command); f.terminal("initial");
+  f.update(command);
   // A second real connection exercises durable state rather than a JS cache.
   const reopened = new CorptieStore({ dbPath, configPath: "/unused-checklist-reopened-config", manageProcessEnvironment: false });
   await reopened.initialize({ resolveDataPath: false }); t.after(() => reopened.close());
   const service = new ExecutionChecklistService({ store: reopened, mailbox: new SessionMailboxService({ store: reopened }), clock: () => "2026-11-03T00:00:00.000Z" });
   assert.equal(service.read(f.task.id).completedCount, 1);
-  assert.equal(service.mutate(f.task.id, command, f.context).receipt.revision, 2);
-  const registered = []; service.recover((...args) => registered.push(args));
-  assert.equal(registered.length, 1);
+  assert.equal(service.read(f.task.id).steps[0].assignment.taskId, child.id);
+  assert.equal(service.mutate(f.task.id, command, f.context).receipt.revision, 3);
+  assert.equal(reopened.selectAll("SELECT * FROM execution_checklist_continuations").length, 0);
 });
 
 test("desktop HTTP mutations require local user authority and preview remains read-only", async t => {
@@ -233,8 +113,92 @@ test("model tool creates through authenticated binding and returns bounded remai
   assert.equal(response.remaining.length, 8); assert.equal(response.checklist.authorizationRef, undefined);
   const page = callExecutionChecklistTool(f.service, { metadata, arguments: { action: "get", offset: 20, limit: 10 } });
   assert.equal(page.checklist.steps[0].text, "Work 20"); assert.equal(page.nextOffset, 30);
-  f.terminal("initial");
-  const operation = f.store.getAgentTask(f.wakes[0][1]); f.service.onFailed(operation);
-  assert.equal(f.service.read(f.task.id).stopReason, "dispatch_result_unknown");
-  assert.equal(f.store.getAgentTask(operation.taskId).status, "cancelled");
+
+});
+
+for (const provider of ["codex-app-server", "claude-agent-sdk", "openclacky"]) {
+  test(`${provider}: checklist records obstacles and completion without execution controls`, async t => {
+    const f = await fixture(t, provider); f.create();
+    const plan = f.service.read(f.task.id);
+    assert.equal(plan.expiresAt, undefined);
+    assert.equal(plan.remainingTurns, undefined);
+    f.setDate("2030-01-01T00:00:00Z"); f.unsupported();
+    f.mailbox.setPaused(f.logical.logicalSessionId, true);
+    f.update({ action: "status", itemId: plan.steps[0].stepId, status: "blocked", reason: "Waiting for dependency" });
+    f.update({ action: "status", itemId: plan.steps[1].stepId, status: "inProgress" });
+    assert.equal(f.service.read(f.task.id).lifecycle, "active");
+    assert.equal(f.service.read(f.task.id).stopReason, null);
+    for (const step of plan.steps) f.update({ action: "status", itemId: step.stepId, status: "completed" });
+    assert.equal(f.service.read(f.task.id).lifecycle, "completed");
+    f.update({ action: "status", itemId: plan.steps[0].stepId, status: "pending" });
+    assert.equal(f.service.read(f.task.id).lifecycle, "active");
+    assert.equal(f.wakes.length, 0);
+    assert.equal(f.store.selectAll("SELECT * FROM execution_checklist_continuations").length, 0);
+    assert.equal(f.service.onTerminal, undefined);
+    assert.equal(f.service.pauseSession, undefined);
+  });
+}
+
+test("old stopped states are ignored without modifying progress or resuming anything", async t => {
+  const f = await fixture(t); f.create();
+  for (const lifecycle of ["blocked", "paused", "cancelled"]) {
+    const old = { ...f.service.read(f.task.id), lifecycle, stopReason: "CHECKLIST_EXPIRED", expiresAt: "2000-01-01", remainingTurns: 0 };
+    f.store.db.run("UPDATE execution_checklists SET body_json=? WHERE task_id=?", [JSON.stringify(old), f.task.id]);
+    assert.equal(f.service.read(f.task.id).lifecycle, "active");
+    assert.equal(f.service.display(old).stopReason, null);
+    f.update({ action: "edit", itemId: old.steps[0].stepId, text: "Work still editable" });
+    assert.equal(f.wakes.length, 0);
+  }
+});
+
+test("retirement removes only unsent legacy checklist messages, leaving ordinary and running work intact", async t => {
+  const f = await fixture(t); f.create();
+  for (const id of ["legacy", "ordinary", "running"]) {
+    f.store.enqueueAgentTask({ taskId: id, agentId: f.store.getSession(f.logical.legacySessionId).agentId,
+      sessionId: f.logical.legacySessionId, kind: "user", priority: 0, text: "Work",
+      source: id === "ordinary" ? { type: "desktop" } : { checklistTaskId: f.task.id } });
+  }
+  f.store.claimAgentTask("running");
+  f.service.retireLegacyContinuations(); f.service.retireLegacyContinuations();
+  assert.equal(f.store.getAgentTask("legacy").status, "cancelled");
+  assert.equal(f.store.getAgentTask("ordinary").status, "queued");
+  assert.equal(f.store.getAgentTask("running").status, "running");
+  assert.equal(f.service.read(f.task.id).lifecycle, "active");
+});
+
+test("assignment supports many items per child, reassignment and removal without controlling child execution", async t => {
+  const f = await fixture(t); f.create();
+  const makeChild = title => f.store.createTask({ workId: f.task.work_id, parentTaskId: f.task.id,
+    mainAgentId: f.task.main_agent_id, title });
+  const child = makeChild("API"), other = makeChild("UI");
+  const ids = f.service.read(f.task.id).steps.slice(0, 2).map(s => s.stepId);
+  f.update({ action: "assign", itemIds: ids, taskId: child.id });
+  let shown = f.service.display(f.service.read(f.task.id));
+  assert.deepEqual(shown.steps.slice(0, 2).map(s => s.assignment.title), ["API", "API"]);
+  assert.equal(shown.completedCount, 0);
+  const stored = JSON.parse(f.store.selectOne("SELECT body_json FROM execution_checklists WHERE task_id=?", [f.task.id]).body_json);
+  assert.deepEqual(stored.steps[0].assignment, { taskId: child.id });
+  f.update({ action: "edit", itemId: ids[0], text: "Changed definition" });
+  assert.equal(f.service.read(f.task.id).steps[0].assignment.taskId, child.id);
+  f.update({ action: "assign", itemId: ids[0], taskId: other.id });
+  f.update({ action: "unassign", itemIds: [ids[1]] });
+  shown = f.service.display(f.service.read(f.task.id));
+  assert.equal(shown.steps[0].assignment.title, "UI");
+  assert.equal(shown.steps[1].assignment, undefined);
+  assert.equal(f.store.getTask(child.id).lifecycle_state, "todo");
+  assert.equal(f.wakes.length, 0);
+  const before = f.service.read(f.task.id);
+  assert.throws(() => f.update({ action: "assign", itemIds: [ids[0], "missing"], taskId: child.id }), /ITEM_NOT_FOUND/);
+  assert.deepEqual(f.service.read(f.task.id), before);
+  assert.throws(() => f.update({ action: "assign", itemIds: ids, taskId: f.task.id }), /SCOPE_INVALID/);
+});
+
+test("missing linked tasks do not prevent checklist display or progress edits", async t => {
+  const f = await fixture(t); f.create();
+  const value = f.service.read(f.task.id);
+  value.steps[0].assignment = { taskId: "task:gone" };
+  f.service.save(value);
+  assert.equal(f.service.display(f.service.read(f.task.id)).steps[0].assignment.status, "unavailable");
+  f.update({ action: "status", itemId: value.steps[1].stepId, status: "completed" });
+  assert.equal(f.service.read(f.task.id).completedCount, 1);
 });

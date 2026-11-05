@@ -7,10 +7,11 @@ import CorptieClientCore
 
 @MainActor @Suite(.serialized)
 struct TaskExecutionChecklistTests {
-    private func plan(count: Int, blocked: Bool = false) throws -> ConversationExecutionPlan {
+    private func plan(count: Int, blocked: Bool = false, assigned: Bool = false) throws -> ConversationExecutionPlan {
         let steps: [[String: Any]] = (0..<count).map { index in
             var item: [String: Any] = ["stepId": "item:\(index)", "ordinal": index, "text": String(repeating: "长事项说明", count: 40), "status": "pending"]
             if blocked && index % 3 == 0 { item["reason"] = "等待用户输入"; item["status"] = "blocked" }
+            if assigned { item["assignment"] = ["taskId": "task:child", "sessionId": "session:child", "title": "子任务", "status": "running"] }
             return item
         }
         let source: [String: Any] = ["schemaVersion": 1, "planId": "checklist:task:one", "taskId": "task:one",
@@ -117,5 +118,41 @@ struct TaskExecutionChecklistTests {
             #expect(NSApp.windows.filter(\.isVisible).count == visibleWindowCount)
         }
     }
+    @Test func assignedRowsKeepMeasuredHeightAndMouseOpensChildWithoutCompletingItem() async throws {
+        let value = try plan(count: 200, blocked: true, assigned: true)
+        for width: CGFloat in [240, 520, 780] {
+            for expanded in [false, true] {
+                let heights = TaskExecutionChecklist.heights(plan: value, width: width)
+                let expected = expanded ? heights.expanded : heights.collapsed
+                let host = NSHostingView(rootView: TaskExecutionChecklist(plan: value, width: width, isExpanded: expanded) { _ in }
+                    .frame(width: width))
+                host.frame = NSRect(x: 0, y: 0, width: width, height: expected)
+                host.layoutSubtreeIfNeeded()
+                #expect(abs(host.fittingSize.height - expected) <= 1)
+            }
+        }
+        var opened: String?
+        let host = NSHostingView(rootView: TaskExecutionChecklist(plan: value, width: 520,
+            openAssignment: { opened = $0.taskId }) { _ in Issue.record("Opening a child must not mutate completion") }
+            .frame(width: 520, height: 240, alignment: .topLeading))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 240),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(80))
+        host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let point = NSPoint(x: 65, y: host.isFlipped ? 48 : host.bounds.height - 48)
+        let location = host.convert(point, to: nil)
+        for (number, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: number + 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            window.sendEvent(event)
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(opened == "task:child")
+    }
+
 }
 #endif
