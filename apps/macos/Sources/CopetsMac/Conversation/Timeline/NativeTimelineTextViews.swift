@@ -5,6 +5,34 @@ import CorptieClientCore
 
 @MainActor
 final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
+    var usesIntrinsicHeight = false
+
+    override var intrinsicContentSize: NSSize {
+        guard usesIntrinsicHeight, let container = textContainer, let manager = layoutManager else {
+            return super.intrinsicContentSize
+        }
+        guard (textStorage?.length ?? 0) > 0 else { return .init(width: NSView.noIntrinsicMetric, height: 0) }
+        guard container.containerSize.width > 0 else {
+            return .init(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+        manager.ensureLayout(for: container)
+        return .init(width: NSView.noIntrinsicMetric, height: ceil(manager.usedRect(for: container).height))
+    }
+
+    func prepareIntrinsicWidth(_ width: CGFloat) {
+        guard usesIntrinsicHeight, width > 0, let container = textContainer else { return }
+        container.widthTracksTextView = false
+        let size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        if container.containerSize != size { container.containerSize = size }
+        invalidateIntrinsicContentSize()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = frame.width != newSize.width
+        super.setFrameSize(newSize)
+        if usesIntrinsicHeight && widthChanged { invalidateIntrinsicContentSize() }
+    }
+
     var linkBaseDirectory: String?
     var cardContextMenu: NSMenu?
     // Read AppKit's selection only when routing a menu; no selection observer or
@@ -100,7 +128,7 @@ final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
 
     override func layout() {
         super.layout()
-        guard let textContainer else { return }
+        guard let textContainer, bounds.width > 0 else { return }
         let expectedSize = NSSize(
             width: max(1, bounds.width),
             height: CGFloat.greatestFiniteMagnitude

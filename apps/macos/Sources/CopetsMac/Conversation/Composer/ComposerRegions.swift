@@ -1,0 +1,168 @@
+import AppKit
+import CorptieClientCore
+import CorptieConversation
+import SwiftUI
+
+/// Usage/restart observation stays in this footer leaf, away from the native
+/// editor. This is a dependency boundary, not a parent view-producing getter.
+struct ComposerStatusSurface: View {
+    let sessionID: String
+    let status: TaskStatus?
+    let isReady: Bool
+    let notReadyReason: SessionNotReadyReason?
+    let activityStatus: String?
+    let renderInputs: SessionPageRenderInputs?
+
+    var body: some View {
+        if let page = renderInputs {
+            ConversationComposerStatusRow(isReady: isReady,
+                readinessTitle: notReadyReason?.presentationTitle ?? L10n("Session Not Ready"),
+                readinessMessage: notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."),
+                readinessCode: notReadyReason?.code, executionState: status?.sharedExecutionState,
+                activity: page.restart?.text ?? activityStatus) {
+                    ChatUsageBar(sessionID: sessionID, usage: page.usage)
+                }
+        } else {
+            ThreadMetaView(sessionID: sessionID, status: status, isReady: isReady,
+                notReadyReason: notReadyReason, activityStatus: activityStatus)
+        }
+    }
+
+}
+
+struct ComposerModelSelectionSurface: View {
+    let modelCatalog: ProviderCatalogStore
+    let backendClient: BackendClient
+    let renderInputs: SessionPageRenderInputs?
+    let maximumWidth: CGFloat
+    let session: TaskSession?
+
+    var body: some View {
+        if let page = renderInputs {
+            SessionModelMenuSurface(models: page.models, defaultModelID: page.defaultModel,
+                defaultReasoningLevel: page.defaultReasoning, loadingModels: page.loadingModels,
+                switchingModel: page.switchingModel, switchingReasoning: page.switchingReasoning,
+                backendClient: backendClient, maxWidth: maximumWidth, session: session,
+                activity: page.activity, renderInputs: page)
+        } else { CodexModelMenu(modelCatalog: modelCatalog, maxWidth: maximumWidth, session: session) }
+    }
+
+}
+
+struct ComposerAttachmentsSurface: View {
+    let images: [ChatImageReference]
+    let sessionId: String
+    let backendClient: BackendClient
+    let onRemove: (ChatImageReference) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: ComposerShellMetrics.attachmentSpacing) {
+                ForEach(images) { image in
+                    ComposerImageChip(
+                        imageURL: backendClient.chatImageURL(sessionID: sessionId, managedPath: image.managedPath),
+                        onRemove: { onRemove(image) }
+                    )
+                }
+            }
+            .padding(.horizontal, 9)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+        }
+        .frame(height: ComposerShellMetrics.attachmentStripHeight)
+    }
+
+}
+
+/// Only the trailing controls observe reduced motion and animate stop-button
+/// insertion. Builders are evaluated once per new value, never stored.
+struct ComposerActionSurface<Model: View, Stop: View, Send: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let showsModel: Bool
+    let showsStop: Bool
+    private let model: Model
+    private let stop: Stop
+    private let send: Send
+
+    init(showsModel: Bool, showsStop: Bool, @ViewBuilder model: () -> Model,
+         @ViewBuilder stop: () -> Stop, @ViewBuilder send: () -> Send) {
+        self.showsModel = showsModel; self.showsStop = showsStop
+        self.model = model(); self.stop = stop(); self.send = send()
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if showsModel { model }
+            if showsStop { stop.transition(.move(edge: .trailing).combined(with: .opacity)) }
+            send
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showsStop)
+    }
+}
+
+private struct ComposerImageChip: View {
+    let imageURL: URL?
+    let onRemove: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            AsyncImage(url: imageURL) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Image(systemName: phase.error == nil ? "photo" : "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 48, height: 48)
+            .background(Color.black.opacity(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .black.opacity(0.66))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 5, y: -5)
+            .help(L10n("Remove image"))
+        }
+        .padding(.trailing, 3)
+    }
+}
+
+struct ComposerGlassActionBackground: View {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
+    let tint: Color
+
+    var body: some View {
+        if !isLiquidGlass {
+            // 原生降级：简洁圆按钮
+            Circle()
+                .fill(tint.opacity(0.14))
+        } else if #available(macOS 26.0, *) {
+            Circle()
+                .fill(.clear)
+                .glassEffect(.clear.tint(tint.opacity(0.11)), in: .circle)
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
+                }
+        } else {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Circle()
+                        .fill(tint.opacity(0.07))
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
+                }
+        }
+    }
+}
