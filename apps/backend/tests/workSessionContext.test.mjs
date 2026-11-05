@@ -453,7 +453,8 @@ test("optional recall cannot consume the next user turn's evidence reservation",
   const direct = mergeWorkerSessionContexts({ baseContext, memoryContext,
     directUserIntentContext: { prompt: "e".repeat(540) } });
   assert.equal(continuation.contextBudget.memoryContextOmitted, true);
-  assert.equal(direct.contextBudget.memoryContextOmitted, true);
+  assert.equal(direct.contextBudget.memoryContextOmitted, false);
+  assert.equal(direct.contextBudget.reservedUtf8Bytes, 0);
   const fitting = mergeWorkerSessionContexts({ baseContext,
     memoryContext: { prompt: "r".repeat(18_000) } });
   assert.equal(fitting.contextBudget.memoryContextOmitted, false);
@@ -471,6 +472,17 @@ test("complete selected paths can cross the soft target without consuming the ev
   assert.equal(result.contextBudget.referenceContextTruncated, false);
   assert.equal(result.contextBudget.memoryContextOmitted, true);
   assert.ok(result.contextBudget.finalTurnUtf8Bytes + result.contextBudget.reservedUtf8Bytes <= 32_768);
+});
+
+test("real user evidence fits the hard limit without reserving unused future evidence", () => {
+  const baseContext = { prompt: "b".repeat(31_147) };
+  const directUserIntentContext = { prompt: "e".repeat(760) };
+  const result = mergeWorkerSessionContexts({ baseContext, directUserIntentContext });
+  assert.equal(Buffer.byteLength(result.prompt), 31_909);
+  assert.equal(result.contextBudget.reservedUtf8Bytes, 0);
+  assert.ok(result.prompt.endsWith(directUserIntentContext.prompt));
+  assert.throws(() => mergeWorkerSessionContexts({ baseContext: { prompt: "b".repeat(32_007) },
+    directUserIntentContext }), { code: "SESSION_CONTEXT_BUDGET_EXCEEDED" });
 });
 
 test("required budget boundaries include reservation and disclose byte counts without content", () => {
