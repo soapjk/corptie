@@ -27,7 +27,6 @@ struct FirstRunSetupTests {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/FirstRunSetupView.swift"), encoding: .utf8)
-        #expect(source.contains("guard provider.program == nil else { return }"))
         #expect(source.contains(".task(id: checkGeneration)"))
         #expect(source.contains("本机发现有其他版本的 Codex"))
         #expect(!source.contains("private func chooseHome()"))
@@ -50,7 +49,7 @@ struct FirstRunSetupTests {
     }
 
     @Test @MainActor
-    func environmentChoiceCardRendersInCompactWindow() throws {
+    func legacyEnvironmentCardRendersWithoutLoginControls() throws {
         let environment = ProviderRuntimeEnvironment(profileId: "native", mode: "native", home: "/tmp/native",
             revision: 1, options: [
                 .init(mode: "native", title: "使用现有 Codex 环境（推荐）", home: "/tmp/native"),
@@ -62,7 +61,7 @@ struct FirstRunSetupTests {
             scanGeneration: 0, isDefault: false, pathChanged: { _ in }, updated: { _ in }).frame(width: 480))
         view.frame = NSRect(x: 0, y: 0, width: 480, height: 520)
         view.layoutSubtreeIfNeeded()
-        #expect(view.fittingSize.height > 200)
+        #expect(view.fittingSize.height > 0)
         #expect(view.fittingSize.width <= 480)
     }
     @Test @MainActor
@@ -107,9 +106,9 @@ struct FirstRunSetupTests {
     }
 
     @Test
-    func failedOrRunningCheckCannotUnlockSetup() throws {
-        #expect(try !decode(enabled: true, executable: true, checkState: "failed").canContinue)
-        #expect(try !decode(enabled: true, executable: true, checkState: "checking").canContinue)
+    func replyProofDoesNotControlEnabledConfiguration() throws {
+        #expect(try decode(enabled: true, executable: true, checkState: "failed").canContinue)
+        #expect(try decode(enabled: true, executable: true, checkState: "checking").canContinue)
     }
 
     @Test

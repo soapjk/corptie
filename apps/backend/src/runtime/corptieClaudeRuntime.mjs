@@ -70,7 +70,7 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
     agentMemory.sharedMemoryPath,
     paths.claudeMemoryPath
   );
-  const credentialsCopied = await bootstrapCredentials(paths);
+  const credentialsCopied = options.importAuthentication === true ? await bootstrapCredentials(paths) : false;
   const connectionSettingsChanged = await syncConnectionSettings(paths);
   const manifestChanged = await syncManagedContent(
     `${JSON.stringify(PLUGIN_MANIFEST, null, 2)}\n`,
@@ -117,6 +117,12 @@ async function syncConnectionSettings(paths) {
   for (const key of ["env", "model", "apiKeyHelper"]) {
     if (Object.hasOwn(source, key)) current[key] = source[key];
     else delete current[key];
+  }
+  if (await isFile(join(paths.configDir, ".corptie-source-managed"))) {
+    delete current.apiKeyHelper;
+    if (current.env && typeof current.env === "object") {
+      for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"]) delete current.env[key];
+    }
   }
   return syncManagedContent(`${JSON.stringify(current, null, 2)}\n`, paths.settingsPath, 0o600);
 }

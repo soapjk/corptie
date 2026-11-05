@@ -37,7 +37,9 @@ final class SettingsDraftState {
     var collaboration = CollaborationSettings.defaults { didSet { updateSummary(.general) } }
     var taskCreation = TaskCreationDefaults() { didSet { updateSummary(.provider) } }
     private(set) var baseline: Snapshot?
-    private(set) var dirtyTabs: Set<SettingsTab> = []
+    var providerDraft = ProviderSettingsDraft()
+    private(set) var sharedDirtyTabs: Set<SettingsTab> = []
+    var dirtyTabs: Set<SettingsTab> { sharedDirtyTabs.union(providerDraft.isDirty ? [.provider] : []) }
     private(set) var conflictTabs: Set<SettingsTab> = []
     private(set) var dataRootError: String?
     var showValidation = false
@@ -50,7 +52,7 @@ final class SettingsDraftState {
 
     var isLoaded: Bool { baseline != nil }
     var canSave: Bool {
-        isLoaded && !isReadOnly && !dirtyTabs.isEmpty && dataRootError == nil && conflictTabs.isEmpty && !isSaving
+        isLoaded && !isReadOnly && !dirtyTabs.isEmpty && dataRootError == nil && conflictTabs.isEmpty && providerDraft.conflicts.isEmpty && !isSaving
     }
 
     var snapshot: Snapshot? {
@@ -98,6 +100,7 @@ final class SettingsDraftState {
     }
 
     func discard() {
+        providerDraft.discard()
         guard let baseline else { return }
         conflictTabs = []
         showValidation = false
@@ -147,7 +150,7 @@ final class SettingsDraftState {
 
     private func updateSummary(_ tab: SettingsTab? = nil) {
         guard !applyingSnapshot, let baseline else { return }
-        var changed = dirtyTabs
+        var changed = sharedDirtyTabs
         func set(_ category: SettingsTab, _ dirty: Bool) {
             if dirty { changed.insert(category) } else { changed.remove(category) }
         }
@@ -162,7 +165,7 @@ final class SettingsDraftState {
         }
         if tab == nil || tab == .proxy { set(.proxy, agentProxy != baseline.agentProxy) }
         if tab == nil || tab == .gateway { set(.gateway, gateway != baseline.gateway) }
-        dirtyTabs = changed
+        sharedDirtyTabs = changed
         conflictTabs.formIntersection(changed)
         // Match the existing settings API's required-value check. Filesystem and
         // migration preflight remain authoritative on the backend.

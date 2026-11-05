@@ -1567,6 +1567,8 @@ struct CodexModelsResponse: Decodable {
 }
 
 struct AgentProviderDescriptor: Identifiable, Decodable, Equatable, Sendable {
+    var executionEnabled: Bool? = nil
+    var isExecutionEnabled: Bool { executionEnabled != false }
     let id: String
     let displayName: String
     let transport: String
@@ -1607,7 +1609,7 @@ extension Collection where Element == AgentProviderDescriptor {
     /// SessionActions projection.
     func sessionProviderAlternatives(to currentProviderIdentity: String?) -> [AgentProviderDescriptor] {
         filter {
-            $0.supports("session.create") && !$0.matches(currentProviderIdentity)
+            $0.isExecutionEnabled && $0.supports("session.create") && !$0.matches(currentProviderIdentity)
         }
     }
 }

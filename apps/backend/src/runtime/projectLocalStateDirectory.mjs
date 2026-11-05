@@ -53,9 +53,9 @@ async function context(root, scope) {
   return { root: canonical, scope, isGit, rootDevice: String(info.dev), rootInode: String(info.ino) };
 }
 
-function read(bound, create = false, expected = null) {
+function read(bound, create = false, expected = null, adoptIgnoredExisting = false) {
   const result = native().localStateDirectory(bound.root, create, bound.rootDevice, bound.rootInode,
-    expected?.directoryDevice, expected?.directoryInode);
+    expected?.directoryDevice, expected?.directoryInode, adoptIgnoredExisting);
   if (result.errorCode) {
     const error = failure(result.errorCode, `Cannot safely prepare .corptie (${result.errorCode}). Check for symbolic links, wrong types, permissions, existing content and ignore rules.`);
     error.localStateReceipt = { ...bound, nativeReceipt: result };
@@ -78,12 +78,13 @@ async function untracked(bound) {
   if (stdout) throw failure("LOCAL_STATE_TRACKED", ".corptie contains Git-tracked files. Untrack them explicitly before using private local state.");
 }
 
-async function ignored(bound) {
+async function ignored(bound, { repositoryRulesOnly = false } = {}) {
+  const config = repositoryRulesOnly ? ["-c", "core.excludesFile=/dev/null"] : [];
   if (!bound.isGit) return;
-  const { stdout } = await git(bound.root, ["check-ignore", "--no-index", "-z", "--stdin"], `${probes.join("\0")}\0`);
+  const { stdout } = await git(bound.root, [...config, "check-ignore", "--no-index", "-z", "--stdin"], `${probes.join("\0")}\0`);
   const found = new Set(stdout.split("\0").filter(Boolean));
   if (probes.some(path => !found.has(path))) throw failure("LOCAL_STATE_NOT_IGNORED", "Local Corptie files are not fully ignored by Git.");
-  const others = await git(bound.root, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".corptie"]);
+  const others = await git(bound.root, [...config, "ls-files", "--others", "--exclude-standard", "-z", "--", ".corptie"]);
   if (others.stdout) throw failure("LOCAL_STATE_NOT_IGNORED", "Existing local Corptie content is visible to Git.");
 }
 
@@ -99,9 +100,14 @@ export async function ensureProjectLocalState(root, { scope } = {}) {
   await untracked(bound);
   const before = read(bound);
   if (before.ignoreExists) ignorePolicy(before);
+  // Legacy project data may already be private under repository-level rules.
+  // Prove every existing entry and future local path is ignored before allowing
+  // the native bridge to add only the missing blanket ignore file.
+  const adoptIgnoredExisting = Boolean(bound.isGit && before.exists && !before.ignoreExists
+    && await ignored(bound, { repositoryRulesOnly: true }).then(() => true, () => false));
   let receipt;
   try {
-    const prepared = read(bound, true, before.exists ? before : null);
+    const prepared = read(bound, true, before.exists ? before : null, adoptIgnoredExisting);
     receipt = { schemaVersion: 1, ...bound, nativeReceipt: prepared };
     ignorePolicy(prepared);
     await untracked(bound);
