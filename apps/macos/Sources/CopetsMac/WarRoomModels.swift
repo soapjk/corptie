@@ -351,6 +351,8 @@ struct CorptieTaskDeletionPlan: Codable, Equatable {
     let status: String
     let retryable: Bool
     let associatedSessionCount: Int
+    var associatedTaskIds: [String]? = nil
+    var childTaskIds: [String]? = nil
     let artifacts: [CorptieTaskDeletionArtifact]?
     let worktree: CorptieTaskDeletionWorktree?
     let risks: [CorptieTaskDeletionRisk]

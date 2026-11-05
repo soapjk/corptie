@@ -42,7 +42,6 @@ export class TaskHierarchyRepository {
     if (!parentTaskId) return null;
     const parent = this.getTask(parentTaskId);
     if (!parent || parent.work_id !== workId) throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
-    if (parent.parent_task_id) throw taskHierarchyError("TASK_MAX_DEPTH_EXCEEDED");
     if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status || parent.creation_state !== "ready") {
       throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
     }
@@ -120,16 +119,24 @@ export class TaskHierarchyRepository {
   }
 
   taskHierarchyAncestors(tasks) {
-    const present=new Set(tasks.map(task=>task.id));
-    const ids=[...new Set(tasks.map(task=>task.parent_task_id).filter(id=>id && !present.has(id)))];
-    const childScopes=new Set(tasks.filter(task=>task.parent_task_id).map(task=>JSON.stringify([task.parent_task_id,task.work_id])));
     const byId=new Map(tasks.map(task=>[task.id,task]));
+    const visited=new Set();
     const ancestors=[];
-    for(let offset=0;offset<ids.length;offset+=400) {
-      const batch=ids.slice(offset,offset+400);
-      const rows=this.selectAll(`SELECT * FROM tasks WHERE id IN (${batch.map(()=>"?").join(",")}) AND ${active} AND parent_task_id IS NULL`,batch);
-      for(const parent of rows) if(childScopes.has(JSON.stringify([parent.id,parent.work_id]))) {
-        if(!byId.has(parent.id)) {ancestors.push(parent);byId.set(parent.id,parent);}
+    let pending=tasks;
+    while(pending.length) {
+      const scopes=new Map();
+      for(const task of pending) if(task.parent_task_id && !visited.has(task.parent_task_id)) {
+        scopes.set(task.parent_task_id,task.work_id);visited.add(task.parent_task_id);
+      }
+      pending=[];
+      const ids=[...scopes.keys()];
+      for(let offset=0;offset<ids.length;offset+=400) {
+        const batch=ids.slice(offset,offset+400);
+        const rows=this.selectAll(`SELECT * FROM tasks WHERE id IN (${batch.map(()=>"?").join(",")}) AND COALESCE(deletion_status,'')<>'deleted'`,batch);
+        for(const parent of rows) if(parent.work_id===scopes.get(parent.id)) {
+          pending.push(parent);
+          if(!byId.has(parent.id)) {ancestors.push(parent);byId.set(parent.id,parent);}
+        }
       }
     }
     return ancestors;
@@ -167,7 +174,7 @@ export class TaskHierarchyRepository {
           && binding.binding_revision === target.bindingRevision && onlyTarget
           && !this.selectOne("SELECT 1 FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' LIMIT 1", [task.id])
           && protectedMembers.every(row => row.id === task.id)) return;
-        throw taskHierarchyError("TASK_DELETE_TARGET_CHANGED", "The deletion operation no longer authorizes this Worktree.");
+        throw taskHierarchyError("TASK_DELETE_SCOPE_INVALID", "The deletion operation no longer authorizes this Worktree.");
       }
       const job=jobId && this.selectOne("SELECT * FROM worktree_integration_jobs WHERE id=?",[jobId]);
       const plan=job?.details_json ? JSON.parse(job.details_json).plan : null;
@@ -182,11 +189,10 @@ export class TaskHierarchyRepository {
         const rootsFresh=graph.groups.every(group=>{
           const task=this.getTask(group.rootTaskId);
           const children=(this.readTaskDeliveryParticipation({parentTaskIds:[group.rootTaskId]}).byParentTaskId.get(group.rootTaskId) ?? []).filter(child=>child.participates);
-          return task && !task.archived && !task.deletion_status && task.lifecycle_state!=="done" && task.hierarchy_revision===group.scope.expectedHierarchyRevision
-            && JSON.stringify(children.map(child=>child.id))===JSON.stringify(group.bindings.slice(1).map(child=>child.taskId))
+          return task && !task.archived && !task.deletion_status
             && group.bindings.every(item=>{
               const binding=this.getTaskDeliveryBinding(item.taskId),child=this.getTask(item.taskId);
-              return binding?.worktree_id===item.worktreeId && binding.binding_revision===item.bindingRevision
+              return binding?.worktree_id===item.worktreeId
                 && child?.work_id===task.work_id && (child.parent_task_id ?? null)===item.parentTaskId;
             });
         });
@@ -205,7 +211,7 @@ export class TaskHierarchyRepository {
       const writes=this.selectAll(`SELECT worktree_id,path,canonical_path FROM git_worktrees WHERE worktree_id IN (${ids.map(()=>"?").join(",") || "NULL"})
         OR path IN (${writePaths.map(()=>"?").join(",") || "NULL"}) OR canonical_path IN (${writePaths.map(()=>"?").join(",") || "NULL"})`,[...ids,...writePaths,...writePaths]);
       if(scope?.version===1 && ["queued","running","paused","cancellation_requested"].includes(job?.status)
-        && root?.hierarchy_revision===scope.expectedHierarchyRevision && binding?.binding_revision===scope.expectedBindingRevision
+        && root && !root.deletion_status && binding && binding.repository_id===job.repository_id
         && actual.length && actual.every(w=>plan.reservedWorktreeIds?.includes(w.worktree_id))
         && writes.every(w=>writable.has(w.worktree_id)) && ids.every(id=>writes.some(w=>w.worktree_id===id))
         && writePaths.every(path=>writes.some(w=>w.path===path || w.canonical_path===path))) return;
@@ -254,10 +260,9 @@ export class TaskHierarchyRepository {
           acceptance={state:stale ? "stale" : "not_proven",receiptId:receipt.receipt_id,testedHeadOid:snapshot?.parentHeadOid ?? null,
             reason:stale ? "INTEGRATION_ACCEPTANCE_STALE" : "INTEGRATION_ACCEPTANCE_RECHECK_REQUIRED"};
         }
-        const valid = !row.parent_task_id || (row.root_revision && row.parent_work_id === row.work_id && !row.grandparent_task_id);
+        const valid = !row.parent_task_id || (row.root_revision && row.parent_work_id === row.work_id);
         const unavailable = !valid ? "TASK_PARENT_INVALID"
-          : row.parent_task_id ? "TASK_MAX_DEPTH_EXCEEDED"
-            : row.archived || row.lifecycle_state === "done" || row.deletion_status || row.creation_state !== "ready" ? "TASK_PARENT_UNAVAILABLE" : null;
+          : row.archived || row.lifecycle_state === "done" || row.deletion_status || row.creation_state !== "ready" ? "TASK_PARENT_UNAVAILABLE" : null;
         output.set(row.id, {
           version: 1, rootTaskId: row.parent_task_id ?? row.id, depth: row.parent_task_id ? 1 : 0,
           revision: row.root_revision ?? row.hierarchy_revision,
@@ -269,6 +274,18 @@ export class TaskHierarchyRepository {
         });
       }
     }
+    const current=[...output.keys()].map(id=>this.getTask(id)).filter(Boolean);
+    const family=new Map([...current,...this.taskHierarchyAncestors(current)].map(task=>[task.id,task]));
+    for(const task of current) {
+      let root=task,depth=0;
+      const seen=new Set([task.id]);
+      while(root.parent_task_id) {
+        const parent=family.get(root.parent_task_id);
+        if(!parent || seen.has(parent.id) || parent.work_id!==task.work_id) break;
+        seen.add(parent.id);root=parent;depth++;
+      }
+      Object.assign(output.get(task.id),{rootTaskId:root.id,depth,revision:task.hierarchy_revision});
+    }
     return output;
   }
 
@@ -278,7 +295,7 @@ export class TaskHierarchyRepository {
     if (!this.getWork(workId)) throw taskHierarchyError("WORK_NOT_FOUND", "Work not found", 404);
     if (parentTaskId) {
       const parent = this.getTask(parentTaskId);
-      if (!parent || parent.work_id !== workId || parent.parent_task_id) throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
+      if (!parent || parent.work_id !== workId) throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
     }
     const queryHash = createHash("sha256").update(JSON.stringify([workId,mode,parentTaskId,text,includeCompleted,includeArchived])).digest("hex");
     let after = null;

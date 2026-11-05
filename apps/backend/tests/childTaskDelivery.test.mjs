@@ -75,11 +75,14 @@ test("empty child can be retired without a Git Job or Artifact",async t=>{
   const f=await fixture(t);const result=await f.accept(await f.issue());
   assert.equal((await settled(f,result.childDelivery.operationId)).state,"completed");
 });
-test("changed Artifact inventory between intent and click is rejected, with no cleanup",async t=>{
+test("changed Artifact inventory is captured at the actual approval click and delivered",async t=>{
   const f=await fixture(t),receipt=await f.issue();
-  await f.artifacts.create(f.context,{scope:"task",boundTaskId:f.child.id,title:"New",content:"new"});
-  await assert.rejects(()=>f.accept(receipt),{code:"CHILD_DELIVERY_VERSION_CHANGED"});
-  assert.ok(f.store.getTask(f.child.id));assert.equal(f.service.repository.listRecoverableOperations().length,0);
+  const artifact=await f.artifacts.create(f.context,{scope:"task",boundTaskId:f.child.id,title:"New",content:"new"});
+  const accepted=await f.accept(receipt);
+  const final=await settled(f,accepted.childDelivery.operationId);
+  assert.equal(final.state,"completed",final.errorMessage);
+  assert.equal(f.store.getArtifact(artifact.artifactId).boundTaskId,f.parent.id);
+  assert.equal(f.store.getTask(f.child.id),null);
 });
 test("ownership write followed by a coordinator crash recovers without duplicating ownership or references",async t=>{
   const f=await fixture(t);
@@ -194,4 +197,49 @@ test("an Artifact create already preparing bytes cannot land in a retired child"
     assert.equal(final.state,"blocked");
   }
   if(created.error) assert.ok(["CHILD_DELIVERY_IN_PROGRESS","ARTIFACT_TASK_NOT_FOUND","ARTIFACT_SCOPE_INVALID","ARTIFACT_CROSS_WORK_FORBIDDEN"].includes(created.error.code),created.error.message);
+});
+
+
+test("cleanup recovery delivers missing Artifacts before deleting, using the original approval", async t => {
+  const f=await fixture(t);
+  const artifact=await f.artifacts.create(f.context,{scope:"task",boundTaskId:f.child.id,title:"Pending",content:"deliver me"});
+  const wake=f.service.wake.bind(f.service);
+  f.service.wake=()=>Promise.resolve();
+  const accepted=await f.accept(await f.issue("incomplete"));
+  const id=accepted.childDelivery.operationId;
+  let operation=f.service.repository.getOperation(id);
+  operation=f.service.advance(operation,{state:"running",phase:"cleanup",progress:{codeDelivered:true,artifactsDelivered:false}});
+  f.service.wake=wake;
+  const result=await f.deletion.requestAfterChildDelivery(operation);
+  assert.equal(result.accepted,true);
+  assert.ok(result.operation);
+  await f.deletion.resumeChildDeliveryDeletion(result.operation.operationId,id);
+  assert.equal(f.deletion.getOperation(result.operation.operationId).state,"succeeded");
+  assert.equal(f.store.getArtifact(artifact.artifactId).boundTaskId,f.parent.id);
+  assert.equal(f.store.getTask(f.child.id),null);
+});
+
+test("cleanup recovery starts pending code delivery and does not delete until its job finishes", async t => {
+  const f=await fixture(t);
+  const wake=f.service.wake.bind(f.service);
+  f.service.wake=()=>Promise.resolve();
+  const accepted=await f.accept(await f.issue("pending-code"));
+  const id=accepted.childDelivery.operationId;
+  let operation=f.service.repository.getOperation(id);
+  operation=f.service.advance(operation,{state:"running",phase:"cleanup",progress:{codeDelivered:false,artifactsDelivered:false}});
+  let attempts=0,ready=false;
+  f.service.ensureCodeDelivered=async()=>{attempts++;return ready;};
+  f.service.wake=wake;
+  const pending=await f.deletion.requestAfterChildDelivery(operation);
+  assert.equal(pending.pendingDelivery,true);
+  assert.equal(pending.operation,null);
+  assert.equal(attempts,1);
+  assert.ok(f.store.getTask(f.child.id));
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM task_deletion_operations").n,0);
+  ready=true;
+  f.service.onRuntimeEvent("SessionRunCompleted",{sessionId:"session:child"});
+  const final=await settled(f,id);
+  assert.equal(final.state,"completed",final.errorMessage);
+  assert.equal(f.store.getTask(f.child.id),null);
+  assert.equal(attempts,2);
 });

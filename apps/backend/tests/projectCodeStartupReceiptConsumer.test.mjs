@@ -18,15 +18,18 @@ test("Startup consumer binds exact authenticated Session, Store identity and Git
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 
-test("Startup consumer fails closed when current Worktree HEAD changed", async () => {
+test("Startup consumer accepts a normal commit and keeps its original startup receipt unchanged", async () => {
   const fixture = await createProjectCodeFixture();
   try {
     await writeFile(join(fixture.directory, "new.txt"), "new\n");
     const { git } = await import("./helpers/projectCodeTestFixture.mjs");
     await git(fixture.directory, ["add", "new.txt"]);
     await git(fixture.directory, ["commit", "-qm", "changed head"]);
-    await assert.rejects(() => new StartupBindingReceiptConsumer().verify(fixture.startupReceipt, fixture.binding, fixture.sessionContext),
-      (error) => error.code === "STARTUP_SOURCE_CHANGED");
+    const before=JSON.stringify(fixture.startupReceipt);
+    const current=await new StartupBindingReceiptConsumer().verify(fixture.startupReceipt,fixture.binding,fixture.sessionContext);
+    assert.notEqual(current.commitOid,fixture.startupReceipt.sourceCommitOid);
+    assert.equal(current.commitOid,await git(fixture.directory,["rev-parse","HEAD"]));
+    assert.equal(JSON.stringify(fixture.startupReceipt),before);
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 

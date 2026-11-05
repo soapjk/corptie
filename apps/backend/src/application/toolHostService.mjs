@@ -177,7 +177,10 @@ export class ToolHostService {
   }
 
   async #execute(input = {}) {
-    await this.assertExecutionAllowed?.(input);
+    const canonical = input.tool === TOOL_RESTRICTED_GATEWAY ? input.arguments?.tool : input.tool;
+    const entry = canonical ? this.catalog.entry(canonical) : null;
+    const discovery = input.tool === TOOL_CATALOG_SEARCH || input.tool === TOOL_DOMAIN_LOAD;
+    await this.assertExecutionAllowed?.({ ...input, executionEffect: discovery ? "read" : entry?.executionEffect ?? "write" });
     if (input.tool === TOOL_CATALOG_SEARCH) {
       const scope = exactScope(input);
       const searchInput = {

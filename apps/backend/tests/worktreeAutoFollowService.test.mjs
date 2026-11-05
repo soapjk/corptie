@@ -155,8 +155,8 @@ test("SQLite persists opt-in through Store close and reopen", async () => {
   } finally { store?.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("busy, dirty, conflict and locked Worktrees wait then resume only when safe", async () => {
-  for (const reason of ["SESSION_BUSY", "UNCOMMITTED_CHANGES", "GIT_OPERATION_IN_PROGRESS", "WORKTREE_LOCKED", "DETACHED_HEAD", "WORKTREE_UNAVAILABLE"]) {
+test("actual active execution and Git operation wait then resume", async () => {
+  for (const reason of ["SESSION_BUSY", "GIT_OPERATION_IN_PROGRESS", "DETACHED_HEAD", "WORKTREE_UNAVAILABLE"]) {
     const f = fixture(); await f.enable(); f.detail.blockedReason = reason;
     await f.service.tick(); assert.equal(f.calls.length, 0); assert.equal(f.service.state("tree").reason, reason);
     f.detail.blockedReason = null; await f.service.tick(); assert.equal(f.calls.filter(call => call[0] === "confirm").length, 1);
@@ -205,9 +205,8 @@ test("turning off during preflight cancels the draft without confirm or rebase",
   const heads = f.heads(); await f.service.tick(); assert.equal(f.heads(), heads);
 });
 
-test("unsafe plans and changes before confirmation cancel without auto-committing", async () => {
-  for (const change of [job => job.plan.items[0].dirty = true, job => job.plan.items[0].commitStatus = "pending",
-    job => job.plan.blockingRisks.push({ code: "CONFLICT" })]) {
+test("actual blocked plans and route changes before confirmation cancel", async () => {
+  for (const change of [job => job.plan.blockingRisks.push({ code: "CONFLICT" })]) {
     const f = fixture(); await f.enable(); const original = f.jobService.preflight;
     f.jobService.preflight = async (...args) => { const job = await original(...args); change(job); return job; };
     await f.service.tick(); assert.deepEqual(f.calls.map(call => call[0]), ["preflight", "cancel"]);
@@ -217,10 +216,28 @@ test("unsafe plans and changes before confirmation cancel without auto-committin
   await f.service.tick(); assert.deepEqual(f.calls.map(call => call[0]), ["preflight", "cancel"]);
 });
 
-test("repository-wide jobs exclude automatic rebase and concurrent checks coalesce", async () => {
-  const f = fixture(); await f.enable(); f.jobs.set("manual", { status: "running" });
-  await Promise.all([f.service.tick(), f.service.tick()]);
-  assert.equal(f.calls.length, 0); assert.equal(f.heads(), 2);
+test("only overlapping jobs defer automatic follow and concurrent checks coalesce", async () => {
+  for (const treeId of ["unrelated", "tree", "main"]) {
+    const f = fixture(); await f.enable();
+    f.jobs.set("manual", { id: "manual", status: "running", details: { plan: { items: [{worktreeId:treeId}] } } });
+    await Promise.all([f.service.tick(), f.service.tick()]);
+    assert.equal(f.calls.filter(call=>call[0]==="confirm").length, treeId==="unrelated" ? 1 : 0);
+    assert.equal(f.heads(), 2);
+  }
+});
+
+test("parent baseline authorization follows actual relationships rather than hierarchy counters", async () => {
+  const f=fixture();
+  f.source.hierarchy={role:"child",rootTaskId:"task:root",parentTaskId:"task:parent",hierarchyRevision:1,bindingRevision:1,
+    comparison:{worktreeId:"main",branchName:"develop",behind:2}};
+  await f.enable();
+  f.source.hierarchy.hierarchyRevision=9; f.source.hierarchy.bindingRevision=7;
+  await f.service.tick();
+  assert.equal(f.calls[0][2].taskScope.rootTaskId,"task:parent");
+  assert.equal(f.calls[0][2].taskScope.expectedHierarchyRevision,9);
+  const job=f.jobs.get(f.service.state("tree").jobId);
+  job.details.plan={...job.plan,taskScope:f.calls[0][2].taskScope};
+  assert.equal(f.service.authorizes(job),true);
 });
 
 test("restart discards only its own unconfirmed auto draft and creates a fresh safe plan", async () => {
@@ -321,3 +338,9 @@ for (const conflict of [false, true]) {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+ test("dirty files use the shared sync path without invalidating the opt-in", async () => {
+  const f=fixture(); f.source.dirty=true; f.main.dirty=true;
+  await f.enable(); await f.service.tick();
+  assert.equal(f.calls.filter(call=>call[0]==="confirm").length,1);
+ });

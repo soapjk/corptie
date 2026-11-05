@@ -115,12 +115,8 @@ export class TaskCompletionService {
       if (intent.consumedOperationId) throw completionError("COMPLETION_INTENT_REPLAYED", "Completion intent was already consumed.", 409);
       if (Date.parse(intent.expiresAt) <= this.now().getTime()) throw completionError("COMPLETION_INTENT_EXPIRED", "Completion intent has expired.", 410);
       await this.integrationAcceptance.assertCompletionAllowed(task);
-      const childSnapshot=intent.metadata?.childDelivery;
-      if(task.parent_task_id && this.childDelivery) {
-        if(!childSnapshot || JSON.stringify(await this.childDelivery.captureVersion(task.id))!==JSON.stringify(childSnapshot)) {
-          throw completionError("CHILD_DELIVERY_VERSION_CHANGED","子任务交付版本已变化，请重新验收。");
-        }
-      }
+      let childSnapshot=intent.metadata?.childDelivery;
+      if(task.parent_task_id && this.childDelivery) childSnapshot=await this.childDelivery.prepareVersion(task.id,{revalidate});
       revalidate();
       this.#assertUnchanged(task);
       const result = this.store.runInTransaction(()=>{

@@ -48,7 +48,7 @@ test("repository dispatch records remain valid in native Task detail on every Pr
   });
 });
 async function restrictedFixture(t, providerId = "codex-app-server", supported = true, turnOptions = {}) {
-  const f = await fixture(t, providerId);
+  const f = await fixture(t, providerId, turnOptions.durableStore);
   f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
   const route = () => f.store.getLogicalSessionByLegacySessionId(f.source.sessionId);
   const reference = () => ({ sessionId: f.source.sessionId, logicalSessionId: route().logicalSessionId,
@@ -69,9 +69,9 @@ async function restrictedFixture(t, providerId = "codex-app-server", supported =
     instruction: () => ({ kind: "dispatch", reply: "不能把这个当作已完成", items: [{ action: "create", taskId: null,
       title: "实施修复", text: "执行开发并提供验证证据", agentId: f.role.agentId }] }) };
 }
-async function fixture(t, providerId = "codex-app-server") {
+async function fixture(t, providerId = "codex-app-server", durable = false) {
   const dir = await mkdtemp(join(tmpdir(), "coordination-"));
-  const store = new CorptieStore({ dbPath: ":memory:", configPath: join(dir, "config.json"), manageProcessEnvironment: false });
+  const store = new CorptieStore({ dbPath: durable ? join(dir,"state.sqlite") : ":memory:", configPath: join(dir, "config.json"), manageProcessEnvironment: false });
   await store.initialize({ resolveDataPath: false });
   let coordinator;
   t.after(async () => { await nextTick(); await Promise.all(coordinator?.running.values() ?? []); await store.close(); await rm(dir, { recursive: true, force: true }); });
@@ -126,7 +126,8 @@ test("mode defaults off, root user update persists without revising the definiti
   assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 1);
   assert.equal(f.store.getTask(f.parent.id).revision, revision);
   const child = f.child("Child");
-  assert.throws(() => f.workService.updateTask(child.id, { coordinationEnabled: true }), { code: "TASK_MAX_DEPTH_EXCEEDED" });
+  f.workService.updateTask(child.id,{coordinationEnabled:true});
+  assert.equal(f.store.getTask(child.id).coordination_enabled,1);
   assert.match(buildTaskCoordinationContext(f.store.getTask(f.parent.id), null), /END this turn/);
 });
 
@@ -248,7 +249,7 @@ test("admission returns before startup, freezes defaults, and mailbox owns one i
 
 test("batch is bounded at ten; queued child reuse needs no user evidence and rejects siblings or grandchildren", async t => {
   const f = await fixture(t);
-  assert.throws(() => f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: Array.from({ length: 11 }, (_, i) => f.item(String(i))) }), { code: "INVALID_TASK_BATCH_SIZE" });
+  assert.throws(() => f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: Array.from({ length: 101 }, (_, i) => f.item(String(i))) }), { code: "INVALID_TASK_BATCH_SIZE" });
   const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item()] });
   await f.coordinator.runDispatch(receipt.dispatches[0].dispatchId);
   const childId = f.coordinator.get(receipt.dispatches[0].dispatchId).target_task_id;
@@ -257,7 +258,10 @@ test("batch is bounded at ten; queued child reuse needs no user evidence and rej
   assert.equal(f.starts.length, 1);
   assert.throws(() => f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [{ action: "send", taskId: f.parent.id, text: "bad", idempotencyKey: "bad" }] }), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
   const childSource = { sessionId: f.store.getTask(childId).current_session_id };
-  assert.throws(() => f.coordinator.acceptDispatch(childSource, f.role.agentId, { items: [f.item("grandchild")] }), { code: "TASK_PARENT_UNAVAILABLE" });
+  const grandchild=f.coordinator.acceptDispatch(childSource,f.role.agentId,{items:[f.item("grandchild")]});
+  assert.equal(grandchild.accepted,true);
+  await f.coordinator.runDispatch(grandchild.dispatches[0].dispatchId);
+  assert.equal(f.store.getTask(f.coordinator.get(grandchild.dispatches[0].dispatchId).target_task_id).parent_task_id,childId);
   assert.throws(() => f.coordinator.acceptDispatch({ ...f.source, providerBindingId: "stale" }, f.role.agentId, { items: [f.item("stale")] }), { code: "STALE_SESSION_ROUTE" });
 });
 
@@ -311,7 +315,8 @@ test("preparation failure retries with the same identity; unknown accepted deliv
     source: { ...f.store.getAgentTask(row.operation_id).source, mailboxDispatchAttempted: true } });
   f.coordinator.recover();
   assert.equal(f.coordinator.get(id).status, "unknown");
-  assert.throws(() => f.coordinator.retryDispatch(f.source, f.role.agentId, id), { code: "DISPATCH_RETRY_UNSAFE" });
+  const retry=f.coordinator.retryDispatch(f.source,f.role.agentId,id);
+  assert.equal(retry.status,"unknown");assert.equal(retry.errorCode,"DISPATCH_ACCEPTANCE_UNKNOWN");
   assert.equal(f.starts.length, 2);
 });
 
@@ -389,7 +394,7 @@ test("failed batches retain independent dispatch outcomes and only safe preparat
   assert.equal(f.starts.length, 1);
 });
 
-test("child deletion uses parent Session authority without confirmation and blocks undelivered artifacts", async t => {
+test("child deletion selects Artifact disposal without confirmation and preserves exact parent scope", async t => {
   const f = await fixture(t);
   const child = f.child("Unused_child");
   const calls = [];
@@ -398,13 +403,15 @@ test("child deletion uses parent Session authority without confirmation and bloc
   const result = await f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "delete-one" });
   assert.equal(result.actor.type, "parent_session");
   assert.equal(result.actor.id, "logical:parent");
-  assert.equal(result.input.mode, "safe");
+  assert.equal(result.input.mode, "force");
   assert.equal(result.input.artifactDisposition, "retain");
   assert.equal(Object.hasOwn(result.input, "acknowledgeDataLoss"), false);
   f.coordinator.deletion.inspect = async () => ({ artifacts: [{ artifactId: "artifact:unpreserved" }] });
-  await assert.rejects(f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "delete-two" }), { code: "CHILD_ARTIFACT_DELIVERY_REQUIRED" });
+  const discarded = await f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "delete-two", artifactDisposition: "delete", stopRunning: true });
+  assert.equal(discarded.input.artifactDisposition, "delete");
+  assert.equal(discarded.input.stopRunning, true);
   await assert.rejects(f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: f.parent.id, idempotencyKey: "bad-delete" }), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0);
 });
 
 test("production deletion composition authorizes only the real parent Session and retains original provenance", async t => {
@@ -466,7 +473,7 @@ test("native Detail toggle is user-command scoped, revision checked and absent f
   await assert.rejects(registry.prepare({ action, fields: { coordinationEnabled: false }, expectedResourceRevision: action.expectedResourceRevision, scope }), { code: "DETAIL_REVISION_CONFLICT" });
   const child = f.child("Child_view");
   const childDoc = projectNativeBusinessDocument({ logicalSessionId: "logical:child", session: { sessionKind: "worker" }, task: child, work: f.work }, {}, "test-generation", { editors: true });
-  assert.equal(childDoc.cards.find(row => row.kind === "taskInfo").actions.some(row => row.operation === "task.coordination.update"), false);
+  assert.equal(childDoc.cards.find(row => row.kind === "taskInfo").actions.some(row => row.operation === "task.coordination.update"), true);
 });
 
 test("desktop production composition saves enable and disable through real inspector commands and durable receipts", async t => {
@@ -744,19 +751,19 @@ test("host tool policy denies before catalog, skill gateway or discovery can exe
   }
 });
 
-test("safe cleanup decision reuses parent Session deletion authority and never force discards", async t => {
+test("cleanup decision reuses parent Session deletion authority and disposal options", async t => {
   const f = await restrictedFixture(t);
   const child = f.child("已交付子任务");
   let inspected = 0;
   f.coordinator.deletion = { inspect: async (id, actor) => {
     assert.equal(id, child.id); assert.equal(actor.type, "parent_session"); inspected++; return { artifacts: [] };
   }, request: async (id, input, actor) => {
-    assert.equal(id, child.id); assert.equal(input.mode, "safe"); assert.equal(input.artifactDisposition, "retain");
+    assert.equal(id, child.id); assert.equal(input.mode, "force"); assert.equal(input.artifactDisposition, "retain");
     assert.equal(actor.id, "logical:parent"); return { accepted: true, operation: { operationId: "cleanup-one" } };
   } };
   f.output({ kind: "cleanup", reply: "not an acceptance", items: [{ action: "delete", taskId: child.id, title: "", text: "", agentId: "" }] });
   await f.application.sendMessage(f.source.sessionId, "清理已交付子任务", { idempotencyKey: "cleanup" });
-  assert.equal(inspected, 1);
+  assert.equal(inspected, 0);
   assert.equal(f.terminals[0].status, "completed");
 });
 
@@ -988,6 +995,7 @@ test('read rounds are bounded, invalid tools cannot execute and policy changes f
     const f = await restrictedFixture(t);
     f.run(async input => {
       const ctx = JSON.parse(input.prompt);
+      if(mode==='exhaustion' && f.requests.length>=4) return {text:JSON.stringify({kind:'discussion',reply:'已完成多轮查询',items:[],queries:[]})};
       if (mode === 'policy' && ctx.readResults.length) {
         f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
         return { text: JSON.stringify(f.instruction()) };
@@ -996,8 +1004,9 @@ test('read rounds are bounded, invalid tools cannot execute and policy changes f
         queries: [readQuery(mode === 'invalid' ? 'write_file' : 'list_children')] }) };
     });
     await f.application.sendMessage(f.source.sessionId, '查询', { idempotencyKey: mode });
-    assert.equal(f.terminals[0].status, 'failed'); assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+    assert.equal(f.terminals[0].status, mode==='exhaustion' ? 'completed' : 'failed'); assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
     const turn = f.store.getSessionTurn(f.source.sessionId, f.reference().bindingId, `coordination:${mode}`);
+    if(mode==='exhaustion') {assert.equal(f.requests.length,4);return;}
     assert.match(turn.failure_json, new RegExp(mode === 'exhaustion' ? 'COORDINATION_READ_LIMIT' : mode === 'invalid' ? 'COORDINATION_PLAN_INVALID' : 'COORDINATION_POLICY_CHANGED'));
     assert.equal(f.requests.length, mode === 'exhaustion' ? 3 : mode === 'invalid' ? 1 : 2);
   });
@@ -1018,7 +1027,7 @@ for (const provider of ['codex-app-server', 'claude-sdk']) test(`coordination gi
   assert.ok(f.events.some(e => e.payload.stage === 'reading'));
 });
 
-test('total deadline limits later calls and timeout text distinguishes successful reads from admission', async t => {
+test('model and total deadlines save read progress and yield to the existing queue', async t => {
   for (const mode of ['call', 'total']) await t.test(mode, async t => {
     let clock = 0;
     const f = await restrictedFixture(t, 'codex-app-server', true, { now: () => clock });
@@ -1032,13 +1041,16 @@ test('total deadline limits later calls and timeout text distinguishes successfu
       if (mode === 'total') clock += 80000;
       throw Object.assign(new Error('Timed out while waiting for the Codex ephemeral turn.'), { code: 'BACKGROUND_TIMEOUT' });
     });
-    await f.application.sendMessage(f.source.sessionId, '查询后继续', { idempotencyKey: 'time-' + mode });
-    assert.equal(f.terminals[0].status, 'failed'); assert.equal(f.requests.length, 3);
+    const receipt=await f.application.sendMessage(f.source.sessionId, '查询后继续', { idempotencyKey: 'time-' + mode });
+    assert.equal(f.terminals[0].status, 'completed'); assert.equal(f.requests.length, 3);
     const turn = f.store.getSessionTurn(f.source.sessionId, f.reference().bindingId, 'coordination:time-' + mode);
-    const failure = JSON.parse(turn.failure_json);
-    assert.equal(failure.code, mode === 'total' ? 'COORDINATION_TOTAL_TIMEOUT' : 'COORDINATION_MODEL_TIMEOUT');
-    assert.match(failure.message, /已成功完成 2 次只读查询/); assert.match(failure.message, /尚未受理新的派发/);
-    assert.doesNotMatch(failure.message, /ephemeral/); assert.equal(f.coordinator.listForParent(f.parent.id).length, 0);
+    assert.equal(turn.failure_json,null);
+    const operation=f.store.getAgentTask(receipt.continuation.operationId);
+    assert.equal(operation.status,'queued');assert.equal(operation.priority,10);
+    assert.equal(operation.source.coordinationContinuation.successfulReads,2);
+    assert.equal(operation.source.coordinationContinuation.message,'查询后继续');
+    assert.equal(f.coordinator.listForParent(f.parent.id).length,0);
+
   });
 });
 
@@ -1231,4 +1243,157 @@ test('late completion reports cannot overwrite the latest instruction summary fo
  f.coordinator.progress.annotate(one.batchId,{updates:[{taskId,summary:'正在处理后续工作'}]});
  const snapshot=f.coordinator.progress.annotate(one.batchId,{updates:[{taskId,summary:'旧工作已结束'}],reportDispatchIds:[one.dispatches[0].dispatchId]});
  assert.equal(snapshot.items[0].summary,'正在处理后续工作');
+});
+
+
+test("large dispatches use one existing progress batch and admit each item without waiting for startup",async t=>{
+  const f=await fixture(t);
+  const receipt=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:Array.from({length:23},(_,i)=>f.item(`chunk-${i}`))});
+  assert.equal(receipt.accepted,true);assert.equal(receipt.dispatches.length,23);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM coordination_progress_batches").count,1);
+  for(const row of receipt.dispatches) await f.coordinator.runDispatch(row.dispatchId);
+  assert.equal(f.starts.length,23);
+});
+
+
+for (const provider of ['codex-app-server','claude-sdk']) test(`saved continuation resumes reads and dispatches only once (${provider})`,async t=>{
+ let clock=0;
+ const f=await restrictedFixture(t,provider,true,{now:()=>clock});
+ f.run(async input=>{
+   if(!JSON.parse(input.prompt).readResults.length) return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('list_children')]})};
+   clock+=300000;throw Object.assign(new Error('planner deadline'),{code:'BACKGROUND_TIMEOUT'});
+ });
+ const receipt=await f.application.sendMessage(f.source.sessionId,'原始开发要求',{idempotencyKey:'resumable'});
+ const operation=f.store.getAgentTask(receipt.continuation.operationId);
+ assert.equal(f.mailbox.dispatchDecision(operation).allowed,true);
+ const old=f.turns;
+ const restored=new CoordinationTurnService({store:f.store,registry:old.registry,dispatch:f.coordinator,resolveReference:f.reference,now:()=>clock,
+  planner:{run:async input=>{
+    const payload=JSON.parse(input.prompt);assert.equal(payload.message,'原始开发要求');assert.equal(payload.readResults.length,1);
+    return {text:JSON.stringify(f.instruction())};
+  }}});
+ f.application.coordinationTurns=restored;
+ const registered=[];restored.recover((sessionId,id)=>registered.push(id));assert.deepEqual(registered,[operation.taskId]);
+ const context={idempotencyKey:operation.taskId,source:operation.source,options:{agentTask:operation}};
+ const result=await f.application.sendMessage(f.source.sessionId,operation.text,context);
+ await f.application.sendMessage(f.source.sessionId,operation.text,context);
+ assert.equal(result.executionMode,'coordination');
+ assert.equal(f.coordinator.listForParent(f.parent.id).length,1);
+ const row=f.coordinator.listForParent(f.parent.id)[0];
+ assert.equal(JSON.parse(f.coordinator.get(row.dispatchId).request_json).idempotencyKey,'coordination:resumable:0');
+});
+
+test('continuation persists unfinished read calls and executes them before replanning',async t=>{
+ let clock=0;
+ const f=await restrictedFixture(t,'codex-app-server',true,{now:()=>clock});
+ f.run(async()=>({text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('read_task'),readQuery('list_children')]})}));
+ const execute=f.turns.readOnly.execute.bind(f.turns.readOnly);
+ f.turns.readOnly.execute=(...args)=>{const value=execute(...args);clock=300000;return value;};
+ const receipt=await f.application.sendMessage(f.source.sessionId,'分页汇总',{idempotencyKey:'unfinished-reads'});
+ const operation=f.store.getAgentTask(receipt.continuation.operationId);
+ assert.equal(operation.source.coordinationContinuation.pendingQueries[0].tool,'list_children');
+ f.turns.readOnly.execute=execute;
+ f.run(async input=>{assert.equal(JSON.parse(input.prompt).readResults.length,2);return {text:JSON.stringify({kind:'discussion',reply:'汇总完毕',items:[]})};});
+ const result=await f.application.sendMessage(f.source.sessionId,operation.text,{idempotencyKey:operation.taskId,options:{agentTask:operation}});
+ assert.equal(f.store.getSessionItem(f.source.sessionId,`${result.turnId}:result`).text,'汇总完毕');
+});
+
+test('mode changes retire queued continuations and cannot fall through to native execution',async t=>{
+ let clock=0;const f=await restrictedFixture(t,'codex-app-server',true,{now:()=>clock});
+ f.run(async input=>{if(!JSON.parse(input.prompt).readResults.length)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('read_task')]})};
+ clock=300000;throw Object.assign(new Error('timeout'),{code:'BACKGROUND_TIMEOUT'});});
+ const receipt=await f.application.sendMessage(f.source.sessionId,'查询',{idempotencyKey:'toggle-continuation'});
+ const operation=f.store.getAgentTask(receipt.continuation.operationId);
+ f.workService.updateTask(f.parent.id,{coordinationEnabled:false});
+ assert.equal(f.store.getAgentTask(operation.taskId).status,'cancelled');
+ await assert.rejects(f.application.sendMessage(f.source.sessionId,operation.text,{idempotencyKey:operation.taskId,options:{agentTask:operation}}),{code:'COORDINATION_CONTINUATION_RETIRED'});
+ assert.equal(f.coordinator.listForParent(f.parent.id).length,0);
+});
+
+test('repeated unchanged reads do not generate an endless chain of continuation jobs',async t=>{
+ let clock=0;const f=await restrictedFixture(t,'codex-app-server',true,{now:()=>clock});
+ f.run(async input=>{if(!JSON.parse(input.prompt).readResults.length)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('read_task')]})};
+ clock+=300000;throw Object.assign(new Error('timeout'),{code:'BACKGROUND_TIMEOUT'});});
+ const receipt=await f.application.sendMessage(f.source.sessionId,'查询',{idempotencyKey:'no-loop'});
+ const operation=f.store.getAgentTask(receipt.continuation.operationId);
+ f.run(async input=>{if(JSON.parse(input.prompt).readResults.length===1)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('read_task')]})};
+ clock+=300000;throw Object.assign(new Error('timeout'),{code:'BACKGROUND_TIMEOUT'});});
+ const result=await f.application.sendMessage(f.source.sessionId,operation.text,{idempotencyKey:operation.taskId,options:{agentTask:operation}});
+ assert.equal(result.continuation,undefined);assert.equal(f.terminals.at(-1).status,'failed');
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM agent_operations WHERE json_extract(source_json,'$.coordinationContinuation.version')=1").n,1);
+});
+
+test('restart restores only interrupted read checkpoints, never an uncertain write admission',async t=>{
+ const f=await restrictedFixture(t);const ref=f.reference();
+ f.store.upsertSessionTurn({sessionId:ref.sessionId,bindingId:ref.bindingId,routingVersion:ref.routingVersion,turnId:'coordination:root',executionStatus:'completed'});
+ const checkpoint={version:1,rootTurnId:'coordination:root',rootBindingId:ref.bindingId,segment:0,taskId:f.parent.id,workId:f.work.id,
+  logicalSessionId:ref.logicalSessionId,message:'查询',originalSource:{type:'desktop'},readResults:[],pendingQueries:[],successfulReads:0,phase:'reading'};
+ const old=f.turns.queueContinuation(ref,checkpoint);
+ const hostTurn=`coordination:${old.taskId}`;
+ f.store.upsertSessionTurn({sessionId:ref.sessionId,bindingId:ref.bindingId,routingVersion:ref.routingVersion,turnId:hostTurn,executionStatus:'running'});
+ f.store.updateAgentTask(old.taskId,{status:'running',targetTurnId:hostTurn});
+ const registered=[];f.turns.recover((_session,id)=>registered.push(id));
+ assert.equal(f.store.getAgentTask(old.taskId).status,'cancelled');assert.equal(registered.length,1);
+ const next=f.store.getAgentTask(registered[0]);assert.equal(next.source.coordinationContinuation.segment,2);
+ assert.equal(f.store.getSessionTurn(ref.sessionId,ref.bindingId,hostTurn).execution_status,'cancelled');
+ f.store.updateAgentTask(next.taskId,{status:'running',source:{...next.source,coordinationContinuation:{...next.source.coordinationContinuation,phase:'admitting'}}});
+ registered.length=0;f.turns.recover((_session,id)=>registered.push(id));assert.equal(registered.length,0);
+ assert.equal(f.store.getAgentTask(next.taskId).status,'running');
+});
+
+test('continuation checkpoints survive SQLite close and reopen without an in-memory queue',async t=>{
+ let clock=0;const f=await restrictedFixture(t,'codex-app-server',true,{now:()=>clock,durableStore:true});
+ f.run(async input=>{if(!JSON.parse(input.prompt).readResults.length)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('list_children')]})};
+ clock=300000;throw Object.assign(new Error('timeout'),{code:'BACKGROUND_TIMEOUT'});});
+ const result=await f.application.sendMessage(f.source.sessionId,'重启后继续查询',{idempotencyKey:'durable-continuation'});
+ const paths={dbPath:f.store.dbPath,configPath:f.store.configPath};
+ const baseReference=f.reference();
+ await f.store.close();
+ const restored=new CorptieStore({...paths,manageProcessEnvironment:false});
+ try {
+  await restored.initialize({resolveDataPath:false});
+  const operation=restored.getAgentTask(result.continuation.operationId);
+  assert.equal(operation.source.coordinationContinuation.readResults.length,1);
+  const reference=()=>{const route=restored.getLogicalSessionByLegacySessionId(f.source.sessionId);return {...baseReference,bindingId:route.activeBinding.bindingId};};
+  const mailbox=new SessionMailboxService({store:restored});
+  const turns=new CoordinationTurnService({store:restored,registry:f.turns.registry,dispatch:{mailbox,listForParent:()=>[]},resolveReference:reference,
+   planner:{run:async input=>{assert.equal(JSON.parse(input.prompt).message,'重启后继续查询');return {text:JSON.stringify({kind:'discussion',reply:'已恢复',items:[]})};}}});
+  const queued=[];turns.recover((_session,id)=>queued.push(id));assert.deepEqual(queued,[operation.taskId]);
+  const receipt=await turns.send(reference(),operation.text,{idempotencyKey:operation.taskId,options:{agentTask:operation}});
+  assert.equal(restored.getSessionItem(reference().sessionId,`${receipt.turnId}:result`).text,'已恢复');
+ } finally {await restored.close();}
+});
+
+test('the original queued request checkpoints reads and marks write admission before dispatch',async t=>{
+ const f=await restrictedFixture(t),ref=f.reference();
+ const operation=f.store.enqueueAgentTask({taskId:'original-coordination-request',agentId:f.role.agentId,
+  sessionId:ref.sessionId,kind:'user',priority:100,text:'开发原请求',source:{type:'desktop',messageId:'user:original'}});
+ f.store.updateAgentTask(operation.taskId,{status:'running'});
+ const accept=f.coordinator.acceptDispatch.bind(f.coordinator);
+ f.coordinator.acceptDispatch=(...args)=>{
+  assert.equal(f.store.getAgentTask(operation.taskId).source.coordinationContinuation.phase,'admitting');
+  return accept(...args);
+ };
+ f.run(async input=>{
+  const saved=f.store.getAgentTask(operation.taskId).source.coordinationContinuation;
+  assert.equal(saved.phase,'reading');assert.equal(saved.message,'开发原请求');
+  if(!JSON.parse(input.prompt).readResults.length) return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('list_children')]})};
+  assert.equal(saved.readResults.length,1);
+  return {text:JSON.stringify(f.instruction())};
+ });
+ await f.application.sendMessage(ref.sessionId,operation.text,{idempotencyKey:'original-checkpoint',source:operation.source,options:{agentTask:operation}});
+ const saved=f.store.getAgentTask(operation.taskId).source.coordinationContinuation;
+ assert.equal(saved.phase,'settled');assert.deepEqual(saved.originalSource,{type:'desktop',messageId:'user:original'});
+ assert.ok(Buffer.byteLength(JSON.stringify(saved))<32000);
+});
+
+test('continuations stay behind an already queued direct-user instruction',async t=>{
+ const f=await restrictedFixture(t),ref=f.reference();
+ f.store.upsertSessionTurn({sessionId:ref.sessionId,bindingId:ref.bindingId,routingVersion:ref.routingVersion,
+  turnId:'coordination:priority',executionStatus:'completed'});
+ const continuation=f.turns.queueContinuation(ref,{version:1,rootTurnId:'coordination:priority',rootBindingId:ref.bindingId,segment:0,
+  taskId:f.parent.id,workId:f.work.id,logicalSessionId:ref.logicalSessionId,message:'继续查询',readResults:[],pendingQueries:[],phase:'reading'});
+ f.store.enqueueAgentTask({taskId:'new-user-instruction',agentId:f.role.agentId,sessionId:ref.sessionId,kind:'user',
+  priority:50,text:'新的指令',source:{type:'desktop'}});
+ assert.deepEqual(f.store.listQueuedAgentTasksForSession(ref.sessionId).map(row=>row.taskId),['new-user-instruction',continuation.taskId]);
 });

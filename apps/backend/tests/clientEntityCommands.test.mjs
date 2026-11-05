@@ -103,7 +103,7 @@ test("management projections are available to every paired device and mirror the
     assert.equal(management.schemaVersion, 1);
     assert.deepEqual(management.task, { id: f.task.id, workId: "work:test", title: "Task", description: "", acceptanceCriteria: "",
       verificationCriteria: "", priority: "medium", lifecycleState: "todo", archived: false,
-      autoTitleEnabled: true, mainAgentId: "agent:test", deletionStatus: null });
+      autoTitleEnabled: true, coordinationEnabled: false, mainAgentId: "agent:test", deletionStatus: null });
     assert.deepEqual(management.agents, [{ id: "agent:test", name: "Test" }]);
     assert.deepEqual(management.priorities, ["low", "medium", "high", "urgent"]);
     assert.deepEqual(management.actions, {
@@ -133,7 +133,7 @@ test("deletion plan is inspected as the paired-device actor and never exposes ho
     const api = f.make();
     const plan = await api.taskDeletionPlan(tasks, f.task.id);
     assert.deepEqual(f.calls, [["inspectTaskDeletion", f.task.id, { type: "user", id: "user:paired-device:device:test" }]]);
-    assert.deepEqual(plan, { schemaVersion: 1, taskId: f.task.id, parentTaskId: null, status: "risky", associatedSessionCount: 1,
+    assert.deepEqual(plan, { schemaVersion: 1, taskId: f.task.id, parentTaskId: null, status: "risky", associatedSessionCount: 1, associatedTaskIds: [], childTaskIds: [],
       artifacts: [{ id: "artifact:a", title: "Plan" }],
       worktree: { branchName: "task/abc", dirty: true, mergedIntoMain: false, aheadOfMain: 2 },
       risks: [{ code: "DIRTY_WORKTREE", message: "uncommitted changes", files: ["a.swift", "/Volumes/PRIVATE/b.swift"], commitCount: 2 }], blockers: [] });

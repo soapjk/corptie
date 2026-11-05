@@ -12,9 +12,17 @@ export function worktreeDispatchBlocker(store, reference) {
     message: "任务正在删除，暂不启动新的执行。"
   };
   if (!logical?.repositoryId || !logical.activeWorkspaceId) return null;
-  const job = store.getLatestWorktreeIntegrationJob?.(logical.repositoryId);
-  if (!job) return null;
-  const workspaceId = logical.activeWorkspaceId;
+  const workspaceId=logical.activeWorkspaceId;
+  const jobs=store.listWorktreeIntegrationJobsForWorktree?.(logical.repositoryId,workspaceId)
+    ?? [store.getLatestWorktreeIntegrationJob?.(logical.repositoryId)].filter(Boolean);
+  for(const job of jobs) {
+    const blocker=integrationDispatchBlocker(store,logical,workspaceId,job);
+    if(blocker) return blocker;
+  }
+  return null;
+}
+
+function integrationDispatchBlocker(store,logical,workspaceId,job) {
   const safety = job.details?.dispatchSafety;
   const safetyCurrent = (safety?.verifiedRevision ?? 0) === (job.details?.dispatchRevision ?? 0);
   const blocked = reason => ({ reason, jobId: job.id, worktreeId: workspaceId,

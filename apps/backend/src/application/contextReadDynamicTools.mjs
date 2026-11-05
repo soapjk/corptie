@@ -5,6 +5,7 @@ const limit = { type: "integer", minimum: 1, maximum: 10 };
 
 export const contextReadDynamicTools = Object.freeze([
   Object.freeze({
+    executionEffect: "read",
     type: "function", name: "corptie_context_search", deferLoading: false,
     description: "Search bounded, read-only Work/Task/Session/Artifact reference material in an exact target Work. The caller's Session binding never changes.",
     inputSchema: {
@@ -18,6 +19,7 @@ export const contextReadDynamicTools = Object.freeze([
     }
   }),
   Object.freeze({
+    executionEffect: "read",
     type: "function", name: "corptie_context_read", deferLoading: false,
     description: "Read one product resource or a bounded section of its persistent data by exact ID. For Session messages, query searches persistent conversation text. Artifact bodies use corptie_artifact_get with an immutable version and hash.",
     inputSchema: {

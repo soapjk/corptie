@@ -126,9 +126,12 @@ struct WorktreeListProjection {
         // Expansion only concatenates the already prepared visible row groups.
         let expandedIDs = isFiltering ? expanded.union(parentIDs) : expanded
         var result: [ManagedWorktree] = []
-        for root in roots {
-            result.append(root)
-            if expandedIDs.contains(root.worktreeId) { result.append(contentsOf: childrenByParent[root.worktreeId] ?? []) }
+        var stack=Array(roots.reversed())
+        var seen=Set<String>()
+        while let tree=stack.popLast() {
+            guard seen.insert(tree.worktreeId).inserted else { continue }
+            result.append(tree)
+            if expandedIDs.contains(tree.worktreeId) { stack.append(contentsOf:(childrenByParent[tree.worktreeId] ?? []).reversed()) }
         }
         return result
     }

@@ -135,7 +135,7 @@ extension UnifiedConsoleView {
                 .buttonStyle(.plain).consoleHoverFeedback().accessibilityLabel(L10n("加载更多子任务"))
             }
         }
-        .padding(.leading, nativeDisclosure || task.parentTaskId == nil ? 0 : 24)
+        .padding(.leading, nativeDisclosure ? 0 : CGFloat(min(task.hierarchy?.depth ?? (task.parentTaskId == nil ? 0 : 1), 6)) * 24)
     }
 
     func hierarchyTasks(_ tasks: [CorptieTask]) -> [CorptieTask] {

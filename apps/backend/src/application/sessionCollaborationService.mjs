@@ -52,7 +52,6 @@ export class SessionCollaborationService {
     const requestDenial = this.#collaborationRequestDenial(scope);
     const parent = scope.session.taskId ? this.store.getTask(scope.session.taskId) : null;
     const childReason = requestDenial?.code ?? (!canCreate ? "COLLABORATION_CREATE_FORBIDDEN"
-      : parent?.parent_task_id ? "TASK_MAX_DEPTH_EXCEEDED"
       : parent && (parent.archived || parent.deletion_status) ? "TASK_PARENT_UNAVAILABLE" : null);
     const managesChildren = canCreate && !childReason && scope.session.sessionKind === "worker" && parent?.lifecycle_state !== "done";
     return {
@@ -134,8 +133,8 @@ export class SessionCollaborationService {
   async createChildTasksBatch(metadata, actorId, input = {}) {
     assertKnown(input, ["parentTaskId", "expectedParentResourceVersion", "logicalSessionId",
       "userMessageEventId", "userMessageSequence", "turnId", "items"]);
-    if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > MAX_CHILD_TASK_BATCH_SIZE) {
-      throw coded("INVALID_TASK_BATCH_SIZE", `Each child Task batch must contain 1-${MAX_CHILD_TASK_BATCH_SIZE} items.`, 400);
+    if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 100) {
+      throw coded("INVALID_TASK_BATCH_SIZE", "Each request accepts 1-100 items, admitted in groups of ten.", 400);
     }
     const parentTaskId = required(input.parentTaskId, "parentTaskId");
     const scope = this.#scope(metadata, actorId, { mutation: true });
@@ -150,6 +149,14 @@ export class SessionCollaborationService {
       const key = required(item.idempotencyKey, "items[].idempotencyKey");
       if (keys.has(key)) throw coded("DUPLICATE_TASK_BATCH_KEY", "Each child Task must have a distinct stable idempotency key.", 400);
       keys.add(key);
+    }
+    if(this.taskCoordinationService && scope.session.sessionKind==="worker") {
+      const receipt=this.taskCoordinationService.acceptDispatch(metadata,actorId,{items:input.items.map(item=>({
+        action:"create",text:item.description?.trim() || `执行子任务：${item.title}`,
+        idempotencyKey:item.idempotencyKey,
+        creation:Object.fromEntries(Object.entries(item).filter(([key])=>key!=="idempotencyKey"))
+      }))});
+      return {...receipt,parentTaskId,total:input.items.length,status:"accepted",results:receipt.dispatches};
     }
     const { items, ...shared } = input;
     const results = [];
@@ -375,10 +382,9 @@ export class SessionCollaborationService {
     // Deprecated transport input: accepted for old clients, never a creation fence.
     if (input.expectedParentResourceVersion != null && (!Number.isSafeInteger(input.expectedParentResourceVersion) || input.expectedParentResourceVersion < 1)) throw coded("INVALID_TASK_PARENT", "Legacy parent version must be a positive integer.", 400);
     if (!scope.session.workId || !["workChat", "worker"].includes(scope.session.sessionKind)) throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Session is required.", 403);
-    if (scope.session.sessionKind === "worker" && id !== scope.session.taskId) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Worker can create children only under its own bound root Task.", 403);
+    if (scope.session.sessionKind === "worker" && id !== scope.session.taskId) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Worker can create children only under its own bound Task.", 403);
     const parent = this.store.getTask(id);
     if (!parent || parent.work_id !== scope.session.workId) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Parent is outside the current Work.", 403);
-    if (parent.parent_task_id) throw coded("TASK_MAX_DEPTH_EXCEEDED", "Grandchildren are not supported.", 409);
     if (parent.archived || parent.deletion_status || parent.lifecycle_state === "done") throw coded("TASK_PARENT_UNAVAILABLE", "Parent Task is unavailable.", 409);
   }
 
@@ -535,7 +541,7 @@ export class SessionCollaborationService {
     const scope = this.#scope(metadata, actorId, { mutation: true });
     this.#assertCreationSource(scope);
     const parent = this.store.getTask(scope.session.taskId);
-    if (scope.session.sessionKind !== "worker" || !parent || parent.parent_task_id || parent.archived
+    if (scope.session.sessionKind !== "worker" || !parent || parent.archived
       || parent.deletion_status || parent.lifecycle_state === "done") throw coded("TASK_PARENT_UNAVAILABLE", "An active root Task Session is required.", 403);
     if (metadata.providerBindingId && metadata.providerBindingId !== scope.logical.activeBinding.bindingId) throw coded("STALE_SESSION_ROUTE", "Refresh the Session route.", 409);
     return { ...scope, parent };
@@ -577,7 +583,7 @@ export class SessionCollaborationService {
   }
 
   async deleteChildTask(metadata, actorId, input = {}) {
-    assertKnown(input, ["childTaskId", "idempotencyKey"]);
+    assertKnown(input, ["childTaskId", "idempotencyKey", "artifactDisposition", "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration", "inspectOnly"]);
     const scope = this.coordinationScope(metadata, actorId);
     const key = `parent:${scope.logicalSessionId}:${required(input.idempotencyKey, "idempotencyKey")}`;
     const replay = this.store.getTaskDeletionOperationByKey(required(input.childTaskId, "childTaskId"), key);
@@ -592,10 +598,11 @@ export class SessionCollaborationService {
     const service = this.taskCoordinationService?.deletion;
     if (!service) throw coded("CAPABILITY_UNAVAILABLE", "Task deletion is unavailable.", 503);
     const actor = { type: "parent_session", id: scope.logicalSessionId };
-    const plan = await service.inspect(child.id, actor);
-    if (plan.artifacts?.length) throw coded("CHILD_ARTIFACT_DELIVERY_REQUIRED", "Preserve/deliver the child's Artifacts before deletion; autonomous deletion never discards them.", 409);
-    return service.request(child.id, { mode: "safe", deleteWorktree: true, artifactDisposition: "retain",
-      idempotencyKey: key }, actor);
+    if (input.inspectOnly === true) return { deletion: await service.inspect(child.id, actor) };
+    return service.request(child.id, { mode: "force", deleteWorktree: true,
+      artifactDisposition: input.artifactDisposition ?? "retain", stopRunning: input.stopRunning === true,
+      cancelStartup: input.cancelStartup === true, deleteAssociatedTasks: input.deleteAssociatedTasks === true,
+      cancelIntegration: input.cancelIntegration === true, idempotencyKey: key }, actor);
   }
 
   #presentTask(item, hierarchy = undefined, referencesAvailable = true) {

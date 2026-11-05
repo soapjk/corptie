@@ -183,7 +183,7 @@ const domainDelegates = Object.freeze({
     "getLatestProjectIntegrationRun", "updateProjectIntegrationRun", "updateProjectIntegrationItem",
     "createWorktreeIntegrationJob", "createWorktreeIntegrationJobIdempotently",
     "getWorktreeIntegrationJob", "getWorktreeIntegrationJobByIdempotencyKey", "listWorktreeIntegrationJobs",
-    "getLatestWorktreeIntegrationJob", "getActiveWorktreeIntegrationJobForConflictTask",
+    "getLatestWorktreeIntegrationJob", "listWorktreeIntegrationJobsForWorktree", "getActiveWorktreeIntegrationJobForConflictTask",
     "listRecoverableWorktreeIntegrationJobs", "updateWorktreeIntegrationJob"
   ],
   sessionEventRepository: [

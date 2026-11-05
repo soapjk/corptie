@@ -28,7 +28,9 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
       const busy = routes.some(route => sessionHasActiveRun(store.getSession(route.legacySessionId) ?? {})
         || ["running", "waiting_approval"].includes(route.executionStatus)
         || store.getSessionRuntimeBlocker?.(route.legacySessionId, { includeQueued: true }));
-      const job = store.getLatestWorktreeIntegrationJob?.(delivery.repository_id);
+      const job = store.listWorktreeIntegrationJobsForWorktree?.(delivery.repository_id,worktree.worktreeId)
+        .find(job=>["queued","running","paused","cancellation_requested","replanning"].includes(job.status))
+        ?? store.getLatestWorktreeIntegrationJob?.(delivery.repository_id);
       const reserved = job?.details?.plan?.reservedWorktreeIds ?? job?.details?.plan?.items?.map(item => item.worktreeId) ?? [];
       const integrationBusy = job && ["queued", "running", "paused", "cancellation_requested", "replanning"].includes(job.status)
         && reserved.includes(worktree.worktreeId);
@@ -36,12 +38,12 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
       const conflicts = String(worktree.statusSummary ?? "").split(/\r?\n/).some(line => /^(DD|AU|UD|UA|DU|AA|UU) /.test(line));
       const blocker = worktree.isMain ? "MAIN_WORKTREE" : foreign ? "SHARED_WITH_ACTIVE_TASK"
         : busy ? "SESSION_BUSY" : integrationBusy ? "ACTIVE_WORKTREE_INTEGRATION_JOB"
-        : worktree.isLocked ? "WORKTREE_LOCKED" : operationState ? "GIT_OPERATION_IN_PROGRESS"
+        : operationState ? "GIT_OPERATION_IN_PROGRESS"
         : conflicts ? "UNRESOLVED_CONFLICTS" : !worktree.branchName ? "WORKTREE_BRANCH_AMBIGUOUS"
         : !completedTaskStatus(task.lifecycle_state) ? "TASK_NOT_COMPLETED" : worktree.dirty ? "UNCOMMITTED_CHANGES"
         : !(worktree.deliveryComparison?.delivered ?? worktree.mergedIntoMain) ? "NOT_MERGED_INTO_MAIN" : null;
       return { status: "available", repositoryId: delivery.repository_id, sessionId: sessions.at(-1)?.id ?? null,
-        worktree, blocker, canReclaim: blocker === null };
+        worktree, blocker, integrationJob: integrationBusy ? { id: job.id, status: job.status, phase: job.phase } : null, canReclaim: blocker === null };
     }
     const session = sessions.find((candidate) => candidate.id === task.current_session_id)
       ?? sessions.at(-1)

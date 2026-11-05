@@ -217,7 +217,7 @@ test("unrelated, sibling, stale and cross-Work endpoints do not inherit parent-c
     providerThreadId: "provider:sibling", providerSessionId: "provider:sibling", providerId: "another-provider",
     boundCwd: f.directory, sessionName: "Sibling" });
   f.store.db.run("UPDATE tasks SET current_session_id='provider:sibling' WHERE id='task:sibling'");
-  assert.equal(f.service.requestChannel({ ...f.input, recipientSessionId: "session:sibling", idempotencyKey: "siblings" }).status, "pending");
+  assert.equal(f.service.requestChannel({ ...f.input, recipientSessionId: "session:sibling", idempotencyKey: "siblings" }).status, "sent");
   f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id='task:a'");
   assert.equal(f.service.requestChannel(f.input).status, "pending");
   f.store.db.run("UPDATE tasks SET current_session_id='provider:a' WHERE id='task:a'");
@@ -582,7 +582,7 @@ test("shared queue creates one wake operation for a burst and ignores silent not
     await queue.syncSessionChannelDeliveriesIntoAgentWorkQueue();
     assert.equal(f.store.listQueuedAgentTasksForSession("provider:b").length, 1);
     assert.equal(wakes, 1);
-    assert.equal(f.mailbox.shouldWake(silent.delivery.deliveryId), false);
+    assert.equal(f.mailbox.shouldWake(silent.delivery.deliveryId), true);
     const work = f.store.listQueuedAgentTasksForSession("provider:b")[0];
     f.store.claimAgentTask(work.taskId);
     const batch = f.mailbox.prepareBatch(f.head.deliveryId, work.taskId);
@@ -897,7 +897,7 @@ test("external notifications persist without waking and manual processing uses t
     const input = { recipientSessionId: "session:b", sourceType: "background", sourceId: "background:one",
       body: "Result available", authorization: { ownerLogicalSessionId: "session:b", sourceId: "background:one" }, idempotencyKey: "done" };
     const message = f.unified.receiveEvent(input);
-    assert.equal(f.wakes.length, 0); assert.equal(message.intent, "notification");
+    assert.equal(f.wakes.length, 1); assert.equal(message.intent, "notification");
     assert.equal(f.unified.receiveEvent(input).messageId, message.messageId);
     assert.throws(() => f.unified.receiveEvent({ ...input, recipientSessionId: "session:a" }), { code: "MAILBOX_EVENT_SCOPE_REQUIRED" });
     f.unified.setPaused("session:b", true);

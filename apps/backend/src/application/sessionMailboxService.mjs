@@ -5,7 +5,7 @@ import { dispatchReady, dispatchBlocked } from "../utils/dispatchDecision.mjs";
 import { formatTrustedChannelMessage } from "../collaboration/trustedCollaborationEvent.mjs";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
 
-const actionable = intent => ["action_required", "response_required"].includes(intent);
+const actionable = intent => ["action_required", "response_required", "notification"].includes(intent);
 const fail = (code, statusCode = 409) => { throw Object.assign(new Error(code), { code, statusCode }); };
 const decode = value => { try { return JSON.parse(value ?? "{}"); } catch { return {}; } };
 
@@ -64,7 +64,7 @@ export class SessionMailboxService {
     const where = ["mm.recipient_session_id=?"], args = [logical.logicalSessionId];
     if (sourceType) { where.push("mm.source_type=?"); args.push(sourceType); }
     if (beforeCursor) { where.push("mm.sequence < ?"); args.push(Number(beforeCursor)); }
-    if (filter === "pending") where.push("mm.disposition='pending' AND COALESCE(d.status,'pending')!='delivered' AND (op.status IS NULL OR op.status='queued') AND (mm.intent IN ('action_required','response_required') OR mm.manual_requested=1)");
+    if (filter === "pending") where.push("mm.disposition='pending' AND COALESCE(d.status,'pending')!='delivered' AND (op.status IS NULL OR op.status='queued') AND (mm.intent IN ('action_required','response_required','notification') OR mm.manual_requested=1)");
     if (filter === "abnormal") where.push("(d.status='failed' OR b.status='unknown' OR op.status='failed' OR (op.status='cancelled' AND json_extract(op.source_json,'$.mailboxDispatchAttempted')=1))");
     const rows = this.store.selectAll(`${this.selectSql(body)} WHERE ${where.join(" AND ")} ORDER BY mm.sequence DESC LIMIT ?`, [...args, size + 1]);
     return { messages: rows.slice(0, size).map(row => this.present(row, body)), hasMore: rows.length > size,
@@ -141,7 +141,7 @@ export class SessionMailboxService {
   summary(sessionId) {
     const id = this.logical(sessionId).logicalSessionId;
     const result = this.store.selectOne(`SELECT
-      SUM(CASE WHEN mm.disposition='pending' AND (mm.intent IN ('action_required','response_required') OR mm.manual_requested=1)
+      SUM(CASE WHEN mm.disposition='pending' AND (mm.intent IN ('action_required','response_required','notification') OR mm.manual_requested=1)
         AND COALESCE(d.status,'pending') IN ('pending','queued') AND (op.status IS NULL OR op.status='queued') THEN 1 ELSE 0 END) AS pending,
       SUM(CASE WHEN mm.read_at IS NULL THEN 1 ELSE 0 END) AS unread
       FROM session_mailbox_messages mm LEFT JOIN session_collaboration_deliveries d ON d.delivery_id=mm.channel_delivery_id
@@ -346,6 +346,8 @@ export class SessionMailboxService {
       (message_id,recipient_session_id,source_type,source_id,body,intent,authorization_json,created_at,updated_at)
       VALUES(?,?,?,?,?,?,?,?,?)`, [messageId, logical.logicalSessionId, sourceType, sourceId, body, intent,
       JSON.stringify({ ...authorization, idempotencyKey }), this.clock(), this.clock()]);
+    // Acknowledgements settle as receipts; they never schedule an ACK-to-ACK turn.
+    this.store.db.run("UPDATE session_mailbox_messages SET disposition='adopted',read_at=?,updated_at=? WHERE message_id=?",[this.clock(),this.clock(),messageId]);
     this.notify(logical);
     return this.get(logical.logicalSessionId, messageId);
   }
@@ -363,7 +365,7 @@ export class SessionMailboxService {
   syncQueuedOperations(register) {
     const rows=this.store.selectAll(`SELECT mm.sequence,mm.operation_id,mm.recipient_session_id FROM session_mailbox_messages mm
       JOIN agent_operations op ON op.task_id=mm.operation_id WHERE mm.disposition='pending' AND op.status='queued'
-      AND (mm.manual_requested=1 OR mm.intent IN ('action_required','response_required'))
+      AND (mm.manual_requested=1 OR mm.intent IN ('action_required','response_required','notification'))
       AND mm.sequence > ? ORDER BY mm.sequence LIMIT 500`,[this.queueSyncCursor ?? 0]);
     this.queueSyncCursor=rows.length===500 ? rows.at(-1).sequence : 0;
     for (const row of rows) {

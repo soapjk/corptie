@@ -271,7 +271,7 @@ private struct NativeBusinessCard: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             NativeBusinessSummary(summary: value.summary)
-            if value.parentTaskId == nil, let action = command("task.coordination.update", target: value.taskId) {
+            if let action = command("task.coordination.update", target: value.taskId) {
                 ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false, dispatches: value.coordinationDispatches ?? [], execution: value.coordinationExecution) { enabled in
                     perform(action, ["coordinationEnabled": .bool(enabled)])
                 }.disabled(!action.available)
