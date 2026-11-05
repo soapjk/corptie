@@ -144,24 +144,18 @@ test("child deletion uses parent delivery and safely retries partial Git cleanup
       await deletion.inFlight.get(accepted.operation.operationId);
       let result = deletion.getOperation(accepted.operation.operationId);
       assert.equal(result.input.actor.id, actor.id);
-      if (["changed", "locked"].includes(mode)) {
+      if (mode === "branch_retry") {
         assert.equal(result.state, "failed");
-        assert.ok(f.store.getTask(child.id));
-        assert.equal(await readFile(join(childPath, "parent.txt"), "utf8"), "parent feature\n");
-      } else {
-        if (mode === "branch_retry") {
-          assert.equal(result.state, "failed");
-          assert.equal(result.result.cleanup.worktreeRemoved, true);
-          accepted = await deletion.request(child.id, { ...input, idempotencyKey: "retry-new-confirmation" }, actor);
-          await deletion.inFlight.get(accepted.operation.operationId);
-          result = deletion.getOperation(accepted.operation.operationId);
-        }
-        assert.equal(result.state, "succeeded", result.errorMessage);
-        assert.equal(f.store.getTask(child.id), null);
-        assert.equal(f.store.getTaskDeliveryBinding(child.id), null);
-        assert.equal(await manager.gitSucceeds(f.repository, ["show-ref", "--verify", "refs/heads/child-deletion"]), false);
-        assert.equal((await deletion.inspect(parent.id, actor)).blockers.some(b => b.code === "TASK_HAS_CHILDREN"), false);
+        assert.equal(result.result.cleanup.worktreeRemoved, true);
+        accepted = await deletion.request(child.id, { ...input, idempotencyKey: "retry-cleanup" }, actor);
+        await deletion.inFlight.get(accepted.operation.operationId);
+        result = deletion.getOperation(accepted.operation.operationId);
       }
+      assert.equal(result.state, "succeeded", result.errorMessage);
+      assert.equal(f.store.getTask(child.id), null);
+      assert.equal(f.store.getTaskDeliveryBinding(child.id), null);
+      assert.equal(await manager.gitSucceeds(f.repository, ["show-ref", "--verify", "refs/heads/child-deletion"]), false);
+      assert.equal((await deletion.inspect(parent.id, actor)).blockers.some(b => b.code === "TASK_HAS_CHILDREN"), false);
       assert.equal((await gitOutput(["rev-parse", "HEAD"], parentPath)).trim(), parentHead);
       assert.equal((await gitOutput(["rev-parse", "HEAD"], f.repository)).trim(), mainHead);
       assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
@@ -1630,7 +1624,7 @@ test("completed merge removes the worktree and its merged branch", async () => {
   }
 });
 
-test("unmerged worktree deletion requires only irreversible risk confirmation", async () => {
+test("explicit unmerged Worktree deletion needs no second content-loss confirmation", async () => {
   const fixture = await createFixture("force-delete", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
     store: fixture.store,
@@ -1645,34 +1639,11 @@ test("unmerged worktree deletion requires only irreversible risk confirmation", 
     await git(["commit", "-m", "Second unmerged change"], fixture.activeWorktree);
     const sourceWorktreeId = (await inspectGitWorkspace(fixture.activeWorktree)).worktreeId;
 
-    await assert.rejects(
-      () => manager.removeMergedWorktree({
-        logicalSessionId: "logical:one",
-        sourceWorktreeId,
-        ignoreLogicalSessionIds: ["logical:one"],
-        deleteBranch: true
-      }),
-      /has 2 commits.*Confirm permanent data loss/
-    );
-    await assert.rejects(
-      () => manager.removeMergedWorktree({
-        logicalSessionId: "logical:one",
-        sourceWorktreeId,
-        ignoreLogicalSessionIds: ["logical:one"],
-        deleteBranch: true,
-        forceDeleteUnmerged: true,
-        acknowledgeIrrecoverable: false,
-      }),
-      /Confirm permanent data loss/
-    );
-
     const removed = await manager.removeMergedWorktree({
       logicalSessionId: "logical:one",
       sourceWorktreeId,
       ignoreLogicalSessionIds: ["logical:one"],
-      deleteBranch: true,
-      forceDeleteUnmerged: true,
-      acknowledgeIrrecoverable: true,
+      deleteBranch: true
     });
     assert.equal(removed.removed, true);
     assert.equal(removed.forced, true);
@@ -1695,22 +1666,11 @@ test("confirmed permanent deletion also discards uncommitted worktree changes", 
   try {
     await writeFile(join(fixture.activeWorktree, "uncommitted.txt"), "discard me\n");
     const sourceWorktreeId = (await inspectGitWorkspace(fixture.activeWorktree)).worktreeId;
-    await assert.rejects(
-      () => manager.removeMergedWorktree({
-        logicalSessionId: "logical:one",
-        sourceWorktreeId,
-        ignoreLogicalSessionIds: ["logical:one"],
-        deleteBranch: true
-      }),
-      /and uncommitted changes/
-    );
     const removed = await manager.removeMergedWorktree({
       logicalSessionId: "logical:one",
       sourceWorktreeId,
       ignoreLogicalSessionIds: ["logical:one"],
-      deleteBranch: true,
-      forceDeleteUnmerged: true,
-      acknowledgeIrrecoverable: true,
+      deleteBranch: true
     });
     assert.equal(removed.forced, true);
     assert.equal(removed.discardedCommitCount, 0);
@@ -2004,16 +1964,9 @@ test("integration merge rejects a dirty target even when the source is already m
   try {
     const mainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
     await writeFile(join(fixture.repository, "residue.txt"), "left behind\n");
-    await assert.rejects(
-      () => manager.mergeIntegrationSource({
-        mainPath: fixture.repository,
-        sourceHead: mainHead,
-        expectedMainHead: mainHead,
-        jobId: "job:postcondition"
-      }),
-      (error) => error.code === "INTEGRATION_POSTCONDITION_DIRTY"
-        && error.changedFiles.includes("residue.txt")
-    );
+    const result=await manager.mergeIntegrationSource({mainPath:fixture.repository,sourceHead:mainHead,expectedMainHead:mainHead,jobId:"job:postcondition"});
+    assert.equal(result.alreadyMerged,true);
+    assert.equal(await readFile(join(fixture.repository,"residue.txt"),"utf8"),"left behind\n");
   } finally {
     await fixture.close();
   }
@@ -2401,8 +2354,12 @@ test("parent conflict resolution retains earlier child merges and completion req
     assert.equal(done.mainHead, verified.resolvedHead);
     assert.deepEqual(done.verifiedHeads, completion.requiredHeads);
     await writeFile(join(f.repository, "uncommitted.txt"), "unfinished\n");
-    await assert.rejects(manager.inspectMainIntegrationCompletion({ ...completion, expectedTargetHead: verified.resolvedHead }),
-      { code: "INTEGRATION_POSTCONDITION_DIRTY" });
+    assert.equal((await manager.inspectMainIntegrationCompletion({...completion,expectedTargetHead:verified.resolvedHead})).mainHead,verified.resolvedHead);
+    assert.equal(await readFile(join(f.repository,"uncommitted.txt"),"utf8"),"unfinished\n");
+    await git(["add","uncommitted.txt"],f.repository);await git(["commit","-m","Normal main advance after integration"],f.repository);
+    const advanced=await manager.inspectMainIntegrationCompletion({...completion,expectedTargetHead:verified.resolvedHead});
+    assert.notEqual(advanced.mainHead,verified.resolvedHead);
+    assert.deepEqual(advanced.verifiedHeads,completion.requiredHeads);
   } finally { await f.close(); }
 });
 
@@ -2487,3 +2444,18 @@ async function gitOutput(arguments_, cwd) {
   const result = await execFileAsync("git", ["-C", cwd, ...arguments_], { encoding: "utf8" });
   return result.stdout;
 }
+
+
+test("permanent deletion removes a Git-locked Worktree with uncommitted files",async()=>{
+  const fixture=await createFixture("delete-locked",{activeFeatureWorktree:true});
+  const manager=new GitWorkspaceManager({store:fixture.store,transitions:{switchWorkspace:async()=>assert.fail("must not switch")}});
+  try{
+    await writeFile(join(fixture.activeWorktree,"draft.txt"),"discard");
+    await git(["worktree","lock",fixture.activeWorktree],fixture.repository);
+    const sourceWorktreeId=(await inspectGitWorkspace(fixture.activeWorktree)).worktreeId;
+    const result=await manager.removeMergedWorktree({logicalSessionId:"logical:one",sourceWorktreeId,ignoreLogicalSessionIds:["logical:one"],deleteBranch:true,forceDeleteUnmerged:true,acknowledgeIrrecoverable:true});
+    assert.equal(result.removed,true);
+    await assert.rejects(()=>inspectGitWorkspace(fixture.activeWorktree));
+    assert.ok(await gitOutput(["rev-parse","HEAD"],fixture.repository));
+  }finally{await fixture.close();}
+});

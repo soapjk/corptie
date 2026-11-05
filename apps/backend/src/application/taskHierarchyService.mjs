@@ -3,7 +3,7 @@ import { taskHierarchyError } from "../store/repositories/taskHierarchyRepositor
 
 // Shared by all Providers; adapters never own Git or integration acceptance.
 export const taskHierarchyCapabilities = Object.freeze({
-  version:1, maxDepth:1, createChild:true, worktreeOperations:true, integrationAcceptance:true
+  version:1, maxDepth:null, createChild:true, worktreeOperations:true, integrationAcceptance:true
 });
 
 export function readTaskHierarchyPage(store, workId, query) {

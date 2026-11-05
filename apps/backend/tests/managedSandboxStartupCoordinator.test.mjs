@@ -83,7 +83,11 @@ test("managed Sandbox starts a non-Git Task in an isolated copy and persists its
     assert.equal(execution.strategy, "managedSandbox");
     assert.equal(store.getTask(task.id).current_session_id, "codex:sandbox");
     assert.equal((await coordinator.start(command, authorization)).idempotentReplay, true);
-    await access(createdCwd);
+    store.markTaskDeletion(task.id, "deleting", null);
+    await coordinator.cleanupForTaskDeletion(task.id);
+    await assert.rejects(access(createdCwd));
+    assert.equal(await readFile(join(source, "brief.md"), "utf8"), "original");
+    assert.equal(store.selectOne("SELECT status FROM execution_spaces WHERE task_id=?", [task.id]).status, "released");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

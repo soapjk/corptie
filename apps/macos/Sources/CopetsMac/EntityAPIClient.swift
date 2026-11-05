@@ -407,7 +407,8 @@ final class EntityAPIClient: ObservableObject {
         taskId: String,
         force: Bool = false,
         deleteWorktree: Bool = true,
-        artifactDisposition: CorptieTaskArtifactDisposition = .delete
+        artifactDisposition: CorptieTaskArtifactDisposition = .delete,
+        options: ClientTaskDeletionOptions = .init()
     ) async -> Bool {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/actions/delete"))
         request.httpMethod = "POST"
@@ -416,6 +417,8 @@ final class EntityAPIClient: ObservableObject {
             "mode": force ? "force" : "safe",
             "deleteWorktree": deleteWorktree,
             "artifactDisposition": artifactDisposition.rawValue,
+            "stopRunning": options.stopRunning, "cancelStartup": options.cancelStartup,
+            "deleteAssociatedTasks": options.deleteAssociatedTasks, "cancelIntegration": options.cancelIntegration,
             "idempotencyKey": "task-delete:\(taskId):\(UUID().uuidString)"
         ]
         if force {

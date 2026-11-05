@@ -28,15 +28,18 @@ public struct ConversationHierarchyActions: View {
                 }
                 operation("合并到父分支","merge_children",hierarchy.actions.mergeToParent)
                 operation("同步父分支","sync_children",hierarchy.actions.syncFromParent)
-            } else {
+            }
+            if hierarchy.childCount > 0 {
                 Text("\(hierarchy.integratedChildCount ?? 0)/\(hierarchy.childCount) \(localize("子分支已合入"))").font(.caption)
-                operation("合并所有子分支","merge_children",hierarchy.actions.mergeChildren)
-                operation("所有子分支同步父分支","sync_children",hierarchy.actions.syncChildren)
+                operation("合并所有子分支","merge_own_children",hierarchy.actions.mergeChildren)
+                operation("所有子分支同步父分支","sync_own_children",hierarchy.actions.syncChildren)
+            }
+            if hierarchy.role != "child" {
                 operation("同步主分支","sync_main",hierarchy.actions.syncFromMain)
                 Divider()
                 ConversationIntegrationAcceptance(taskID: hierarchy.rootTaskId, api: api, openParent: openParent, localize: localize) { status in
                     Button(localize("合并到主分支")) { Task { await prepare("promote_parent",status?.receiptId) } }
-                        .disabled(status?.mayPromote != true)
+                        .disabled(!hierarchy.actions.promoteToMain.available)
                 }
                 .id(scopeID)
             }

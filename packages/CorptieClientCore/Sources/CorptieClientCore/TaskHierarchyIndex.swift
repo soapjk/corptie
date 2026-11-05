@@ -7,10 +7,11 @@ public struct TaskHierarchyIndex: Sendable {
         let index=TaskHierarchyIndex(nodes:nodes)
         var result:[String]=[]
         var seen = Set<String>()
-        for node in nodes where node.parentTaskId == nil && !index.invalidNodeIDs.contains(node.id) {
-            guard seen.insert(node.id).inserted else { continue }
-            result.append(node.id)
-            if expanded.contains(node.id) { result.append(contentsOf:index.childrenByParentID[node.id] ?? []) }
+        var stack = nodes.filter { $0.parentTaskId == nil && !index.invalidNodeIDs.contains($0.id) }.map(\.id).reversed().map { $0 }
+        while let id = stack.popLast() {
+            guard seen.insert(id).inserted else { continue }
+            result.append(id)
+            if expanded.contains(id) { stack.append(contentsOf: (index.childrenByParentID[id] ?? []).reversed()) }
         }
         return result
     }
@@ -28,6 +29,8 @@ public struct TaskHierarchyIndex: Sendable {
     public private(set) var parentByTaskID: [String: String] = [:]
     public private(set) var unresolvedParentIDs: Set<String> = []
     public private(set) var invalidNodeIDs: Set<String> = []
+    public private(set) var depthByTaskID: [String: Int] = [:]
+    public private(set) var rootByTaskID: [String: String] = [:]
 
     public init(nodes: [Node], ancestors: [Node] = []) {
         var byID: [String: Node] = [:]
@@ -52,11 +55,39 @@ public struct TaskHierarchyIndex: Sendable {
                 continue
             }
             guard id != parentID, parent.workId == node.workId,
-                  parent.parentTaskId == nil, !invalidNodeIDs.contains(parentID) else {
+                  !invalidNodeIDs.contains(parentID) else {
                 invalidNodeIDs.insert(id)
                 continue
             }
             childrenByParentID[parentID, default: []].append(id)
         }
+        // Resolve each chain once. Invalid cycles and cross-Work edges never
+        // masquerade as roots, and depth lookups in a row stay O(1).
+        for id in order where depthByTaskID[id] == nil && !invalidNodeIDs.contains(id) {
+            var path: [String] = []
+            var visiting = Set<String>()
+            var cursor = id
+            var baseDepth = -1
+            var root = cursor
+            var valid = true
+            var unresolved = false
+            while depthByTaskID[cursor] == nil {
+                guard !invalidNodeIDs.contains(cursor), visiting.insert(cursor).inserted,
+                      let node = byID[cursor] else { valid = false; break }
+                path.append(cursor)
+                guard let parentID = node.parentTaskId else { root = cursor; break }
+                guard let parent = byID[parentID] else { unresolved = true; valid = false; break }
+                guard parent.workId == node.workId else { valid = false; break }
+                cursor = parentID
+            }
+            if let known = depthByTaskID[cursor] { baseDepth = known; root = rootByTaskID[cursor] ?? cursor }
+            if valid {
+                for member in path.reversed() { baseDepth += 1; depthByTaskID[member] = baseDepth; rootByTaskID[member] = root }
+            } else if !unresolved { invalidNodeIDs.formUnion(path) }
+        }
+        for (parent, children) in childrenByParentID {
+            childrenByParentID[parent] = children.filter { !invalidNodeIDs.contains($0) }
+        }
+
     }
 }

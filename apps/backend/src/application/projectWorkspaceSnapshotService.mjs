@@ -21,7 +21,10 @@ export class ProjectWorkspaceSnapshotService {
   async captureParentWorkspace({path, operationId, bindingContext = null, startupTiming = null, validate = async()=>{}}) {
     return measureStartup(startupTiming,"snapshot.wait-and-capture",()=>withWorktreeOperationLock(path, async()=>{
       await validate();
-      const ref = `refs/corptie/workspace-snapshots/${Buffer.from(operationId).toString("hex")}`;
+      const encoded=Buffer.from(operationId).toString("hex");
+      // Lossless encoding, no extra digest. Keep each ref path component below
+      // filesystem NAME_MAX when an operation includes an exact source path.
+      const ref = `refs/corptie/workspace-snapshots/${encoded.match(/.{1,200}/g).join("/")}`;
       const existing = await this.git(path,["rev-parse","--verify","--quiet",ref]).catch(error=>{
         if ([1,128].includes(error.code)) return "";
         throw error;

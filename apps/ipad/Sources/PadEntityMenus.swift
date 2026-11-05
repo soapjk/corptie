@@ -531,8 +531,7 @@ struct PadDeleteTaskSheet: View {
     @State private var plan: ClientTaskDeletionPlan?
     @State private var loading = true
     @State private var inspectError: String?
-    @State private var showForceConfirmation = false
-    @State private var acknowledgeDataLoss = false
+    @State private var deletionOptions = ClientTaskDeletionOptions()
     @State private var deleteWorktree = true
     @State private var artifactDisposition = "delete"
     @State private var submitting = false
@@ -559,7 +558,7 @@ struct PadDeleteTaskSheet: View {
                     deletionForm(plan)
                 }
             }
-            .navigationTitle(showForceConfirmation ? "二次确认强制删除" : "删除 Task")
+            .navigationTitle("删除 Task")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -568,12 +567,6 @@ struct PadDeleteTaskSheet: View {
                 }
             }
             .task { await loadPlan() }
-            .onChange(of: deleteWorktree) { _, enabled in
-                if !enabled {
-                    showForceConfirmation = false
-                    acknowledgeDataLoss = false
-                }
-            }
         }
         .interactiveDismissDisabled(submitting)
     }
@@ -586,7 +579,7 @@ struct PadDeleteTaskSheet: View {
         Section("Task") {
             Text(task.title).font(.headline)
             if plan.parentTaskId != nil {
-                Text("仅删除此子任务及所选资源；不影响父任务、兄弟任务或已合入父分支的代码。")
+                Text("删除此任务及其子任务；已合入父分支的代码不受影响。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Text("删除会永久清除所有关联会话及完整会话历史，无法撤销。Worktree 和 Artifact 仅按下方选项处理。")
@@ -644,21 +637,22 @@ struct PadDeleteTaskSheet: View {
             }
         }
 
-        if requiresForce(for: plan), !canForceDelete(plan) {
-            Section {
-                Label("无法确认 Worktree 的完整分支名，因此不能强制删除。请保留 Worktree，或先在 Mac 上修复分支状态。",
-                      systemImage: "xmark.octagon.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.red)
+        Section("删除选项") {
+            if plan.blockers.contains(where: { $0.code == "SESSION_BUSY" }) {
+                Toggle("停止正在运行的会话后删除", isOn: $deletionOptions.stopRunning)
             }
-        }
-
-        if showForceConfirmation {
-            Section("永久删除确认") {
-                Text("强制删除将永久丢弃上述未提交修改、未跟踪文件和未合并提交，且无法恢复。")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.red)
-                Toggle("我理解这些内容可能永久丢失", isOn: $acknowledgeDataLoss)
+            if plan.blockers.contains(where: { $0.code == "START_IN_PROGRESS" }) {
+                Toggle("中断启动后删除", isOn: $deletionOptions.cancelStartup)
+            }
+            if plan.blockers.contains(where: { $0.code == "SHARED_WITH_ACTIVE_TASK" }) {
+                Toggle("一并删除共用 Worktree 的关联任务", isOn: $deletionOptions.deleteAssociatedTasks)
+                ForEach(plan.associatedTaskIds ?? [], id: \.self) { Text($0).font(.caption) }
+            }
+            if plan.blockers.contains(where: { $0.code == "ACTIVE_WORKTREE_INTEGRATION_JOB" }) {
+                Toggle("取消占用的集成作业后删除", isOn: $deletionOptions.cancelIntegration)
+            }
+            if !(plan.childTaskIds ?? []).isEmpty {
+                Text("将级联删除 \(plan.childTaskIds?.count ?? 0) 个子任务。")
             }
         }
 
@@ -666,8 +660,6 @@ struct PadDeleteTaskSheet: View {
             Section {
                 Text(notice).font(.footnote).foregroundStyle(.red)
                 Button("重新检查删除条件") {
-                    showForceConfirmation = false
-                    acknowledgeDataLoss = false
                     Task { await loadPlan() }
                 }
                 .disabled(submitting || commands.isBusy)
@@ -675,38 +667,13 @@ struct PadDeleteTaskSheet: View {
         }
 
         Section {
-            if requiresForce(for: plan), !showForceConfirmation {
-                Button("进入强制删除确认", role: .destructive) {
-                    showForceConfirmation = true
-                    acknowledgeDataLoss = false
-                }
-                .disabled(submitting || commands.isBusy || !blockers.isEmpty || !canForceDelete(plan))
-            } else {
-                Button(role: .destructive) {
-                    executeDeletion(plan: plan, force: requiresForce(for: plan))
-                } label: {
-                    HStack {
-                        Spacer()
-                        if submitting {
-                            ProgressView().controlSize(.small).padding(.trailing, 4)
-                        }
-                        Text(showForceConfirmation ? "确认强制删除" : "删除 Task")
-                            .fontWeight(.semibold)
-                        Spacer()
-                    }
-                }
-                .disabled(
-                    submitting
-                        || commands.isBusy
-                        || !blockers.isEmpty
-                        || (requiresForce(for: plan) && (!canForceDelete(plan) || !acknowledgeDataLoss))
-                )
-            }
+            Button("删除 Task", role: .destructive) { executeDeletion(plan: plan, force: true) }
+                .disabled(submitting || commands.isBusy || !blockers.isEmpty)
         }
     }
 
     private func effectiveBlockers(for plan: ClientTaskDeletionPlan) -> [ClientTaskDeletionPlan.Risk] {
-        deleteWorktree ? plan.blockers : plan.blockers.filter { TaskDeletionConfirmationPolicy.isTaskLevelBlocker($0.code) }
+        plan.blockers.filter { (deleteWorktree || TaskDeletionConfirmationPolicy.isTaskLevelBlocker($0.code)) && !deletionOptions.resolves($0.code) }
     }
 
     private func effectiveRisks(for plan: ClientTaskDeletionPlan) -> [ClientTaskDeletionPlan.Risk] {
@@ -737,8 +704,6 @@ struct PadDeleteTaskSheet: View {
 
     @MainActor
     private func loadPlan() async {
-        showForceConfirmation = false
-        acknowledgeDataLoss = false
         loading = true
         inspectError = nil
         deleteNotice = nil
@@ -766,6 +731,10 @@ struct PadDeleteTaskSheet: View {
                 request.mode = force ? "force" : "safe"
                 request.deleteWorktree = deleteWorktree
                 request.artifactDisposition = artifactDisposition
+                request.stopRunning = deletionOptions.stopRunning
+                request.cancelStartup = deletionOptions.cancelStartup
+                request.deleteAssociatedTasks = deletionOptions.deleteAssociatedTasks
+                request.cancelIntegration = deletionOptions.cancelIntegration
                 if force {
                     request.acknowledgeDataLoss = true
                 }

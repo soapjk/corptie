@@ -166,12 +166,12 @@ struct WarRoomView: View {
                         retryItem: presentation.task
                     )
                 },
-                onDelete: { force, deleteWorktree, artifactDisposition in
+                onDelete: { force, deleteWorktree, artifactDisposition, options in
                     enqueueDeletion(
                         presentation.task,
                         force: force,
                         deleteWorktree: deleteWorktree,
-                        artifactDisposition: artifactDisposition
+                        artifactDisposition: artifactDisposition, options: options
                     )
                 }
             )
@@ -460,7 +460,8 @@ struct WarRoomView: View {
         _ task: CorptieTask,
         force: Bool,
         deleteWorktree: Bool,
-        artifactDisposition: CorptieTaskArtifactDisposition
+        artifactDisposition: CorptieTaskArtifactDisposition,
+        options: ClientTaskDeletionOptions
     ) {
         guard !deletingCorptieTaskIds.contains(task.id) else { return }
 
@@ -475,7 +476,7 @@ struct WarRoomView: View {
                 taskId: task.id,
                 force: force,
                 deleteWorktree: deleteWorktree,
-                artifactDisposition: artifactDisposition
+                artifactDisposition: artifactDisposition, options: options
             )
             deletingCorptieTaskIds.remove(task.id)
 

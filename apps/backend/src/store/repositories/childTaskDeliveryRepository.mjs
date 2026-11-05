@@ -27,9 +27,9 @@ export class ChildTaskDeliveryRepository {
   advanceOperation(operation, patch) {
     const next = { ...operation, ...patch };
     this.store.runInTransaction(()=>{
-    this.store.db.run(`UPDATE child_task_delivery_operations SET state=?,phase=?,progress_json=?,error_code=?,error_message=?,
+    this.store.db.run(`UPDATE child_task_delivery_operations SET state=?,phase=?,snapshot_json=?,progress_json=?,error_code=?,error_message=?,
       revision=revision+1,updated_at=? WHERE operation_id=? AND revision=?`,
-    [next.state,next.phase,JSON.stringify(next.progress),next.errorCode ?? null,next.errorMessage ?? null,
+    [next.state,next.phase,JSON.stringify(next.snapshot),JSON.stringify(next.progress),next.errorCode ?? null,next.errorMessage ?? null,
       new Date().toISOString(),operation.operationId,operation.revision]);
     if (Number(this.store.selectOne("SELECT changes() AS count").count) !== 1) throw failure("CHILD_DELIVERY_CHANGED", "收尾状态已变化。");
     // Make the bounded parent record visible through the existing state stream.

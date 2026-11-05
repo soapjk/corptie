@@ -534,20 +534,30 @@ struct PadTaskOutlineHierarchy {
     var tasks: [ClientTask] = []
     var taskByID: [String: ClientTask] = [:]
     var childCountByParent: [String: Int] = [:]
+    var depthByTaskID: [String: Int] = [:]
+    var rootByTaskID: [String: String] = [:]
     var footerParentByRowID: [String: String] = [:]
 
     init() {}
 
     init(filtered: [ClientTask], inventory: [ClientTask], expanded: Set<String>, searching: Bool) {
-        let needed = Set(filtered.compactMap(\.parentTaskId)).subtracting(Set(filtered.map(\.id)))
-        let candidates = filtered + inventory.filter { needed.contains($0.id) }
+        let inventoryByID = Dictionary(inventory.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        var candidates = filtered
+        var seen = Set(filtered.map(\.id))
+        var offset = 0
+        while offset < candidates.count {
+            if let id = candidates[offset].parentTaskId, seen.insert(id).inserted, let parent = inventoryByID[id] { candidates.append(parent) }
+            offset += 1
+        }
         taskByID = Dictionary(candidates.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let nodes = candidates.map { TaskHierarchyIndex.Node(id: $0.id, workId: $0.workId, parentTaskId: $0.parentTaskId) }
         let index = TaskHierarchyIndex(nodes: nodes)
         let visibleExpansion = searching ? Set(candidates.map(\.id)) : expanded
         tasks = TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: visibleExpansion).compactMap { taskByID[$0] }
         childCountByParent = index.childrenByParentID.mapValues(\.count)
-        for root in candidates where root.parentTaskId == nil && visibleExpansion.contains(root.id) {
+        depthByTaskID = index.depthByTaskID
+        rootByTaskID = index.rootByTaskID
+        for root in candidates where visibleExpansion.contains(root.id) {
             footerParentByRowID[index.childrenByParentID[root.id]?.last ?? root.id] = root.id
         }
     }

@@ -25,16 +25,16 @@ test("durable deletion ignores client target overrides and preserves authenticat
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("legacy recovery cannot delete a newly resolved target without reconfirmation", async () => {
+test("legacy recovery resolves the same Task without requesting confirmation", async () => {
   const f = await fixture();
   try {
-    const old = f.store.beginTaskDeletionOperation("task:delete", { mode: "force" }, "legacy:unbound");
+    const old = f.store.beginTaskDeletionOperation("task:delete", { mode: "force", actor: localUser }, "legacy:unbound");
     assert.equal(f.deletion.recoverInterruptedDeletions(), 1);
     await f.deletion.inFlight.get(old.operationId);
     const result = f.deletion.getOperation(old.operationId);
-    assert.equal(result.state, "failed");
-    assert.equal(result.errorCode, "TASK_DELETE_RECONFIRM_REQUIRED");
-    assert.equal(f.store.getTask("task:delete").deletion_status, "delete_failed");
+    assert.equal(result.state, "succeeded");
+    assert.equal(result.errorCode, null);
+    assert.equal(f.store.getTask("task:delete"), null);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
@@ -256,4 +256,22 @@ test("deletion retires a Task while preserving a legacy immutable cancellation a
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
   }
+});
+
+
+test("root deletion cascades real child records and preserves unrelated Tasks across retry",async()=>{
+  const f=await fixture();
+  try {
+    const parent=f.store.getTask("task:delete");
+    f.store.createTask({id:"task:cascade",workId:parent.work_id,title:"Child",parentTaskId:parent.id},{},{});
+    f.store.createTask({id:"task:unrelated",workId:parent.work_id,title:"Unrelated"},{},{});
+    const accepted=await f.deletion.request(parent.id,{idempotencyKey:"cascade"},localUser);
+    await f.deletion.inFlight.get(accepted.operation.operationId);
+    assert.equal(f.deletion.getOperation(accepted.operation.operationId).state,"succeeded");
+    assert.equal(f.store.getTask("task:cascade"),null);
+    assert.equal(f.store.getTask(parent.id),null);
+    assert.ok(f.store.getTask("task:unrelated"));
+    assert.equal((await f.deletion.request(parent.id,{idempotencyKey:"cascade"},localUser)).idempotentReplay,true);
+    assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"),[]);
+  } finally {await f.store.close();await rm(f.directory,{recursive:true,force:true});}
 });

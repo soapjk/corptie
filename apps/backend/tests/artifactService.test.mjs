@@ -1744,3 +1744,31 @@ test("restore rejects unsafe directory identities without modifying existing fil
     assert.equal(await readFile(join(f.service.contentRoot, artifact.versions[0].storageKey), "utf8"), "original");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
+
+
+for (const disposition of ["delete","work","retain"]) test(`parent deletion disposes only its child's Artifacts with ${disposition} and preserves Session provenance`,async()=>{
+  const f=await fixture();
+  try{
+    f.store.createTask({id:"task:delete-child",workId:"work:one",title:"Deletechild",parentTaskId:"task:peer",mainAgentId:f.worker.agentId},{},{});
+    const artifact=await f.service.create(localUserContext,{title:"Delete_child_artifact",scope:"task",boundTaskId:"task:delete-child",content:"payload",idempotencyKey:`parent-delete-${disposition}`});
+    const foreign=await f.service.create(peerContext(f),{title:"Keep_parent_artifact",content:"keep",idempotencyKey:"parent-keep"});
+    f.store.createLogicalSessionRoute({logicalSessionId:"logical:delete-parent",legacySessionId:"session:peer",providerThreadId:"thread:delete-parent",providerId:"codex-app-server",providerSessionId:"session:peer",boundCwd:f.directory,sessionName:"Parent"});
+    const operation=f.store.beginTaskDeletionOperation("task:delete-child",{actor:{type:"parent_session",id:"logical:delete-parent"},target:{version:1,taskId:"task:delete-child",artifactIds:[artifact.artifactId]}},`parent-dispose:${disposition}`);
+    f.store.updateTaskDeletionOperation(operation.operationId,{state:"running"});
+    const context={kind:"parent_task_deletion",actorId:"logical:delete-parent",operationId:operation.operationId};
+    await assert.rejects(f.service.disposeBoundArtifactsForTaskDeletion(context,"task:peer",disposition),{code:"TASK_DELETE_FORBIDDEN"});
+    const result=await f.service.disposeBoundArtifactsForTaskDeletion(context,"task:delete-child",disposition);
+    assert.deepEqual(result.artifactIds,[artifact.artifactId]);
+    assert.equal(f.store.getArtifact(foreign.artifactId).status,"active");
+    const next=f.store.getArtifact(artifact.artifactId);
+    assert.equal(next.status,disposition==="delete" ? "revoked" : "active");
+    if(disposition==="work") {
+      assert.equal(next.scope,"work");
+      const pin=pinnedReadOptions(artifact);
+      assert.equal((await f.service.get(peerContext(f),artifact.artifactId,pin)).content,"payload");
+    }
+    if(disposition==="retain") assert.equal(next.boundTaskId,"task:delete-child");
+    const audit=f.store.listArtifactAudit("work:one",artifact.artifactId);
+    if(disposition!=="retain") assert.ok(audit.some(row=>row.actorId==="logical:delete-parent"));
+  }finally{await f.store.close();await rm(f.directory,{recursive:true,force:true});}
+});

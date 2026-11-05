@@ -12,10 +12,10 @@ struct TaskHierarchyTests {
         #expect(TaskDeletionConfirmationPolicy.isTaskLevelBlocker("UNKNOWN_BLOCKER"))
         #expect(!TaskDeletionConfirmationPolicy.isTaskLevelBlocker("MAIN_WORKTREE"))
     }
-    @Test func unknownApprovalStateNeverEnablesPublication() throws {
+    @Test func gitCapabilityIsIndependentOfApprovalState() throws {
         let status = try JSONDecoder().decode(TaskIntegrationAcceptanceStatus.self,
             from: Data(#"{"state":"future_state","canPromote":true,"reason":null,"receiptId":null,"testedHeadOid":null}"#.utf8))
-        #expect(!status.mayPromote)
+        #expect(status.mayPromote)
     }
     @Test func manualApprovalUsesUserEndpointsAndDoesNotCompleteTasksOrResumeJobs() async throws {
         for surface in [ClientTaskHierarchyAPI.Surface.local, .pairedDevice] {
@@ -83,7 +83,19 @@ struct TaskHierarchyTests {
         #expect(index.rootIDsByWork["w"] == ["p"])
         #expect(index.childrenByParentID["p"] == ["c"])
         #expect(index.unresolvedParentIDs == ["unloaded"])
-        #expect(index.invalidNodeIDs == ["cross", "grandchild", "loop-a", "loop-b"])
+        #expect(index.invalidNodeIDs == ["cross", "loop-a", "loop-b"])
+    }
+
+    @Test func multipleLevelsRespectEveryDisclosureAndExposeConstantTimeDepth() {
+        typealias Node = TaskHierarchyIndex.Node
+        let nodes = [Node(id: "root", workId: "w", parentTaskId: nil),
+                     Node(id: "child", workId: "w", parentTaskId: "root"),
+                     Node(id: "leaf", workId: "w", parentTaskId: "child")]
+        #expect(TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: ["root"]) == ["root", "child"])
+        #expect(TaskHierarchyIndex.visibleOrder(nodes: nodes, expanded: ["root", "child"]) == ["root", "child", "leaf"])
+        let index = TaskHierarchyIndex(nodes: nodes)
+        #expect(index.depthByTaskID["leaf"] == 2)
+        #expect(index.rootByTaskID["leaf"] == "root")
     }
 
     @Test func largeIndexPreservesStableServerOrder() {

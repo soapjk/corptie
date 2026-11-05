@@ -1,6 +1,8 @@
 import { worktreeDispatchBlocker } from "./worktreeExecutionBarrier.mjs";
 
 const STATE_KEY = "worktree:auto-follow:v1";
+const sameScope = (left, right) => (left?.rootTaskId ?? null) === (right?.rootTaskId ?? null)
+  && (left?.action ?? null) === (right?.action ?? null);
 const ACTIVE = new Set(["awaiting_confirmation", "queued", "running", "paused", "replanning", "cancellation_requested"]);
 
 // Shared Session dispatch barrier: queued user messages remain queued during
@@ -25,7 +27,7 @@ export class WorktreeAutoFollowService {
       if(h?.role!=="child") return detail;
       return {...detail,mainWorktreeId:h.comparison.worktreeId,mainBranch:h.comparison.branchName,
         worktree:{...detail.worktree,behindMain:h.comparison.behind},
-        taskScope:{version:1,rootTaskId:h.rootTaskId,action:"sync_children",expectedHierarchyRevision:h.hierarchyRevision,expectedBindingRevision:h.bindingRevision,acceptanceReceiptId:null}};
+        taskScope:{version:1,rootTaskId:h.parentTaskId ?? h.rootTaskId,action:"sync_children",expectedHierarchyRevision:h.hierarchyRevision,expectedBindingRevision:h.bindingRevision,acceptanceReceiptId:null}};
     };
     this.timer = null;
     this.running = null;
@@ -53,7 +55,7 @@ export class WorktreeAutoFollowService {
       && !task?.deletion_status && !task?.archived && task?.lifecycle_state !== "done"
       && job.repositoryId === entry.repositoryId && plan?.operationType === "sync"
       && plan.targetWorktreeId === entry.mainWorktreeId
-      && JSON.stringify(plan.taskScope ?? null)===JSON.stringify(entry.taskScope ?? null)
+      && sameScope(plan.taskScope,entry.taskScope)
       && plan.items.filter(item => !item.isMain).length === 1
       && plan.items.some(item => !item.isMain && item.worktreeId === entry.worktreeId && item.branchName === entry.sourceBranch)
       && plan.items.some(item => item.isMain && item.worktreeId === entry.mainWorktreeId && item.branchName === entry.targetBranch));
@@ -74,17 +76,13 @@ export class WorktreeAutoFollowService {
     }
     const detail = await this.readDetail(sessionId);
     const tree = detail.worktree;
-    if(input.enabled && tree?.hierarchy?.role==="parent") throw Object.assign(new Error("A shared parent baseline cannot automatically rebase main."),{code:"PARENT_BASE_SHARED",statusCode:409});
-    if(input.enabled && detail.taskScope && (input.expectedTargetWorktreeId!==detail.mainWorktreeId
-      || input.expectedHierarchyRevision!==detail.taskScope.expectedHierarchyRevision
-      || input.expectedBindingRevision!==detail.taskScope.expectedBindingRevision)) throw Object.assign(new Error("Confirm the current parent baseline."),{code:"TASK_DELIVERY_BINDING_CHANGED",statusCode:409});
     if (!detail.attached || !tree || tree.isMain || tree.worktreeId !== input.expectedWorktreeId
         || (input.enabled && (!detail.mainWorktreeId || !tree.branchName || !detail.mainBranch))) {
       throw Object.assign(new Error("The current Worktree binding changed or cannot follow main."), { code: "WORKTREE_STATE_CHANGED", statusCode: 409 });
     }
     const entries = this.entries();
     const previous = entries[tree.worktreeId];
-    if (previous?.enabled === input.enabled && previous.sessionId === sessionId && previous.mainWorktreeId===detail.mainWorktreeId && JSON.stringify(previous.taskScope ?? null)===JSON.stringify(detail.taskScope ?? null)) return this.state(tree.worktreeId);
+    if (previous?.enabled === input.enabled && previous.sessionId === sessionId && previous.mainWorktreeId===detail.mainWorktreeId && sameScope(previous.taskScope,detail.taskScope)) return this.state(tree.worktreeId);
     entries[tree.worktreeId] = { sessionId, repositoryId: detail.repositoryId, worktreeId: tree.worktreeId,
       mainWorktreeId: detail.mainWorktreeId, sourceBranch: tree.branchName, targetBranch: detail.mainBranch,
       ...(detail.taskScope ? {taskScope:detail.taskScope} : {}),
@@ -161,7 +159,6 @@ export class WorktreeAutoFollowService {
       this.save(id, { status: "paused", reason: "WORKTREE_BINDING_CHANGED" }); return;
     }
     const task = session.taskId ? this.store.getTask(session.taskId) : null;
-    if(task && !task.parent_task_id && this.store.hasTaskChildren?.(task.id)) {this.save(id,{status:"paused",reason:"PARENT_BASE_SHARED"});return;}
     if (task?.deletion_status || task?.archived || task?.lifecycle_state === "done") {
       this.save(id, { status: "paused", reason: "SESSION_UNAVAILABLE" }); return;
     }
@@ -175,18 +172,26 @@ export class WorktreeAutoFollowService {
     if (this.signatures.get(id) === signature && this.state(id).status === "aligned") return;
     const detail = await this.readDetail(entry.sessionId);
     if (!this.current(id, entry)) return;
-    if(JSON.stringify(detail.taskScope ?? null)!==JSON.stringify(entry.taskScope ?? null)) {this.save(id,{status:"paused",reason:"TASK_DELIVERY_BINDING_CHANGED"});return;}
+    if(!sameScope(detail.taskScope,entry.taskScope)) {this.save(id,{status:"paused",reason:"TASK_DELIVERY_BINDING_CHANGED"});return;}
     if (detail.repositoryId !== entry.repositoryId || detail.worktree?.worktreeId !== id
         || detail.mainWorktreeId !== entry.mainWorktreeId || detail.mainBranch !== entry.targetBranch
         || detail.worktree.branchName !== entry.sourceBranch) {
       this.save(id, { status: "paused", reason: "WORKTREE_BINDING_CHANGED" }); return;
     }
-    let other = this.store.listWorktreeIntegrationJobs(entry.repositoryId).find(job => ACTIVE.has(job.status));
+    const involvedJobs = () => this.store.listWorktreeIntegrationJobsForWorktree
+      ? [...new Map([id, entry.mainWorktreeId].flatMap(treeId => this.store.listWorktreeIntegrationJobsForWorktree(entry.repositoryId, treeId))
+        .map(job => [job.id, job])).values()]
+      : this.store.listWorktreeIntegrationJobs(entry.repositoryId).filter(job => {
+        const plan = job.details?.plan ?? job.plan;
+        return [id, entry.mainWorktreeId].some(treeId => plan?.reservedWorktreeIds?.includes(treeId)
+          || plan?.items?.some(item => item.worktreeId === treeId));
+      });
+    let other = involvedJobs().find(job => ACTIVE.has(job.status));
     if (other?.status === "awaiting_confirmation"
         && other.details?.automaticFollow?.worktreeId === id
         && other.details.automaticFollow.revision === entry.revision) {
       await this.jobs.cancel(other.id);
-      other = this.store.listWorktreeIntegrationJobs(entry.repositoryId).find(job => ACTIVE.has(job.status));
+      other = involvedJobs().find(job => ACTIVE.has(job.status));
     }
     if (detail.blockedReason || other) {
       this.save(id, { status: "waiting", reason: detail.blockedReason ?? "INTEGRATION_JOB_ACTIVE" }); return;
@@ -202,19 +207,18 @@ export class WorktreeAutoFollowService {
     try {
       draft = await this.jobs.preflight(entry.repositoryId, {
         operationType: "one_way_sync", sourceWorktreeIds: [id], targetWorktreeId: entry.mainWorktreeId,
-        ...(entry.taskScope ? {taskScope:entry.taskScope,syncStrategy:"auto"} : {}),
+        ...(detail.taskScope ? {taskScope:detail.taskScope,syncStrategy:"auto"} : {}),
         automaticFollow: { worktreeId: id, revision: entry.revision }
       });
       if (this.current(id, entry)) this.save(id, { jobId: draft.id });
-      if (!this.current(id, entry) || draft.plan.blockingRisks.length
-          || draft.plan.items.some(item => item.dirty || item.commitStatus !== "not_needed")) {
+      if (!this.current(id, entry) || draft.plan.blockingRisks.length) {
         await this.jobs.cancel(draft.id);
         if (this.entries()[id]?.jobId === draft.id) this.save(id, { jobId: null });
         if (this.current(id, entry)) this.save(id, { status: "waiting", reason: "WORKTREE_STATE_CHANGED", jobId: null });
         return;
       }
-      // An explicit persisted opt-in authorizes only this exact, clean sync
-      // plan. Re-read both trees and Session safety immediately before confirm.
+      // The persisted opt-in authorizes synchronization of these exact trees.
+      // Dirty files use the shared snapshot/autostash path; recheck the route.
       const fresh = await this.readDetail(entry.sessionId);
       if (!this.current(id, entry) || fresh.blockedReason || fresh.worktree?.worktreeId !== id
           || fresh.mainWorktreeId !== entry.mainWorktreeId) {

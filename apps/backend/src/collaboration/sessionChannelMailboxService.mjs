@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { formatTrustedChannelBatch } from "./trustedCollaborationEvent.mjs";
 
-const SILENT = new Set(["notification", "acknowledgement"]);
+const SILENT = new Set(["acknowledgement"]);
 export const CHANNEL_BATCH_MAX_BYTES = 64 * 1024;
 
 // Persistent membership belongs to the mailbox; execution still belongs to the
@@ -69,7 +69,7 @@ export class SessionChannelMailboxService {
       LEFT JOIN session_collaboration_batch_items i ON i.delivery_id=d.delivery_id
       LEFT JOIN session_collaboration_batches b ON b.batch_id=i.batch_id
       LEFT JOIN session_mailbox_messages mm ON mm.channel_delivery_id=d.delivery_id
-      WHERE (m.delivery_intent NOT IN ('notification','acknowledgement') OR mm.manual_requested=1)
+      WHERE (m.delivery_intent != 'acknowledgement' OR mm.manual_requested=1)
       AND COALESCE(mm.disposition,'pending')='pending' 
       AND d.status IN ('pending','queued','failed') AND d.attempt_count < ?
       AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)

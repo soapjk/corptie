@@ -356,10 +356,12 @@ final class PadWorktreeStore {
 
     func prepareHierarchy(_ tree: ClientManagedWorktree, action: String, receiptID: String? = nil, connection: PadConnection) async {
         guard let h=tree.hierarchy, let project=detail?.project else { return }
-        let children=project.worktrees.filter { $0.hierarchy?.parentTaskId == h.rootTaskId }.map(\.worktreeId)
-        let sources=["merge_children","sync_children"].contains(action) ? (h.role == "child" ? [tree.worktreeId] : children) : [tree.worktreeId]
-        let target=["merge_children","sync_children"].contains(action) ? (h.parentWorktreeId ?? tree.worktreeId) : project.mainWorktreeId
-        await preparePlan(operation:["sync_children","sync_main"].contains(action) ? .synchronize : .merge,
+        let own = action == "merge_own_children" || action == "sync_own_children"
+        let normalized = action.replacingOccurrences(of: "_own_", with: "_")
+        let children=project.worktrees.filter { $0.hierarchy?.parentTaskId == (own ? h.taskId : h.rootTaskId) }.map(\.worktreeId)
+        let sources=["merge_children","sync_children"].contains(normalized) ? (!own && h.role == "child" ? [tree.worktreeId] : children) : [tree.worktreeId]
+        let target=["merge_children","sync_children"].contains(normalized) ? (own ? tree.worktreeId : h.parentWorktreeId ?? tree.worktreeId) : project.mainWorktreeId
+        await preparePlan(operation:["sync_children","sync_main"].contains(normalized) ? .synchronize : .merge,
             sources:sources,target:target,taskScope:h.scope(action,receiptId:receiptID),syncStrategy:action == "sync_main" ? "merge" : nil,
             replacingDraft:true,connection:connection)
     }

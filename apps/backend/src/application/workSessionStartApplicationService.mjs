@@ -36,6 +36,11 @@ export class WorkSessionStartApplicationService {
     return this.coordinator.start({ ...command, providerId: authorized.providerId });
   }
 
+  async cancelForTaskDeletion(taskId) {
+    await this.coordinator.cancelForTaskDeletion(taskId);
+    await this.managedSandboxCoordinator?.cancelForTaskDeletion(taskId);
+  }
+
   getReceipt(input) {
     if (String(input?.startupOperationId ?? "").startsWith("execution-space:")) {
       return this.managedSandboxCoordinator?.getReceipt(input);

@@ -163,7 +163,6 @@ export class WorkApplicationService {
       );
     }
     const normalized = validateTaskInput(patch, "update");
-    if (normalized.coordinationEnabled === true && current.parent_task_id) throw new TaskAcceptanceError("TASK_MAX_DEPTH_EXCEEDED", "Only root Tasks support coordination mode.");
     if (normalized.coordinationEnabled === true) this.assertCoordinationCanEnable?.(current);
     const nextPatch = { ...normalized };
     if (Object.prototype.hasOwnProperty.call(normalized, "acceptanceCriteria")

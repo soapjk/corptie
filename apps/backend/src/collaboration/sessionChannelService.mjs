@@ -113,7 +113,7 @@ export class SessionChannelService {
     if (!sourceTask || !recipientTask) return null;
     const parent = recipientTask.parent_task_id === sourceTask.id ? sourceTask : recipientTask;
     const child = recipientTask.parent_task_id === sourceTask.id ? recipientTask : sourceTask;
-    if (!parent || !child || parent.parent_task_id || child.parent_task_id !== parent.id
+    if (!parent || !child || child.parent_task_id !== parent.id
       || parent.work_id !== child.work_id || parent.work_id !== source.workId
       || parent.archived || child.archived || parent.deletion_status || child.deletion_status
       || sourceTask.current_session_id !== sourceLogical.legacySessionId
@@ -124,9 +124,35 @@ export class SessionChannelService {
       sourceSessionId:sourceLogical.logicalSessionId,recipientSessionId:recipientLogical.logicalSessionId};
   }
 
+  resolveTaskFamilyAuthorization(sourceId, recipientId) {
+    const source=this.#requireActiveLogicalSession(sourceId,"sourceSessionId");
+    const recipient=this.#requireActiveLogicalSession(recipientId,"recipientSessionId");
+    const a=this.#resourceContext(source.logicalSessionId),b=this.#resourceContext(recipient.logicalSessionId);
+    if(!a.taskId || !b.taskId || !a.workId || a.workId!==b.workId) return null;
+    const root=id=>{
+      let task=this.store.getTask(id);const seen=new Set();
+      while(task) {
+        if(task.work_id!==a.workId || task.archived || task.deletion_status || seen.has(task.id)) return null;
+        seen.add(task.id);if(!task.parent_task_id) return task.id;
+        task=this.store.getTask(task.parent_task_id);
+      }
+      return null;
+    };
+    const first=this.store.getTask(a.taskId),second=this.store.getTask(b.taskId),rootId=root(a.taskId);
+    if(!rootId || rootId!==root(b.taskId) || first?.current_session_id!==source.legacySessionId
+      || second?.current_session_id!==recipient.legacySessionId) return null;
+    const [x,y]=canonicalPair(source.logicalSessionId,recipient.logicalSessionId);
+    if(this.store.selectOne("SELECT 1 FROM session_collaboration_channels WHERE session_a_id=? AND session_b_id=? AND status='revoked'",[x,y])) return null;
+    // Reuse the existing policy receipt type; no new persistent policy payload.
+    return {type:"parent_child_policy",parentTaskId:rootId,childTaskId:second.id,
+      sourceSessionId:source.logicalSessionId,recipientSessionId:recipient.logicalSessionId};
+  }
+
   resolveAutomaticAuthorization(sourceId, recipientId) {
     const parentChild = this.resolveParentChildAuthorization(sourceId, recipientId);
     if (parentChild) return parentChild;
+    const family=this.resolveTaskFamilyAuthorization(sourceId,recipientId);
+    if(family) return family;
     if (this.store.collaborationSettings().requireFirstMessageConfirmation) return null;
     const [a, b] = canonicalPair(sourceId, recipientId);
     // Disabling first-contact prompts never reverses an explicit revocation.
@@ -181,7 +207,8 @@ export class SessionChannelService {
       const recipientId = target.recipientSessionId ?? request.requestedRecipientSessionId;
       const recipient = this.#requireActiveLogicalSession(recipientId, "recipientSessionId");
       if (evidence?.type === "parent_child_policy") {
-        const current = this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId);
+        const current = this.resolveParentChildAuthorization(source.logicalSessionId, recipient.logicalSessionId)
+          ?? this.resolveTaskFamilyAuthorization(source.logicalSessionId, recipient.logicalSessionId);
         if (!current || ["parentTaskId", "childTaskId", "sourceSessionId", "recipientSessionId"].some(key => current[key] !== evidence[key])) {
           throw channelError("CHANNEL_PARENT_CHILD_BINDING_CHANGED", "The current direct parent/child binding no longer authorizes this Channel.", 409);
         }
@@ -616,6 +643,12 @@ export class SessionChannelService {
        ) VALUES (?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?)`,
       [deliveryId, messageId, recipientSessionId, timestamp, timestamp]
     );
+    if(normalizeDeliveryIntent(input.deliveryIntent)==="acknowledgement") {
+      this.store.db.run("UPDATE session_collaboration_deliveries SET status='delivered',delivered_at=?,updated_at=? WHERE delivery_id=?",[timestamp,timestamp,deliveryId]);
+      this.store.db.run("UPDATE session_mailbox_messages SET disposition='adopted',read_at=?,updated_at=? WHERE channel_delivery_id=?",[timestamp,timestamp,deliveryId]);
+      if(inReplyToMessageId) this.store.db.run("UPDATE session_mailbox_messages SET read_at=?,updated_at=? WHERE source_type='channel' AND source_id=? AND message_id=?",
+        [timestamp,timestamp,channel.channelId,`mailbox:${inReplyToMessageId}`]);
+    }
     this.store.db.run(
       "UPDATE session_collaboration_channels SET updated_at=? WHERE channel_id=?",
       [timestamp, channel.channelId]
