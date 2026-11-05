@@ -296,6 +296,7 @@ struct SettingsView: View {
         await backendClient.loadSettings()
         if let settings = settingsState.settings { draft.receive(settings) }
         else { draft.loadError = backendClient.lastError ?? L10n("Unable to load settings.") }
+        await draft.providerDraft.load()
         // Only the gateway needs these inventories. Do not put them ahead of the
         // first visible form or fetch them on every settings entry.
     }
@@ -652,7 +653,7 @@ struct SettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
-                ProviderEnvironmentSettingsView(defaultProviderId: backendClient.settings?.newSessionDefaults?.taskCreation?.providerId)
+                ProviderEnvironmentSettingsView(defaultProviderId: backendClient.settings?.newSessionDefaults?.taskCreation?.providerId, draft: draft.providerDraft)
                     .disabled(draft.isReadOnly)
             }
             .padding(.trailing, 8)
@@ -766,6 +767,8 @@ struct SettingsView: View {
 
     private func persistSettings(dataRoot: String) async -> Bool {
         let success = await draft.save { submitted in
+            // Save provider metadata before a data-root migration moves its state directory.
+            try await draft.providerDraft.save()
             let updated = await backendClient.updateSettings(
                 dataRoot: dataRoot,
                 choiceParser: submitted.choiceParser,
@@ -773,18 +776,20 @@ struct SettingsView: View {
                 codeDiff: submitted.codeDiff,
                 agentProxy: submitted.agentProxy,
                 gateway: submitted.gateway,
-                sessionCreationDefaults: draft.dirtyTabs.contains(.provider) ? submitted.taskCreation : nil,
+                sessionCreationDefaults: draft.sharedDirtyTabs.contains(.provider) ? submitted.taskCreation : nil,
                 collaboration: submitted.collaboration
             )
             guard updated, let settings = settingsState.settings else {
                 throw BackendError.message(backendClient.lastError ?? L10n("Save failed"))
             }
+            await backendClient.loadProviders()
             return settings
         }
         if !success {
             // The endpoint can save ordinary fields before migration fails.
             await backendClient.loadSettings()
             if let settings = settingsState.settings { draft.receive(settings) }
+            await draft.providerDraft.load()
         }
         return success
     }

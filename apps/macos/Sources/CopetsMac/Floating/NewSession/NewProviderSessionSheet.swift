@@ -124,7 +124,7 @@ struct NewPtyAgentTaskSheet: View {
                 HStack(spacing: 8) {
                     ForEach(creatableProviders) { provider in
                         PresetButton(
-                            title: provider.displayName,
+                            title: provider.isExecutionEnabled ? provider.displayName : "\(provider.displayName) · \(L10n("已关闭"))",
                             command: provider.id,
                             arguments: "",
                             isSelected: selectedProviderId == provider.id,
@@ -136,6 +136,10 @@ struct NewPtyAgentTaskSheet: View {
                     if creatableProviders.isEmpty {
                         ProgressView().controlSize(.small)
                     }
+                }
+                if selectedProvider?.isExecutionEnabled == false {
+                    Text(L10n("所选执行引擎已关闭，请先在设置中启用或手动选择其他引擎。"))
+                        .font(.caption).foregroundStyle(.red)
                 }
             }
 
@@ -580,6 +584,7 @@ struct NewPtyAgentTaskSheet: View {
     }
 
     private func startSelectedAgent(titleOverride: String? = nil) {
+        guard selectedProvider?.isExecutionEnabled != false else { return }
         guard title.isEmpty || EntityNamePolicy.isValid(title) else { return }
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -643,6 +648,7 @@ struct NewPtyAgentTaskSheet: View {
     }
 
     private var isCreateDisabled: Bool {
+        if selectedProvider?.isExecutionEnabled == false { return true }
         if !title.isEmpty && !EntityNamePolicy.isValid(title) { return true }
         if backendClient.isCreatingTask {
             return true

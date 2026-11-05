@@ -119,7 +119,9 @@ int corptie_local_state(const char *root, int create, uint64_t expected_device, 
     if (errno != ENOENT) goto unsafe;
     if (!create) goto verified;
     int empty = local_empty_except_ignore(directory);
-    if (empty != 1) { errno = empty == 0 ? ENOTEMPTY : errno; local_fail(out, "LOCAL_STATE_EXISTING_CONTENT"); goto failed; }
+    /* Bit 2 is an explicit adoption request from the Git privacy preflight.
+       It permits only the exclusive ignore-file creation; existing entries are untouched. */
+    if (empty != 1 && !(empty == 0 && (create & 2))) { errno = empty == 0 ? ENOTEMPTY : errno; local_fail(out, "LOCAL_STATE_EXISTING_CONTENT"); goto failed; }
     CorptieSafeTreeResult publication = {0};
     if (publish_at(directory, ".gitignore", (const unsigned char *)"*\n", 2, &publication)) {
       if (strcmp(publication.error_code, "ARTIFACT_DESTINATION_EXISTS")) goto unsafe;

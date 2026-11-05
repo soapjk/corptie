@@ -170,3 +170,34 @@ test("bound definition reads are bounded and never follow symlink ancestors or s
   await ensure(root);
   await assert.rejects(readProjectLocalFile(receipt, "scripts/helper"), /LOCAL_STATE_PATH_CHANGED/);
 });
+
+test('legacy state already ignored by repository rules is preserved while adding the missing local ignore', async t => {
+  const root = await fixture(t);
+  await writeFile(join(root, '.gitignore'), '.corptie/\n');
+  await mkdir(join(root, '.corptie'));
+  const original = '{"legacy":"preserve"}\n';
+  await writeFile(join(root, '.corptie/toolset.json'), original);
+  await mkdir(join(root, '.corptie/runtime'));
+  await writeFile(join(root, '.corptie/runtime/keep'), 'existing runtime data');
+  const before = (await exec('git', ['-C', root, 'status', '--porcelain'])).stdout;
+  const receipt = await ensure(root);
+  assert.equal(receipt.state, 'ready');
+  assert.equal(receipt.nativeReceipt.createdDirectory, false);
+  assert.equal(receipt.nativeReceipt.createdIgnore, true);
+  assert.equal(await readFile(join(root, '.corptie/.gitignore'), 'utf8'), '*\n');
+  assert.equal(await readFile(join(root, '.corptie/toolset.json'), 'utf8'), original);
+  assert.equal(await readFile(join(root, '.corptie/runtime/keep'), 'utf8'), 'existing runtime data');
+  assert.equal((await exec('git', ['-C', root, 'status', '--porcelain'])).stdout, before);
+  assert.equal((await verifyProjectLocalState(receipt)).state, 'ready');
+  assert.equal(rollbackProjectLocalState(receipt).retained, true);
+  assert.equal(await readFile(join(root, '.corptie/toolset.json'), 'utf8'), original);
+});
+
+test('partial repository ignore rules never authorize adopting unprotected legacy files', async t => {
+  const root = await fixture(t);
+  await writeFile(join(root, '.gitignore'), '.corptie/*.log\n');
+  await mkdir(join(root, '.corptie'));
+  await writeFile(join(root, '.corptie/keep'), 'visible data');
+  await assert.rejects(ensure(root), { code: 'LOCAL_STATE_EXISTING_CONTENT' });
+  assert.deepEqual(await readdir(join(root, '.corptie')), ['keep']);
+});

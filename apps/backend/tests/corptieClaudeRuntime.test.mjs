@@ -36,8 +36,8 @@ test("Claude runtime installs the Corptie collaboration Skill as a local plugin"
     assert.equal(runtime.pluginAvailable, true);
     assert.equal(runtime.skillAvailable, true);
     assert.equal(runtime.memoryAvailable, true);
-    assert.equal(runtime.credentialsCopied, true);
-    assert.equal(await readFile(runtime.credentialsPath, "utf8"), "{\"token\":\"test\"}\n");
+    assert.equal(runtime.credentialsCopied, false);
+    await assert.rejects(readFile(runtime.credentialsPath), { code: "ENOENT" });
     assert.equal((await lstat(runtime.claudeMemoryPath)).isSymbolicLink(), true);
     assert.equal(await realpath(runtime.claudeMemoryPath), await realpath(runtime.sharedMemoryPath));
     assert.match(await readFile(runtime.claudeMemoryPath, "utf8"), /Environment: development/);

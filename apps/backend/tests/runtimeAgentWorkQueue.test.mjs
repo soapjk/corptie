@@ -301,3 +301,16 @@ test('mailbox hard rejection fails the operation with its original reason',async
  assert.equal(f.tasks.get('missing').status,'failed');assert.equal(f.events.find(([event])=>event==='AgentWorkFailed')[1].reason.code,'MAILBOX_MESSAGE_NOT_FOUND');
  assert.equal(f.sends.length,0);
 });
+
+test('disabled providers pause queued work without consuming retries and enabling resumes it', async () => {
+  let enabled = false;
+  const f = fixture({ providerDispatchDecision: () => enabled ? { allowed: true }
+    : { allowed: false, code: 'PROVIDER_DISABLED', kind: 'paused', message: 'disabled' } });
+  f.add('message');
+  for (let i = 0; i < 6; i++) await f.queue.drainAgentWork('session');
+  assert.equal(f.tasks.get('message').status, 'queued');
+  assert.equal(f.sends.length, 0);
+  enabled = true;
+  await f.queue.drainAgentWork('session');
+  assert.equal(f.sends.length, 1);
+});
