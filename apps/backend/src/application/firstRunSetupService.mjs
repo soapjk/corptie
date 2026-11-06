@@ -59,7 +59,8 @@ export class FirstRunSetupService {
     const environment = provider.environmentDescriptor?.();
     const environmentFingerprint = environment ? await provider.environmentFingerprint(environment) : null;
     const environmentMatches = !environment || saved?.probe?.environmentFingerprint === environmentFingerprint;
-    const runtime = this.runtimeSettings ? await this.runtimeSettings.describe(provider.id) : null;
+    const accounts = await provider.accounts?.list();
+    const runtime = !accounts && this.runtimeSettings ? await this.runtimeSettings.describe(provider.id) : null;
     const sourceUnchanged = !runtime || (!runtime.sourceChanged && !["account_changed", "unavailable", "missing"].includes(runtime.state));
     const available = Boolean(sourceUnchanged && fingerprint && environmentMatches && saved?.probe?.state === "available" && saved.probe.fingerprint === fingerprint);
     const checkState = check ? "checking" : (!fingerprint ? "missing" : (available ? "available"
@@ -68,6 +69,7 @@ export class FirstRunSetupService {
       executable: Boolean(fingerprint), enabled: saved?.enabled === true && saved?.userDisabled !== true,
       checkState, message: checkState === "failed" ? saved.probe.message : null,
       ...(runtime ? { runtime } : {}),
+      ...(accounts ? { accounts } : {}),
       lastCheckedAt: saved?.probe?.checkedAt ?? null,
       ...(environment ? { environment } : {}),
       ...(program ? { program: { ...program, running: provider.runningPrograms?.() ?? [] } } : {}),
@@ -144,7 +146,7 @@ export class FirstRunSetupService {
     });
     try {
       if (!fingerprint) throw new Error("请选择可执行文件。");
-      await this.runtimeSettings?.sync(provider.id);
+      if (!provider.accounts) await this.runtimeSettings?.sync(provider.id);
       const release = this.runtimeSettings?.acquire(provider.id);
       let result;
       try { result = await provider.probe(check.path, { signal: check.controller.signal, environment, model: check.model }); }
@@ -248,24 +250,32 @@ export class FirstRunSetupService {
         if ((value.enabled || programChanged) && (!isAbsolute(path) || !await executableFingerprint(path))) throw new Error(`${provider.name}：请选择可执行的程序。`);
         const controlled = provider.programDiscovery?.controlledPath();
         if (programChanged && controlled && controlled !== path) throw new Error("程序路径由运行环境指定，不能覆盖。");
+        const accountChanged = value.accountId != null && value.accountId !== before.accounts?.selectedAccountId;
+        if (accountChanged) {
+          if (!provider.accounts) throw new Error("此执行引擎不支持账号管理。");
+          if (this.checks.has(provider.id)) throw new Error("请等待连接检测结束后再切换账号。");
+          await provider.accounts.validateSelection(value.accountId);
+        }
         const oldSource = before.runtime?.source ?? null;
         const source = value.source ?? null;
         const sourceChanged = JSON.stringify(source && { kind: source.kind, path: source.path })
           !== JSON.stringify(oldSource && { kind: oldSource.kind, path: oldSource.path });
         const applySource = sourceChanged || value.confirmSource === true;
         if (applySource) {
+          if (provider.accounts) throw new Error("请在账号管理中导入凭证。");
           if (!this.runtimeSettings || !source || !isAbsolute(source.path ?? "")) throw new Error(`${provider.name}：请选择有效的凭证来源路径。`);
           await this.runtimeSettings.validateSource(provider.id, source);
         }
         if ((programChanged || applySource) && (this.checks.has(provider.id) || this.runtimeSettings?.isBusy(provider.id))) {
           throw new Error(`${provider.name} 正在执行，请结束当前请求后再保存程序或凭证来源。`);
         }
-        changes.push({ provider, value, before, path, programChanged, source, applySource });
+        changes.push({ provider, value, before, path, programChanged, source, applySource, accountChanged });
       }
       for (const change of changes) {
-        const { provider, value, before, path, programChanged, source, applySource } = change;
+        const { provider, value, before, path, programChanged, source, applySource, accountChanged } = change;
         if (applySource) await this.saveCredentialSource({ providerId: provider.id, ...source });
         if (programChanged) await this.setProgram({ providerId: provider.id, path });
+        if (accountChanged) await provider.accounts.select(value.accountId);
         if (value.enabled !== before.enabled) await this.setEnabled({ providerId: provider.id, path, enabled: value.enabled });
       }
       return this.status();
@@ -317,10 +327,16 @@ export class FirstRunSetupService {
   }
 
   async saveCredentialSource(input) {
-    this.provider(input.providerId);
+    if (this.provider(input.providerId).accounts) throw new Error("请在账号管理中导入凭证。");
     if (!this.runtimeSettings) throw new Error("此环境不支持凭证来源设置。");
     await this.runtimeSettings.saveSource(input.providerId, input);
     return this.row(this.provider(input.providerId));
+  }
+
+  async accountOperation(id, input) {
+    const accounts = this.provider(id).accounts;
+    if (!accounts) throw new Error("此执行引擎不支持账号管理。");
+    return input == null ? accounts.list() : accounts.operation(input);
   }
 
   async authentication(input) {

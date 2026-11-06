@@ -1,3 +1,4 @@
+import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
 import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.mjs";
 import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
 import { worktreeDispatchBlocker } from "./application/worktreeExecutionBarrier.mjs";
@@ -802,12 +803,15 @@ async function prepareCodexEnvironment(profile) {
   });
   const resources = await managedCodexResources;
   await codexEnvironmentRegistry.validate(profile);
+  if (profile.mode === "isolated" && profile.home !== corptieCodexRuntimePaths.codexHome) {
+    return ensureCorptieCodexRuntime({ ...codexRuntimeOptions, codexHome: profile.home });
+  }
   return resources;
 }
 const codexEnvironment = (profile, command = codexAppServerCommand()) => selectedCredentialEnvironment({
   ...environmentForCommand(command),
   ...proxyEnvForProfile(store.settings().agentProxy?.codex), CODEX_HOME: profile.home
-}, "codex-app-server", providerRuntimeSettings?.sources["codex-app-server"]);
+}, "codex-app-server", profile.mode === "isolated" ? {} : null);
 let nativeCodexInstructions;
 async function codexEnvironmentInstructions() {
   nativeCodexInstructions ??= Promise.all([
@@ -837,6 +841,7 @@ const { ensureCodexSessionPermissions, resolvedNewCodexRuntimeConfig } = createC
 });
 const codexRuntime = createCodexEnvironmentRuntime({
   registry: codexEnvironmentRegistry, environment: codexEnvironment,
+  assertProfileReady: (profile) => codexAccounts.assertProfileReady(profile),
   prepare: prepareCodexEnvironment, instructions: codexEnvironmentInstructions,
   canRelease: (profile) => !codexEnvironmentHasActiveSession(profile),
   resolveSourceThread: (input) => {
@@ -1124,23 +1129,39 @@ providerRuntimeSettings = new ProviderRuntimeSettings({
       && (session.external?.activeTurnId || session.activeTurnId || session.rawStatus?.activeTurnId)),
   onChanged: (providerId) => firstRunSetup.invalidateConnectionTest(providerId)
 });
-providerRuntimeSettings.adapters["codex-app-server"].afterSync = () => codexRuntime.close();
-providerRuntimeSettings.adapters["codex-app-server"].onSourceApplied = () =>
-  codexEnvironmentSetup.configureEnvironment(codexEnvironmentRegistry.selection({ mode: "isolated" }));
-providerRuntimeSettings.adapters["codex-app-server"].usesLegacyEnvironment = (reference) =>
-  (reference?.providerSessionId ? codexEnvironmentRegistry.forThread(reference.providerSessionId)
-    : codexEnvironmentRegistry.current).mode === "native";
-// Historical native bindings cannot consume a different selected source implicitly.
-providerRuntimeSettings.adapters["codex-app-server"].assertExecutionScope = (reference) => {
-  if (reference?.providerSessionId && codexEnvironmentRegistry.forThread(reference.providerSessionId).mode !== "isolated") {
-    throw Object.assign(new Error("此历史会话绑定官方原生环境，不能静默切换凭证来源；请新建使用独立环境的会话。"),
-      { code: "PROVIDER_ENVIRONMENT_REBIND_REQUIRED", dispatchState: "not_dispatched" });
+const codexCredentialReader = providerRuntimeSettings.adapters["codex-app-server"];
+const codexAccounts = new CodexAccountManager({
+  path: () => join(store.layout.stateDirectory, "codex-accounts.json"),
+  registry: codexEnvironmentRegistry,
+  readSource: (source) => codexCredentialReader.read(source),
+  sourceKinds: codexCredentialReader.sourceKinds,
+  candidates: codexCredentialReader.candidates,
+  prepare: prepareCodexEnvironment,
+  environment: codexEnvironment,
+  command: codexAppServerCommand,
+  isBusy: (profile) => !codexRuntime.canRefreshAuthentication(profile) || codexEnvironmentHasActiveSession(profile),
+  bindingCount: (profile) => {
+    const threads = new Set(Object.keys(codexEnvironmentRegistry.state.threads));
+    if (profile.profileId === codexEnvironmentRegistry.legacy.profileId) {
+      for (const archived of [false, true]) {
+        for (const session of store.listSessions({ archived })) {
+          if (session.external?.provider === "codex-app-server" && session.external.threadId) threads.add(session.external.threadId);
+        }
+      }
+    }
+    return [...threads].filter(id => codexEnvironmentRegistry.forThread(id).profileId === profile.profileId).length;
+  },
+  recycle: (profile) => codexRuntime.refreshAuthentication(profile),
+  onSelected: async (profile) => {
+    process.env.CODEX_HOME = profile.home;
+    await firstRunSetup.invalidateConnectionTest("codex-app-server");
   }
-};
+});
 agentProviderRegistry.executionPolicy = {
   isEnabled: (providerId) => firstRunSetup.isEnabled(providerId),
   assertAllowed: (providerId) => firstRunSetup.assertExecutionAllowed(providerId),
-  prepare: (providerId, _capability, args) => providerRuntimeSettings.prepareExecution(providerId, args)
+  prepare: (providerId, _capability, args) => firstRunSetup.provider(providerId).accounts
+    ? undefined : providerRuntimeSettings.prepareExecution(providerId, args)
 };
 
 const firstRunSetup = new FirstRunSetupService({
@@ -1174,10 +1195,18 @@ const firstRunSetup = new FirstRunSetupService({
       withProgramTransition: async (path, probe, operation) => {
         const saved = firstRunSetup.state.providers["codex-app-server"];
         if (codexAppServerCommand() === path && saved?.probe?.fingerprint === probe.fingerprint) return operation();
-        codexEnvironmentSetup.assertNoPendingLogin();
+        codexAccounts.assertNoPendingLogin();
         return codexRuntime.withExecutableTransition(operation);
       },
       ...codexEnvironmentSetup,
+      accounts: codexAccounts,
+      authentication: undefined,
+      resolveEnvironment: () => codexEnvironmentRegistry.current,
+      configureEnvironment: () => {},
+      probe: async (path, options) => {
+        await codexAccounts.assertProfileReady(options.environment);
+        return codexEnvironmentSetup.probe(path, options);
+      },
       prepare: async () => {
         await prepareCodexEnvironment(codexEnvironmentRegistry.current);
         await codexRuntime.initialize();
@@ -1186,7 +1215,7 @@ const firstRunSetup = new FirstRunSetupService({
       configure: async (path, probe = {}) => {
         const saved = firstRunSetup.state.providers["codex-app-server"];
         if (codexAppServerCommand() === path && saved?.probe?.fingerprint === probe.fingerprint) return;
-        codexEnvironmentSetup.assertNoPendingLogin();
+        codexAccounts.assertNoPendingLogin();
         if (codexEnvironmentHasActiveSession(codexEnvironmentRegistry.current)) {
           throw new Error("此 Provider 正在执行，请结束后再更改程序。");
         }
@@ -2497,6 +2526,7 @@ detailServiceFor(store, detailMigration);
 await providerRuntimeSettings.initialize();
 await firstRunSetup.initialize();
 await codexEnvironmentRegistry.initialize();
+await codexAccounts.initialize();
 if (firstRunSetup.state.defaultProviderId) {
   agentProviderRegistry.defaultProviderId = firstRunSetup.state.defaultProviderId;
   backgroundAgentService.defaultProviderId = firstRunSetup.state.defaultProviderId;
@@ -2626,7 +2656,7 @@ const shutdownBackend = createBackendShutdown({
 
 function shutdown() {
   worktreeAutoFollowService?.stop();
-  return shutdownBackend();
+  return codexAccounts.close().finally(() => shutdownBackend());
 }
 
 process.on("SIGINT", () => void shutdown());

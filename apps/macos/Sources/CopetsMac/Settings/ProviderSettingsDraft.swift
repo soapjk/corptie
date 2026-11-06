@@ -5,11 +5,13 @@ struct ProviderConfigurationDraft: Equatable {
     var path: String
     var enabled: Bool
     var source: ProviderCredentialSource?
+    var accountId: String?
     var confirmSource = false
 
     init(_ provider: FirstRunProvider) {
         path = provider.program?.adoptedPath.nonEmpty ?? provider.path
         enabled = provider.enabled
+        accountId = provider.accounts?.selectedAccountId
         source = provider.runtime?.source.map { .init(kind: $0.kind, path: $0.path) }
     }
 }
@@ -65,8 +67,9 @@ final class ProviderSettingsDraft {
         }
     }
 
-    func edit(_ id: String, path: String? = nil, enabled: Bool? = nil, source: ProviderCredentialSource? = nil) {
+    func edit(_ id: String, path: String? = nil, enabled: Bool? = nil, source: ProviderCredentialSource? = nil, accountId: String? = nil) {
         guard var value = values[id] else { return }
+        if let accountId { value.accountId = accountId }
         if let path { value.path = path }
         if let enabled { value.enabled = enabled }
         if let source { value.source = .init(kind: source.kind, path: source.path); value.confirmSource = true }
@@ -96,7 +99,7 @@ final class ProviderSettingsDraft {
             guard let value = submitted[id] else { return nil }
             let source: Any = value.source.map { ["kind": $0.kind, "path": $0.path] as Any } ?? NSNull()
             return ["providerId": id, "path": value.path, "enabled": value.enabled,
-                    "source": source,
+                    "source": source, "accountId": value.accountId as Any? ?? NSNull(),
                     "confirmSource": value.confirmSource]
         }
         isSaving = true
