@@ -77,8 +77,7 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header()
+        ConversationRegionStack(accessoryAtTop: true, accessoryHeight: Header.self == EmptyView.self ? 0 : 72) {
             transcript()
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .background(WorkbenchStyle.canvas)
@@ -92,6 +91,8 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                 // after a rapid reopen. An immediate native transition avoids
                 // both that race and repeated transcript width reflow.
                 .transaction(value: isVisible) { $0.disablesAnimations = true }
+        } accessory: {
+            header().environment(\.detailColumnVisibility, $isVisible)
         }
     }
 }

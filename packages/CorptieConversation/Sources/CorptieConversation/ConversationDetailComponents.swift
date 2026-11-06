@@ -198,26 +198,17 @@ struct ConversationDetailComponentView: View {
 /// One local measurement per list, not one observer per row. Short lists keep
 /// their natural height; long content scrolls without growing the Detail column.
 struct ConversationDetailBoundedScroll<Content: View>: View {
-    @State private var contentHeight: CGFloat = 1
     private let content: Content
     init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View {
-        ScrollView(.vertical) {
+        ViewThatFits(in: .vertical) {
             content.frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .background(GeometryReader { geometry in
-                    Color.clear.preference(key: DetailScrollHeight.self, value: geometry.size.height)
-                })
-        }
-        .frame(height: min(320, max(1, contentHeight)))
-        .onPreferenceChange(DetailScrollHeight.self) { height in
-            if height.isFinite && abs(contentHeight - height) > 0.5 { contentHeight = height }
-        }
+            ScrollView(.vertical) {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(height: 320)
+        }.frame(maxHeight: 320, alignment: .top)
     }
-}
-private struct DetailScrollHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 enum ConversationDetailFormInputPolicy {
@@ -311,12 +302,13 @@ private struct ConversationDetailPreparedContent: View {
     let scope: String
     @Environment(\.locale) private var locale
     @State private var width: CGFloat = 0
-    @State private var rendered: ConversationDetailRichContentView?
+    @State private var preparedText: [AttributedString?] = []
+    @State private var rendered: ConversationDetailRichContent?
     @State private var renderedScope: String?
     @State private var cache = ConversationDetailRichContentCache(maximumEntries: 1, maximumBytes: 512 * 1024)
-    private struct Input: Hashable { let source: String; let width: CGFloat; let scope: String; let locale: String; let format: ConversationDetailRichContent.Format }
+    private struct Input: Hashable { let source: String; let scope: String; let locale: String; let format: ConversationDetailRichContent.Format }
     var body: some View {
-        Group { if let rendered, renderedScope == scope { rendered } else { Color.clear.frame(height: 1) } }
+        Group { if let rendered, renderedScope == scope { ConversationDetailRichContentView(content: rendered, width: width, preparedText: preparedText) } else { Color.clear.frame(height: 1) } }
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(GeometryReader { proxy in Color.clear.preference(key: DetailContentWidth.self, value: floor(proxy.size.width)) })
             .onPreferenceChange(DetailContentWidth.self) { if width != $0 { width = $0 } }
@@ -325,13 +317,18 @@ private struct ConversationDetailPreparedContent: View {
                 Task { await cache.removeScope(old) }
             }
             .onDisappear { rendered = nil; Task { await cache.removeAll() } }
-            .task(id: Input(source: source, width: width, scope: scope, locale: locale.identifier, format: format)) {
-                guard width > 0 else { return }
+            .task(id: Input(source: source, scope: scope, locale: locale.identifier, format: format)) {
                 let text = format == .chart ? "```corptie-chart\n" + source + "\n```" : source
                 guard let content = try? await cache.content(key: .init(scope: scope, cardID: identity, nodeID: "content"), source: text, format: format,
                     parameters: .init(rendererVersion: 1, localeID: locale.identifier)) else { return }
                 guard !Task.isCancelled else { return }
-                rendered = ConversationDetailRichContentView(content: content, width: width)
+                preparedText = content.blocks.map { block in
+                    if case .markdown(let source) = block.content {
+                        return AttributedString(MessageMarkdown.make(text: source, style: .agent, rendersMath: false))
+                    }
+                    return nil
+                }
+                rendered = content
                 renderedScope = scope
             }
     }

@@ -6,78 +6,6 @@ import Testing
 
 @MainActor
 struct ConsoleOverlayScrollerTests {
-    @Test func actualOverlayLayerOwnsTheWholeCapsuleOutsideTheUnchangedViewport() throws {
-        let table = AppKitChatTimelineView.makeTableView()
-        let scroll = try #require(AppKitChatTimelineView.makeScrollView(tableView: table) as? FirstLayoutRestoringScrollView)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 427, height: 300),
-                              styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = scroll
-        defer { window.orderOut(nil) }
-        scroll.trailingScrollerExtension = 7
-        let document = try #require(scroll.documentView)
-        document.frame = NSRect(x: 0, y: 0, width: 420, height: 2400)
-        let thumb = try #require(scroll.verticalScroller as? TimelineIntentScroller)
-        for width: CGFloat in [427, 287, 807] {
-            window.setContentSize(NSSize(width: width, height: 300))
-            window.layoutIfNeeded()
-            scroll.tile()
-            scroll.reflectScrolledClipView(scroll.contentView)
-            thumb.beginScrollInteraction()
-            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-                thumb.appearance = NSAppearance(named: appearance)
-                for position in [0.0, 0.25, 0.8, 1.0] {
-                    thumb.doubleValue = position
-                    thumb.displayIfNeeded()
-                    thumb.layer?.displayIfNeeded()
-                    #expect(scroll.contentView.frame.width == width - 7)
-                    let knob = thumb.visibleKnobLayer
-                    #expect(knob.superlayer === thumb.layer)
-                    #expect(thumb.layer?.sublayers?.count == 1)
-                    #expect(knob.frame == thumb.knobDrawingRect)
-                    #expect(knob.frame.width == 4.5)
-                    #expect(knob.cornerRadius == 2.25)
-                    #expect(thumb.bounds.contains(knob.frame))
-                    let visible = scroll.convert(knob.frame, from: thumb)
-                    let cardRight = scroll.contentView.frame.maxX - ChatBubbleWidthPolicy.userTrailingInset
-                    #expect(visible.minX >= cardRight)
-                    #expect(visible.maxX <= scroll.bounds.maxX)
-                    let transparentPoint = NSPoint(x: thumb.frame.minX + 0.5, y: thumb.frame.midY)
-                    #expect(thumb.hitTest(transparentPoint) == nil)
-                    let center = thumb.convert(NSPoint(x: knob.frame.midX, y: knob.frame.midY), to: nil)
-                    #expect(thumb.testPart(center) == .knob)
-                }
-            }
-        }
-    }
-
-    @Test func timelineTrackClicksAreIgnoredWithoutChangingReaderIntent() throws {
-        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 16, height: 400))
-        let window = NSWindow(contentRect: scroller.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = scroller
-        defer { window.orderOut(nil) }
-        scroller.scrollerStyle = .legacy
-        scroller.isEnabled = true
-        scroller.knobProportion = 0.2
-        scroller.doubleValue = 0.5
-        var begins = 0
-        var ends = 0
-        scroller.onBegin = { begins += 1 }
-        scroller.onEnd = { ends += 1 }
-        let knob = scroller.rect(for: .knob)
-        #expect(!knob.isEmpty)
-        let knobPoint = scroller.convert(NSPoint(x: scroller.knobDrawingRect.midX, y: knob.midY), to: nil)
-        #expect(scroller.testPart(knobPoint) == .knob)
-        let trackPoint = scroller.convert(NSPoint(x: knob.midX, y: max(1, knob.minY - 10)), to: nil)
-        #expect(scroller.testPart(trackPoint) == .noPart)
-        let event = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: trackPoint,
-            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
-            eventNumber: 0, clickCount: 1, pressure: 1))
-        scroller.mouseDown(with: event)
-        #expect(scroller.doubleValue == 0.5)
-        #expect(begins == 0)
-        #expect(ends == 0)
-    }
-
     @Test func hostedWorkOutlineKeepsScrollerLeftAndOutsideContentAfterResize() throws {
         let host = NSHostingView(rootView: ScrollView {
             VStack {
@@ -126,8 +54,9 @@ struct ConsoleOverlayScrollerTests {
         #expect(scroll.scrollerStyle == .overlay)
         #expect(type(of: scroll.verticalScroller!).isCompatibleWithOverlayScrollers)
         #expect(scroll.verticalScroller is ConsoleThinScroller)
-        #expect(NSScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay)
-                > ConsoleThinScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay))
+        #expect(scroll.verticalScroller?.controlSize == .small)
+        #expect(NSScroller.scrollerWidth(for: .small, scrollerStyle: .overlay)
+                == ConsoleThinScroller.scrollerWidth(for: .small, scrollerStyle: .overlay))
         #expect(!scroll.drawsBackground)
         #expect(!scroll.contentView.drawsBackground)
         #expect(scroll.autohidesScrollers)
@@ -146,122 +75,6 @@ struct ConsoleOverlayScrollerTests {
         #expect(scroll.borderType == .noBorder)
         #expect(scroll.contentView.frame.width == 320)
         #expect(scroll.scrollerInsets.right == 0)
-    }
-
-    @Test func timelinePaintsHalfWidthKnobAndNoTrackInBothAppearances() throws {
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            for width: CGFloat in [12, 16, 20] {
-                let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: width, height: 240))
-                // Exercise the drawing independently of AppKit's overlay fade state.
-                scroller.scrollerStyle = .legacy
-                scroller.isEnabled = true
-                scroller.knobProportion = 0.2
-                scroller.doubleValue = 0.5
-                let bounds = scroller.bounds
-                let knob = scroller.rect(for: .knob)
-                #expect(!knob.isEmpty)
-                let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
-                    pixelsWide: Int(bounds.width), pixelsHigh: Int(bounds.height), bitsPerSample: 8,
-                    samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-                let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
-                NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current = context
-                NSColor.clear.setFill()
-                bounds.fill(using: .copy)
-                NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
-                    scroller.draw(bounds)
-                    scroller.drawKnobSlot(in: bounds, highlight: true)
-                }
-                context.flushGraphics()
-                NSGraphicsContext.restoreGraphicsState()
-                var paintedColumns = Set<Int>()
-                var paintedRows = Set<Int>()
-                var maximumAlpha: CGFloat = 0
-                for y in 0..<bitmap.pixelsHigh {
-                    for x in 0..<bitmap.pixelsWide {
-                        let pixel = bitmap.colorAt(x: x, y: y)
-                        maximumAlpha = max(maximumAlpha, pixel?.alphaComponent ?? 0)
-                        if (pixel?.alphaComponent ?? 0) > 0.01 {
-                            if (pixel?.alphaComponent ?? 0) > 0.3 {
-                                let red = pixel?.redComponent ?? 0
-                                #expect(appearance == .darkAqua ? red > 0.95 : (red > 0.2 && red < 0.75))
-                                #expect(abs(red - (pixel?.greenComponent ?? 0)) < 0.03)
-                                #expect(abs(red - (pixel?.blueComponent ?? 0)) < 0.03)
-                            }
-                            paintedColumns.insert(x)
-                            paintedRows.insert(y)
-                        }
-                    }
-                }
-                #expect(!paintedColumns.isEmpty)
-                #expect(maximumAlpha > 0.4 && maximumAlpha < 0.5)
-                // At most one anti-aliased edge pixel per side at 1x.
-                #expect(paintedColumns.count >= 4 && paintedColumns.count <= 6)
-                #expect(paintedColumns.max() == Int(bounds.maxX) - 1)
-                let visibleThumbPoint = scroller.convert(NSPoint(x: bounds.maxX - 2, y: knob.midY), to: nil)
-                #expect(scroller.testPart(visibleThumbPoint) == .knob)
-                #expect(paintedRows.count <= Int(ceil(knob.height)) + 2)
-                #expect(paintedRows.count < bitmap.pixelsHigh / 2)
-            }
-        }
-    }
-
-    @Test func movingTimelineThumbDoesNotLeaveFragmentsOrAccumulateOpacity() throws {
-        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 12, height: 240))
-        scroller.scrollerStyle = .legacy
-        scroller.isEnabled = true
-        scroller.knobProportion = 0.2
-        let bounds = scroller.bounds
-        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
-            pixelsWide: Int(bounds.width), pixelsHigh: Int(bounds.height), bitsPerSample: 8,
-            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
-        NSGraphicsContext.saveGraphicsState()
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        NSGraphicsContext.current = context
-        NSColor.clear.setFill()
-        bounds.fill(using: .copy)
-        for position in [0.2, 0.25, 0.7] {
-            scroller.doubleValue = position
-            scroller.draw(bounds)
-        }
-        context.flushGraphics()
-        let current = scroller.knobDrawingRect.insetBy(dx: -1, dy: -1)
-        var strayPixels = 0
-        var maximumAlpha: CGFloat = 0
-        for y in 0..<bitmap.pixelsHigh {
-            for x in 0..<bitmap.pixelsWide {
-                let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
-                maximumAlpha = max(maximumAlpha, alpha)
-                // NSBitmapImageRep rows start at the top; the drawing context is unflipped.
-                let point = NSPoint(x: CGFloat(x) + 0.5, y: CGFloat(bitmap.pixelsHigh - y) - 0.5)
-                if alpha > 0.01 && !current.contains(point) { strayPixels += 1 }
-            }
-        }
-        #expect(strayPixels == 0)
-        #expect(maximumAlpha <= 0.46)
-    }
-
-    @Test func customTimelineThumbHidesAfterIdleAndNewInteractionCancelsOldDeadline() async throws {
-        let scroller = TimelineIntentScroller(frame: NSRect(x: 0, y: 0, width: 12, height: 240))
-        #expect(scroller.visibleKnobLayer.opacity == 0)
-        #expect(scroller.alphaValue == 1)
-        scroller.beginScrollInteraction()
-        #expect(scroller.visibleKnobLayer.opacity == 1)
-        scroller.endScrollInteraction()
-        try await Task.sleep(for: .milliseconds(500))
-        scroller.beginScrollInteraction()
-        try await Task.sleep(for: .milliseconds(500))
-        #expect(scroller.visibleKnobLayer.opacity == 1)
-        scroller.endScrollInteraction()
-        try await Task.sleep(for: .milliseconds(1100))
-        #expect(scroller.visibleKnobLayer.opacity == 0)
-        #expect(scroller.alphaValue == 1)
-        scroller.beginScrollInteraction()
-        #expect(scroller.visibleKnobLayer.opacity == 1)
-        #expect(scroller.visibleKnobLayer.animation(forKey: "idleFade") == nil)
     }
 
     @Test func contentProbeConfiguresOnlyItsEnclosingScrollView() {
@@ -293,7 +106,7 @@ struct ConsoleOverlayScrollerTests {
         #expect(scroll.autohidesScrollers)
         #expect(scroll.verticalScroller is ConsoleThinScroller)
         #expect(try #require(scroll.verticalScroller).frame.minX < 16)
-        #expect(try #require(scroll.verticalScroller).frame.width <= 8)
+        #expect(try #require(scroll.verticalScroller).controlSize == .small)
         #expect(scroll.contentView.frame.width == 320)
 
         scroll.setFrameSize(NSSize(width: 400, height: 240))

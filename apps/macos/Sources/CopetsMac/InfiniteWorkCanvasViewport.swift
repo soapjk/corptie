@@ -190,11 +190,6 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
             .background(CanvasWheelInput(enabled: isActive && !cardDragging && pan == .zero) { point, delta in
                 viewportState.zoom(by: exp(delta * 0.008), at: point)
             })
-            // Resolve transformed anchors in screen space. The drawing surface
-            // stays viewport-sized even when world coordinates are far apart.
-            .overlayPreferenceValue(TaskCardAnchors.self) { anchors in
-                TaskCollaborationOverlay(anchors: anchors, active: isActive).clipped()
-            }
             .overlay(alignment: .bottomTrailing) {
                 Button("\(Int((camera.scale * 100).rounded()))%") {
                     if let layoutSnapshot {

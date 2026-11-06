@@ -5,6 +5,17 @@ import Testing
 @testable import CorptieConversation
 
 @MainActor struct DetailScrollRoutingTests {
+    @Test func boundedContentUsesNaturalShortHeightAndCapsLongContent() {
+        for (contentHeight, expected): (CGFloat, CGFloat) in [(36, 36), (900, 320)] {
+            let host = NSHostingView(rootView: ConversationDetailBoundedScroll {
+                Color.clear.frame(height: contentHeight)
+            })
+            host.frame = CGRect(x: 0, y: 0, width: 280, height: 320)
+            host.layoutSubtreeIfNeeded()
+            #expect(abs(host.fittingSize.height - expected) < 1)
+        }
+    }
+
     @Test func inactiveCardsScrollRailAndActivationTransfersExclusively() throws {
         let fixture = Fixture()
         defer { fixture.close() }

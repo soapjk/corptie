@@ -490,6 +490,18 @@ struct SessionConversationSurface: View {
     private var conversationLayout: some View {
         VStack(alignment: .leading, spacing: 0) {
             conversationTopChrome
+            ConversationRegionStack {
+                messageViewport
+            } accessory: {
+                inputDock
+            }
+
+        }
+        .padding(1)
+        .background(Color.white.opacity(0.001))
+    }
+
+    private var messageViewport: some View {
             // The editor participates in normal layout. Only the fixed-height
             // quick actions float over the clipped message viewport.
             Group {
@@ -575,6 +587,10 @@ struct SessionConversationSurface: View {
                         .frame(maxWidth: .infinity)
                 }
             }
+    }
+
+    private var inputDock: some View {
+        VStack(spacing: 0) {
             // One editor at one structural position: placement changes must
             // not recreate the native text view, attachments or draft owner.
             if hasPinnedChecklist, let plan = cachedChecklistDock.checklist {
@@ -610,10 +626,7 @@ struct SessionConversationSurface: View {
             }
             .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
             .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
-            .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)
-        }
-        .padding(1)
-        .background(Color.white.opacity(0.001))
+            .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)        }
     }
 
     private var conversationTopChrome: some View {
@@ -1407,6 +1420,8 @@ struct SessionConversationSurface: View {
     }
 
     private var shouldRenderDetailMessages: Bool {
+        // A pending restore must not unmount already displayed same-Session content.
+        if hasPreparedDisplayCacheForCurrentSession && !cachedDisplayEntries.isEmpty { return true }
         if let anchorRowID = requestedRestorationAnchorRowID,
            !cachedDisplayEntries.contains(where: { $0.id == anchorRowID }) {
             return false
