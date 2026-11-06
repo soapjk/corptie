@@ -42,7 +42,7 @@ test("local context failures settle unsent deliveries without invalidating healt
     const updates = [];
     let invalidations = 0;
     const failure = Object.assign(new Error("Message was not sent to the model: context limit"), {
-      code: "SESSION_CONTEXT_BUDGET_EXCEEDED", dispatchState: "not_sent", stage
+      code: "CONTEXT_ASSEMBLY_FAILED", dispatchState: "not_sent", stage
     });
     const { operation, calls } = fixture({
       store: {

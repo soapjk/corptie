@@ -2,119 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { performance } from "node:perf_hooks";
 
-import {
-  ARTIFACT_CONTEXT_DEFAULT_LIMITS,
-  ArtifactContextBudgetPolicy,
-  boundArtifactSummary,
-  serializedUtf8Bytes
-} from "../src/application/artifactContextBudgetPolicy.mjs";
+import { boundArtifactSummary } from "../src/application/artifactContextMetadata.mjs";
 import { ArtifactReadCoordinator } from "../src/application/artifactReadCoordinator.mjs";
 import { WorkChatContextService } from "../src/application/workChatContextService.mjs";
 
-test("Artifact summaries and indexes enforce code-point, token, byte, item, and stable omission limits", () => {
-  const summary = boundArtifactSummary("😀中a".repeat(600));
-  assert.ok(Buffer.byteLength(summary.summary) <= 1_024);
-  assert.ok(Array.from(summary.summary).length <= 256);
-  assert.equal(Buffer.from(summary.summary).toString("utf8"), summary.summary);
-  assert.equal(summary.summaryTruncated, true);
-  assert.equal(summary.summaryOriginalBytes, Buffer.byteLength("😀中a".repeat(600)));
-
-  const candidates = Array.from({ length: 120 }, (_, index) => ({
-    artifactId: `artifact:${String(index).padStart(3, "0")}`,
-    summary: "证据😀".repeat(30)
-  }));
-  const policy = new ArtifactContextBudgetPolicy();
-  const first = policy.measureAndPack({
-    section: "workerArtifactIndex",
-    candidates,
-    limits: ARTIFACT_CONTEXT_DEFAULT_LIMITS.workerArtifactIndex,
-    stableOrder: (left, right) => left.artifactId.localeCompare(right.artifactId)
-  });
-  const second = policy.measureAndPack({
-    section: "workerArtifactIndex",
-    candidates: [...candidates].reverse(),
-    limits: ARTIFACT_CONTEXT_DEFAULT_LIMITS.workerArtifactIndex,
-    stableOrder: (left, right) => left.artifactId.localeCompare(right.artifactId)
-  });
-  assert.deepEqual(first.items, second.items);
-  assert.ok(first.items.length <= 80);
-  assert.ok(first.usage.estimatedTokens <= first.limits.maxEstimatedTokens);
-  assert.ok(first.usage.serializedUtf8Bytes <= first.limits.maxUtf8Bytes);
-  assert.equal(first.omittedCount, candidates.length - first.items.length);
-  assert.doesNotThrow(() => JSON.parse(JSON.stringify({ items: first.items, omissions: first.omissionReasons })));
-});
-
-test("Artifact index packing remains bounded and fast for the 80-item worst case", () => {
-  const candidates = Array.from({ length: 80 }, (_, index) => ({
-    artifactId: `artifact:${index}`,
-    title: "T".repeat(128),
-    summary: "😀".repeat(256),
-    contentHash: "a".repeat(64)
-  }));
-  const policy = new ArtifactContextBudgetPolicy();
-  const samples = [];
-  for (let iteration = 0; iteration < 30; iteration += 1) {
-    const started = performance.now();
-    const packed = policy.measureAndPack({
-      section: "workerArtifactIndex", candidates,
-      limits: ARTIFACT_CONTEXT_DEFAULT_LIMITS.workerArtifactIndex
-    });
-    samples.push(performance.now() - started);
-    assert.ok(serializedUtf8Bytes(packed.items) <= ARTIFACT_CONTEXT_DEFAULT_LIMITS.workerArtifactIndex.maxUtf8Bytes + 2);
-  }
-  samples.sort((left, right) => left - right);
-  assert.ok(samples[Math.floor(samples.length * 0.95)] < 10, `p95=${samples[Math.floor(samples.length * 0.95)]}ms`);
-});
-
-test("Work snapshot remains valid JSON within dual hard budgets at 80 Tasks and Artifacts", () => {
-  const work = {
-    id: "work:1", name: "目标".repeat(600), description: "😀说明".repeat(2_000),
-    status: "active", profile: "general",
-    tags: Array.from({ length: 100 }, (_, index) => `tag-${index}`),
-    workspaceId: "workspace:1",
-    contributorAgentIds: Array.from({ length: 100 }, (_, index) => `agent:${index}`)
-  };
-  const tasks = Array.from({ length: 80 }, (_, index) => ({
-    id: `task:${String(index).padStart(3, "0")}`, title: "工作".repeat(100),
-    description: "描述😀".repeat(500), acceptance_criteria: "标准".repeat(500),
-    priority: "medium", status: "in_progress",
-    main_agent_id: null, current_session_id: null
-  }));
-  const agents = new Map(work.contributorAgentIds.map((agentId) => [agentId, {
-    agentId, name: "Agent", role: "Worker", description: "description".repeat(200)
-  }]));
-  const artifacts = Array.from({ length: 80 }, (_, index) => ({
-    artifactId: `artifact:${index}`, title: "Artifact", summary: "摘要😀".repeat(100),
-    summaryTruncated: true, summaryOriginalBytes: 10_000, visibility: "work_private",
-    pinnedVersion: 1, contentHash: "a".repeat(64), byteLength: 100_000,
-    mimeType: "text/markdown", required: index < 4, relations: ["implementation_spec"],
-    referenceIds: [`artifact_reference:${index}`], pendingUpdate: null
-  }));
-  const store = {
-    getWork: () => work,
-    listTasksByWork: () => tasks,
-    resolveWorkspaceRoot: (id) => `/Volumes/T9/${id}/${"p".repeat(2_000)}`,
-    getAgent: (id) => agents.get(id),
-    getWorkChatSession: () => ({ id: "session:work", sessionKind: "workChat", workId: work.id })
-  };
-  const service = new WorkChatContextService({
-    store,
-    artifactService: { indexForSession: () => ({ items: artifacts, omittedArtifactCount: 0, omissionReasons: {} }) }
-  });
-  const samples = [];
-  let result;
-  for (let index = 0; index < 100; index += 1) {
-    const started = performance.now();
-    result = service.build(work.id);
-    samples.push(performance.now() - started);
-  }
-  samples.sort((left, right) => left - right);
-  assert.ok(result.utf8Bytes <= 32_768);
-  assert.ok(result.estimatedTokens <= 8_192);
-  assert.ok(result.counts.tasks <= 80);
-  assert.ok(result.counts.artifacts <= 80);
-  assert.doesNotThrow(() => JSON.parse(result.prompt.split("Work snapshot:\n")[1]));
-  assert.ok(samples[Math.ceil(samples.length * 0.95) - 1] < 20, `p95=${samples[Math.ceil(samples.length * 0.95) - 1]}ms`);
+test("Artifact summary metadata preserves complete Unicode text without context limits", () => {
+  const text = "😀中a".repeat(20000);
+  const result = boundArtifactSummary(text);
+  assert.equal(result.summary, text);
+  assert.equal(result.summaryTruncated, false);
 });
 
 test("Artifact read coordinator single-flights pages, persists one receipt, and exhausts both Turn budgets", async () => {

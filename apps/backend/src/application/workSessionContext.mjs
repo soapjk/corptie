@@ -5,23 +5,10 @@ import { EXECUTION_CHECKLIST_INSTRUCTIONS } from "./executionChecklistInstructio
 
 export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; manually create or switch Worktrees only when the direct user explicitly requests it. Scoped child Task tools may automatically allocate child Worktrees during autonomous decomposition, without a separate user creation request. This does not authorize manual Worktree changes; shell cd or command workdir never changes the logical Workspace.";
 
-export const WORKER_SESSION_CONTEXT_LIMITS = Object.freeze({
-  // Corptie supplemental-context limits, not a model token-window estimate.
-  baseMaxUtf8Bytes: 32_768,
-  baseTargetUtf8Bytes: 16_384,
-  turnMaxUtf8Bytes: 32_768,
-  turnTargetUtf8Bytes: 20_480,
-  userEvidenceReserveUtf8Bytes: 2_048
-});
-const DEFAULT_MAX_CONTEXT_BYTES = WORKER_SESSION_CONTEXT_LIMITS.baseMaxUtf8Bytes;
-const DEFAULT_MAX_TURN_CONTEXT_BYTES = WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes;
-const encoder = new TextEncoder();
-
 export function buildWorkSessionContext({
   session, task, work, artifactIndex = null, startupReceipt = null, coordination = null,
   toolDomains = [],
-  toolCatalogVersion = null,
-  maxContextBytes = DEFAULT_MAX_CONTEXT_BYTES
+  toolCatalogVersion = null
 } = {}) {
   if (!session || session.sessionKind !== "worker" || !task) return null;
   if (session.taskId !== task.id || session.workId !== task.work_id) {
@@ -49,15 +36,12 @@ export function buildWorkSessionContext({
     throw error;
   }
 
-  if (!Number.isSafeInteger(maxContextBytes) || maxContextBytes <= 0) {
-    throw contextError("WORK_SESSION_CONTEXT_BUDGET_INVALID", "Worker Session context budget must be a positive integer.");
-  }
   const taskDefinition = canonicalTaskDefinition(task);
   const requiredArtifacts = (artifactIndex?.items ?? []).filter((item) => item.required === true);
   if ((artifactIndex?.requiredOmittedCount ?? 0) > 0) {
     throw contextError(
       "WORK_SESSION_CONTEXT_INCOMPLETE",
-      "Required Artifact metadata did not fit the upstream Artifact index budget.",
+      "Required Artifact metadata is missing from the upstream Artifact index.",
       { missingFields: ["requiredArtifacts"], requiredOmittedCount: artifactIndex.requiredOmittedCount }
     );
   }
@@ -102,33 +86,15 @@ export function buildWorkSessionContext({
   ].filter(Boolean);
   const suffix = "\n</corptie_work_session_binding>";
   const corePrompt = prefixLines.join("\n") + suffix;
-  assertCoreFits(corePrompt, maxContextBytes, taskDefinition, requiredArtifacts);
-
-  const optionalArtifacts = (artifactIndex?.items ?? []).filter((item) => item.required !== true);
-  const optionalMaximum = Math.min(maxContextBytes,
-    Math.max(encoder.encode(corePrompt).byteLength, WORKER_SESSION_CONTEXT_LIMITS.baseTargetUtf8Bytes));
-  const included = [];
-  for (const item of optionalArtifacts) {
-    if (fitsWithOptional(prefixLines, included.concat(item), artifactIndex, suffix, optionalMaximum)) included.push(item);
-    else break;
-  }
-  const upstreamOmitted = artifactIndex?.omittedCount ?? artifactIndex?.omittedArtifactCount ?? 0;
-  const contextOmitted = optionalArtifacts.length - included.length;
-  const omittedCount = upstreamOmitted + contextOmitted;
-  const omissionReasons = {
-    ...(artifactIndex?.omissionReasons ?? {}),
-    ...(contextOmitted ? { worker_context_budget: contextOmitted } : {})
-  };
-  const prompt = optionalArtifactPrompt(corePrompt, included, omittedCount, omissionReasons, optionalMaximum);
-  assertComplete(prompt, maxContextBytes, taskDefinition, requiredArtifacts);
+  assertComplete(corePrompt, taskDefinition, requiredArtifacts);
+  const optionalArtifacts = (artifactIndex?.items ?? []).filter(item => item.required !== true);
+  const omittedCount = artifactIndex?.omittedCount ?? artifactIndex?.omittedArtifactCount ?? 0;
+  const omissionReasons = artifactIndex?.omissionReasons ?? {};
+  const prompt = optionalArtifactPrompt(corePrompt, optionalArtifacts, omittedCount, omissionReasons);
+  assertComplete(prompt, taskDefinition, requiredArtifacts);
   return {
-    prompt,
-    corePrompt,
-    optionalArtifactSource: Object.freeze({
-      items: Object.freeze([...optionalArtifacts]),
-      upstreamOmitted,
-      upstreamOmissionReasons: Object.freeze({ ...(artifactIndex?.omissionReasons ?? {}) })
-    }),
+    prompt, corePrompt,
+    contextArtifacts: { omittedCount, omissionReasons },
     contextIntegrity: Object.freeze({
       taskId: task.id,
       taskRevision: taskDefinition.revision,
@@ -136,12 +102,7 @@ export function buildWorkSessionContext({
       corePromptSha256: sha256(corePrompt),
       finalPromptSha256: sha256(prompt)
     }),
-    contextBudget: Object.freeze({
-      maxUtf8Bytes: maxContextBytes,
-      finalUtf8Bytes: encoder.encode(prompt).byteLength,
-      omittedOptionalArtifacts: omittedCount,
-      omissionReasons: Object.freeze(omissionReasons)
-    })
+
   };
 }
 
@@ -156,142 +117,26 @@ export function buildTaskCoordinationContext(task, coordination) {
   ].filter(Boolean).join("\n");
 }
 
-export function mergeWorkerSessionContexts({
-  baseContext, directUserIntentContext = null, memoryContext = null,
-  requiredContexts = [],
-  mentionContext = null,
-  referenceContext = null,
-  maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES,
-  targetContextBytes = WORKER_SESSION_CONTEXT_LIMITS.turnTargetUtf8Bytes,
-  userEvidenceReserveBytes = WORKER_SESSION_CONTEXT_LIMITS.userEvidenceReserveUtf8Bytes
-} = {}) {
+export function mergeWorkerSessionContexts({ baseContext, directUserIntentContext = null,
+  memoryContext = null, requiredContexts = [], mentionContext = null, referenceContext = null } = {}) {
   if (!baseContext?.prompt) return null;
-  if (!Number.isSafeInteger(targetContextBytes) || targetContextBytes <= 0
-      || !Number.isSafeInteger(userEvidenceReserveBytes) || userEvidenceReserveBytes < 0) {
-    throw contextError("WORK_SESSION_CONTEXT_BUDGET_INVALID", "Worker Session context budgets must be valid byte counts.");
-  }
-  const requiredTail = [...requiredContexts, directUserIntentContext, mentionContext]
-    .filter((item) => item?.prompt).map((item) => item.prompt);
-  const composeRequired = (basePrompt) => [basePrompt, ...requiredTail].join("\n\n");
   const corePrompt = baseContext.corePrompt ?? baseContext.prompt;
-  const coreBytes = encoder.encode(corePrompt).byteLength;
-  const sectionBytes = Object.fromEntries([
-    ["session-binding", coreBytes],
-    ...requiredContexts.map((item, index) => [item.contextKey ?? `required-${index}`, encoder.encode(item.prompt ?? "").byteLength]),
-    ["direct-user-evidence", encoder.encode(directUserIntentContext?.prompt ?? "").byteLength],
-    ["mentions", encoder.encode(mentionContext?.prompt ?? "").byteLength]
-  ]);
-  const completeRequiredPrompt = composeRequired(corePrompt);
-  const requiredBytes = encoder.encode(completeRequiredPrompt).byteLength;
-  // Internal continuations must leave room for the next real user turn. The
-  // A real user turn already includes its complete evidence in requiredBytes;
-  // only internal continuations need space reserved for a future user turn.
-  const reservedBytes = directUserIntentContext?.prompt ? 0 : userEvidenceReserveBytes;
-  assertSessionContextBudget(completeRequiredPrompt, maxContextBytes,
-    { sectionBytes, reservedUtf8Bytes: reservedBytes });
-  const softMaximum = Math.min(maxContextBytes - reservedBytes,
-    Math.max(requiredBytes, targetContextBytes - reservedBytes));
-  // User-selected references are useful but never outrank the complete Task
-  // definition, direct-user evidence, or explicitly selected mentions. Bound
-  // them before packing optional Artifact metadata and memory.
-  const referencePrompt = fitOptionalReferencePrompt(
-    referenceContext?.prompt,
-    Math.min(4_096, (referenceContext?.atomic ? maxContextBytes - reservedBytes : softMaximum) - requiredBytes - 2)
-  );
-  if (referenceContext?.atomic && referencePrompt !== referenceContext.prompt) {
-    throw contextError("CONTEXT_REFERENCE_BUDGET_EXCEEDED",
-      "Complete local file references do not fit the Provider-safe Turn budget. Disable some references; no partial path was sent.");
-  }
-  const compose = (basePrompt) => [basePrompt, ...requiredTail, referencePrompt]
-    .filter(Boolean).join("\n\n");
-  // Complete selected file paths may cross the soft target, just like other
-  // atomic input. Optional Artifact metadata and recall still use the remainder.
-  const optionalMaximum = Math.max(softMaximum,
-    requiredBytes + (referencePrompt ? encoder.encode(referencePrompt).byteLength + 2 : 0));
-  const source = baseContext.optionalArtifactSource;
-  let selectedBasePrompt = baseContext.prompt;
-  let selectedCount = source?.items.length ?? 0;
-  let omissionReasons = baseContext.contextBudget?.omissionReasons ?? {};
-  if (source) {
-    selectedBasePrompt = corePrompt;
-    selectedCount = 0;
-    for (let count = 0; count <= source.items.length; count += 1) {
-      const omitted = source.upstreamOmitted + source.items.length - count;
-      const reasons = {
-        ...source.upstreamOmissionReasons,
-        ...(source.items.length > count ? { worker_context_budget: source.items.length - count } : {})
-      };
-      const candidate = optionalArtifactPrompt(corePrompt, source.items.slice(0, count), omitted, reasons,
-        Math.min(baseContext.contextBudget?.maxUtf8Bytes ?? DEFAULT_MAX_CONTEXT_BYTES,
-          Math.max(coreBytes, WORKER_SESSION_CONTEXT_LIMITS.baseTargetUtf8Bytes)));
-      if (!candidate || encoder.encode(compose(candidate)).byteLength > optionalMaximum) break;
-      selectedBasePrompt = candidate;
-      selectedCount = count;
-    }
-    omissionReasons = {
-      ...source.upstreamOmissionReasons,
-      ...(source.items.length > selectedCount ? { worker_context_budget: source.items.length - selectedCount } : {})
-    };
-  }
-  const requiredPrompt = compose(selectedBasePrompt);
-  const memoryFits = memoryContext?.prompt
-    && encoder.encode(`${requiredPrompt}\n\n${memoryContext.prompt}`).byteLength <= optionalMaximum;
-  const prompt = memoryFits ? `${requiredPrompt}\n\n${memoryContext.prompt}` : requiredPrompt;
-  const artifactPrompt = selectedBasePrompt.startsWith(corePrompt)
-    ? selectedBasePrompt.slice(corePrompt.length).trim() : "";
   const contextSections = [
     { id: "session-binding", prompt: corePrompt, reusable: true },
-    { id: "artifact-index", prompt: artifactPrompt, reusable: true },
+    { id: "artifact-index", prompt: baseContext.prompt.startsWith(corePrompt)
+      ? baseContext.prompt.slice(corePrompt.length).trim() : "", reusable: true },
     ...requiredContexts.map((item, index) => ({ id: item.contextKey ?? `required-${index}`,
       prompt: item.prompt ?? "", reusable: item.contextReusable === true })),
     { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
     { id: "mentions", prompt: mentionContext?.prompt ?? "", reusable: false },
-    { id: "context-references", prompt: referencePrompt, reusable: true },
-    { id: "memory-recall", prompt: memoryFits ? memoryContext.prompt : "", reusable: false }
+    { id: "context-references", prompt: referenceContext?.prompt ?? "", reusable: true },
+    { id: "memory-recall", prompt: memoryContext?.prompt ?? "", reusable: false }
   ];
-  return {
-    ...baseContext,
-    prompt,
-    contextSections,
-    contextIntegrity: baseContext.contextIntegrity ? Object.freeze({
-      ...baseContext.contextIntegrity,
-      finalPromptSha256: sha256(prompt)
-    }) : null,
-    memoryRecall: memoryFits ? memoryContext.memoryRecall ?? null : null,
-    contextBudget: Object.freeze({
-      ...(baseContext.contextBudget ?? {}),
-      finalUtf8Bytes: encoder.encode(selectedBasePrompt).byteLength,
-      omittedOptionalArtifacts: source
-        ? source.upstreamOmitted + source.items.length - selectedCount
-        : baseContext.contextBudget?.omittedOptionalArtifacts ?? 0,
-      omissionReasons: Object.freeze(omissionReasons),
-      maxTurnUtf8Bytes: maxContextBytes,
-      targetTurnUtf8Bytes: targetContextBytes,
-      requiredUtf8Bytes: requiredBytes,
-      reservedUtf8Bytes: reservedBytes,
-      sectionBytes: Object.freeze(sectionBytes),
-      finalTurnUtf8Bytes: encoder.encode(prompt).byteLength,
-      referenceContextOmitted: Boolean(referenceContext?.prompt && !referencePrompt),
-      referenceContextTruncated: Boolean(referenceContext?.prompt && referencePrompt !== referenceContext.prompt),
-      memoryContextOmitted: Boolean(memoryContext?.prompt && !memoryFits)
-    })
-  };
-}
-
-function fitOptionalReferencePrompt(prompt, maxUtf8Bytes) {
-  if (!prompt || maxUtf8Bytes < 512) return "";
-  if (encoder.encode(prompt).byteLength <= maxUtf8Bytes) return prompt;
-  const suffix = "\n[Additional reference content omitted by the Turn budget.]";
-  const contentBudget = maxUtf8Bytes - encoder.encode(suffix).byteLength;
-  let result = "";
-  let used = 0;
-  for (const point of prompt) {
-    const size = encoder.encode(point).byteLength;
-    if (used + size > contentBudget) break;
-    result += point;
-    used += size;
-  }
-  return result + suffix;
+  const prompt = contextSections.filter(section => section.prompt).map(section => section.prompt).join("\n\n");
+  return { ...baseContext, prompt, contextSections,
+    memoryRecall: memoryContext?.memoryRecall ?? null,
+    contextIntegrity: baseContext.contextIntegrity ? Object.freeze({ ...baseContext.contextIntegrity,
+      finalPromptSha256: sha256(prompt) }) : null };
 }
 
 function canonicalTaskDefinition(task) {
@@ -315,58 +160,12 @@ function canonicalTaskDefinition(task) {
   return Object.freeze(definition);
 }
 
-function fitsWithOptional(prefixLines, artifacts, artifactIndex, suffix, maximum) {
-  const contextOmitted = (artifactIndex?.items ?? []).filter((item) => item.required !== true).length - artifacts.length;
-  const omittedCount = (artifactIndex?.omittedCount ?? artifactIndex?.omittedArtifactCount ?? 0) + contextOmitted;
-  const omissionReasons = {
-    ...(artifactIndex?.omissionReasons ?? {}),
-    ...(contextOmitted ? { worker_context_budget: contextOmitted } : {})
-  };
-  const section = [
-    "Optional Artifact index (metadata only; bodies load on demand; never defines the bound Task):",
-    JSON.stringify({ artifacts, omittedCount, omissionReasons }),
-    "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
-  ].join("\n");
-  return encoder.encode(prefixLines.join("\n") + suffix + "\n\n" + section).byteLength <= maximum;
-}
-
-function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionReasons, maximum) {
+function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionReasons) {
   if (!artifacts.length && !omittedCount) return corePrompt;
-  const section = [
-    "Optional Artifact index (metadata only; bodies load on demand; never defines the bound Task):",
-    JSON.stringify({ artifacts, omittedCount, omissionReasons }),
-    "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
-  ].join("\n");
-  const prompt = `${corePrompt}\n\n${section}`;
-  return encoder.encode(prompt).byteLength <= maximum ? prompt : artifacts.length ? null : corePrompt;
+  return `${corePrompt}\n\nOptional Artifact index (metadata only; bodies load on demand; never defines the bound Task):\n${JSON.stringify({ artifacts, omittedCount, omissionReasons })}\nUse the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions.`;
 }
 
-function assertCoreFits(prompt, maximum, taskDefinition, requiredArtifacts) {
-  assertSessionContextBudget(prompt, maximum, {
-    sectionBytes: { "session-binding": encoder.encode(prompt).byteLength }
-  });
-  assertComplete(prompt, maximum, taskDefinition, requiredArtifacts);
-}
-
-// Shared by canonical assembly and wire delivery, including non-append Providers.
-// Diagnostics contain counts only; no user content or new persistent records.
-export function assertSessionContextBudget(prompt, maximum, {
-  sectionBytes = {}, reservedUtf8Bytes = 0, stage = "context_assembly"
-} = {}) {
-  if (!Number.isSafeInteger(maximum) || maximum <= 0) {
-    throw contextError("WORK_SESSION_CONTEXT_BUDGET_INVALID", "Worker Session context budget must be a positive integer.");
-  }
-  const requiredUtf8Bytes = encoder.encode(prompt ?? "").byteLength;
-  if (requiredUtf8Bytes + reservedUtf8Bytes <= maximum) return requiredUtf8Bytes;
-  const error = contextError("SESSION_CONTEXT_BUDGET_EXCEEDED",
-    `Message was not sent to the model: required Session context exceeds the Corptie supplemental-context limit (${requiredUtf8Bytes} bytes + ${reservedUtf8Bytes} bytes reserved; limit ${maximum} bytes).`,
-    { requiredUtf8Bytes, reservedUtf8Bytes, maxUtf8Bytes: maximum, sectionBytes, stage });
-  error.dispatchState = "not_sent";
-  error.stage = stage;
-  throw error;
-}
-
-function assertComplete(prompt, maximum, taskDefinition, requiredArtifacts) {
+function assertComplete(prompt, taskDefinition, requiredArtifacts) {
   const missingFields = [];
   if (!prompt.includes(JSON.stringify(taskDefinition))) missingFields.push("taskDefinition");
   if (requiredArtifacts.length && !prompt.includes(JSON.stringify(requiredArtifacts))) missingFields.push("requiredArtifacts");
@@ -376,10 +175,10 @@ function assertComplete(prompt, maximum, taskDefinition, requiredArtifacts) {
   if (afterBinding === null || (afterBinding !== "" && !afterBinding.startsWith("\n\nOptional Artifact index ("))) {
     missingFields.push("closingBindingTag");
   }
-  if (encoder.encode(prompt).byteLength > maximum) missingFields.push("contextBudget");
+
   if (missingFields.length) {
     throw contextError("WORK_SESSION_CONTEXT_INCOMPLETE", "Worker Session context failed its completeness invariant.", {
-      missingFields, maxUtf8Bytes: maximum, finalUtf8Bytes: encoder.encode(prompt).byteLength
+      missingFields
     });
   }
 }
