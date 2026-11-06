@@ -273,6 +273,37 @@ test("ordinary subset integration ignores an unrelated dirty parent and leaves u
   assert.ok((await git(f.parentTree.path, ["status", "--porcelain"])).includes("unrelated-dirty.txt"));
 });
 
+test("rollback can restore completed graph targets while source-only Worktrees remain protected", async t => {
+  const f = await fixture(t);
+  const child = f.children[0], tree = f.trees.get(child.id);
+  const childHead = await f.commit(child, "child.txt");
+  await git(f.parentTree.path, ["merge", "--no-ff", "--no-edit", childHead]);
+  const parentResult = await git(f.parentTree.path, ["rev-parse", "HEAD"]);
+  const parentItems = [{ ...f.parentTree, isMain: true, sourceHeadBefore: f.baseHead },
+    { ...tree, sourceHeadBefore: childHead, mergeStatus: "completed", mergeMainHead: parentResult }];
+  const job = f.store.createWorktreeIntegrationJob({ repositoryId: "repository:integration", status: "running",
+    planFingerprint: "rollback-scope", details: { plan: {
+      mainWorktreeId: "worktree:main", mainPath: f.mainPath, mainHeadBefore: f.baseHead,
+      reservedWorktreeIds: ["worktree:main", ...[...f.trees.values()].map(tree => tree.worktreeId)],
+      writeWorktreeIds: ["worktree:main"],
+      items: [{ worktreeId: "worktree:main", path: f.mainPath, branchName: "main", sourceHeadBefore: f.baseHead, isMain: true },
+        { ...f.parentTree, sourceHeadBefore: parentResult, mergeStatus: "conflict" }],
+      orchestration: { version: 1, groups: [{ rootTaskId: f.parent.id,
+        bindings: [f.parent, ...f.children].map(task => ({ taskId: task.id,
+          worktreeId: f.trees.get(task.id).worktreeId, parentTaskId: task.parent_task_id ?? null })) }] }
+    }, graphExecution: { phase: "steps", steps: [{ targetWorktreeId: f.parentTree.worktreeId, items: parentItems }] } } });
+  assert.throws(() => f.store.assertStandaloneWorktreeMutation({ paths: [f.parentTree.path], jobId: job.id }),
+    { code: "TASK_HIERARCHY_SCOPE_REQUIRED" });
+  f.store.updateWorktreeIntegrationJob(job.id, { status: "cancellation_requested", phase: "rollback_running" });
+  assert.doesNotThrow(() => f.store.assertStandaloneWorktreeMutation({ paths: [f.parentTree.path], jobId: job.id }));
+  assert.throws(() => f.store.assertStandaloneWorktreeMutation({ paths: [tree.path], jobId: job.id }),
+    { code: "TASK_HIERARCHY_SCOPE_REQUIRED" });
+  f.store.updateWorktreeIntegrationJob(job.id, { status: "paused", phase: "rollback_review" });
+  assert.throws(() => f.store.assertStandaloneWorktreeMutation({ paths: [f.parentTree.path], jobId: job.id }),
+    { code: "TASK_HIERARCHY_SCOPE_REQUIRED" });
+  assert.equal(await git(tree.path, ["rev-parse", "HEAD"]), childHead);
+});
+
 test("sync mutates only child while parent and main remain byte-identical", async t => {
   const f = await fixture(t), child = f.children[0], tree = f.trees.get(child.id);
   const parentHead = await f.commit(f.parent, "parent.txt");

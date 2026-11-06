@@ -1,12 +1,12 @@
 import { deviceError } from "./clientDeviceAuthority.mjs";
 
 const WORKSPACE_ACTIONS = new Set([
-  "commit", "commit-message", "commit-prepare", "merge", "push", "restart", "synchronize"
+  "commit", "commit-message", "commit-prepare", "merge", "push", "restart", "synchronize", "git-operation"
 ]);
 const SERVICE_ACTIONS = new Set(["initialize", "update", "profile", "start", "restart", "stop"]);
 const JOB_ACTIONS = new Set([
   "cancel", "confirm", "resolve-conflict", "retry", "commit-policy-prepare", "commit-policy-decisions",
-  "commit-policy-residue"
+  "commit-policy-residue", "cancel-preview", "rollback", "resume"
 ]);
 
 /**
@@ -77,6 +77,11 @@ export class ClientWorktreeManagementAPI {
     repositoryId = validId(repositoryId, "INVALID_REPOSITORY_ID");
     worktreeId = validId(worktreeId, "INVALID_WORKTREE_ID");
     if (!WORKSPACE_ACTIONS.has(action)) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+    if (action === "git-operation") {
+      const result = await this.worktrees.handleWorktreeGitOperation(repositoryId, worktreeId, input);
+      this.emit("WorktreeGitOperationChanged", { repositoryId, worktreeId, result });
+      return { result };
+    }
     const result = await this.projects.runWorkspaceAction(repositoryId, worktreeId, action, input, {kind:"paired_device"});
     this.emit("ProjectWorkspaceChanged", { projectId: repositoryId, workspaceId: worktreeId, action, result });
     return result;
@@ -93,7 +98,9 @@ export class ClientWorktreeManagementAPI {
   async jobAction(jobId, action, input) {
     jobId = validId(jobId, "INVALID_JOB_ID");
     if (!JOB_ACTIONS.has(action)) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
-    const job = action === "confirm"
+    if (action === "cancel-preview") return this.worktrees.prepareRollback(jobId);
+    const job = action === "resume" ? this.worktrees.resumeRollbackReview(jobId)
+      : action === "rollback" ? await this.worktrees.confirmRollback(jobId, input) : action === "confirm"
       ? await this.worktrees.confirm(jobId, input)
       : action === "cancel"
         ? await this.worktrees.cancel(jobId, input)
