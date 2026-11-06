@@ -47,6 +47,7 @@ function publicExecutionPlan(value) {
     planId: value.planId,
     ...(typeof value.taskId === "string" ? {
       taskId: value.taskId,
+      closed: value.closed === true,
       executionAvailable: value.executionAvailable === true,
       stopReason: typeof value.stopReason === "string" ? value.stopReason : null,
       completedCount: Number.isInteger(value.completedCount) ? value.completedCount : 0

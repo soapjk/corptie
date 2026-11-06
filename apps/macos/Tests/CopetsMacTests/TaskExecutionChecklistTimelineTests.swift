@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 import CorptieClientCore
@@ -7,19 +8,69 @@ import CorptieConversation
 
 @MainActor
 final class TaskExecutionChecklistTimelineTests: XCTestCase {
-    private func item(count: Int, revision: Int = 1) throws -> CodexThreadItem {
+    private func item(count: Int, revision: Int = 1, closed: Bool = false) throws -> CodexThreadItem {
         let steps: [[String: Any]] = (0..<count).map { index in
             ["stepId": "item:\(index)", "ordinal": index, "text": "事项 \(index)", "status": "pending"]
         }
         let fields: [String: Any] = ["id": "checklist:timeline-test:\(count)", "turnId": "turn:one",
             "turnStatus": "completed", "type": "executionChecklist", "title": "执行清单", "text": "执行清单", "status": "completed",
             "executionPlan": ["schemaVersion": 1, "planId": "checklist:timeline-test:\(count)", "taskId": "task:one",
-                "revision": revision, "lifecycle": "active", "completedCount": 0,
+                "revision": revision, "closed": closed, "lifecycle": "active", "completedCount": 0,
                 "updatedAt": "2026-11-04T00:00:00Z", "steps": steps]]
         return try JSONDecoder().decode(CodexThreadItem.self, from: JSONSerialization.data(withJSONObject: fields))
     }
     private var builder: ConversationNativeRowBuilder {
         .init(sessionTitle: "Session", workingDirectory: nil, allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in nil })
+    }
+    func testCloseEventDeliversTheClosedBatchToCardOwnersImmediately() async throws {
+        let plan = try XCTUnwrap(item(count: 8, closed: true).executionPlan)
+        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plan))
+        let data = try JSONSerialization.data(withJSONObject: ["payload": ["taskId": "task:one", "checklist": payload]])
+        let router = BackendEventRouter(ports: .init(channelMessage: { _ in }, loadSettings: {},
+            syncNewSessionDefaults: {}, loadProviders: {}, reconcileTimelineRevisions: {}, loadAutomations: {},
+            selectedSession: { nil }, loadScheduledTasks: { _ in }, scheduleTimelineSync: { _, _ in },
+            timelineRevision: { _, _ in }, projectStatus: { _ in }, terminalAutomation: { _ in },
+            automationRefresh: { _ in }, workspaceSwitched: { _ in }, workspaceSwitchFailed: { _ in },
+            usageEvent: { _ in }, inventoryEvent: { _ in }, sessionCleared: { _ in }))
+        var received: ConversationExecutionPlan?
+        let subscription = NotificationCenter.default.publisher(for: .executionChecklistChanged).sink { note in
+            received = note.userInfo?["checklist"] as? ConversationExecutionPlan
+        }
+        defer { subscription.cancel() }
+        await router.handle("ExecutionChecklistChanged", data: String(decoding: data, as: UTF8.self))
+        XCTAssertEqual(received?.planId, plan.planId)
+        XCTAssertEqual(received?.closed, true)
+    }
+    func testClosedBatchMovesIntoHistoryAndNextBatchOwnsTheDock() throws {
+        let old = try item(count: 2, revision: 10, closed: true)
+        let next = try item(count: 8, revision: 11)
+        let closedRow = builder.nativeAppKitRow(ChatDisplayEntry(kind: .message(old)), expandedTurnIds: [])
+        let nextRow = builder.nativeAppKitRow(ChatDisplayEntry(kind: .message(next)), expandedTurnIds: [])
+        let closedOnly = ConversationChecklistDockProjection(rows: [closedRow])
+        XCTAssertNil(closedOnly.checklist)
+        XCTAssertEqual(closedOnly.latestChecklist?.closed, true)
+        XCTAssertEqual(closedOnly.latestChecklist?.revision, 10)
+        XCTAssertEqual(closedOnly.timelineRows.map(\.id), [closedRow.id])
+        let both = ConversationChecklistDockProjection(rows: [closedRow, nextRow])
+        XCTAssertEqual(both.checklist?.planId, next.executionPlan?.planId)
+        XCTAssertEqual(both.latestChecklist?.planId, next.executionPlan?.planId)
+        XCTAssertEqual(both.timelineIndexByRowID[closedRow.id], 0)
+        XCTAssertEqual(both.timelineRows.count, 1)
+    }
+    func testClosedHistoryHasCompactHeightAndCanExpandInline() throws {
+        let message = try item(count: 8, revision: 99, closed: true)
+        let entry = ChatDisplayEntry(kind: .message(message))
+        let key = ScheduledTriggerPresentation.expansionID(for: message.id)
+        var compactHeight: CGFloat = 0
+        for expanded in [false, true] {
+            let row = builder.nativeAppKitRow(entry, expandedTurnIds: expanded ? [key] : [])
+            let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: 620, skin: .classic)
+            let host = NSHostingView(rootView: MacSharedMessageTextCard(row: row, layout: layout).frame(width: 620))
+            host.frame = NSRect(x: 0, y: 0, width: 620, height: 1)
+            host.layoutSubtreeIfNeeded()
+            if expanded { XCTAssertGreaterThan(host.fittingSize.height, compactHeight) }
+            else { compactHeight = host.fittingSize.height; XCTAssertLessThan(compactHeight, 80) }
+        }
     }
     func testDockKeepsLatestChecklistOutsideHistoryWithoutDuplicatingRows() throws {
         let first = builder.nativeAppKitRow(ChatDisplayEntry(kind: .message(try item(count: 2))), expandedTurnIds: [])
