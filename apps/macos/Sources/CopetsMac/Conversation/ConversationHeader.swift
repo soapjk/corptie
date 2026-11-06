@@ -128,7 +128,7 @@ struct SessionConversationHeaderSurface: View {
     }
 
     private var headerControlRow: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             HStack {
                 if isLiquidGlass {
                     Button {
@@ -237,6 +237,7 @@ struct SessionConversationHeaderSurface: View {
                 .help(L10n("Click to copy Session title"))
                 .accessibilityLabel(L10n("Copy Session title"))
                 .accessibilityValue(selectedTitle)
+                .frame(height: 28)
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if showsHistoricalThread {
@@ -280,7 +281,6 @@ struct SessionConversationHeaderSurface: View {
 
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
         .help(selectedTitle ?? "")
     }
 

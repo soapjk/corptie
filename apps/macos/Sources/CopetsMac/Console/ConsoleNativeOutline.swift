@@ -270,7 +270,6 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
         scroll.documentView = outline
-        (scroll.verticalScroller as? WorkOutlineThinScroller)?.bindScrollActivity(to: scroll)
         context.coordinator.update(outline, initial: true)
         return scroll
     }
