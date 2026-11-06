@@ -85,7 +85,6 @@ final class SessionPageRenderInputs {
     private(set) var searchTarget: UnifiedSearchNavigation.Target?
     private(set) var searchMatches: [UnifiedSearchHit] = []
     private(set) var searchError: String?
-    private(set) var conversationTopInset: CGFloat = 0
     private(set) var retired = false
 
     private struct Binding: Equatable {
@@ -177,11 +176,6 @@ final class SessionPageRenderInputs {
         }
     }
 
-    func setConversationTopInset(_ value: CGFloat) {
-        guard active, !retired, value.isFinite else { return }
-        let next = max(0, value)
-        if conversationTopInset != next { conversationTopInset = next }
-    }
     var acceptsPresentationUpdates: Bool { active && !retired }
     var acceptsScopeResults: Bool { !retired && validBinding() }
     func hasValidBinding() -> Bool { !retired && validBinding() }

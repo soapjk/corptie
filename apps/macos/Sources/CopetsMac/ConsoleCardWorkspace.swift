@@ -438,7 +438,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 isUnread: session.map(isSessionUnread) ?? false, isActive: isActive, session: session) {
                 interventionSummary(task, session: session)
             }
-        }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }
+        }
         .buttonStyle(SessionSelectionPressStyle()).consoleHoverFeedback().disabled(task.deletionStatus == "deleting").contextMenu {
             Button("暂不处理") {
                 displayPreferences.setFixed(false, taskID: task.id)
