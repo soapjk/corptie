@@ -1,11 +1,6 @@
-import {
-  ARTIFACT_CONTEXT_DEFAULT_LIMITS,
-  ArtifactContextBudgetPolicy,
-  estimateArtifactTokens
-} from "./artifactContextBudgetPolicy.mjs";
+import { estimateArtifactTokens } from "./artifactContextMetadata.mjs";
 import { sessionResponsibilityInstructions } from "./sessionResponsibilityInstructions.mjs";
 
-const DEFAULT_CHARACTER_BUDGET = 32_768;
 const MAX_TASKS = 80;
 const encoder = new TextEncoder();
 
@@ -23,8 +18,6 @@ export class WorkChatContextService {
   constructor(options = {}) {
     this.store = options.store;
     this.artifactService = options.artifactService ?? null;
-    this.characterBudget = options.characterBudget ?? DEFAULT_CHARACTER_BUDGET;
-    this.budgetPolicy = options.budgetPolicy ?? new ArtifactContextBudgetPolicy();
     if (!this.store) throw new TypeError("WorkChatContextService requires a store.");
   }
 
@@ -60,12 +53,6 @@ export class WorkChatContextService {
       mainAgentId: item.main_agent_id,
       currentSessionId: item.current_session_id
     }));
-    const packedTasks = this.budgetPolicy.measureAndPack({
-      section: "workActiveTasks",
-      candidates: taskCandidates,
-      limits: { maxEstimatedTokens: 4_096, maxUtf8Bytes: 16_384, maxItems: MAX_TASKS },
-      stableOrder: (left, right) => left.id.localeCompare(right.id)
-    });
     const snapshot = {
       generatedAt: new Date().toISOString(),
       work: {
@@ -80,13 +67,13 @@ export class WorkChatContextService {
       },
       workspaces: workspaceRows,
       contributors: agents,
-      tasks: [...packedTasks.items],
+      tasks: taskCandidates,
       artifacts: [...(artifactIndex?.items ?? [])],
       omissions: {
         artifacts: artifactIndex?.omittedArtifactCount ?? 0,
         artifactReasons: artifactIndex?.omissionReasons ?? {},
-        tasks: taskCandidates.length - packedTasks.items.length,
-        taskReasons: packedTasks.omissionReasons,
+        tasks: 0,
+        taskReasons: {},
         workspaces: 0,
         contributors: Math.max(0, work.contributorAgentIds.length - contributorAgentIds.length),
         workTextTruncated: false
@@ -102,33 +89,11 @@ export class WorkChatContextService {
       "Artifact entries contain only bounded metadata, summaries, pinned version/hash, and required flags. Read private bodies on demand with Artifact tools."
     ].join("\n");
     const prefix = `${header}\n\nWork snapshot:\n`;
-    const totalLimits = ARTIFACT_CONTEXT_DEFAULT_LIMITS.workChatSnapshot;
     // Compact JSON materially reduces both serialization work and context
     // bytes at the 80/80 boundary; structure, not indentation, is the contract.
     // The sampling clock is metadata, not a change to Work state.
     const serializeSnapshot = () => JSON.stringify({ ...snapshot, generatedAt: undefined });
-    let raw = serializeSnapshot();
-    const omittedForTotal = { artifacts: 0, tasks: 0, contributors: 0, workspaces: 0 };
-    for (const [field, omissionField] of [
-      ["tasks", "tasks"], ["artifacts", "artifacts"],
-      ["contributors", "contributors"], ["workspaces", "workspaces"]
-    ]) {
-      if (snapshotFits(prefix, raw, totalLimits, this.characterBudget)) break;
-      const original = snapshot[field];
-      const kept = maximumFittingPrefix(snapshot, field, original, prefix, totalLimits, this.characterBudget);
-      const omitted = original.length - kept.length;
-      snapshot[field] = kept;
-      snapshot.omissions[omissionField] += omitted;
-      omittedForTotal[omissionField] += omitted;
-      raw = serializeSnapshot();
-    }
-    while (!snapshotFits(prefix, raw, totalLimits, this.characterBudget)) {
-      if (!shrinkWork(snapshot.work)) {
-        throw serviceError("WORK_CONTEXT_BUDGET_TOO_SMALL", "Work Chat context header exceeds the configured hard budget.");
-      }
-      snapshot.omissions.workTextTruncated = true;
-      raw = serializeSnapshot();
-    }
+    const raw = serializeSnapshot();
     const prompt = `${prefix}${raw}`;
     const truncated = Object.values(snapshot.omissions).some((value) =>
       typeof value === "number" ? value > 0 : value === true
@@ -141,7 +106,6 @@ export class WorkChatContextService {
       ],
       workId: work.id,
       generatedAt: snapshot.generatedAt,
-      characterBudget: this.characterBudget,
       characters: prompt.length,
       utf8Bytes: encoder.encode(prompt).byteLength,
       estimatedTokens: estimateArtifactTokens(prompt),
@@ -151,7 +115,6 @@ export class WorkChatContextService {
         artifacts: snapshot.artifacts.length,
         omittedTasks: snapshot.omissions.tasks,
         omittedArtifacts: snapshot.omissions.artifacts,
-        omittedForTotal
       }
     };
   }
@@ -168,46 +131,6 @@ function boundedText(value, maxCodePoints) {
     bounded.push(point);
   }
   return bounded.join("");
-}
-
-function shrinkWork(work) {
-  for (const field of ["description", "name"]) {
-    const points = Array.from(String(work[field] ?? ""));
-    if (points.length > 32) {
-      work[field] = points.slice(0, Math.max(32, Math.floor(points.length / 2))).join("");
-      return true;
-    }
-  }
-  if ((work.tags ?? []).length > 0) { work.tags.pop(); return true; }
-  if ((work.contributorAgentIds ?? []).length > 0) { work.contributorAgentIds.pop(); return true; }
-  return false;
-}
-
-function maximumFittingPrefix(snapshot, field, original, prefix, limits, characterBudget) {
-  let lower = 0;
-  let upper = original.length;
-  let best = 0;
-  while (lower <= upper) {
-    const middle = Math.floor((lower + upper) / 2);
-    snapshot[field] = original.slice(0, middle);
-    const raw = JSON.stringify(snapshot);
-    if (snapshotFits(prefix, raw, limits, characterBudget)) {
-      best = middle;
-      lower = middle + 1;
-    } else {
-      upper = middle - 1;
-    }
-  }
-  snapshot[field] = original;
-  return original.slice(0, best);
-}
-
-function snapshotFits(prefix, raw, limits, characterBudget) {
-  const prompt = prefix + raw;
-  const bytes = encoder.encode(prompt).byteLength;
-  return prompt.length <= characterBudget
-    && bytes <= limits.maxUtf8Bytes
-    && estimateArtifactTokens(prompt, bytes) <= limits.maxEstimatedTokens;
 }
 
 function requiredText(value, field) {

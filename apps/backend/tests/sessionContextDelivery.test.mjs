@@ -128,10 +128,11 @@ for (const kind of ["codex", "claude", "openclacky"]) {
     assert.ok(captured.at(-1).includes("中".repeat(4_665)));
     const count = captured.length;
     overBudget = true;
-    await assert.rejects(service.sendMessage("s", "unsent"), error =>
-      error.code === "SESSION_CONTEXT_BUDGET_EXCEEDED"
-      && error.stage === "context_assembly" && error.dispatchState === "not_sent");
-    assert.equal(captured.length, count);
+    await service.sendMessage("s", "large context must reach Provider");
+    assert.equal(captured.length, count + 1);
+    assert.ok(Buffer.byteLength(captured.at(-1)) > 32768);
+    reject = true;
+    await assert.rejects(service.sendMessage("s", "Provider owns input rejection"), /Provider rejected context/);
   });
 }
 
@@ -147,29 +148,12 @@ test("native compaction notifications reach the shared invalidation boundary", (
   assert.equal(claude.payload.item.type, "contextCompaction");
 });
 
-test("canonical overflow is rejected even for a cached delta or non-append Provider", () => {
-  const cache = new SessionContextDelivery();
-  const source = context();
-  cache.prepare(reference, source, policy).commit();
-  const invalid = { ...source, contextBudget: { maxTurnUtf8Bytes: 100 } };
-  for (const deliveryPolicy of [policy, undefined, { mode: "replace" }]) {
-    assert.throws(() => cache.prepare(reference, invalid, deliveryPolicy), error =>
-      error.code === "SESSION_CONTEXT_BUDGET_EXCEEDED"
-      && error.dispatchState === "not_sent" && error.stage === "context_delivery");
-  }
-});
-
-test("update markers fall back to a validated complete baseline when wire bytes overflow", () => {
+test("delta update markers are not constrained by a local byte threshold", () => {
   const cache = new SessionContextDelivery();
   const source = context({ binding: "binding" });
-  const budgeted = { ...source, contextBudget: { maxTurnUtf8Bytes: Buffer.byteLength(source.prompt) } };
-  cache.prepare(reference, budgeted, policy).commit();
+  cache.prepare(reference, source, policy).commit();
   const changed = context({ binding: "binding", artifact: "ARTIFACT_TWO" });
-  const result = cache.prepare(reference, { ...changed, contextBudget: budgeted.contextBudget }, policy);
-  assert.equal(result.context.contextDelivery.mode, "full");
-  assert.equal(result.context.prompt, changed.prompt);
-  assert.ok(Buffer.byteLength(result.context.prompt) <= budgeted.contextBudget.maxTurnUtf8Bytes);
-  result.commit();
-  cache.invalidate("s");
-  assert.equal(cache.prepare(reference, budgeted, policy).context.contextDelivery.mode, "full");
+  const result = cache.prepare(reference, changed, policy);
+  assert.match(result.context.prompt, /ARTIFACT_TWO/);
+  assert.equal(result.context.contextDelivery.mode, "delta");
 });

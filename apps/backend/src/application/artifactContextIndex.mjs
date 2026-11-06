@@ -1,9 +1,7 @@
 import {
-  ARTIFACT_CONTEXT_DEFAULT_LIMITS,
   ARTIFACT_CONTEXT_POLICY_REVISION,
-  ArtifactContextBudgetPolicy,
-  boundArtifactSummary
-} from "./artifactContextBudgetPolicy.mjs";
+  boundArtifactSummary, estimateArtifactTokens, serializedUtf8Bytes
+} from "./artifactContextMetadata.mjs";
 
 const RELATION_ORDER = new Map([
   "implementation_spec", "security_requirement", "test_plan", "research_evidence",
@@ -17,7 +15,7 @@ const CONTEXT_RELATION_ORDER = Object.freeze({
   work_unreferenced: 4
 });
 
-export function buildArtifactContextIndex({ store, session, policy = new ArtifactContextBudgetPolicy(), limits = null } = {}) {
+export function buildArtifactContextIndex({ store, session } = {}) {
   const workId = session?.workId ?? session?.work_id ?? null;
   const sessionKind = session?.sessionKind ?? session?.session_kind ?? null;
   const sessionId = session?.id ?? null;
@@ -87,21 +85,18 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
         reference.authorizedAt > latest ? reference.authorizedAt : latest, "")
     });
   }
-  const section = sessionKind === "worker" ? "workerArtifactIndex" : "workArtifactIndex";
   candidates.sort(artifactIndexOrder);
-  const packed = policy.measureAndPack({
-    section,
-    candidates: candidates.map(({ authorizedAt: _authorizedAt, ...item }) => item),
-    limits: limits ?? ARTIFACT_CONTEXT_DEFAULT_LIMITS[section],
-    stableOrder: null
-  });
+  const items = candidates.map(({ authorizedAt: _authorizedAt, ...item }) => item);
+  const serialized = JSON.stringify(items);
+  const packed = { items: Object.freeze(items),
+    usage: Object.freeze({ itemCount: items.length, serializedUtf8Bytes: serializedUtf8Bytes(items), estimatedTokens: estimateArtifactTokens(serialized) }),
+    omittedCount: 0, omissionReasons: Object.freeze({}), estimatorRevision: "unicode-scalars-or-utf8-div3-v1" };
   const requiredCandidateCount = candidates.filter((item) => item.required === true).length;
   const requiredIncludedCount = packed.items.filter((item) => item.required === true).length;
   return Object.freeze({
     policyRevision: ARTIFACT_CONTEXT_POLICY_REVISION,
     items: packed.items,
     usage: packed.usage,
-    limits: packed.limits,
     omittedArtifactCount: packed.omittedCount,
     omittedCount: packed.omittedCount,
     requiredOmittedCount: requiredCandidateCount - requiredIncludedCount,
@@ -142,13 +137,10 @@ function canonicalPending(references) {
 function relationRank(value) { return RELATION_ORDER.get(value) ?? Number.MAX_SAFE_INTEGER; }
 
 function emptyIndex(sessionKind) {
-  const section = sessionKind === "workChat" ? "workArtifactIndex" : "workerArtifactIndex";
-  const limits = ARTIFACT_CONTEXT_DEFAULT_LIMITS[section];
   return Object.freeze({
     policyRevision: ARTIFACT_CONTEXT_POLICY_REVISION,
     items: Object.freeze([]),
     usage: Object.freeze({ estimatedTokens: 0, serializedUtf8Bytes: 0, itemCount: 0 }),
-    limits,
     omittedArtifactCount: 0,
     omittedCount: 0,
     requiredOmittedCount: 0,
