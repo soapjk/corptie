@@ -27,7 +27,7 @@ async function fixture() {
   return { directory, store, service, context };
 }
 
-test("Artifact index honors 80 item, 16KiB/4096-token, and 1024-byte summary budgets", async () => {
+test("Artifact context retains every authorized item and complete summary", async () => {
   const value = await fixture();
   try {
     for (let index = 0; index < 90; index += 1) {
@@ -39,11 +39,10 @@ test("Artifact index honors 80 item, 16KiB/4096-token, and 1024-byte summary bud
     const session = value.store.getSession("session:budget");
     const index = value.service.indexForSession(session);
     const bytes = Buffer.byteLength(JSON.stringify({ artifacts: index.items }));
-    assert.ok(index.items.length <= 80);
-    assert.ok(bytes <= 16 * 1024);
-    assert.ok(Math.ceil(bytes / 4) <= 4096);
-    assert.ok(index.items.every((item) => Buffer.byteLength(item.summary) <= 1024));
-    assert.equal(index.omittedCount, 90 - index.items.length);
+    assert.equal(index.items.length, 90);
+    assert.ok(bytes > 32768);
+    assert.ok(index.items.every(item => item.summary === "测".repeat(1000)));
+    assert.equal(index.omittedCount, 0);
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });

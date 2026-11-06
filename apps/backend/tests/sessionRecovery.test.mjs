@@ -135,7 +135,7 @@ test("handoff sampling spans long history and validates structured Background Ag
     sequence: index + 1,
     content: `historical record ${index + 1} with enough detail`
   }));
-  const source = buildSessionRecoveryHandoffSource(entries, { characterBudget: 12_000 });
+  const source = buildSessionRecoveryHandoffSource(entries);
   assert.ok(source.selectedEntryCount < source.totalEntryCount);
   assert.equal(source.entries[0].sequence, 1);
   assert.equal(source.entries.at(-1).sequence, 400);
