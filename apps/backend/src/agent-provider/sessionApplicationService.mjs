@@ -727,12 +727,6 @@ export class SessionApplicationService {
           // Context assembly is local; its failure says nothing about Provider health.
           const failure = withDispatchStateNotSent(error);
           failure.stage = "context_assembly";
-          if (failure.code === "SESSION_CONTEXT_BUDGET_EXCEEDED") {
-            console.warn(`[session-context-budget] ${JSON.stringify({
-              sessionId: prepared.sessionId, providerId: prepared.providerId,
-              code: failure.code, ...failure.details
-            })}`);
-          }
           throw failure;
         })
         : null;
@@ -765,9 +759,9 @@ export class SessionApplicationService {
         contextIntegrityScope: "validated_canonical_context",
         contextDelivery: sessionContext.contextDelivery ?? null,
         finalUtf8Bytes: sessionContext.contextDelivery?.sentUtf8Bytes
-          ?? sessionContext.contextBudget?.finalTurnUtf8Bytes ?? null,
-        omittedOptionalArtifacts: sessionContext.contextBudget?.omittedOptionalArtifacts ?? 0,
-        omissionReasons: sessionContext.contextBudget?.omissionReasons ?? {}
+          ?? null,
+        omittedOptionalArtifacts: sessionContext.contextArtifacts?.omittedCount ?? 0,
+        omissionReasons: sessionContext.contextArtifacts?.omissionReasons ?? {}
       })}`);
     }
     let result;

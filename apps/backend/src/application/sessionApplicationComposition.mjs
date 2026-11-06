@@ -99,7 +99,7 @@ export function createSessionApplicationComposition({
       let referenceContext = null;
       if (session?.sessionKind === "workChat" && session.workId) {
         baseContext = workChatContextService.build(session.workId, session);
-        referenceContext = await resolveContextReferences(reference.sessionId, { characterBudget: 4_096 });
+        referenceContext = await resolveContextReferences(reference.sessionId);
         if (referenceContext?.prompt) {
           baseContext = { ...baseContext, prompt: `${baseContext.prompt}\n\n${referenceContext.prompt}`,
             contextSections: [...(baseContext.contextSections ?? [
@@ -141,7 +141,7 @@ export function createSessionApplicationComposition({
           toolDomains: appliedToolDomainIds(toolMaterialization),
           toolCatalogVersion: toolMaterialization?.appliedCatalogVersion ?? null
         });
-        referenceContext = await resolveContextReferences(reference.sessionId, { characterBudget: 4_096 });
+        referenceContext = await resolveContextReferences(reference.sessionId);
       }
       let memoryContext = null;
       let recallDecision = null;
@@ -208,11 +208,10 @@ export function createSessionApplicationComposition({
         presentationContext, mentionContext, directUserIntentContext, memoryContext]
         .filter((item) => item?.prompt);
       const recordInjection = (globalIncluded, recallIncluded) => {
-        if (globalPreferences) memoryRecallService.markInjection?.(globalPreferences,
-          globalIncluded ? "context_included" : "budget_omitted");
+        if (globalPreferences && globalIncluded) memoryRecallService.markInjection?.(globalPreferences, "context_included");
         if (!recallDecision) return;
         const status = recallDecision.memories.length === 0 ? "not_selected"
-          : recallIncluded ? "context_included" : "budget_omitted";
+          : recallIncluded ? "context_included" : "not_selected";
         memoryRecallService.markInjection?.(recallDecision, status);
       };
       if (contexts.length === 0) {
