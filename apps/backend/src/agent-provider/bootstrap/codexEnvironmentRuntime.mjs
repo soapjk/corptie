@@ -15,7 +15,7 @@ const attachmentMethods = new Set(["resumeThread", "ensureThreadResumed", "inspe
 // the provider-thread environment before publishing a newly created Session.
 export function createCodexEnvironmentRuntime({ registry, environment, prepare, instructions,
   createRuntime = (options) => new CodexProviderRuntime(options), maxEnvironments = 4,
-  canRelease = () => true, resolveSourceThread = () => null, ...options }) {
+  canRelease = () => true, assertProfileReady = async () => {}, resolveSourceThread = () => null, ...options }) {
   const runtimes = new Map();
   const activity = new Map();
   const prepared = new Map();
@@ -137,6 +137,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     async startThread(input = {}) {
       const sourceThreadId = input.sourceThreadId ?? resolveSourceThread(input);
       const profile = sourceThreadId ? registry.forThread(sourceThreadId) : registry.current;
+      await assertProfileReady(profile);
       const runtime = runtimeFor(profile);
       const result = await runtime.startThread(await attach(profile, input));
       try { await registry.register(profile, { threadId: result.thread.id }); }
@@ -145,6 +146,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     },
     async forkThread(threadId, input = {}) {
       const profile = registry.forThread(threadId);
+      await assertProfileReady(profile);
       const runtime = runtimeFor(profile);
       const result = await runtime.forkThread(threadId, await attach(profile, input));
       try { await registry.register(profile, { threadId: result.thread.id }); }
@@ -153,6 +155,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
     },
     async runEphemeralPrompt(input = {}) {
       const profile = registry.current;
+      await assertProfileReady(profile);
       await prepareProfile(profile);
       return runtimeFor(profile).runEphemeralPrompt(input.executionPolicy === "no-tools" ? input : await attach(profile, input));
     },
@@ -175,6 +178,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
       if (attachmentMethods.has(property)) {
         return attach(profile, args[0]).then((input) => runtime[property](threadId, input, ...args.slice(1)));
       }
+      if (property === "startTurn") return assertProfileReady(profile).then(() => runtime[property](threadId, ...args));
       return runtime[property](threadId, ...args);
     };
     delegates.set(property, delegate);

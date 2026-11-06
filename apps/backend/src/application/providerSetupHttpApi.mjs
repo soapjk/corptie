@@ -25,6 +25,18 @@ export function handleProviderModelsHttpRequest({ request, response, url, sessio
 export function handleProviderSetupHttpRequest({
   request, response, url, agentProviderRegistry, firstRunSetup, readJson, sendJson, errorStatus, store
 }) {
+  const accountsMatch = url.pathname.match(/^\/providers\/([^/]+)\/accounts$/);
+  if (accountsMatch && ["GET", "POST"].includes(request.method)) {
+    Promise.resolve().then(async () => firstRunSetup.accountOperation(decodeURIComponent(accountsMatch[1]),
+      request.method === "POST" ? await readJson(request) : null))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, error.statusCode ?? 400, {
+        error: error.code && !error.statusCode ? "无法完成账号操作，请检查本地运行目录和权限。" : error.message,
+        code: error.code ?? null
+      }));
+    return true;
+  }
+
   const providerConfigurationActionMatch = url.pathname.match(
     /^\/providers\/([^/]+)\/(configuration\/validate|connection-test)$/
   );

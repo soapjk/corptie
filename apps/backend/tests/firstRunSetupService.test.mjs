@@ -439,3 +439,28 @@ test('page save applies credential source and enable state together without a mo
   assert.equal(status.providers[0].runtime.source.path, source);
   assert.equal(f.probes.length, 0);
 });
+
+test("account management is advertised only by providers that implement it, and default changes use settings save", async t => {
+  const f = await fixture(t);
+  const provider = f.options.providers[0];
+  let selectedAccountId = "old";
+  provider.accounts = {
+    list: async () => ({ selectedAccountId }),
+    validateSelection: async id => assert.equal(id, "new"),
+    select: async id => { selectedAccountId = id; },
+    operation: async input => ({ action: input.action })
+  };
+  assert.equal((await f.service.accountOperation(provider.id, null)).selectedAccountId, "old");
+  assert.deepEqual(await f.service.accountOperation(provider.id, { action: "rename" }), { action: "rename" });
+  const status = await f.service.status();
+  const row = status.providers.find(value => value.id === provider.id);
+  const other = status.providers.find(value => value.id !== provider.id);
+  assert.equal(row.accounts.selectedAccountId, "old");
+  assert.equal(other.accounts, undefined);
+  await assert.rejects(f.service.accountOperation(other.id, null), /不支持账号管理/);
+  await assert.rejects(f.service.saveCredentialSource({ providerId: provider.id }), /账号管理/);
+  const saved = await f.service.saveSettings({ providers: [
+    { providerId: provider.id, path: row.path, enabled: row.enabled, accountId: "new" }
+  ] });
+  assert.equal(saved.providers.find(value => value.id === provider.id).accounts.selectedAccountId, "new");
+});
