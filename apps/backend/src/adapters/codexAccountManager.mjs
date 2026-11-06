@@ -123,18 +123,18 @@ export class CodexAccountManager {
     const current = this.registry.current.profileId;
     const accounts = [];
     for (const record of Object.values(this.state.accounts)) {
-      if (record.deletedAt) continue;
+      if (record.deletedAt || record.state === "signing_in") continue;
       const profile = this.profile(record);
       if (!profile) continue;
       const count = this.bindingCount(profile), busy = this.isBusy(profile);
       const status = await this.status(record);
-      const signingIn = record.state === "signing_in"
-        || [...this.logins.values()].some(login => login.state === "pending" && login.record.updateFor === record.id);
+      const signingIn = [...this.logins.values()].some(login => login.state === "pending" && login.record.updateFor === record.id);
       const deletionReason = signingIn ? "请先完成或取消登录。" : record.legacy ? "原有环境保留，不自动删除其凭证或数据。" : current === profile.profileId
-        ? "请先选择其他默认账号并保存设置。" : count ? "仍有会话绑定此账号，不能删除。" : busy ? "账号正在使用，请等待请求结束。" : null;
+        ? "请先选择其他当前使用账号并保存设置。" : count ? "仍有会话绑定此账号，不能删除。" : busy ? "账号正在使用，请等待请求结束。" : null;
       accounts.push({ id: record.id, name: record.name, accountLabel: status.label ?? "未验证账号",
         state: status.state, kind: record.kind, runtimeDirectory: profile.home,
         credentialPath: join(profile.home, "auth.json"), importedFrom: record.importedFrom ?? null,
+        origin: record.legacy ? (profile.mode === "native" ? "native" : "legacy") : record.importedFrom ? "imported" : "login",
         isDefault: current === profile.profileId, isLegacy: Boolean(record.legacy), sessionCount: count,
         canSelect: status.state === "ready" && profile.mode === "isolated",
         canDelete: !deletionReason, deletionReason, canReauthorize: profile.mode === "isolated" && !busy,
@@ -241,7 +241,7 @@ export class CodexAccountManager {
     }
     const existing = Object.values(this.state.accounts).find(record => !record.deletedAt && this.profile(record)?.mode === "isolated" && credential.identity && record.identity === credential.identity);
     if (existing) throw fail("CODEX_ACCOUNT_EXISTS", "此账号已在管理列表中，请选择现有账号或更新其凭证。");
-    const record = await this.allocate(input.name, { identity: credential.identity, kind: credential.kind,
+    const record = await this.allocate(input.name ?? credential.label, { identity: credential.identity, kind: credential.kind,
       importedFrom: input.source.path });
     await this.prepare(this.profile(record));
     await this.writeCredential(this.profile(record), credential.content);
@@ -252,7 +252,7 @@ export class CodexAccountManager {
     if ([...this.logins.values()].some(login => login.state === "pending")) throw fail("CODEX_LOGIN_PENDING", "请先完成或取消正在进行的登录。");
     const target = input.accountId ? this.record(input.accountId) : null;
     if (target && (this.profile(target).mode !== "isolated" || this.isBusy(this.profile(target)))) throw fail("CODEX_ACCOUNT_BUSY", "请等待该账号的当前请求结束后再重新授权。");
-    const record = await this.allocate(target?.name ?? input.name, { state: "signing_in", updateFor: target?.id ?? null });
+    const record = await this.allocate(target?.name ?? input.name ?? "Codex 账号", { state: "signing_in", updateFor: target?.id ?? null });
     const profile = this.profile(record);
     const login = { id: randomUUID(), record, state: "pending", providerLoginId: null, started: false };
     this.logins.set(login.id, login);
@@ -277,7 +277,7 @@ export class CodexAccountManager {
     } catch {
       await login.client?.close().catch(() => {});
       login.state = "failed";
-      record.state = "needs_auth";
+      await this.discardLoginCredential(record);
       await this.persist();
       throw fail("CODEX_LOGIN_FAILED", "无法启动官方登录，请检查 Codex 程序和网络后重试；原有账号未被修改。");
     }
@@ -294,13 +294,13 @@ export class CodexAccountManager {
       const target = login.record.updateFor ? this.record(login.record.updateFor) : null;
       if (target) {
         await this.replaceCredential(target, credential);
-        login.record.deletedAt = now();
-        await rm(join(this.profile(login.record).home, "auth.json"), { force: true });
+        await this.discardLoginCredential(login.record);
         login.accountId = target.id;
       } else {
         const duplicate = Object.values(this.state.accounts).find(record => record.id !== login.record.id && !record.deletedAt
           && this.profile(record)?.mode === "isolated" && credential.identity && record.identity === credential.identity);
         if (duplicate) throw fail("CODEX_ACCOUNT_EXISTS", "此账号已存在，请使用原账号的重新授权操作。");
+        if (login.record.name === "Codex 账号") login.record.name = credential.label;
         Object.assign(login.record, { identity: credential.identity, kind: credential.kind, state: "ready" });
         login.accountId = login.record.id;
       }
@@ -309,10 +309,16 @@ export class CodexAccountManager {
     } catch (error) {
       login.state = "failed";
       login.message = error.statusCode === 409 ? error.message : "登录凭证未能安全保存，请重试；原有账号未被覆盖。";
-      login.record.state = "interrupted_update";
+      await this.discardLoginCredential(login.record);
       await this.persist();
     }
     delete login.authUrl;
+  }
+
+  async discardLoginCredential(record) {
+    const profile = this.profile(record);
+    await rm(join(profile.home, "auth.json"), { force: true });
+    record.deletedAt = now();
   }
 
   async cancelLogin(login) {
@@ -321,7 +327,7 @@ export class CodexAccountManager {
     await login.client?.request("account/login/cancel", { loginId: login.providerLoginId }).catch(() => {});
     await login.client?.close().catch(() => {});
     login.state = "cancelled";
-    login.record.state = "needs_auth";
+    await this.discardLoginCredential(login.record);
     delete login.authUrl;
     await this.persist();
   }
@@ -344,7 +350,20 @@ export class CodexAccountManager {
   operation(input) {
     return this.serial(async () => {
       let flow = null;
+      let discovered;
       switch (input.action) {
+        case "discover": {
+          const inspected = await Promise.all(this.candidates.filter(source => source.kind !== "keychain").map(async source => {
+            try {
+              const result = await this.readSource(source);
+              if (!result) return null;
+              const credential = inspectCodexCredential(result.content);
+              return { ...source, label: credential.label };
+            } catch { return null; }
+          }));
+          discovered = inspected.filter(Boolean);
+          break;
+        }
         case "import": await this.importCredential(input); break;
         case "login": flow = await this.startLogin(input); break;
         case "rename": this.record(input.accountId).name = this.name(input.name); await this.persist(); break;
@@ -363,7 +382,7 @@ export class CodexAccountManager {
         }
         default: throw fail("CODEX_ACCOUNT_ACTION_INVALID", "账号操作无效。");
       }
-      return { accounts: await this.list(), flow };
+      return { accounts: await this.list(), flow, discovered };
     });
   }
 
