@@ -72,7 +72,7 @@ struct ProviderAccountsView: View {
                 .disabled(disabled || saving)
                 Button(L10n("管理账号…")) { managing = true }.disabled(disabled || saving)
             }
-            Text(L10n("新会话使用此账号，已有会话继续使用各自绑定的账号。"))
+            Text(L10n("新会话使用此账号。打开旧会话时，会用此账号恢复原线程。运行中的请求会先完成。"))
                 .font(.caption).foregroundStyle(.secondary)
             if draft != nil {
                 Text(L10n("切换账号在点击页面底部“保存设置”后生效。"))

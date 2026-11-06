@@ -351,15 +351,31 @@ struct SessionConversationSurface: View {
         }
     }
 
-    var body: some View {
-        let _ = legacyRevision
-        let _ = SessionSwitchTrace.shared.mark(.conversationBody, sessionID: sessionId)
+    private var accountPreparationKey: String? {
+        selectedSession?.notReadyReason?.code == "CODEX_ACCOUNT_RESUME_REQUIRED" ? sessionId : nil
+    }
+
+    private var conversationRoot: some View {
         Group {
             if renderInputs?.retired == true {
                 Text(L10n("This conversation no longer exists."))
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { conversationLayout }
         }
+        .task(id: accountPreparationKey) { await prepareCurrentExecutionAccount() }
+    }
+
+    private func prepareCurrentExecutionAccount() async {
+        guard accountPreparationKey != nil, acceptsPresentationUpdates, displayedOnline,
+              let session = selectedSession, session.id == sessionId else { return }
+        await backendClient.verifyProviderBinding(for: session,
+            expectedSelectionGeneration: backendClient.sessionSelectionController.generation)
+    }
+
+    var body: some View {
+        let _ = legacyRevision
+        let _ = SessionSwitchTrace.shared.mark(.conversationBody, sessionID: sessionId)
+        conversationRoot
         .onAppear {
             guard acceptsPresentationUpdates else { return }
             restoreCachedProjectionDisplayCacheIfNeeded()

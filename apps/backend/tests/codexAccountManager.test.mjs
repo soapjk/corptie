@@ -98,3 +98,37 @@ test("discovery lists only readable credentials without reading the keychain imp
   const imported = await manager.operation({ action: "import", source: result.discovered[0] });
   assert.equal(imported.accounts.accounts.find(account => account.origin === "imported")?.name, "ChatGPT 账号");
 });
+
+test("refreshes one account through its managed Home and coalesces simultaneous refresh requests", async t => {
+  let refreshCount = 0;
+  let managedHome;
+  const { manager, registry } = await fixture(t, {
+    command: () => "mock-codex",
+    environment: profile => ({ CODEX_HOME: profile.home }),
+    createClient: ({ env }) => {
+      managedHome = env.CODEX_HOME;
+      return {
+        initialize: async () => {},
+        close: async () => {},
+        async request(method, params) {
+          assert.equal(method, "account/read");
+          assert.deepEqual(params, { refreshToken: true });
+          refreshCount++;
+          await writeFile(join(managedHome, "auth.json"), credential("old", "refreshed"));
+        }
+      };
+    }
+  });
+  const profile = registry.current;
+  const before = await manager.executionAuthentication(profile);
+  assert.equal(before.chatgptAccountId, "old");
+  const results = await Promise.all([
+    manager.executionAuthentication(profile, { previousAccountId: "old" }),
+    manager.executionAuthentication(profile, { previousAccountId: "old" })
+  ]);
+  assert.equal(refreshCount, 1);
+  assert.equal(managedHome, profile.home);
+  assert.ok(results.every(result => result.accessToken === "refreshed"));
+  await assert.rejects(manager.executionAuthentication(profile, { previousAccountId: "other" }),
+    { code: "CODEX_ACCOUNT_MISMATCH" });
+});

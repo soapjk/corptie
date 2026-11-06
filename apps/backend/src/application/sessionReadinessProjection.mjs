@@ -68,7 +68,8 @@ export function createSessionReadinessProjection({
       logicalSession: logical,
       requireActiveBinding: options.requireActiveBinding !== false,
       providerRuntime: providerId ? providerRuntimeReadiness.get(providerId) : null,
-      bindingRuntime: bindingRuntimeReadiness(logical, binding),
+      bindingRuntime: bindingRuntimeReadiness(logical, binding)
+        ?? (providerId ? agentProviderRegistry.get(providerId).accountSwitchReadiness?.(binding?.providerThreadId ?? decorated.external?.threadId) : null),
       toolMaterialization,
       readOnly: options.readOnly === true
     });

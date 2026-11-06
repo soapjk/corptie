@@ -182,10 +182,10 @@ function migratedRolloutPath(value, codexHome) {
   const currentPath = resolve(value);
   if (isDescendant(codexHome, currentPath)) return null;
   const normalized = currentPath.split(sep).join("/");
-  const marker = "/runtimes/codex/sessions/";
-  const markerIndex = normalized.lastIndexOf(marker);
-  if (markerIndex < 0) return null;
-  const suffix = normalized.slice(markerIndex + "/runtimes/codex/".length);
+  const marker = /\/runtimes\/(?:codex|codex-accounts)\/.*?(sessions|archived_sessions)\//;
+  const match = marker.exec(normalized);
+  if (!match) return null;
+  const suffix = normalized.slice(match.index + match[0].length - match[1].length - 1);
   const targetPath = resolve(codexHome, suffix);
   return isDescendant(codexHome, targetPath) ? targetPath : null;
 }

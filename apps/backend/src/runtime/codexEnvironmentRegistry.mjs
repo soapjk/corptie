@@ -11,7 +11,7 @@ export class CodexEnvironmentRegistry {
     Object.assign(this, { path, isolatedHome: resolve(isolatedHome), nativeHome: resolve(nativeHome), hasExistingSessions });
     if (this.nativeHome === this.isolatedHome) this.nativeHome = join(os.homedir(), ".codex");
     this.legacy = this.profile("isolated", this.isolatedHome);
-    this.state = { version: 1, defaultProfileId: this.legacy.profileId,
+    this.state = { version: 1, legacyProfileId: this.legacy.profileId, defaultProfileId: this.legacy.profileId,
       profiles: { [this.legacy.profileId]: this.legacy }, threads: {} };
     this.pending = Promise.resolve();
   }
@@ -29,6 +29,10 @@ export class CodexEnvironmentRegistry {
       }
       this.state = saved;
       if (saved.nativeHome) this.nativeHome = saved.nativeHome;
+      const legacy = saved.profiles[saved.legacyProfileId]
+        ?? Object.values(saved.profiles).find(profile => profile.mode === "isolated" && profile.home === this.isolatedHome);
+      if (legacy) this.legacy = legacy;
+      this.state.legacyProfileId = this.legacy.profileId;
       this.state.profiles[this.legacy.profileId] ??= this.legacy;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;

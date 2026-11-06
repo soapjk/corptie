@@ -51,6 +51,7 @@ export class CodexAccountManager {
     this.state = { version: 1, accounts: {} };
     this.pending = Promise.resolve();
     this.logins = new Map();
+    this.refreshes = new Map();
   }
 
   serial(operation) {
@@ -187,6 +188,47 @@ export class CodexAccountManager {
     if ([...this.logins.values()].some(login => login.state === "pending")) {
       throw fail("CODEX_LOGIN_PENDING", "请先完成或取消正在进行的登录。");
     }
+  }
+
+  async executionAuthentication(profile, refresh, storageProfile) {
+    await this.assertProfileReady(profile);
+    if (!refresh && profile.mode === "native" && storageProfile?.profileId === profile.profileId) return null;
+    const readAuth = async () => {
+      const credential = await this.credential(profile);
+      if (!credential) throw fail("CODEX_ACCOUNT_NOT_READY", "当前 Codex 账号缺少可用凭证。");
+      const value = JSON.parse(credential.content);
+      if (value.tokens?.access_token && value.tokens?.account_id) {
+        return { type: "chatgptAuthTokens", accessToken: value.tokens.access_token,
+          chatgptAccountId: value.tokens.account_id, chatgptPlanType: null };
+      }
+      if (!refresh && (value.OPENAI_API_KEY || value.personal_access_token) && storageProfile?.profileId === profile.profileId) return null;
+      throw fail("CODEX_ACCOUNT_NOT_READY", "当前 Codex 凭证格式不支持独立执行。");
+    };
+    const previous = await readAuth();
+    if (!refresh) return previous;
+    if (previous.type !== "chatgptAuthTokens" || (refresh.previousAccountId && refresh.previousAccountId !== previous.chatgptAccountId)) {
+      throw fail("CODEX_ACCOUNT_MISMATCH", "刷新请求与当前账号不匹配。");
+    }
+    const id = profile.profileId;
+    if (!this.refreshes.has(id)) {
+      const operation = this.serial(async () => {
+        const current = await readAuth();
+        if (current.accessToken !== previous.accessToken) return current;
+        const client = this.createClient({ command: this.command(), env: this.environment(profile) });
+        try {
+          await client.initialize();
+          await client.request("account/read", { refreshToken: true });
+          await this.assertProfileReady(profile);
+          const refreshed = await readAuth();
+          if (refreshed.type !== previous.type || refreshed.chatgptAccountId !== previous.chatgptAccountId) {
+            throw fail("CODEX_ACCOUNT_MISMATCH", "刷新后的凭证与当前账号不匹配。");
+          }
+          return refreshed;
+        } finally { await client.close(); }
+      }).finally(() => this.refreshes.delete(id));
+      this.refreshes.set(id, operation);
+    }
+    return this.refreshes.get(id);
   }
 
   async assertProfileReady(profile = this.registry.current) {
