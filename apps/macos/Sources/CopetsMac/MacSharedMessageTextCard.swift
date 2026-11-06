@@ -700,8 +700,9 @@ protocol AppKitChatRowRendering: AnyObject {
 final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering {
     var onImageGeometryChanged: (() -> Void)?
     private var representedImageGeometries: [MessageImageGeometry?] = []
-    private var host: NSHostingView<MacSharedMessageTextCard>?
+    private var host: MessageCardHostingView?
     private var messageGlow: NativeMessageStatusGlow?
+    private weak var messageGlowAnchor: MessageGlowAnchor?
     private var skin = ConversationSkin.classic
     private var row: AppKitChatTimelineRow?
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
@@ -798,7 +799,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             host.rootView = root
         } else {
             SessionSwitchTrace.shared.recordCell(.hostCreated, sessionID: row.sessionID, rowID: row.id)
-            let host = NSHostingView(rootView: root)
+            let host = MessageCardHostingView(rootView: root)
+            host.onLayout = { [weak self] in self?.messageGlowAnchor?.paint() }
             host.sizingOptions = [.intrinsicContentSize]
             host.translatesAutoresizingMaskIntoConstraints = false
             host.setContentHuggingPriority(.required, for: .vertical)
@@ -823,6 +825,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if row.nativeStyle != .user || row.messageStatus == nil {
             messageGlow?.removeFromSuperview()
             messageGlow = nil
+            messageGlowAnchor = nil
         }
         configureHostedTextViews(resetTextSelection: resetTextSelection)
         DispatchQueue.main.async { [weak self] in
@@ -831,8 +834,10 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         if needsLayout { self.needsLayout = true }
     }
 
-    fileprivate func paintStatusGlow(_ status: UserMessageStatusPresentation, frame: NSRect) {
+    fileprivate func paintStatusGlow(_ status: UserMessageStatusPresentation, anchor: MessageGlowAnchor) {
         guard row?.nativeStyle == .user, row?.messageStatus == status else { return }
+        messageGlowAnchor = anchor
+        let frame = anchor.convert(anchor.bounds, to: self)
         if messageGlow == nil {
             let glow = NativeMessageStatusGlow(frame: frame)
             addSubview(glow, positioned: .below, relativeTo: host)
@@ -978,6 +983,17 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     }
 }
 
+/// A background representable may keep the same bounds while SwiftUI moves
+/// its ancestors to align the card. Refresh the paint-only sibling after the
+/// hosting layout completes, rather than relying on the anchor's own layout.
+private final class MessageCardHostingView: NSHostingView<MacSharedMessageTextCard> {
+    var onLayout: (() -> Void)?
+    override func layout() {
+        super.layout()
+        onLayout?()
+    }
+}
+
 private struct IntrinsicCappedContent<Content: View>: View {
     let maximumHeight: CGFloat
     let content: Content
@@ -1012,7 +1028,7 @@ private final class MessageGlowAnchor: NSView {
         var ancestor = superview
         while let view = ancestor {
             if let cell = view as? AppKitSharedMessageTextCell {
-                cell.paintStatusGlow(status, frame: convert(bounds, to: cell))
+                cell.paintStatusGlow(status, anchor: self)
                 return
             }
             ancestor = view.superview
