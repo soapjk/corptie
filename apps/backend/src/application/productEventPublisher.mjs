@@ -33,6 +33,9 @@ export function createProductEventPublisher({
       ? null
       : options.sessionId || sessionIdFromEventPayload(payload);
     const sessionId = resolveDurableEventSessionId(store, requestedSessionId);
+    if (type === "SessionAbilitiesChanged") {
+      clientDeviceGateway?.inspectorEvents.invalidate([sessionId, requestedSessionId].filter(Boolean));
+    }
     const createdAt = now();
     const durableEventId = options.eventId || randomUUID();
     if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;

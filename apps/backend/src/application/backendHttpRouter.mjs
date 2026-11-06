@@ -1,4 +1,5 @@
 import { handleExecutionChecklistHttp } from "./executionChecklistHttpApi.mjs";
+import { handleSessionAbilityHttp } from "./sessionAbilityHttpApi.mjs";
 import { handleSessionMailboxHttp } from "./sessionMailboxHttpApi.mjs";
 import { handleDesktopDetail, handleDesktopDetailSync } from "./detailDocumentService.mjs";
 import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
@@ -12,7 +13,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
     toolHostService, sessionToolMetadata, handleCollaborationRoutes, handleArtifactHttpRequest, artifactService,
     handleBenchmarkHttpRequest, benchmarkControlPlane, handleCodeTaskObservabilityHttpRequest, turnObservability, handleSshWorkspaceHttpRequest,
-    getSshWorkspaceServices, handleMcpRegistryHttpRequest, mcpRegistryService, mcpSessionAvailabilityService, emitEvent,
+    getSshWorkspaceServices, handleMcpRegistryHttpRequest, mcpRegistryService, mcpSessionAvailabilityService, sessionAbilityPreferences, emitEvent,
     handleEntityRoutes, handleDshHttpRequest, sessionApplicationService, listGatewaySessions, readStoredSessionConversation,
     readStoredSessionTimeline, now, createSessionThroughApplication, publishDshPromptStart, sendUnifiedSessionMessage,
     publishDshPromptFailure, handleBackendHealthHttpRequest, projectCodeIndexStore, projectCodeRunIsolationPort, projectCodeApplicationService,
@@ -140,6 +141,13 @@ export function routeBackendHttpRequest(request, response, ports) {
     }).catch(() => {
       if (!response.headersSent) sendJson(response, 500, { error: "SSH configuration operation failed." });
     });
+    return;
+  }
+
+  if (/^\/sessions\/[^/]+\/abilities$/.test(url.pathname)) {
+    void handleSessionAbilityHttp({ request, response, url, service: sessionAbilityPreferences, readJson, sendJson,
+      writesAllowed: !developmentPreview,
+      onChanged: (sessionId, receipt) => emitEvent("SessionAbilitiesChanged", { sessionId, receipt }, { sessionId }) });
     return;
   }
 
