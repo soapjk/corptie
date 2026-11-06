@@ -681,7 +681,8 @@ export class SkillRegistryService {
     if (!agentId || !this.store.getAgent(agentId)) {
       throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     }
-    const assigned = this.store.listRegistrySkillsForAgent(agentId);
+    const assigned = this.store.listRegistrySkillsForAgent(agentId).filter(skill =>
+      !this.sessionAbilityPreferences?.isDisabled(options.sessionReference, "skill", skill.skillId));
     if (assigned.length === 0) return {};
     const result = new Map();
     const configuredPackages = new Set();
@@ -729,8 +730,12 @@ export class SkillRegistryService {
         if (result.has(key)) {
           throw skillError("MCP_SERVER_NAME_CONFLICT", "Skill MCP Server identity conflicts with another Server.");
         }
+        // Keep the legacy configuration contract unchanged outside a Session.
+        const owners = options.sessionReference ? { skillIds: assigned.filter(item => [
+          item.sourceType, item.source, item.cachePath ?? "", item.packageSubpath ?? "", item.mcpDescriptorSubpath ?? ""
+        ].join("\u0000") === packageKey).map(item => item.skillId) } : {};
         result.set(key, collidingServerNames.has(serverName)
-          ? { ...server, displayName: serverName } : server);
+          ? { ...server, ...owners, displayName: serverName } : { ...server, ...owners });
       }
       configuredPackages.add(packageKey);
       this.#recordRuntimeEvent({
@@ -952,9 +957,10 @@ export class SkillRegistryService {
   }
 
   // 启动时仅返回轻量索引；完整 Skill 由会话工具按需加载。
-  async skillsForAgent(agentId) {
+  async skillsForAgent(agentId, sessionReference) {
     if (!agentId) return [];
-    return this.store.listRegistrySkillsForAgent(agentId).map((skill) => ({
+    return this.store.listRegistrySkillsForAgent(agentId).filter(skill =>
+      !this.sessionAbilityPreferences?.isDisabled(sessionReference, "skill", skill.skillId)).map((skill) => ({
       skillId: skill.skillId,
       name: skill.manifestName || skill.name,
       displayName: skill.name,
@@ -963,10 +969,10 @@ export class SkillRegistryService {
     }));
   }
 
-  async searchForAgent(agentId, intent = "") {
+  async searchForAgent(agentId, intent = "", sessionReference) {
     if (!agentId || !this.store.getAgent(agentId)) throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     const terms = tokenize(intent);
-    const candidates = (await this.skillsForAgent(agentId))
+    const candidates = (await this.skillsForAgent(agentId, sessionReference))
       .map((skill) => ({ ...skill, score: skillSearchScore(skill, terms) }))
       .filter((skill) => terms.length === 0 || skill.score > 0)
       .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
@@ -983,7 +989,8 @@ export class SkillRegistryService {
     return { found: candidates.length > 0, candidates };
   }
 
-  async loadForAgent(agentId, skillId) {
+  async loadForAgent(agentId, skillId, sessionReference) {
+    this.sessionAbilityPreferences?.assertEnabled(sessionReference, "skill", skillId);
     if (!agentId || !this.store.getAgent(agentId)) throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     const allowed = this.store.listRegistrySkillIdsForAgent(agentId);
     if (!allowed.includes(skillId)) {
@@ -1002,6 +1009,7 @@ export class SkillRegistryService {
     const { markerPath } = await this.#resolveSkillRoot(skill);
     if (!markerPath) throw skillError("INVALID_SKILL", `Skill marker is missing: ${skill.name}`);
     const content = await readFile(markerPath, "utf8");
+    this.sessionAbilityPreferences?.assertEnabled(sessionReference, "skill", skillId);
     const contentHash = hashContent(content);
     this.#recordRuntimeEvent({
       stage: "skill-load",

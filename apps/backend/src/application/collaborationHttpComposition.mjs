@@ -55,8 +55,8 @@ export function createCollaborationHttpRoutes({
         arguments: args,
         metadata
       }),
-      onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
-      onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId),
+      onSearchSkills: (agentId, intent, metadata) => skillRegistryService.searchForAgent(agentId, intent, metadata?.sessionId),
+      onLoadSkill: (agentId, skillId, metadata) => skillRegistryService.loadForAgent(agentId, skillId, metadata?.sessionId),
       onReportTaskAcceptance: reportTaskAcceptanceForAgent
     })) {
       return true;

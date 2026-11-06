@@ -94,7 +94,7 @@ export function createSessionApplicationComposition({
       const ownership = session?.sessionKind === "worker"
         ? store.assertLogicalWorkSessionBinding(reference.logicalSessionId) : null;
       const assignedCapabilities = Promise.resolve().then(() => session?.agentId
-        ? resolveAssignedCapabilities(session.agentId) : []).then(value => ({ value }), error => ({ error }));
+        ? resolveAssignedCapabilities(session.agentId, reference.logicalSessionId ?? reference.sessionId) : []).then(value => ({ value }), error => ({ error }));
       let baseContext = null;
       let referenceContext = null;
       if (session?.sessionKind === "workChat" && session.workId) {
