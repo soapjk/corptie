@@ -1,77 +1,24 @@
 import AppKit
 import SwiftUI
 
-/// A narrow native overlay scroller. The scroll view still owns its visibility,
-/// tracking and accessibility behavior. Paint only a thin knob, never a track
-/// (including the native hover track), inside a wider native drag target.
+/// System-painted small overlay scroller. AppKit owns drawing and fading.
 class ConsoleThinScroller: NSScroller {
-    static let knobWidth: CGFloat = 3
-    var paintedKnobWidth: CGFloat { Self.knobWidth }
-    var knobTrailingInset: CGFloat? { nil }
-    var knobColor: NSColor { .secondaryLabelColor.withAlphaComponent(0.55) }
-
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        // Repaint at each native overlay width, rather than stretching a cached
-        // bitmap of the wider hover state into a hairline.
-        layerContentsRedrawPolicy = .duringViewResize
+        controlSize = .small
     }
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        layerContentsRedrawPolicy = .duringViewResize
-    }
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        needsDisplay = true
-    }
-
-    override var isOpaque: Bool { false }
-    override class var isCompatibleWithOverlayScrollers: Bool { true }
-
-    override class func scrollerWidth(for controlSize: NSControl.ControlSize,
-                                     scrollerStyle: NSScroller.Style) -> CGFloat {
-        scrollerStyle == .overlay ? 8 : super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle)
-    }
-
-    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) { }
-
-    override func draw(_ dirtyRect: NSRect) {
-        // Do not ask NSScroller to paint its bezel or hover-slot background.
-        // NSScrollView still manages the overlay's visibility and fading.
-        drawKnob()
-    }
-
-    var knobDrawingRect: NSRect {
-        guard isEnabled, knobProportion < 1 else { return .zero }
-        let nativeKnob = rect(for: .knob)
-        guard nativeKnob.width > 0, nativeKnob.height > 0 else { return .zero }
-        let x = knobTrailingInset.map { bounds.maxX - $0 - paintedKnobWidth }
-            ?? (nativeKnob.midX - paintedKnobWidth / 2)
-        let scale = window?.backingScaleFactor ?? 1
-        // Align the pinned trailing edge, rather than rounding the leading edge
-        // outwards when a fractional-width knob is used on a 1x display.
-        let alignedX = knobTrailingInset.map { ((bounds.maxX - $0) * scale).rounded() / scale - paintedKnobWidth }
-            ?? (x * scale).rounded() / scale
-        return NSRect(x: alignedX,
-                      y: nativeKnob.minY, width: paintedKnobWidth, height: nativeKnob.height)
-    }
-
-    override func drawKnob() { drawFallbackKnob() }
-
-    func drawFallbackKnob() {
-        let knob = knobDrawingRect
-        guard !knob.isEmpty else { return }
-        knobColor.setFill()
-        NSBezierPath(roundedRect: knob, xRadius: paintedKnobWidth / 2,
-                     yRadius: paintedKnobWidth / 2).fill()
+        controlSize = .small
     }
 }
 
 /// Install on scroll content, so only its enclosing scroll view is configured.
 /// AppKit owns showing/fading the overlay; no timers or scroll observations.
 struct ConsoleOverlayScroller: NSViewRepresentable {
-    // Indicator spans x=8...16; leave a dedicated gutter before card padding.
-    static let leadingContentInset: CGFloat = 20
+    // Native small scroller starts at x=8; reserve its system lane plus a gap.
+    static let leadingContentInset: CGFloat = NSScroller.scrollerWidth(for: .small, scrollerStyle: .overlay) + 12
     var placeOnLeadingEdge = false
 
     func makeNSView(context: Context) -> Probe { Probe(placeOnLeadingEdge: placeOnLeadingEdge) }

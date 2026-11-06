@@ -89,10 +89,12 @@ struct ResidentSessionPageRoot: View {
             ResidentSessionPageHeader(inputs: inputs, backend: backend)
                 .padding(.bottom, 8)
         }
-        .padding(MainWindowPageLayoutMetrics.outerPadding)
+        .padding(.horizontal, MainWindowPageLayoutMetrics.outerPadding)
+        .padding(.bottom, MainWindowPageLayoutMetrics.outerPadding)
+        .padding(.top, 2)
         // Both columns share the full-height viewport. Compensating only the
         // transcript leaves Detail's clip edge below the floating controls.
-        .padding(.top, -inputs.conversationTopInset)
+        .ignoresSafeArea(.container, edges: .top)
         .environment(\.detailColumnVisibility, $showsDetailColumn)
         .modifier(ConversationSkinHost())
         .environmentObject(layout)
@@ -122,9 +124,11 @@ private struct ResidentSessionPageHeader: View {
         var layoutSize: NSSize = .zero
         init(inputs: SessionPageRenderInputs, root: Root) {
             self.inputs = inputs; host = NSHostingController(rootView: root); host.sizingOptions = []
+            (host.view as? NSHostingView<Root>)?.safeAreaRegions = []
             let surface = SessionPageSurfaceView()
             surface.wantsLayer = true; surface.isHidden = true; surface.alphaValue = 0
-            surface.content = host.view; surface.addSubview(host.view)
+            host.view.autoresizingMask = [.width, .height]
+            surface.addSubview(host.view)
             self.surface = surface
             surface.onCompletedLayout = { [weak self] size in
                 guard let self else { return }
@@ -169,21 +173,6 @@ private struct ResidentSessionPageHeader: View {
     }
     override func loadView() {
         let container = SessionPageContainerView()
-        container.layoutChildren = { [weak self] bounds in
-            guard let self else { return }
-            self.fallbackHost?.view.frame = bounds
-            // Hidden pages retain their layout until they are selected again.
-            if let current = self.current, !current.surface.isHidden {
-                if current.surface.frame != bounds { current.surface.frame = bounds }
-                let inset = current.host.view.safeAreaInsets.top
-                if current.inputs.conversationTopInset != inset {
-                    DispatchQueue.main.async { [weak self, weak current] in
-                        guard let self, let current, self.current === current else { return }
-                        current.inputs.setConversationTopInset(inset)
-                    }
-                }
-            }
-        }
         view = container
         for name in [NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification, NSWindow.didChangeOcclusionStateNotification] {
             observations.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -292,7 +281,6 @@ private struct ResidentSessionPageHeader: View {
         current = entry; sequence &+= 1; entry.lastUsed = sequence
         if entry.surface.frame != view.bounds { entry.surface.frame = view.bounds }
         if entry.host.view.frame != entry.surface.bounds { entry.host.view.frame = entry.surface.bounds }
-        entry.inputs.setConversationTopInset(entry.host.view.safeAreaInsets.top)
         reveal(entry)
         return true
     }
@@ -314,10 +302,12 @@ private struct ResidentSessionPageHeader: View {
         visiblePage = entry
         for other in entries {
             let hidden = other !== entry
+            other.surface.autoresizingMask = hidden ? [] : [.width, .height]
             other.surface.isHidden = hidden
             other.surface.alphaValue = hidden ? 0 : 1
             other.surface.setAccessibilityHidden(hidden)
         }
+        fallbackHost?.view.autoresizingMask = []
         fallbackHost?.view.isHidden = true
     }
     func cancelPendingPresentation() {
@@ -327,14 +317,16 @@ private struct ResidentSessionPageHeader: View {
     }
     private func showFallback() {
         cancelPendingPresentation()
-        entries.forEach { $0.inputs.freeze(); $0.surface.isHidden = true; $0.surface.setAccessibilityHidden(true) }
+        entries.forEach { $0.inputs.freeze(); $0.surface.autoresizingMask = []; $0.surface.isHidden = true; $0.surface.setAccessibilityHidden(true) }
         current = nil; visiblePage = nil
         if let fallbackHost { fallbackHost.rootView = fallbackRoot }
         else {
             let host = NSHostingController(rootView: fallbackRoot); host.sizingOptions = []
             fallbackHost = host; addChild(host); view.addSubview(host.view, positioned: .below, relativeTo: current?.surface)
         }
-        fallbackHost?.view.frame = view.bounds; fallbackHost?.view.isHidden = false
+        fallbackHost?.view.frame = view.bounds
+        fallbackHost?.view.autoresizingMask = [.width, .height]
+        fallbackHost?.view.isHidden = false
     }
     private func trim(to capacity: Int) {
         while entries.count > max(0, capacity) {
@@ -397,11 +389,10 @@ struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
 
     override func loadView() {
         let container = SessionPageContainerView()
-        container.layoutChildren = { [weak self] bounds in
-            self?.host.view.frame = bounds
-        }
         view = container
         addChild(host)
+        host.view.frame = view.bounds
+        host.view.autoresizingMask = [.width, .height]
         view.addSubview(host.view)
         for name in [NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification, NSWindow.didChangeOcclusionStateNotification] {
             observations.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -437,19 +428,15 @@ struct SessionPageHostSwitcher<Content: View>: NSViewControllerRepresentable {
 }
 
 @MainActor private final class SessionPageSurfaceView: NSView {
-    weak var content: NSView?
     var onCompletedLayout: ((NSSize) -> Void)?
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override func layout() {
         super.layout()
-        if let content, content.frame != bounds { content.frame = bounds }
         onCompletedLayout?(bounds.size)
     }
 }
 
 @MainActor private final class SessionPageContainerView: NSView {
-    var layoutChildren: ((NSRect) -> Void)?
     override var fittingSize: NSSize { NSSize(width: 1000, height: 700) }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
-    override func layout() { super.layout(); layoutChildren?(bounds) }
 }

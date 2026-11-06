@@ -23,6 +23,8 @@ struct SessionDetailPanel: View {
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
     @State private var displayValues = SessionDetailPanelValues()
+    @State private var focusWorkID: String?
+    @State private var focusTasks: [ConversationFocusTask] = []
     @State private var pendingProviderId: String?
     @State private var showProviderSwitchConfirmation = false
     @State private var isSwitchingProvider = false
@@ -55,7 +57,19 @@ struct SessionDetailPanel: View {
             models: modelCatalog.models(for: session.external?.provider),
             defaultReasoning: modelCatalog.defaultReasoning(for: session.external?.provider),
             isSwitchingModel: backendClient.isSwitchingModel, isSwitchingReasoning: backendClient.isSwitchingReasoning)
+        let tasksChanged = displayValues.tasks != value.tasks || focusWorkID != session.workId
         if displayValues != value { displayValues = value }
+        if tasksChanged {
+            focusWorkID = session.workId
+            focusTasks = value.tasks.filter {
+                $0.workId == session.workId && $0.archived != true && $0.deletionStatus == nil && $0.lifecycleState != "done"
+            }.sorted {
+                if $0.summaryNeedsIntervention != $1.summaryNeedsIntervention { return $0.summaryNeedsIntervention }
+                return $0.updatedAt > $1.updatedAt
+            }.prefix(3).map {
+                ConversationFocusTask(id: $0.id, title: $0.title, sessionID: $0.currentSessionId, summary: $0.conversationDetailSummary)
+            }
+        }
     }
     private func restoreOwnedReferences() {
         let source = backendClient.supplementaryDataController
@@ -194,7 +208,7 @@ struct SessionDetailPanel: View {
         }
         .onChange(of: session.id) { _, _ in selectedDetailTab = "detail"; richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
         .onChange(of: session.taskId) { _, _ in retireDetailDestination() }
-        .onChange(of: session.workId) { _, _ in retireDetailDestination() }
+        .onChange(of: session.workId) { _, _ in updateDisplayValues(); retireDetailDestination() }
         .onChange(of: session.external?.provider) { _, _ in retireDetailDestination() }
         .onChange(of: isPresentationActive) { _, active in if !active { retireDetailDestination() } }
         .onDisappear { retireDetailDestination() }
@@ -618,19 +632,6 @@ struct SessionDetailPanel: View {
     private var workDetailContent: some View {
         if let work = displayValues.works.first(where: { $0.id == session.workId }) {
             ConversationWorkOverviewCard(description: work.description)
-            let relevantTasks = displayValues.tasks.filter {
-                $0.workId == work.id && $0.archived != true && $0.deletionStatus == nil
-                    && $0.lifecycleState != "done"
-            }.sorted {
-                if $0.summaryNeedsIntervention != $1.summaryNeedsIntervention {
-                    return $0.summaryNeedsIntervention
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
-            let focusTasks = relevantTasks.prefix(3).map { task in
-                ConversationFocusTask(id: task.id, title: task.title,
-                    sessionID: task.currentSessionId, summary: task.conversationDetailSummary)
-            }
             ConversationFocusTasksCard(tasks: focusTasks) { taskID, sessionID in
                 AppTabRouter.shared.openTaskSession(taskId: taskID, sessionId: sessionID, source: .userSelection)
             }

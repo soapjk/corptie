@@ -120,8 +120,8 @@ struct ConversationDetailRichContentView: View {
         let tableLayout: ConversationMarkdownTableLayout?
     }
     private let blocks: [Block]
-    init(content: ConversationDetailRichContent, width: CGFloat) {
-        blocks = content.blocks.map { block in
+    init(content: ConversationDetailRichContent, width: CGFloat, preparedText: [AttributedString?]? = nil) {
+        blocks = content.blocks.enumerated().map { index, block in
             let text: AttributedString?
             let layout: ConversationMarkdownTableLayout?
             switch block.content {
@@ -130,7 +130,8 @@ struct ConversationDetailRichContentView: View {
                 // or image loader; links require an explicit platform handler.
                 // SwiftUI Text cannot display NSTextAttachment. Keep formulas
                 // readable as source here; native message text hosts render them.
-                text = AttributedString(MessageMarkdown.make(text: source, style: .agent, rendersMath: false))
+                if let preparedText { text = preparedText[index] }
+                else { text = AttributedString(MessageMarkdown.make(text: source, style: .agent, rendersMath: false)) }
                 layout = nil
             case .table(let table):
                 text = nil
@@ -145,7 +146,7 @@ struct ConversationDetailRichContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(blocks) { block in
                 switch block.content {
-                case .markdown:
+                case .markdown(let source):
                     if let text = block.text {
                         Text(text).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)

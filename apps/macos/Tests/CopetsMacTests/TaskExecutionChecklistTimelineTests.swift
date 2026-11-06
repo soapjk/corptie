@@ -55,6 +55,16 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
         XCTAssertNotEqual(collapsed.contentRevision, expanded.contentRevision)
         XCTAssertTrue(MacSharedMessageTextCard.supports(expanded))
     }
+    func testWidthChangesWithinColumnCountReusePreparedHeight() throws {
+        let plan = try XCTUnwrap(item(count: 200).executionPlan)
+        let cache = NativePlanChecklistHeightCache()
+        for widths: [CGFloat] in [[240, 241, 242], [520, 521, 522], [760, 761, 762]] {
+            _ = cache.height(of: plan, width: widths[0])
+            let prepared = cache.taskPreparationCount
+            for width in widths { _ = cache.height(of: plan, width: width) }
+            XCTAssertEqual(cache.taskPreparationCount, prepared)
+        }
+    }
     func testClickUsesPreparedFullHeightAndDoesNotRemeasureTheList() throws {
         let plan = try XCTUnwrap(item(count: 200).executionPlan)
         let cache = NativePlanChecklistHeightCache()
