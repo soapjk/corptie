@@ -64,7 +64,7 @@ const cases = [
   ["/worktree-management/repositories/repo/integration-candidates", "POST", ["createCandidate", "repo", input], 200, "candidate"],
   ["/worktree-management/repositories/repo/integration-jobs", "POST", ["startCandidate", "repo", input], 202, "job"],
   ["/worktree-management/repositories/repo/cleanup", "POST", ["cleanupMergedWorktrees", "repo", input], 200, "result", "WorktreeCleanupCompleted"],
-  ["/worktree-management/repositories/repo/worktrees/tree/delete", "POST", ["deleteWorktree", "repo", "tree"], 200, "result", "WorktreeDeleted"],
+  ["/worktree-management/repositories/repo/worktrees/tree/delete", "POST", ["deleteWorktree", "repo", "tree", input], 200, "result", "WorktreeDeleted"],
   ["/worktree-management/jobs/job%2Fid", "GET", ["get", "job/id"], 200, "job"],
   ["/worktree-management/jobs/job/confirm", "POST", ["confirm", "job", input], 202, "job"],
   ["/worktree-management/jobs/job/cancel", "POST", ["cancel", "job", input], 202, "job"],

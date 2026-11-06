@@ -64,6 +64,7 @@ export class WorktreeIntegrationJobService {
     this.inspectMainIntegrationCompletion = options.inspectMainIntegrationCompletion ?? null;
     this.launchConflictResolution = options.launchConflictResolution;
     this.removeWorktree = options.removeWorktree;
+    this.removeStaleRegistration = options.removeStaleRegistration;
     this.isSessionActive = options.isSessionActive ?? (() => false);
     this.onDeletionFailure = options.onDeletionFailure ?? (() => {});
     this.onEvent = options.onEvent ?? (() => {});
@@ -246,7 +247,7 @@ export class WorktreeIntegrationJobService {
     }
   }
 
-  async deleteWorktree(repositoryId, worktreeId) {
+  async deleteWorktree(repositoryId, worktreeId, input = {}) {
     const requestedRepositoryId = String(repositoryId ?? "").trim();
     const requestedWorktreeId = String(worktreeId ?? "").trim();
     try {
@@ -254,7 +255,7 @@ export class WorktreeIntegrationJobService {
       if (typeof this.removeWorktree !== "function") {
         throw new TypeError("removeWorktree() is required for Worktree deletion.");
       }
-      const inspection = await this.inspectRepository(repository.id);
+      const inspection = await this.inspectRepository(repository.id, { forceFresh: true });
       const inspectedWorktree = inspection.worktrees.find((entry) => entry.worktreeId === requestedWorktreeId);
       if (!inspectedWorktree) {
         throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
@@ -264,7 +265,14 @@ export class WorktreeIntegrationJobService {
       if (blocker) {
         throw new WorktreeIntegrationJobError(blocker.code, blocker.reason, 409);
       }
-      const removal = await this.removeWorktree({
+      const registrationOnly = input.action === "remove_stale_registration";
+      if ((input.action != null && !["remove_worktree", "remove_stale_registration"].includes(input.action))
+        || registrationOnly !== (worktree.cleanupAction?.kind === "remove_stale_registration" && worktree.cleanupAction.available === true)) {
+        throw new WorktreeIntegrationJobError("WORKTREE_SCOPE_CHANGED", "The cleanup action changed. Refresh and review it again.", 409);
+      }
+      const remove = registrationOnly ? this.removeStaleRegistration : this.removeWorktree;
+      if (typeof remove !== "function") throw new WorktreeIntegrationJobError("CLEANUP_NOT_SUPPORTED", "This cleanup action is unavailable.", 409);
+      const removal = await remove({
         repositoryId: repository.id,
         mainPath: inspection.mainPath,
         worktreeId: worktree.worktreeId,
@@ -303,7 +311,7 @@ export class WorktreeIntegrationJobService {
         skipped.push(deletionResult(worktree, "skipped", blocker.code, blocker.reason));
         continue;
       }
-      if (!confirmedWorktreeIds.has(worktree.worktreeId)) {
+      if (worktree.cleanupAction?.kind === "remove_stale_registration" || !confirmedWorktreeIds.has(worktree.worktreeId)) {
         skipped.push(deletionResult(worktree, "skipped", "NOT_IN_CONFIRMED_SCOPE", "This Worktree was not included in the confirmed cleanup scope."));
         continue;
       }
@@ -2944,9 +2952,14 @@ export class WorktreeIntegrationJobService {
   #deletionState(inspectedWorktree) {
     const associationState = this.#associationState(inspectedWorktree);
     const worktree = { ...inspectedWorktree, associations: associationState.associations };
-    const blocker = worktreeDeletionBlocker(worktree);
+    let blocker = worktreeDeletionBlocker(worktree);
+    if (worktree.cleanupAction?.kind === "remove_stale_registration" && worktree.cleanupAction.available === true
+      && (inspectedWorktree.sessions ?? []).length) {
+      blocker = { code: "WORKTREE_IN_USE", reason: "The stale registration still has a Session or Task binding." };
+    }
     return {
-      worktree: { ...worktree, deletionBlocker: blocker },
+      worktree: { ...worktree, deletionBlocker: blocker,
+        cleanupAction: worktree.cleanupAction ? { ...worktree.cleanupAction, available: !blocker, blocker } : null },
       blocker,
       releasableLogicalSessionIds: associationState.releasableLogicalSessionIds
     };
@@ -3035,6 +3048,12 @@ function isCompletedTask(task) {
 
 export function worktreeDeletionBlocker(worktree) {
   if (worktree.isMain) return blocker("MAIN_WORKTREE", "The main Worktree cannot be deleted.");
+  if (worktree.cleanupAction?.blocker) return worktree.cleanupAction.blocker;
+  if (worktree.cleanupAction?.kind === "remove_stale_registration" && worktree.cleanupAction.available === true) {
+    if (worktree.isLocked) return blocker("WORKTREE_LOCKED", worktree.lockReason || "This Worktree is locked.");
+    if ((worktree.associations ?? []).length) return blocker("WORKTREE_IN_USE", "The stale registration still has a Session or Task binding.");
+    return null;
+  }
   if (worktree.availability !== "available") return blocker("WORKTREE_UNAVAILABLE", "This Worktree is unavailable and cannot be removed safely.");
   if (worktree.isLocked) return blocker("WORKTREE_LOCKED", worktree.lockReason || "This Worktree is locked by another operation.");
   if (worktree.isPrunable) return blocker("WORKTREE_PRUNABLE", worktree.pruneReason || "This Worktree has invalid or prunable Git metadata.");

@@ -65,10 +65,10 @@ export class ClientWorktreeManagementAPI {
     return { job: await this.worktrees.startCandidate(validId(repositoryId, "INVALID_REPOSITORY_ID"), input) };
   }
 
-  async deleteWorktree(repositoryId, worktreeId) {
+  async deleteWorktree(repositoryId, worktreeId, input = {}) {
     repositoryId = validId(repositoryId, "INVALID_REPOSITORY_ID");
     worktreeId = validId(worktreeId, "INVALID_WORKTREE_ID");
-    const result = await this.worktrees.deleteWorktree(repositoryId, worktreeId);
+    const result = await this.worktrees.deleteWorktree(repositoryId, worktreeId, input);
     this.emit("WorktreeDeleted", { repositoryId, worktreeId, result });
     return { result };
   }

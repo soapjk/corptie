@@ -99,6 +99,8 @@ struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
     let pendingIntegration: Bool
     let associations: [ManagedWorktreeAssociation]
     let deletionBlocker: ManagedWorktreeDeletionBlocker?
+    var cleanupAction: ClientWorktreeCleanupAction? = nil
+    var isStaleRegistration: Bool { cleanupAction?.kind == "remove_stale_registration" }
     var gitHubPush: GitHubPushStatus? = nil
 }
 
@@ -142,6 +144,7 @@ enum ManagedWorktreeDeletionPolicy {
         }
         if let deletionBlocker = worktree.deletionBlocker { return deletionBlocker }
         if worktree.isMain { return .init(code: "MAIN_WORKTREE", reason: "The main Worktree cannot be deleted.") }
+        if worktree.isStaleRegistration, worktree.cleanupAction?.available == true { return nil }
         if worktree.availability != "available" { return .init(code: "WORKTREE_UNAVAILABLE", reason: "This Worktree is unavailable and cannot be removed safely.") }
         if worktree.isLocked { return .init(code: "WORKTREE_LOCKED", reason: worktree.lockReason ?? "This Worktree is locked by another operation.") }
         if worktree.isPrunable == true { return .init(code: "WORKTREE_PRUNABLE", reason: worktree.pruneReason ?? "This Worktree has invalid or prunable Git metadata.") }
@@ -176,7 +179,7 @@ enum ManagedWorktreeDeletionPolicy {
     }
 
     static func eligibleWorktrees(from worktrees: [ManagedWorktree]) -> [ManagedWorktree] {
-        worktrees.filter { blocker(for: $0) == nil }
+        worktrees.filter { !$0.isStaleRegistration && blocker(for: $0) == nil }
     }
 
     private static func associationLabels(
