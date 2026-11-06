@@ -3,6 +3,20 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func staleRegistrationDeletionCarriesExplicitOperation() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WorktreeProtocol.self]
+        let api = ClientWorktreeAPI(transport: try BackendTransport(
+            endpoint: BackendEndpoint(URL(string: "http://127.0.0.1:1")!), configuration: configuration))
+        WorktreeProtocol.handler = { request in
+            #expect(request.url?.path == "/client/v1/worktrees/repositories/repo/worktrees/stale/delete")
+            let body = try JSONSerialization.jsonObject(with: requestBody(request)) as! [String: Any]
+            #expect(body["action"] as? String == "remove_stale_registration")
+            return "{}"
+        }
+        try await api.delete(repositoryId: "repo", worktreeId: "stale", registrationOnly: true)
+    }
+
     @Test func rollbackPreviewAndConfirmationRetainExactJobReviewAndImpactChoices() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WorktreeProtocol.self]

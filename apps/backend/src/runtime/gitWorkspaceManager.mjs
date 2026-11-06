@@ -17,6 +17,7 @@ import { withWorktreeOperationLock } from "./worktreeOperationLock.mjs";
 import { mergeWorkspaceSnapshot, synchronizeWorkspaceSnapshot, prepareSnapshotConflictWorkspace, snapshotBaseForWorktree } from "./workspaceSnapshotIntegration.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 import { ProjectWorkspaceSnapshotService } from "../application/projectWorkspaceSnapshotService.mjs";
+import { staleRegistrationAction } from "./staleWorktreeRegistration.mjs";
 import { classifyIntegrationRollback } from "../domain/integrationRollbackPlan.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -366,7 +367,12 @@ export class GitWorkspaceManager {
     if (!main || main.availability !== "available") {
       throw new Error("The repository's main worktree is unavailable.");
     }
-    const selectedWorktrees = selectWorktreesForInspection(snapshot.worktrees, options);
+    // Missing-directory snapshots use a synthetic ID; persisted bindings retain
+    // the original ID. Keep association checks on that persisted identity.
+    const storedByPath = new Map(this.store.listGitWorktrees(snapshot.repository.id).map(tree => [tree.path, tree]));
+    const selectedWorktrees = selectWorktreesForInspection(snapshot.worktrees.map(tree =>
+      tree.availability !== "available" && storedByPath.has(tree.path)
+        ? { ...tree, worktreeId: storedByPath.get(tree.path).worktreeId } : tree), options);
     const worktrees = await mapConcurrentOrdered(
       selectedWorktrees,
       this.inspectionConcurrency,
@@ -523,7 +529,7 @@ export class GitWorkspaceManager {
     const enrichmentStartedAt = performance.now();
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => {
       if (worktree.availability !== "available") {
-        return { ...worktree, operationState: null, conflictFiles: [], changedFiles: [] };
+        return { ...worktree, cleanupAction: await this.staleRegistrationCapability(worktree, workingDirectory), operationState: null, conflictFiles: [], changedFiles: [] };
       }
       const [operationState, conflicts] = await Promise.all([
         this.integrationOperationState(worktree.path),
@@ -557,6 +563,7 @@ export class GitWorkspaceManager {
     });
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => ({
       ...worktree,
+      cleanupAction: await this.staleRegistrationCapability(worktree, workingDirectory),
       changedFiles: worktree.availability === "available"
         ? changedFilesFromPorcelain(worktree.statusSummary ?? "")
         : [],
@@ -2181,6 +2188,61 @@ export class GitWorkspaceManager {
       ...input,
       repositoryId: logical.repositoryId,
       workingDirectory: logical.activeBinding?.boundCwd
+    });
+  }
+
+  async staleRegistrationCapability(tree, workingDirectory) {
+    const action = await staleRegistrationAction(tree);
+    if (!action) return null;
+    let blocker = null;
+    if (this.store.listLogicalSessionsByWorkspaceId(tree.worktreeId).length
+      || this.store.selectOne("SELECT 1 FROM task_delivery_worktrees WHERE worktree_id=? LIMIT 1", [tree.worktreeId])) {
+      blocker = { code: "WORKTREE_IN_USE", reason: "The stale registration still has a Session or Task binding." };
+    } else if ((this.store.listWorktreeIntegrationJobsForWorktree?.(tree.repositoryId, tree.worktreeId) ?? [])
+      .some(job => ["queued", "running", "paused", "cancellation_requested", "replanning"].includes(job.status))) {
+      blocker = { code: "ACTIVE_WORKTREE_INTEGRATION_JOB", reason: "An integration job still uses this Worktree." };
+    } else if (tree.headOid && !(await this.gitOutput(workingDirectory,
+      ["for-each-ref", `--contains=${tree.headOid}`, "--format=%(refname)"])).trim()) {
+      blocker = { code: "UNREFERENCED_WORKTREE_HEAD", reason: "Preserve the Worktree commit in a branch before cleaning its registration." };
+    }
+    return { ...action, available: !blocker, blocker };
+  }
+
+  async removeStaleWorktreeRegistration(input) {
+    return withWorktreeOperationLock(input.workingDirectory, async () => {
+      this.store.assertStandaloneWorktreeMutation?.({ worktreeIds: [input.sourceWorktreeId] });
+      const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
+      if (snapshot.repository.id !== input.repositoryId) throw deletionSafetyError("WORKTREE_SCOPE_CHANGED", "The repository identity changed. Refresh and retry.");
+      const stored = this.store.getGitWorktree(input.sourceWorktreeId);
+      const tree = snapshot.worktrees.find(entry => entry.path === stored?.path);
+      if (!tree || !(await staleRegistrationAction(tree))) {
+        throw deletionSafetyError("WORKTREE_SCOPE_CHANGED", "The Worktree is no longer a removable stale registration. Refresh and retry.");
+      }
+      if (!stored || stored.repositoryId !== input.repositoryId || stored.path !== tree.path) {
+        throw deletionSafetyError("WORKTREE_SCOPE_CHANGED", "The Worktree identity changed. Refresh and retry.");
+      }
+      // Preserve every binding, including settled Sessions, for this operation.
+      if (this.store.listLogicalSessionsByWorkspaceId(input.sourceWorktreeId).length
+        || this.store.selectOne("SELECT 1 FROM task_delivery_worktrees WHERE worktree_id=? LIMIT 1", [input.sourceWorktreeId])) {
+        throw deletionSafetyError("WORKTREE_IN_USE", "The stale registration still has a Session or Task binding.");
+      }
+      const jobs = this.store.listWorktreeIntegrationJobsForWorktree?.(input.repositoryId, input.sourceWorktreeId) ?? [];
+      if (jobs.some(job => ["queued", "running", "paused", "cancellation_requested", "replanning"].includes(job.status))) {
+        throw deletionSafetyError("ACTIVE_WORKTREE_INTEGRATION_JOB", "An integration job still uses this Worktree.");
+      }
+      // A detached HEAD may be the last reference to unmerged work. Do not
+      // remove that registration unless another ref already retains its commit.
+      if (tree.headOid && !(await this.gitOutput(input.workingDirectory,
+        ["for-each-ref", `--contains=${tree.headOid}`, "--format=%(refname)"])).trim()) {
+        throw deletionSafetyError("UNREFERENCED_WORKTREE_HEAD", "Preserve the Worktree commit in a branch before cleaning its registration.");
+      }
+      await this.runGit(input.workingDirectory, ["worktree", "remove", tree.path]);
+      const updated = await createGitWorkspaceSnapshot(input.workingDirectory);
+      if (updated.worktrees.some(entry => entry.path === tree.path)) {
+        throw deletionSafetyError("WORKTREE_CLEANUP_INCOMPLETE", "Git still lists this Worktree registration.");
+      }
+      this.store.upsertGitWorkspaceSnapshot(updated);
+      return { removed: true, registrationOnly: true, branchDeleted: false };
     });
   }
 

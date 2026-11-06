@@ -346,16 +346,16 @@ final class WorktreeManagementClient: ObservableObject {
         do {
             let envelope: WorktreeDeletionResultEnvelope = try await post(
                 "worktree-management/repositories/\(repositoryId)/worktrees/\(worktree.worktreeId)/delete",
-                body: [:]
+                body: ["action": worktree.isStaleRegistration ? "remove_stale_registration" : "remove_worktree"]
             )
-            operationNoticeTitle = "Worktree deleted"
-            operationNotice = L10nFormat(
+            operationNoticeTitle = worktree.isStaleRegistration ? "Stale registration cleaned" : "Worktree deleted"
+            operationNotice = worktree.isStaleRegistration ? L10n("The stale Git registration was removed. Local branches were retained.") : L10nFormat(
                 "Removed %@ and its local branch.",
                 envelope.result.branchName ?? envelope.result.path
             )
             OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: .succeeded, name: "Worktree cleanup", repositoryID: repositoryId))
             errorMessage = nil
-            await loadRepository(repositoryId)
+            await loadRepository(repositoryId, force: true)
             return true
         } catch {
             OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Worktree cleanup", repositoryID: repositoryId))
@@ -403,7 +403,7 @@ final class WorktreeManagementClient: ObservableObject {
             do {
                 let envelope: WorktreeDeletionResultEnvelope = try await post(
                     "worktree-management/repositories/\(repositoryId)/worktrees/\(worktree.worktreeId)/delete",
-                    body: [:]
+                    body: ["action": worktree.isStaleRegistration ? "remove_stale_registration" : "remove_worktree"]
                 )
                 removed.append(envelope.result)
             } catch {

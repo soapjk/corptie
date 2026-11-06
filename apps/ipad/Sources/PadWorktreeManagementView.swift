@@ -185,20 +185,22 @@ struct PadWorktreeManagementView: View {
                     cancel: { await manager.jobAction("cancel", reviewedJob: job, connection: connection) })
             }
         }
-        .confirmationDialog("删除 Worktree？", isPresented: Binding(
+        .confirmationDialog(pendingDelete?.isStaleRegistration == true ? "清理失效登记？" : "删除 Worktree？", isPresented: Binding(
             get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
         ), titleVisibility: .visible) {
             if let worktree = pendingDelete {
-                Button("删除 Worktree 与本地分支", role: .destructive) {
+                Button(worktree.isStaleRegistration ? "清理失效登记" : "删除 Worktree 与本地分支", role: .destructive) {
                     pendingDelete = nil
                     Task { await manager.delete(worktree, connection: connection) }
                 }
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("不会执行远程 Git 推送，也不会删除 GitHub 上的分支。")
+            Text(pendingDelete?.isStaleRegistration == true
+                ? "目录已不存在，将仅清理 Git 登记，保留本地分支。\n" + (pendingDelete?.path ?? "")
+                : "不会执行远程 Git 推送，也不会删除 GitHub 上的分支。")
         }
-        .confirmationDialog("清理已合并 Worktree？", isPresented: Binding(
+        .confirmationDialog(pendingCleanup.first?.isStaleRegistration == true ? "清理失效登记？" : "清理已合并 Worktree？", isPresented: Binding(
             get: { !pendingCleanup.isEmpty }, set: { if !$0 { pendingCleanup = [] } }
         ), titleVisibility: .visible) {
             Button("清理 \(pendingCleanup.count) 个 Worktree", role: .destructive) {
@@ -208,7 +210,7 @@ struct PadWorktreeManagementView: View {
             Button("取消", role: .cancel) { pendingCleanup = [] }
         } message: {
             Text("将删除：\n" + pendingCleanup.map { "\($0.branchName ?? $0.worktreeId) · \($0.path)" }.joined(separator: "\n")
-                + "\n不会删除远程分支。")
+                + (pendingCleanup.first?.isStaleRegistration == true ? "\n仅清理 Git 登记，保留本地分支。" : "\n不会删除远程分支。"))
         }
         .confirmationDialog("与主分支同步？", isPresented: Binding(
             get: { pendingSync != nil }, set: { if !$0 { pendingSync = nil } }
@@ -242,6 +244,9 @@ struct PadWorktreeManagementView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             if manager.loading || manager.planning { ProgressView().controlSize(.small) }
             Menu {
+                if let targets = manager.detail?.project.worktrees.filter({ $0.isStaleRegistration && deletionBlocker($0) == nil }), !targets.isEmpty {
+                    Button("清理 \(targets.count) 个失效登记", systemImage: "trash", role: .destructive) { pendingCleanup = targets }
+                }
                 if let targets = cleanupTargets, !targets.isEmpty {
                     Button("清理 \(targets.count) 个已合并 Worktree", systemImage: "trash", role: .destructive) {
                         pendingCleanup = targets
@@ -468,7 +473,7 @@ struct PadWorktreeManagementView: View {
                 if let error = push.error { Text(error).font(.caption).foregroundStyle(.orange) }
             }
             Divider()
-            Button("删除 Worktree 与本地分支", systemImage: "trash", role: .destructive) {
+            Button(worktree.isStaleRegistration ? "清理失效登记" : "删除 Worktree 与本地分支", systemImage: "trash", role: .destructive) {
                 if deletionBlocker(worktree) == nil { pendingDelete = worktree }
                 else { manager.errorMessage = deletionBlocker(worktree) }
             }.disabled(busy || worktree.isMain)
@@ -620,13 +625,14 @@ struct PadWorktreeManagementView: View {
     }
 
     private var cleanupTargets: [ClientManagedWorktree]? {
-        manager.detail?.project.worktrees.filter { !$0.isMain && deletionBlocker($0) == nil }
+        manager.detail?.project.worktrees.filter { !$0.isMain && !$0.isStaleRegistration && deletionBlocker($0) == nil }
     }
 
     private func deletionBlocker(_ worktree: ClientManagedWorktree) -> String? {
         if worktree.hierarchy != nil { return "父子 Worktree 仍有集成依赖，暂不能通过独立清理入口删除。" }
         if let blocker = worktree.deletionBlocker { return blocker.reason }
         if worktree.isMain { return "主 Worktree 不能删除。" }
+        if worktree.isStaleRegistration, worktree.cleanupAction?.available == true { return nil }
         if worktree.availability != "available" { return "Worktree 当前不可用。" }
         if worktree.isLocked { return worktree.lockReason ?? "Worktree 已锁定。" }
         if worktree.operationState != nil { return "Worktree 正在进行 Git 操作。" }
@@ -638,6 +644,7 @@ struct PadWorktreeManagementView: View {
     }
 
     private func worktreeLabel(_ worktree: ClientManagedWorktree) -> String {
+        if worktree.isStaleRegistration { return "登记失效" }
         if worktree.availability != "available" { return "不可用" }
         if worktree.operationState != nil { return "操作中" }
         if worktree.dirty == true { return "未提交" }

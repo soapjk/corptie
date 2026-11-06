@@ -438,6 +438,9 @@ export function createWorktreeIntegrationServices({
         reused: false
       };
     },
+    removeStaleRegistration: ({ repositoryId, mainPath, worktreeId }) => gitWorkspaces.removeStaleWorktreeRegistration({
+      repositoryId, workingDirectory: mainPath, sourceWorktreeId: worktreeId
+    }),
     removeWorktree: ({ repositoryId, mainPath, worktreeId, ignoreLogicalSessionIds }) => gitWorkspaces.removeWorktreeForProject({
       repositoryId,
       workingDirectory: mainPath,

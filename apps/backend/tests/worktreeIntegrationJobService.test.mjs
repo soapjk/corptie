@@ -2516,3 +2516,21 @@ test("integration job, per-item state, and audit survive Store restart", async (
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("stale cleanup requires its explicit action and stays outside merged cleanup", async () => {
+  const { service, worktrees, calls } = memoryFixture({ featureAlreadyMerged: true, featureDirty: false });
+  Object.assign(worktrees[1], { availability: "missing", isPrunable: true, dirty: null, mergedIntoMain: null,
+    isDetached: true, branchName: null, cleanupAction: { kind: "remove_stale_registration", available: true } });
+  service.removeStaleRegistration = async input => { calls.push(`registration:${input.worktreeId}`); return { registrationOnly: true, branchDeleted: false }; };
+  const detail = await service.repository("repository:1");
+  assert.equal(detail.project.worktrees[1].cleanupAction.available, true);
+  await assert.rejects(service.deleteWorktree("repository:1", "wt:feature"), { code: "WORKTREE_SCOPE_CHANGED" });
+  const batch = await service.cleanupMergedWorktrees("repository:1", { worktreeIds: ["wt:feature"] });
+  assert.equal(batch.counts.removed, 0);
+  const result = await service.deleteWorktree("repository:1", "wt:feature", { action: "remove_stale_registration" });
+  assert.equal(result.removal.branchDeleted, false);
+  assert.deepEqual(calls, ["registration:wt:feature"]);
+  Object.assign(worktrees[1], { availability: "available", isPrunable: false, dirty: false, mergedIntoMain: true,
+    isDetached: false, branchName: "feature", cleanupAction: null });
+  await assert.rejects(service.deleteWorktree("repository:1", "wt:feature", { action: "remove_stale_registration" }), { code: "WORKTREE_SCOPE_CHANGED" });
+});

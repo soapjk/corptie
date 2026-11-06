@@ -175,8 +175,8 @@ final class PadWorktreeStore {
 
     func delete(_ worktree: ClientManagedWorktree, connection: PadConnection) async {
         await action(worktree, connection: connection) { api, repositoryID in
-            try await api.delete(repositoryId: repositoryID, worktreeId: worktree.worktreeId)
-            return "已删除 Worktree 与本地分支"
+            try await api.delete(repositoryId: repositoryID, worktreeId: worktree.worktreeId, registrationOnly: worktree.isStaleRegistration)
+            return worktree.isStaleRegistration ? "失效登记已清理，本地分支已保留" : "已删除 Worktree 与本地分支"
         }
     }
 
@@ -264,14 +264,16 @@ final class PadWorktreeStore {
         for worktree in worktrees where !Task.isCancelled {
             guard scope == operationScope else { return }
             guard let current = detail?.project.worktrees.first(where: { $0.worktreeId == worktree.worktreeId }),
-                  !current.isMain, current.availability == "available", !current.isLocked,
-                  current.operationState == nil, current.conflictFiles.isEmpty, current.dirty == false,
-                  current.mergedIntoMain == true, current.associations.isEmpty else {
+                  !current.isMain, current.isStaleRegistration == worktree.isStaleRegistration,
+                  current.isStaleRegistration ? current.cleanupAction?.available == true
+                    : (current.availability == "available" && !current.isLocked && current.operationState == nil
+                       && current.conflictFiles.isEmpty && current.dirty == false && current.mergedIntoMain == true
+                       && current.associations.isEmpty) else {
                 failed.append("\(worktree.branchName ?? worktree.worktreeId)：状态已变化，未删除")
                 continue
             }
             do {
-                try await api.delete(repositoryId: repositoryID, worktreeId: worktree.worktreeId)
+                try await api.delete(repositoryId: repositoryID, worktreeId: worktree.worktreeId, registrationOnly: worktree.isStaleRegistration)
                 removed.append(worktree.branchName ?? worktree.worktreeId)
             } catch {
                 failed.append("\(worktree.branchName ?? worktree.worktreeId)：\(PadWorktreeFailure.describe(error, stage: "删除失败", mutation: true))")
