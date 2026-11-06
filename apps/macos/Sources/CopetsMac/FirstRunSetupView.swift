@@ -22,6 +22,7 @@ struct FirstRunProvider: Decodable, Identifiable {
     let message: String?
     var environment: ProviderRuntimeEnvironment? = nil
     var errorCode: String? = nil
+    var accounts: ProviderAccountsProjection? = nil
     var runtime: ProviderRuntimeSettingsProjection? = nil
     var lastCheckedAt: String? = nil
     var program: ProviderProgramInventory? = nil
@@ -477,7 +478,13 @@ struct FirstRunProviderCard: View {
                 Text(L10n("当前默认执行引擎已关闭；请启用或手动更改默认设置，不会自动改用其他引擎。"))
                     .font(.caption).foregroundStyle(.orange)
             }
-            if let runtime = result.runtime {
+            if let accounts = result.accounts {
+                ProviderAccountsView(provider: result, projection: accounts, draft: settingsDraft,
+                    disabled: controlsBusy || testing) { row in
+                    result = row
+                    updated(row)
+                }
+            } else if let runtime = result.runtime {
                 ProviderRuntimeSettingsView(providerId: provider.id, runtime: runtime, busy: controlsBusy || testing,
                     sourceDraft: settingsDraft?.values[provider.id]?.source,
                     sourceEdited: settingsDraft.map { draft in { source in draft.edit(provider.id, source: source) } }) { row in
