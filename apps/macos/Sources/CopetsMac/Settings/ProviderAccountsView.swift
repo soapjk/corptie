@@ -21,8 +21,15 @@ struct ProviderAccount: Decodable, Identifiable {
     let sessionCount: Int
     let canSelect: Bool
     let canDelete: Bool
+    let removesListingOnly: Bool?
     let canReauthorize: Bool
     let deletionReason: String?
+
+    @MainActor var selectionLabel: String {
+        if canSelect { return name }
+        if origin == "native" { return L10nFormat("%@（需导入）", name) }
+        return L10nFormat("%@（%@）", name, status)
+    }
 
     @MainActor var status: String {
         switch state {
@@ -65,8 +72,10 @@ struct ProviderAccountsView: View {
             HStack {
                 Picker(L10n("当前使用账号"), selection: Binding(get: { selection }, set: select)) {
                     if selection.isEmpty { Text(L10n("请选择账号")).tag("") }
-                    ForEach(projection.accounts.filter { $0.canSelect || $0.id == selection }) { account in
-                        Text(account.name).tag(account.id)
+                    ForEach(projection.accounts) { account in
+                        Text(account.selectionLabel)
+                            .tag(account.id)
+                            .disabled(!account.canSelect && account.id != selection)
                     }
                 }
                 .disabled(disabled || saving)
@@ -74,6 +83,10 @@ struct ProviderAccountsView: View {
             }
             Text(L10n("新会话使用此账号。打开旧会话时，会用此账号恢复原线程。运行中的请求会先完成。"))
                 .font(.caption).foregroundStyle(.secondary)
+            if projection.accounts.contains(where: { $0.origin == "native" && !$0.canSelect }) {
+                Text(L10n("原有原生环境需在“管理账号”中导入，才能切换使用。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if draft != nil {
                 Text(L10n("切换账号在点击页面底部“保存设置”后生效。"))
                     .font(.caption).foregroundStyle(.secondary)
@@ -86,6 +99,7 @@ struct ProviderAccountsView: View {
     }
 
     private func select(_ id: String) {
+        guard id != selection, projection.accounts.contains(where: { $0.id == id && $0.canSelect }) else { return }
         if let draft {
             draft.edit(provider.id, accountId: id)
         } else {
@@ -179,11 +193,13 @@ private struct ProviderAccountManagerSheet: View {
         .padding(18)
         .frame(width: 460)
         .confirmationDialog(L10n("删除此账号？"), isPresented: $showDelete, presenting: deletion) { account in
-            Button(L10n("删除账号"), role: .destructive) {
+            Button(L10n(account.removesListingOnly == true ? "从列表移除" : "删除账号"), role: .destructive) {
                 perform("delete", fields: ["accountId": account.id])
             }
-        } message: { _ in
-            Text(L10n("运行数据和原始凭证来源会保留。"))
+        } message: { account in
+            Text(L10n(account.removesListingOnly == true
+                ? "只从 Corptie 的账号列表移除。官方登录凭证和已有会话的绑定会保留。"
+                : "运行数据和原始凭证来源会保留。"))
         }
         .confirmationDialog(L10n("指定凭证路径"), isPresented: $showCustomSource) {
             if projection.sourceKinds.contains("file") {
@@ -245,6 +261,14 @@ private struct ProviderAccountManagerSheet: View {
                 Button(L10n("保存")) { rename(account) }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button(L10n("取消")) { editing = nil }
+            } else if account.origin == "native" && projection.sourceKinds.contains("directory") {
+                Button(L10n("导入…")) {
+                    target = nil
+                    importSource(kind: "directory", path: account.runtimeDirectory)
+                }
+                .buttonStyle(.borderless)
+                .help(L10n("导入为 Corptie 独立账号"))
+                .disabled(projection.activeLogin != nil)
             } else if account.canReauthorize {
                 Menu {
                     Button(L10n("更新凭证…")) { target = account; error = nil; page = .method }
@@ -270,7 +294,8 @@ private struct ProviderAccountManagerSheet: View {
     private func originLabel(_ account: ProviderAccount) -> String {
         switch account.origin {
         case "legacy": L10n("原有 Corptie 环境")
-        case "imported", "native": L10n("从本机导入")
+        case "native": L10n("本机已有登录 · 需导入")
+        case "imported": L10n("从本机导入")
         default: account.importedFrom == nil ? L10n("在 Corptie 中登录") : L10n("从本机导入")
         }
     }
