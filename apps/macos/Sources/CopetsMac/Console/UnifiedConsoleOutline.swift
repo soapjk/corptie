@@ -93,12 +93,7 @@ extension UnifiedConsoleView {
                     hasUnread: unreadSummary.workIDs.contains(work.id),
                     isWorking: processingWorkIDs.contains(work.id))
                     .contextMenu { workContextMenuContent(for: work) }
-                    .draggable(ConsoleWorkOrderDragItem(id: work.id))
-                    .dropDestination(for: ConsoleWorkOrderDragItem.self) { items, location in
-                        guard items.count == 1 else { return false }
-                        return outlineProjectionStore.moveWork(items[0].id, relativeTo: work.id,
-                            after: location.y >= 15)
-                    }),
+                    .draggable(ConsoleWorkOrderDragItem(id: work.id))),
                 rows: rows, isExpanded: outlineWorkIsExpanded(work.id),
                 allowsCollapse: !queryIsActive,
                 showsDisclosureIndicator: false, showsRowDisclosureIndicator: false,
@@ -119,6 +114,8 @@ extension UnifiedConsoleView {
                 }, rowIsExpandable: { entry in
                     guard !isShowingWorkerArchive, case .task(let task) = entry else { return false }
                     return (task.hierarchy?.childCount ?? 0) > 0 || workRows.nativeChildren[task.id] != nil
+                }, workOrderDrop: { sourceID, after in
+                    outlineProjectionStore.moveWork(sourceID, relativeTo: work.id, after: after)
                 }))
         }
         return groups
