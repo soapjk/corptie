@@ -1,11 +1,9 @@
 const HANDOFF_SCHEMA_VERSION = 1;
-const DEFAULT_INPUT_CHARACTER_BUDGET = 64_000;
 const MAX_LIST_ITEMS = 12;
 
-export function buildSessionRecoveryHandoffSource(entries, options = {}) {
+export function buildSessionRecoveryHandoffSource(entries) {
   const visible = entries.filter((entry) => ["user_message", "assistant_message", "artifact_reference"].includes(entry.kind));
-  const characterBudget = Math.max(8_000, Number(options.characterBudget) || DEFAULT_INPUT_CHARACTER_BUDGET);
-  const selected = selectSourceEntries(visible, characterBudget);
+  const selected = selectSourceEntries(visible);
   return Object.freeze({
     schemaVersion: HANDOFF_SCHEMA_VERSION,
     totalEntryCount: visible.length,
@@ -131,7 +129,7 @@ export function renderSessionRecoveryHandoff(handoff) {
   ].join("\n");
 }
 
-function selectSourceEntries(entries, characterBudget) {
+function selectSourceEntries(entries) {
   if (entries.length === 0) return [];
   const candidates = [];
   addRange(candidates, Math.max(0, entries.length - 48), entries.length);
@@ -143,15 +141,9 @@ function selectSourceEntries(entries, characterBudget) {
     candidates.push(Math.round((slot * (entries.length - 1)) / (remainingSlots + 1)));
   }
   const selectedIndexes = new Set();
-  let used = 0;
   for (const index of candidates) {
     if (selectedIndexes.has(index)) continue;
-    const entry = entries[index];
-    const content = boundedText(entry.content, 4_000);
-    const cost = content.length + 96;
-    if (selectedIndexes.size > 0 && used + cost > characterBudget) continue;
     selectedIndexes.add(index);
-    used += cost;
   }
   return [...selectedIndexes]
     .sort((left, right) => left - right)

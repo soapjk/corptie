@@ -386,11 +386,6 @@ function recoveryHandoffEntries({ attempt, visible, handoff, tailCount }) {
     .filter((entry, index, array) => index === 0 || entry.sequence !== array[index - 1].sequence);
 }
 
-function recoveryHandoffCharacterBudget(maxContextTokens) {
-  if (!Number.isInteger(maxContextTokens) || maxContextTokens <= 0) return 64_000;
-  return Math.min(120_000, Math.max(24_000, Math.floor(maxContextTokens * 0.8)));
-}
-
 export class SessionRecoveryCoordinator {
   constructor({ store, providerPort, resolveProviderDescriptor, compressHandoff = null, clock = () => new Date(), observe = () => {} }) {
     if (!store?.freezeSessionRecoveryAttempt
@@ -507,9 +502,7 @@ export class SessionRecoveryCoordinator {
     let plan = planReplay({ attempt, timelineEvents, capabilities, thresholds });
     if (plan.strategy === "handoff_only" && this.compressHandoff && input.compressHandoff !== false) {
       const sourceEntries = replayEntriesFromTimeline(timelineEvents);
-      const source = buildSessionRecoveryHandoffSource(sourceEntries, {
-        characterBudget: recoveryHandoffCharacterBudget(capabilities.maxContextTokens)
-      });
+      const source = buildSessionRecoveryHandoffSource(sourceEntries);
       try {
         const handoff = normalizeSessionRecoveryHandoff(await this.compressHandoff({ attempt, source }));
         plan = planReplay({
