@@ -190,7 +190,7 @@ final class NativePlanChecklistHeightCache {
             // Both heights are prepared together on data/width changes. A
             // disclosure click is a constant-time lookup, not a list scan or
             // an offscreen render of every item.
-            let key = plan.planId + ":" + String(Int((width * 2).rounded(.down)))
+            let key = plan.planId + ":" + String(TaskExecutionChecklist.columns(for: width))
             sequence &+= 1
             if var cached = taskEntries[key], cached.revision == plan.revision {
                 cached.access = sequence
