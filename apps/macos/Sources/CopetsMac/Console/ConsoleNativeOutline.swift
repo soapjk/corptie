@@ -36,6 +36,7 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var rowIsExpanded: (Row) -> Bool = { _ in false }
     var rowExpansionChanged: (Row, Bool) -> Void = { _, _ in }
     var rowIsExpandable: (Row) -> Bool = { _ in false }
+    var workOrderDrop: ((String, Bool) -> Bool)? = nil
 }
 
 struct ConsoleNativeOutline<Row: Identifiable, Content: View>: View where Row.ID == String {
@@ -168,6 +169,52 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { false }
 
+        private func workDrop(_ outline: NSOutlineView, info: NSDraggingInfo, item: Any?, childIndex: Int)
+            -> (sourceID: String, target: Node, after: Bool, insertion: Int)? {
+            let type = NSPasteboard.PasteboardType(ConsoleWorkOrderDragItem.typeIdentifier)
+            guard info.draggingPasteboard.pasteboardItems?.count == 1,
+                  let data = info.draggingPasteboard.data(forType: type),
+                  let sourceID = String(data: data, encoding: .utf8),
+                  let sourceIndex = roots.firstIndex(where: { $0.id == sourceID && $0.group?.workOrderDrop != nil })
+            else { return nil }
+            let target: Node
+            let after: Bool
+            if let node = item as? Node {
+                target = node.group == nil ? (node.owner ?? node) : node
+                let row = outline.row(forItem: target)
+                guard row >= 0 else { return nil }
+                let point = outline.convert(info.draggingLocation, from: nil)
+                after = point.y >= outline.rect(ofRow: row).midY
+            } else if childIndex >= 0, childIndex < roots.count {
+                target = roots[childIndex]
+                after = false
+            } else if childIndex == roots.count, let last = roots.last {
+                target = last
+                after = true
+            } else { return nil }
+            guard target.group?.workOrderDrop != nil,
+                  let targetIndex = roots.firstIndex(where: { $0 === target }) else { return nil }
+            let insertion = targetIndex + (after ? 1 : 0)
+            guard insertion != sourceIndex, insertion != sourceIndex + 1 else { return nil }
+            return (sourceID, target, after, insertion)
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
+                         proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+            guard let drop = workDrop(outlineView, info: info, item: item, childIndex: index) else { return [] }
+            // The native list owns the insertion indicator and destination;
+            // the hosted title only supplies the existing Transferable preview.
+            outlineView.setDropItem(nil, dropChildIndex: drop.insertion)
+            return info.draggingSourceOperationMask.contains(.move) ? .move
+                : (info.draggingSourceOperationMask.contains(.copy) ? .copy : [])
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
+                         item: Any?, childIndex index: Int) -> Bool {
+            guard let drop = workDrop(outlineView, info: info, item: item, childIndex: index) else { return false }
+            return drop.target.group?.workOrderDrop?(drop.sourceID, drop.after) ?? false
+        }
+
         func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
             (item as? Node)?.group?.allowsCollapse ?? true
         }
@@ -215,6 +262,7 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         outline.backgroundColor = .clear
         outline.dataSource = context.coordinator
         outline.delegate = context.coordinator
+        outline.registerForDraggedTypes([NSPasteboard.PasteboardType(ConsoleWorkOrderDragItem.typeIdentifier)])
         let scroll = WorkOutlineScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true

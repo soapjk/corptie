@@ -50,7 +50,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var measuredTypography = ConversationTypography.classic
     private var measuredSkin = ConversationSkin.classic
     private var surfaceRole = ConversationSurfaceRole.structured
-    private var messageGlow: NativeMessageStatusGlow?
     private let timeSeparatorLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
@@ -803,38 +802,13 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         return
     }
 
-    override func viewDidMoveToSuperview() {
-        super.viewDidMoveToSuperview()
-        messageGlow?.allowRowOverflow()
-    }
-
     private func configureMessageStatus(_ status: UserMessageStatusPresentation?) {
         hasVisibleMessageStatus = false
         messageStatusButton.isHidden = true
         guard let status else {
-            messageGlow?.removeFromSuperview()
-            messageGlow = nil
             cardView.toolTip = nil
             messageStatusDetail = ""
             return
-        }
-        if skin != .classic {
-            messageGlow?.removeFromSuperview()
-            messageGlow = nil
-        } else if let messageGlow {
-            messageGlow.configure(status)
-        } else {
-            let glow = NativeMessageStatusGlow(frame: .zero)
-            glow.configure(status)
-            glow.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(glow, positioned: .below, relativeTo: cardView)
-            NSLayoutConstraint.activate([
-                glow.leadingAnchor.constraint(equalTo: cardView.leadingAnchor),
-                glow.trailingAnchor.constraint(equalTo: cardView.trailingAnchor),
-                glow.topAnchor.constraint(equalTo: cardView.topAnchor),
-                glow.bottomAnchor.constraint(equalTo: cardView.bottomAnchor)
-            ])
-            messageGlow = glow
         }
         let language = Locale.current.language.languageCode?.identifier ?? "en"
         messageStatusDetail = status.detail(languageCode: language)

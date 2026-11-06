@@ -192,19 +192,6 @@ struct SessionConversationHeaderSurface: View {
 
                     Menu {
                         headerActionMenu
-                        Divider()
-                        Button(action: openWorkspaceInVSCode) {
-                            Label(
-                                L10n("Open in Visual Studio Code"),
-                                systemImage: "chevron.left.forwardslash.chevron.right"
-                            )
-                        }
-                        .disabled(workspacePath == nil)
-
-                        Button(action: openWorkspaceInFinder) {
-                            Label(L10n("Open in Finder"), systemImage: "folder")
-                        }
-                        .disabled(workspacePath == nil)
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 13, weight: .semibold))
