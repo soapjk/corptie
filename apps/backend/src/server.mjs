@@ -193,6 +193,8 @@ import {
   broadcastDshHostFrame,
 } from "./dsh-adapter/dshWebSocket.mjs";
 import { createDshLivePublisher } from "./dsh-adapter/dshLivePublisher.mjs";
+import { rebaseCodexStoragePaths } from "./runtime/codexStorageRelocation.mjs";
+import { migrateDataRoot } from "./runtime/dataRootLayout.mjs";
 import { DataRootMigrationCoordinator } from "./runtime/dataRootMigrationCoordinator.mjs";
 import { BackendDataRootOwnership } from "./runtime/backendDataRootOwnership.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
@@ -506,7 +508,11 @@ const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   environment: environmentName,
   inspectBlockers: inspectDataRootMigrationBlockers,
   quiesce: quiescePersistentRuntime,
-  resume: resumePersistentRuntime
+  resume: resumePersistentRuntime,
+  migrateRoot: options => migrateDataRoot({
+    ...options,
+    beforeCommit: ({ stagingLayout }) => rebaseCodexStoragePaths({ ...options, stagingLayout })
+  })
 });
 const workChatContextService = new WorkChatContextService({ store, artifactService });
 let workChatOperationService = null;
@@ -842,6 +848,7 @@ const { ensureCodexSessionPermissions, resolvedNewCodexRuntimeConfig } = createC
 const codexRuntime = createCodexEnvironmentRuntime({
   registry: codexEnvironmentRegistry, environment: codexEnvironment,
   assertProfileReady: (profile) => codexAccounts.assertProfileReady(profile),
+  accountAuthentication: (profile, refresh, storageProfile) => codexAccounts.executionAuthentication(profile, refresh, storageProfile),
   prepare: prepareCodexEnvironment, instructions: codexEnvironmentInstructions,
   canRelease: (profile) => !codexEnvironmentHasActiveSession(profile),
   resolveSourceThread: (input) => {
@@ -1139,7 +1146,7 @@ const codexAccounts = new CodexAccountManager({
   prepare: prepareCodexEnvironment,
   environment: codexEnvironment,
   command: codexAppServerCommand,
-  isBusy: (profile) => !codexRuntime.canRefreshAuthentication(profile) || codexEnvironmentHasActiveSession(profile),
+  isBusy: (profile) => !codexRuntime.canUpdateExecutionAccount(profile) || codexEnvironmentHasActiveSession(profile),
   bindingCount: (profile) => {
     const threads = new Set(Object.keys(codexEnvironmentRegistry.state.threads));
     if (profile.profileId === codexEnvironmentRegistry.legacy.profileId) {
@@ -1151,10 +1158,16 @@ const codexAccounts = new CodexAccountManager({
     }
     return [...threads].filter(id => codexEnvironmentRegistry.forThread(id).profileId === profile.profileId).length;
   },
-  recycle: (profile) => codexRuntime.refreshAuthentication(profile),
+  recycle: (profile) => codexRuntime.recycleExecutionAccount(profile),
   onSelected: async (profile) => {
     process.env.CODEX_HOME = profile.home;
     await firstRunSetup.invalidateConnectionTest("codex-app-server");
+    sessionBindingReadinessProbe.invalidateProvider("codex-app-server");
+    for (const archived of [false, true]) {
+      for (const session of store.listSessions({ archived })) {
+        if (session.external?.provider === "codex-app-server") store.touchSessionProjectionDependency(session.id);
+      }
+    }
   }
 });
 agentProviderRegistry.executionPolicy = {

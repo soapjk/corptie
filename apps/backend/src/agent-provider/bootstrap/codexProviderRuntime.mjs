@@ -27,6 +27,7 @@ export class CodexProviderRuntime {
   liveItemsForThread(...args) { return this.client.liveItemsForThread(...args); }
   attachManagedImagesToLiveItem(...args) { return this.client.attachManagedImagesToLiveItem(...args); }
   readAccountRateLimits(...args) { return this.client.readAccountRateLimits(...args); }
+  readThreadStoragePath(...args) { return this.client.readThreadStoragePath(...args); }
   readThreadForLegacyHistoryRepair(...args) { return this.client.readThreadForLegacyHistoryRepair(...args); }
   respondToApproval(...args) { return this.client.respondToApproval(...args); }
   respondToUserInput(...args) { return this.client.respondToUserInput(...args); }

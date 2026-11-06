@@ -57,6 +57,9 @@ export class CodexAppServerClient {
     this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
     this.onDynamicToolCall = typeof options.onDynamicToolCall === "function" ? options.onDynamicToolCall : null;
     this.notifications = [];
+    this.accountAuthentication = options.accountAuthentication;
+    this.authenticatedGeneration = null;
+    this.authenticationPending = null;
     // Codex plan snapshots have no native event ID or revision. Distinguish
     // physical notifications, including A -> B -> A within the same turn.
     this.planNotificationRunId = randomUUID();
@@ -119,8 +122,35 @@ export class CodexAppServerClient {
     });
   }
 
-  initialize() {
-    return this.transport.initialize();
+  async initialize() {
+    await this.transport.initialize();
+    if (!this.accountAuthentication) return;
+    const generation = this.transport.activeProcessGeneration;
+    if (this.authenticatedGeneration === generation) return;
+    if (this.authenticationPending?.generation === generation) return this.authenticationPending.promise;
+    const promise = (async () => {
+      try {
+        const auth = await this.accountAuthentication();
+        if (generation !== this.transport.activeProcessGeneration) throw new Error("generation changed");
+        if (!auth) {
+          this.authenticatedGeneration = generation;
+          return;
+        }
+        if (auth.type !== "chatgptAuthTokens") throw new Error("unsafe managed login");
+        const result = await this.transport.request("account/login/start", auth);
+        if (result?.type !== auth.type || generation !== this.transport.activeProcessGeneration) throw new Error("login not applied");
+        this.authenticatedGeneration = generation;
+      } catch {
+        throw Object.assign(new Error("无法为此 Codex 线程应用当前账号。请检查执行引擎中的登录状态。"), {
+          code: "CODEX_EXECUTION_AUTH_UNAVAILABLE", dispatchState: "not_dispatched"
+        });
+      }
+    })();
+    this.authenticationPending = { generation, promise };
+    try { await promise; }
+    finally {
+      if (this.authenticationPending?.promise === promise) this.authenticationPending = null;
+    }
   }
 
   get command() { return this.transport.command; }
@@ -147,6 +177,11 @@ export class CodexAppServerClient {
     await this.initialize();
     const { probeCodexTurnExecution } = await import("./codexTurnExecutionProbe.mjs");
     return probeCodexTurnExecution((method, params) => this.request(method, params), threadId, turnId);
+  }
+
+  async readThreadStoragePath(threadId) {
+    await this.initialize();
+    return this.request("thread/read", { threadId, includeTurns: false });
   }
 
   async readThreadForLegacyHistoryRepair(threadId) {
@@ -548,6 +583,11 @@ export class CodexAppServerClient {
 
   async startTurn(threadId, message, options = {}) {
     await this.initialize();
+    if (this.accountAuthentication && !this.threadResumeFingerprints.has(threadId)) {
+      throw Object.assign(new Error("当前账号尚未恢复原线程，请重新准备会话。"), {
+        code: "CODEX_ACCOUNT_SWITCH_PREPARATION_REQUIRED", dispatchState: "not_dispatched"
+      });
+    }
     const result = await this.request("turn/start", {
       threadId,
       input: codexTurnInput(message),
@@ -862,6 +902,20 @@ export class CodexAppServerClient {
   }
 
   handleServerRequest(message) {
+    if (message.method === "account/chatgptAuthTokens/refresh" && this.accountAuthentication) {
+      const generation = this.transport.activeProcessGeneration;
+      void Promise.resolve().then(() => this.accountAuthentication(message.params))
+        .then(({ type, ...credentials }) => {
+          if (type !== "chatgptAuthTokens") throw new Error("invalid refresh mode");
+          if (generation === this.transport.activeProcessGeneration) {
+            return this.transport.respondToServerRequest(message.id, credentials);
+          }
+        })
+        .catch(() => {
+          if (generation === this.transport.activeProcessGeneration) this.transport.rejectUnsupportedRequest(message.id);
+        });
+      return;
+    }
     if (message.method === "item/tool/call") {
       this.handleDynamicToolCall(message);
       return;

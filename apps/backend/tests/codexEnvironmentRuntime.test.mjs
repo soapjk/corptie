@@ -191,3 +191,50 @@ test("binding persistence failure never publishes the new provider thread", asyn
   await assert.rejects(f.runtime.startThread({}), /disk full/);
   assert.equal(f.calls.at(-1).method, "archiveThread");
 });
+
+test("switches execution credentials without changing storage or thread ID, after active work settles", async t => {
+  const storage = { profileId: "A", mode: "isolated", home: "/original-storage" };
+  const selected = { profileId: "B", mode: "isolated", home: "/other-account" };
+  const registry = { current: storage, forThread: () => storage };
+  const actions = [];
+  const processes = [];
+  const runtime = createCodexEnvironmentRuntime({ registry,
+    environment: profile => ({ CODEX_HOME: profile.home }), prepare: async () => {},
+    accountAuthentication: async (account, _refresh, profile) => ({ account: account.profileId, home: profile.home }),
+    createRuntime: config => {
+      const fingerprints = new Map();
+      processes.push(config);
+      return {
+        client: { threadResumeFingerprints: fingerprints },
+        close: async () => actions.push("closed"),
+        ensureThreadResumed: async id => {
+          const auth = await config.accountAuthentication();
+          actions.push({ ...auth, id });
+          fingerprints.set(id, true);
+          return { thread: { id } };
+        },
+        startTurn: async id => ({ threadId: id, auth: await config.accountAuthentication() })
+      };
+    }
+  });
+  t.after(() => runtime.close());
+  await runtime.ensureThreadResumed("original");
+  const aEpoch = runtime.readinessRuntimeEpoch("original");
+  processes[0].onNotification({ method: "turn/started", params: { turn: { id: "running" } } });
+  registry.current = selected;
+  assert.notEqual(runtime.readinessRuntimeEpoch("original"), aEpoch);
+  await assert.rejects(runtime.ensureThreadResumed("original"), { code: "CODEX_ACCOUNT_SWITCH_BUSY" });
+  assert.equal(processes.length, 1);
+  processes[0].onNotification({ method: "turn/completed", params: { turn: { id: "running" } } });
+  assert.equal(runtime.accountSwitchReadiness("original")?.reasonCode, "CODEX_ACCOUNT_RESUME_REQUIRED");
+  const resumed = await runtime.ensureThreadResumed("original");
+  assert.equal(resumed.thread.id, "original");
+  assert.deepEqual(actions, [
+    { account: "A", home: storage.home, id: "original" },
+    "closed",
+    { account: "B", home: storage.home, id: "original" }
+  ]);
+  assert.equal(runtime.accountSwitchReadiness("original"), null);
+  assert.deepEqual(await runtime.startTurn("original"), { threadId: "original", auth: { account: "B", home: storage.home } });
+  assert.equal(registry.forThread("original"), storage);
+});

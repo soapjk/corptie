@@ -99,7 +99,7 @@ extension BackendClient {
         for session: TaskSession,
         expectedSelectionGeneration: UInt64
     ) async {
-        bindingVerificationSessionIDs.insert(session.id)
+        guard bindingVerificationSessionIDs.insert(session.id).inserted else { return }
         defer { bindingVerificationSessionIDs.remove(session.id) }
         do {
             var request = URLRequest(
