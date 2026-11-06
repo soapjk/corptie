@@ -6,6 +6,7 @@ import { presentMemoryRecallAudit } from "./memoryRecallService.mjs";
 import { validateMemoryInput } from "./entityHttpApi.mjs";
 
 const ACTION_FIELDS = {
+  "abilities.update": ["expectedResourceVersion", "kind", "id", "disabled", "reset"],
   "reference.create": ["targetType", "targetId", "locator", "displayName"],
   "reference.update": ["id", "enabled", "locator"], "reference.delete": ["id"], "reference.refresh": ["id"],
   "reference.import": ["fileName", "dataBase64"], "artifact.import": ["fileName", "dataBase64", "title"],
@@ -65,7 +66,8 @@ export class ClientInspectorAPI {
         .map((audit) => presentMemoryRecallAudit(this.store, audit))),
       read("schedules", () => this.schedules.list({ logicalSessionId: scope.logicalSessionId, status: "active" }, pairedDeviceActor(identity))),
       read("turn", () => this.observability.latestSummary(scope.logicalSessionId ?? sessionId, { kind: "local_user" })),
-      read("providers", () => this.providers(sessionId))
+      read("providers", () => this.providers(sessionId)),
+      ...(this.abilities ? [read("abilities", () => this.abilities.inspect(scope.logicalSessionId ?? sessionId))] : [])
     ]);
     if (workId && !task) {
       const focus = this.store.listTasksByWork(workId).filter(row => !row.archived && !row.deletion_status && row.lifecycle_state !== "done")
@@ -119,6 +121,7 @@ export class ClientInspectorAPI {
   }
   async read(identity, sessionId, resource, input = {}) {
     const scope = this.scope(sessionId, identity);
+    if (resource === "abilities" && this.abilities) return this.abilities.inspect(scope.logicalSessionId ?? scope.sessionId);
     if (resource === "session-worktree") {
       if (!this.readSessionWorktree) throw deviceError("ROUTE_NOT_AVAILABLE", 404);
       // Parameters cannot select an unrelated repository or Worktree.
@@ -189,6 +192,12 @@ export class ClientInspectorAPI {
   async perform(scope, action, fields, fingerprint) {
     const { sessionId, context, task } = scope;
     switch (action) {
+      case "abilities.update": {
+        if (!this.abilities) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+        const receipt = this.abilities.update(scope.logicalSessionId ?? sessionId, { ...fields, requestId: fingerprint });
+        this.onAbilitiesChanged?.(scope, receipt);
+        return receipt;
+      }
       case "worktree.autoFollow": return this.setWorktreeAutoFollow(sessionId, fields);
       case "reference.import": case "artifact.import": return this.importFile(scope, action, fields);
       case "reference.create": return this.references.create(sessionId, fields.targetType === "session"

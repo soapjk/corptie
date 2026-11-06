@@ -87,6 +87,19 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 }
             } else {
             primary
+            ConversationSessionAbilities(scope: "\(connection.serverID):\(sessionID)",
+                refreshKey: String(section("abilities")["resourceVersion"].number ?? -1), read: {
+                let api = ClientInspectorAPI(transport: try await connection.transport())
+                return try await api.read(sessionID: sessionID, resource: "abilities")
+            }, update: { fields, requestID in
+                let api = ClientInspectorAPI(transport: try await connection.transport())
+                let receipt = try await api.command(sessionID: sessionID, requestID: requestID,
+                    action: "abilities.update", fields: fields)
+                guard receipt.status == "completed" else {
+                    throw ClientServiceFailure(statusCode: 409, code: receipt.errorCode ?? "SESSION_ABILITY_OUTCOME_UNCONFIRMED")
+                }
+            }).id("abilities:\(connection.serverID):\(sessionID)")
+                .modifier(ConversationDetailModuleSurface())
             if richPresentation {
                 ConversationDetailResourceMenu(items: resourceItems)
             } else { nativeManagementContent }

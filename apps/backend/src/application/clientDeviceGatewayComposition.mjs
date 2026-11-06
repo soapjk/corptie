@@ -24,7 +24,7 @@ export function startClientDeviceGateway({
   decorateSessionForClient, readSessionUsage, setTaskArchivedForEntityRoutes,
   restartTaskForEntityRoutes, taskDeletionService, clearWorkAvatarFile,
   sessionBindingRepository, createTaskAndSession, getClientDeviceGateway, onReady,
-  sessionPreparations = null, detailActionService = null, detailWritesAllowed = false
+  sessionPreparations = null, detailActionService = null, detailWritesAllowed = false, sessionAbilityPreferences = null
 }) {
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
@@ -53,6 +53,8 @@ export function startClientDeviceGateway({
       userMessageNavigation: input => getTimelineReadPool().readUserMessageNavigation(input),
       quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
       inspector: new ClientInspectorAPI({ store, resolveSession: requireSessionReference,
+        abilities: sessionAbilityPreferences,
+        onAbilitiesChanged: (scope, receipt) => emitEvent("SessionAbilitiesChanged", { sessionId: scope.sessionId, receipt }, { sessionId: scope.sessionId }),
         references: sessionContextReferenceService, artifacts: artifactService,
         schedules: scheduledSessionTaskService, observability: turnObservability,
         providers: () => agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,

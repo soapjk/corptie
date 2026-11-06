@@ -16,6 +16,8 @@ export class SkillMcpGateway {
     }
     this.resolveServers = options.resolveServers;
     this.resolveRevision = options.resolveRevision ?? (() => "none");
+    this.assertSessionEnabled = options.assertSessionEnabled ?? (() => {});
+    this.assertSessionRequest = options.assertSessionRequest ?? (() => {});
     this.timeoutMs = Number(options.timeoutMs ?? 10_000);
     this.retryMs = Number(options.retryMs ?? 10_000);
     this.connectServer = options.connectServer ?? ((serverName, config) => connectServer(serverName, config, this.timeoutMs));
@@ -25,6 +27,7 @@ export class SkillMcpGateway {
     this.fingerprintKey = randomBytes(32);
     this.entries = new Map();
     this.pending = new Map();
+    this.leases = new WeakMap();
   }
 
   revision(actorId) {
@@ -104,6 +107,7 @@ export class SkillMcpGateway {
   }
 
   async execute(input = {}, options = {}) {
+    this.assertSessionRequest(input);
     const entry = await this.#entry(input);
     if (options.expectedCatalogVersion && options.expectedCatalogVersion !== entry.catalogVersion) {
       const error = gatewayError("TOOL_CATALOG_STALE", "The assigned Skill MCP catalog changed; search again before calling the gateway.", 409);
@@ -113,6 +117,8 @@ export class SkillMcpGateway {
     }
     const target = entry.tools.get(requiredText(input.tool, "tool"));
     if (!target) throw gatewayError("HOST_TOOL_UNSUPPORTED", `Unsupported assigned Skill MCP tool: ${input.tool}`, 404);
+    // Recheck after asynchronous connection/catalog work, immediately before dispatch.
+    this.assertSessionEnabled(input, target);
     // #entry re-resolves the current assignment fingerprint before every call,
     // so removing a Skill revokes access even if a Provider retained an old list.
     const event = { serverId: target.serverId, agentId: input.actorId,
@@ -120,6 +126,8 @@ export class SkillMcpGateway {
       logicalSessionId: input.metadata?.logicalSessionId,
       bindingId: input.metadata?.bindingId,
       stage: "tool-call", toolName: target.remoteName };
+    const lease = this.leases.get(entry);
+    lease.active += 1;
     try {
       const result = await withTimeout(
         target.client.callTool({ name: target.remoteName, arguments: input.arguments ?? {} }),
@@ -132,6 +140,9 @@ export class SkillMcpGateway {
     } catch (error) {
       this.#emitRuntimeEvent({ ...event, status: "failed", errorCode: error?.code });
       throw error;
+    } finally {
+      lease.active -= 1;
+      if (lease.retired && lease.active === 0) await this.#closeEntry(entry);
     }
   }
 
@@ -161,10 +172,17 @@ export class SkillMcpGateway {
     try { this.onRuntimeEvent(event); } catch { /* diagnostics never change tool authorization */ }
   }
 
+  async #closeEntry(entry) {
+    const lease = this.leases.get(entry);
+    if (lease.closed) return;
+    lease.closed = true;
+    await Promise.all(entry.clients.map(client => client.close().catch(() => {})));
+  }
+
   async #entry(input) {
     const actorId = requiredText(input.actorId, "actorId");
     const providerId = requiredText(input.providerId ?? input.metadata?.providerId, "providerId");
-    const key = `${actorId}\u0000${providerId}`;
+    const key = `${actorId}\u0000${providerId}\u0000${input.metadata?.logicalSessionId ?? input.metadata?.sessionId ?? ""}`;
     const servers = await this.resolveServers({ actorId, providerId, context: input.metadata ?? {} });
     const fingerprint = createHmac("sha256", this.fingerprintKey)
       .update(stableStringify(servers ?? {})).digest("hex");
@@ -182,9 +200,14 @@ export class SkillMcpGateway {
       bindingId: input.metadata?.bindingId
     })
       .then(async (next) => {
+        this.leases.set(next, { active: 0, retired: false, closed: false });
         const previous = this.entries.get(key);
         this.entries.set(key, next);
-        if (previous) await Promise.all(previous.clients.map((client) => client.close().catch(() => {})));
+        if (previous) {
+          const lease = this.leases.get(previous);
+          lease.retired = true;
+          if (lease.active === 0) await this.#closeEntry(previous);
+        }
         return next;
       })
       .finally(() => {
@@ -282,7 +305,7 @@ export class SkillMcpGateway {
           clients.push(client);
           for (const { name, remoteName, definition } of serverTools) {
             candidateDefinitions.push(definition);
-            candidateTools.set(name, { client, remoteName, serverName, serverId: config.serverId,
+            candidateTools.set(name, { client, remoteName, serverName, serverId: config.serverId, skillIds: config.skillIds,
               serverLabel: config.displayName ?? serverName, definition });
           }
           definitions = candidateDefinitions;

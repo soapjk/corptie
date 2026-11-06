@@ -59,8 +59,9 @@ export class ClientInspectorStream {
       return wrote;
     } catch { client.close(); }
   }
-  invalidate() {
+  invalidate(sessionIds = null) {
     for (const client of this.clients) {
+      if (sessionIds && !sessionIds.includes(client.sessionId)) continue;
       client.dirty = true;
       if (client.busy || client.timer) continue;
       client.timer = setTimeout(() => { client.timer = null; void this.deliver(client); }, this.coalesceMs);

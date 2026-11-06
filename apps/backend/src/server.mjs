@@ -123,6 +123,7 @@ import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { assignedCapabilitySummary } from "./application/skillMcpTurnContext.mjs";
 import { McpRegistryService } from "./application/mcpRegistryService.mjs";
 import { McpSessionAvailabilityService } from "./application/mcpSessionAvailabilityService.mjs";
+import { SessionAbilityPreferences } from "./application/sessionAbilityPreferences.mjs";
 import { handleMcpRegistryHttpRequest } from "./application/mcpRegistryHttpApi.mjs";
 import { handleSessionToolHttpRequest } from "./application/sessionToolHttpApi.mjs";
 import { requiredToolDomainsForSession as resolveSessionToolDomainRequirements } from "./application/sessionToolDomainRequirements.mjs";
@@ -687,20 +688,43 @@ function mcpAssignmentRevisionForAgent(agentId) {
   const standalone = mcpRegistryService.assignmentRevisionForAgent(agentId);
   return skill === "none" && standalone === "none" ? "none" : `${skill}:${standalone}`;
 }
+const sessionAbilityPreferences = new SessionAbilityPreferences({ store, registry: mcpRegistryService });
+skillRegistryService.sessionAbilityPreferences = sessionAbilityPreferences;
 const skillMcpGateway = new SkillMcpGateway({
   onRuntimeEvent: (event) => mcpRegistryService.recordRuntimeEvent(event),
-  resolveServers: async ({ actorId, providerId }) => ({
-    ...await skillRegistryService.mcpServersForAgent(actorId, providerId, { isolateFailures: true }),
-    ...mcpRegistryService.serversForAgent(actorId)
-  }),
+  resolveServers: async ({ actorId, providerId, context }) => {
+    const reference = context.logicalSessionId ?? context.sessionId;
+    const servers = {
+      ...await skillRegistryService.mcpServersForAgent(actorId, providerId, { isolateFailures: true, sessionReference: reference }),
+      ...mcpRegistryService.serversForAgent(actorId)
+    };
+    return Object.fromEntries(Object.entries(servers).filter(([, config]) =>
+      !config.serverId || !sessionAbilityPreferences.isDisabled(reference, "mcp", config.serverId)));
+  },
+  assertSessionEnabled: (input, target) => {
+    const reference = input.metadata?.logicalSessionId ?? input.metadata?.sessionId;
+    if (target.serverId) sessionAbilityPreferences.assertEnabled(reference, "mcp", target.serverId);
+    if (target.skillIds?.length && target.skillIds.every(id => sessionAbilityPreferences.isDisabled(reference, "skill", id))) {
+      sessionAbilityPreferences.assertEnabled(reference, "skill", target.skillIds[0]);
+    }
+  },
+  assertSessionRequest: input => {
+    const reference = input.metadata?.logicalSessionId ?? input.metadata?.sessionId;
+    if (!reference) return;
+    for (const id of sessionAbilityPreferences.preferences(reference).disabledMcpServerIds) {
+      if (String(input.tool).startsWith(`standalone_${id.slice(4).replaceAll("-", "")}__`)) {
+        sessionAbilityPreferences.assertEnabled(reference, "mcp", id);
+      }
+    }
+  },
   resolveRevision: mcpAssignmentRevisionForAgent
 });
 const mcpSessionAvailabilityService = new McpSessionAvailabilityService({
   store, gateway: skillMcpGateway, registry: mcpRegistryService
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
-agentContextService.resolveAgentSkills = (agentId) => {
-  return skillRegistryService.skillsForAgent(agentId);
+agentContextService.resolveAgentSkills = (agentId, scope) => {
+  return skillRegistryService.skillsForAgent(agentId, scope?.logicalSessionId ?? scope?.sessionId);
 };
 const collaborationDeliveryRouteResolver = new CollaborationDeliveryRouteResolver({
   core: collaborationCore,
@@ -1409,7 +1433,8 @@ const sessionApplicationService = createSessionApplicationComposition({
   requireSessionReference, workChatContextService,
   resolveContextReferences: (sessionId, options) => sessionContextReferenceService.resolve(sessionId, options),
   artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
-  resolveAssignedCapabilities: (agentId) => assignedCapabilitySummary(store, agentId),
+  resolveAssignedCapabilities: (agentId, reference) => assignedCapabilitySummary(store, agentId)
+    .map(entry => ({ ...entry, enabled: entry.enabled && !sessionAbilityPreferences.isDisabled(reference, entry.kind, entry.id) })),
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 });
@@ -2363,6 +2388,7 @@ const backendHttpPorts = Object.freeze({
   get handleMcpRegistryHttpRequest() { return handleMcpRegistryHttpRequest; },
   get mcpRegistryService() { return mcpRegistryService; },
   get mcpSessionAvailabilityService() { return mcpSessionAvailabilityService; },
+  get sessionAbilityPreferences() { return sessionAbilityPreferences; },
   get emitEvent() { return emitEvent; },
   get handleEntityRoutes() { return handleEntityRoutes; },
   get handleDshHttpRequest() { return handleDshHttpRequest; },
@@ -2601,6 +2627,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   worktreeAutoFollowService.start();
   startClientDeviceGateway({
+    sessionAbilityPreferences,
     workInitializationService,
     detailActionService, detailWritesAllowed: detailMigration.detailWritesAllowed,
     sessionPreparations: sessionBindingReadinessProbe.preparations,
