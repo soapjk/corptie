@@ -82,3 +82,19 @@ test("official login writes to a staging Home and verifies identity before repla
   assert.equal(status.flow.state, "failed");
   assert.equal(await readFile(join(registry.current.home, "auth.json"), "utf8"), original);
 });
+
+test("discovery lists only readable credentials without reading the keychain implicitly", async t => {
+  const { manager, root } = await fixture(t);
+  const valid = join(root, "existing.json");
+  await writeFile(valid, credential("discovered"));
+  manager.candidates = [
+    { kind: "file", path: valid },
+    { kind: "file", path: join(root, "missing.json") },
+    { kind: "keychain", path: valid }
+  ];
+  const result = await manager.operation({ action: "discover" });
+  assert.deepEqual(result.discovered, [{ kind: "file", path: valid, label: "ChatGPT 账号" }]);
+  assert.ok(!JSON.stringify(result).includes("test-token"));
+  const imported = await manager.operation({ action: "import", source: result.discovered[0] });
+  assert.equal(imported.accounts.accounts.find(account => account.origin === "imported")?.name, "ChatGPT 账号");
+});
