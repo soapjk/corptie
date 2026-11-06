@@ -486,7 +486,7 @@ export class ClientDeviceGateway {
           const input = await body(request, 64 * 1024);
           this.authenticateRequest(request);
           if (worktreeDelete) result = await this.worktreeAPI.deleteWorktree(
-            decode(worktreeDelete[1], "INVALID_REPOSITORY_ID"), decode(worktreeDelete[2], "INVALID_WORKTREE_ID")
+            decode(worktreeDelete[1], "INVALID_REPOSITORY_ID"), decode(worktreeDelete[2], "INVALID_WORKTREE_ID"), input
           );
           else if (worktreeWorkspaceAction) result = await this.worktreeAPI.workspaceAction(
             decode(worktreeWorkspaceAction[1], "INVALID_REPOSITORY_ID"),

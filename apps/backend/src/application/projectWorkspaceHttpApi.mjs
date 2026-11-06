@@ -147,7 +147,7 @@ export function handleProjectWorkspaceHttpRequest({
     const repositoryId = decodeURIComponent(worktreeManagementDeleteMatch[1]);
     const worktreeId = decodeURIComponent(worktreeManagementDeleteMatch[2]);
     readJson(request)
-      .then(() => worktreeIntegrationJobService.deleteWorktree(repositoryId, worktreeId))
+      .then((input) => worktreeIntegrationJobService.deleteWorktree(repositoryId, worktreeId, input))
       .then((result) => {
         emitEvent("WorktreeDeleted", { repositoryId, worktreeId, result });
         sendJson(response, 200, { result });
