@@ -2,6 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ClientWorktreeManagementAPI } from "../src/application/clientWorktreeManagementAPI.mjs";
 
+test("paired rollback and Git recovery share the desktop services and require exact targets", async () => {
+  const calls = [];
+  const preview = { job: { id: "job" }, rollback: { id: "review", targets: [] } };
+  const api = new ClientWorktreeManagementAPI({ worktrees: {
+    prepareRollback: async id => { calls.push(["preview", id]); return preview; },
+    confirmRollback: async (id, input) => { calls.push(["rollback", id, input]); return { id, status: "canceled" }; },
+    resumeRollbackReview: id => ({ id, status: "queued" }),
+    handleWorktreeGitOperation: async (...args) => { calls.push(["git", ...args]); return { action: "abort" }; }
+  } });
+  assert.deepEqual(await api.jobAction("job", "cancel-preview", {}), preview);
+  const input = { confirmed: true, reviewId: "review" };
+  assert.equal((await api.jobAction("job", "rollback", input)).job.status, "canceled");
+  assert.equal((await api.jobAction("job", "resume", {})).job.status, "queued");
+  assert.equal((await api.workspaceAction("repo", "tree", "git-operation", { action: "abort", expectedHead: "head" })).result.action, "abort");
+  assert.deepEqual(calls, [["preview", "job"], ["rollback", "job", input], ["git", "repo", "tree", { action: "abort", expectedHead: "head" }]]);
+});
+
 test("paired commit authority is server supplied, never upgraded by a request body",async()=>{
   let authority;
   const api=new ClientWorktreeManagementAPI({projects:{runWorkspaceAction:async(_repo,_tree,_action,_input,context)=>{authority=context;return {};}}});

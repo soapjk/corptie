@@ -1,4 +1,5 @@
 import { integrationBlocksWorkspaceCapture } from "../../domain/worktreeCreationScope.mjs";
+import { integrationRollbackTargets } from "../../domain/integrationRollbackPlan.mjs";
 import { createHash } from "node:crypto";
 
 const active = "COALESCE(deletion_status,'') <> 'deleted' AND creation_state='ready'";
@@ -177,14 +178,17 @@ export class TaskHierarchyRepository {
         throw taskHierarchyError("TASK_DELETE_SCOPE_INVALID", "The deletion operation no longer authorizes this Worktree.");
       }
       const job=jobId && this.selectOne("SELECT * FROM worktree_integration_jobs WHERE id=?",[jobId]);
-      const plan=job?.details_json ? JSON.parse(job.details_json).plan : null;
+      const details=job?.details_json ? JSON.parse(job.details_json) : null;
+      const plan=details?.plan;
+      const rollbackTargets=job?.status === "cancellation_requested" && job.phase === "rollback_running"
+        ? integrationRollbackTargets({details}).map(target=>target.worktreeId) : null;
       const scope=plan?.taskScope;
       const graph=plan?.orchestration;
       if(graph?.version===1 && ["queued","running","paused","cancellation_requested"].includes(job?.status)) {
         // The graph is generated exclusively on the server and bound to the
         // reviewed candidate. Restrict each Git write to the active step.
         const reserved=new Set(plan.reservedWorktreeIds ?? []);
-        const writable=new Set(plan.writeWorktreeIds ?? []);
+        const writable=new Set(rollbackTargets ?? plan.writeWorktreeIds ?? []);
         const graphMembers=this.selectAll(`SELECT worktree_id,path,canonical_path FROM git_worktrees w WHERE ${predicates.join(" OR ")}`,[...ids,...locations,...locations]);
         const rootsFresh=graph.groups.every(group=>{
           const task=this.getTask(group.rootTaskId);
@@ -207,7 +211,7 @@ export class TaskHierarchyRepository {
       const binding=scope && this.getTaskDeliveryBinding(scope.rootTaskId);
       const actual=this.selectAll(`SELECT worktree_id FROM git_worktrees w WHERE ${predicates.join(" OR ")}`,[...ids,...locations,...locations]);
       const writePaths=[...new Set(paths.filter(Boolean))];
-      const writable=new Set(plan?.writeWorktreeIds ?? []);
+      const writable=new Set(rollbackTargets ?? plan?.writeWorktreeIds ?? []);
       const writes=this.selectAll(`SELECT worktree_id,path,canonical_path FROM git_worktrees WHERE worktree_id IN (${ids.map(()=>"?").join(",") || "NULL"})
         OR path IN (${writePaths.map(()=>"?").join(",") || "NULL"}) OR canonical_path IN (${writePaths.map(()=>"?").join(",") || "NULL"})`,[...ids,...writePaths,...writePaths]);
       if(scope?.version===1 && ["queued","running","paused","cancellation_requested"].includes(job?.status)

@@ -193,6 +193,25 @@ test("a conflict pauses indefinitely, never generates automatic recovery or dupl
   await restored.tick(); assert.equal(restored.state("tree").status, "aligned");
 });
 
+test("re-enabling automatic follow releases a canceled predecessor but retains active conflicts", async () => {
+  const f = fixture();
+  await f.enable(); await f.service.tick();
+  const oldId = f.service.state("tree").jobId;
+  f.jobs.get(oldId).status = "canceled";
+  await f.service.tick();
+  assert.equal(f.service.state("tree").status, "paused");
+  await f.service.set("session", { enabled: false, expectedWorktreeId: "tree" });
+  await f.enable();
+  assert.equal(f.service.state("tree").jobId, null);
+  await f.service.tick();
+  const nextId = f.service.state("tree").jobId;
+  assert.notEqual(nextId, oldId);
+  f.jobs.get(nextId).status = "paused";
+  await f.service.set("session", { enabled: false, expectedWorktreeId: "tree" });
+  await f.enable();
+  assert.equal(f.service.state("tree").jobId, nextId);
+});
+
 test("turning off during preflight cancels the draft without confirm or rebase", async () => {
   const f = fixture(); await f.enable();
   const original = f.jobService.preflight;

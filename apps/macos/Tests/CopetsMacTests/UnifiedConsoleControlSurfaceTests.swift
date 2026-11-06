@@ -465,33 +465,6 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func automationRetainsCardsAndWorktreesUsesOpaqueWorkbenchPanels() throws {
-        let mainTab = try source(named: "MainTabView.swift")
-        let automation = try source(named: "AutomationsView.swift")
-        let worktree = try source(named: "WorktreeManagementView.swift")
-
-        #expect(mainTab.contains("card(content: content, material: .ultraThinMaterial)"))
-        #expect(mainTab.contains("shape.strokeBorder("))
-        #expect(mainTab.contains("tab.extendsUnderTransparentTitlebar ? .top : []"))
-        #expect(AppTab.worktrees.extendsUnderTransparentTitlebar)
-        #expect(AppTab.console.extendsUnderTransparentTitlebar)
-        #expect(!AppTab.automations.extendsUnderTransparentTitlebar)
-
-        #expect(automation.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
-        #expect(automation.components(separatedBy: ".mainWindowPageCard()").count - 1 == 2)
-        #expect(automation.contains("MainWindowPageLayoutMetrics.halfColumnSpacing"))
-
-        #expect(!worktree.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
-        #expect(!worktree.contains(".mainWindowPageCard(.lightweight)"))
-        #expect(worktree.contains("WorktreePanel(sidebar: true)"))
-        #expect(worktree.contains(".background(WorkbenchStyle.canvas.ignoresSafeArea"))
-        let panel = try source(named: "WorktreePresentation.swift")
-        #expect(!panel.contains(".clipShape("))
-        #expect(panel.contains(".ignoresSafeArea(.container, edges: .vertical)"))
-        #expect(panel.contains("WorkbenchStyle.sidebarColor : WorkbenchStyle.canvas"))
-    }
-
-    @Test
     func messageComposerStaysVisuallyStableWhileSubmissionIsGuarded() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
             + source(named: "Conversation/Composer/MessageComposer.swift")

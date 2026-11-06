@@ -401,6 +401,7 @@ final class PadWorktreeStore {
             case "retry": updated = try await api.retry(jobId: job.id)
             case "resolve-conflict": updated = try await api.resolveConflict(jobId: job.id)
             case "repreflight": updated = try await api.cancel(jobId: job.id, replan: true)
+            case "resume": updated = try await api.resumeRollbackReview(jobId: job.id)
             default:
                 errorMessage = "不支持的集成操作：\(action)"
                 return false
@@ -417,6 +418,86 @@ final class PadWorktreeStore {
             guard token == operationScope else { return false }
             errorMessage = PadWorktreeFailure.describe(error, stage: "集成任务 \(action)", mutation: true)
             return false
+        }
+    }
+
+    @discardableResult
+    func handleMarkdown(jobID: String, decisions: [ClientWorktreeMarkdownDecision]? = nil,
+                        connection: PadConnection) async -> Bool {
+        guard let current = job, current.id == jobID, !jobBusy, !planning else { return false }
+        guard current.supports("resolve_commit_policy") || current.supports("resolve_commit_policy_residue") else {
+            errorMessage = "文件处理要求已变化，请重新读取任务。"
+            return false
+        }
+        if decisions != nil, current.commitPolicyBlocker == nil, current.commitPolicyResidue == nil {
+            errorMessage = "文件处理要求已变化，请重新读取任务。"
+            return false
+        }
+        let token = operationScope
+        jobBusy = true; errorMessage = nil
+        defer { if token == operationScope { jobBusy = false } }
+        do {
+            let api = ClientWorktreeAPI(transport: try await connection.transport())
+            let updated: ClientWorktreeJob
+            if let decisions, let blocker = current.commitPolicyBlocker {
+                updated = try await api.resolveCommitPolicy(jobId: jobID, blocker: blocker, decisions: decisions)
+            } else if let decisions, current.commitPolicyResidue != nil {
+                updated = try await api.resolveCommitPolicyResidue(jobId: jobID, decisions: decisions)
+            } else {
+                updated = try await api.prepareCommitPolicy(jobId: jobID)
+            }
+            guard token == operationScope, job?.id == jobID else { return false }
+            replaceJob(updated)
+            if let snapshot = updated.notification { PadOperationNotifications.shared.observe(snapshot) }
+            startPollingIfNeeded(updated.repositoryId, connection: connection)
+            return true
+        } catch {
+            guard token == operationScope else { return false }
+            errorMessage = PadWorktreeFailure.describe(error, stage: "处理 Markdown 文件", mutation: decisions != nil)
+            return false
+        }
+    }
+
+    func prepareRollback(jobID: String, connection: PadConnection) async throws -> (ClientWorktreeRollbackPreview?, Bool) {
+        let token = operationScope
+        guard job?.id == jobID else { throw rollbackFailure("任务已变化，请返回当前任务。") }
+        do {
+            let api = ClientWorktreeAPI(transport: try await connection.transport())
+            let result = try await api.prepareRollback(jobId: jobID)
+            guard token == operationScope, job?.id == jobID else { throw rollbackFailure("任务已变化，请返回当前任务。") }
+            replaceJob(result.job)
+            return (result.rollback, !["completed", "canceled"].contains(result.job.status))
+        } catch { throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "读取回滚范围")) }
+    }
+
+    func confirmRollback(jobID: String, reviewID: String, discardChanges: Bool,
+                         includeAdditionalCommits: Bool, connection: PadConnection) async throws {
+        let token = operationScope
+        guard job?.id == jobID, !jobBusy, !planning else { throw rollbackFailure("任务已变化，请刷新回滚范围。") }
+        jobBusy = true
+        defer { if token == operationScope { jobBusy = false } }
+        do {
+            let api = ClientWorktreeAPI(transport: try await connection.transport())
+            let result = try await api.rollback(jobId: jobID, reviewId: reviewID,
+                discardChanges: discardChanges, includeAdditionalCommits: includeAdditionalCommits)
+            guard token == operationScope, job?.id == jobID else { throw rollbackFailure("任务已变化，请核对当前状态。") }
+            replaceJob(result)
+            if let snapshot = result.notification { PadOperationNotifications.shared.observe(snapshot) }
+            if result.status != "canceled" { throw rollbackFailure(result.diagnosticText ?? result.error ?? "回滚未完成，请刷新范围后继续。") }
+            notice = "本次合并已取消并回滚，来源 Worktree 的提交已保留。"
+            await load(result.repositoryId, connection: connection, force: true, afterOperation: notice)
+        } catch { throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "取消并回滚", mutation: true)) }
+    }
+
+    private func rollbackFailure(_ text: String) -> NSError {
+        NSError(domain: "CorptieWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
+    }
+
+    func recoverGitOperation(_ worktree: ClientManagedWorktree, action requested: String,
+                             connection: PadConnection) async {
+        await action(worktree, connection: connection) { api, repositoryID in
+            try await api.recoverGitOperation(repositoryId: repositoryID, worktree: worktree, action: requested)
+            return requested == "abort" ? "Git 操作已中止，请重新核对合并任务。" : "Git 操作已继续，请重新核对合并任务。"
         }
     }
 

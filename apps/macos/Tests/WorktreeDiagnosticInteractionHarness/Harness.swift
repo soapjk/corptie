@@ -2,10 +2,26 @@ import AppKit
 import SwiftUI
 import ApplicationServices
 import CorptieConversation
+import CorptieClientCore
+import Observation
 @preconcurrency import ScreenCaptureKit
 @preconcurrency import Vision
 
 private struct HarnessFailure: Error { let message: String }
+@MainActor @Observable private final class RollbackProbe { var confirmed = false }
+private struct RollbackHarnessView: View {
+    let preview: ClientWorktreeRollbackPreview
+    let probe: RollbackProbe
+    var body: some View {
+        VStack {
+            WorktreeRollbackReviewView(prepare: { (preview, false) }, confirm: { review, discard, additional in
+                guard review == "isolated-review", discard, !additional else { throw HarnessFailure(message: "Wrong rollback confirmation.") }
+                probe.confirmed = true
+            })
+            Text(probe.confirmed ? "ROLLBACK_CONFIRMED" : "ROLLBACK_PENDING").font(.caption.monospaced())
+        }.frame(width: 720, height: 650)
+    }
+}
 private func require<T>(_ value: T?) throws -> T {
     guard let value else { throw HarnessFailure(message: "Required screen or window evidence is missing.") }
     return value
@@ -25,7 +41,11 @@ private struct ConcurrentActivity: View {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             do {
-                try await DiagnosticInteractionHarness.runScenario()
+                if CommandLine.arguments.contains("--rollback") {
+                    try await DiagnosticInteractionHarness.runRollbackScenario()
+                } else {
+                    try await DiagnosticInteractionHarness.runScenario()
+                }
                 Darwin.exit(0)
             } catch {
                 print("DIAGNOSTIC_INTERACTION_FAILED=\(error)")
@@ -47,6 +67,66 @@ private struct ConcurrentActivity: View {
             Darwin.exit(2)
         }
         withExtendedLifetime(delegate) { app.run() }
+    }
+
+    static func runRollbackScenario() async throws {
+        guard AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else {
+            throw HarnessFailure(message: "Existing accessibility and capture permissions are required.")
+        }
+        let previousFrontmost = NSWorkspace.shared.frontmostApplication
+        let previousPointer = CGEvent(source: nil)?.location
+        let probe = RollbackProbe()
+        let preview = try JSONDecoder().decode(ClientWorktreeRollbackPreview.self, from: Data(#"{"id":"isolated-review","jobId":"isolated-job","targets":[{"worktreeId":"main","path":"/isolated/main","branchName":"main","baselineHead":"before-this-round","currentHead":"resolved-conflict-head","operation":"merge","changedFiles":["UU shared.txt"],"ownedCommits":["round-merge"],"additionalCommits":[],"requiresPreservation":true,"published":false,"mode":"restore_baseline"}]}"#.utf8))
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 720, height: 650),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "Corptie isolated rollback interaction test"
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: RollbackHarnessView(preview: preview, probe: probe))
+        window.makeKeyAndOrderFront(nil); window.orderFrontRegardless(); NSApplication.shared.activate()
+        defer {
+            window.close(); _ = previousFrontmost?.activate(options: [])
+            if let previousPointer { CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                mouseCursorPosition: previousPointer, mouseButton: .left)?.post(tap: .cghidEventTap) }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let captured = try require(content.windows.first { $0.windowID == CGWindowID(window.windowNumber) })
+        let filter = SCContentFilter(desktopIndependentWindow: captured)
+        let config = SCStreamConfiguration()
+        config.width = Int(window.frame.width * 2); config.height = Int(window.frame.height * 2)
+        config.ignoreShadowsSingleWindow = true; config.showsCursor = false
+        let screenTop = try require(NSScreen.screens.first).frame.maxY
+        func point(_ box: CGRect) -> CGPoint { CGPoint(x: window.frame.minX + box.midX * window.frame.width,
+            y: screenTop - (window.frame.minY + box.midY * window.frame.height)) }
+        let first = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        let labels = try await Task.detached { try Self.recognize(first) }.value
+        print("ROLLBACK_RENDERED_LABELS=\(labels.map(\.0))")
+        let confirm = try require(labels.first { $0.0.contains("确认取消并回滚") })
+        print("ROLLBACK_CONFIRM_POINT=\(point(confirm.1)) WINDOW=\(window.frame)")
+        try postMouseClick(point(confirm.1), window: window)
+        try await Task.sleep(for: .milliseconds(80))
+        guard !probe.confirmed else { throw HarnessFailure(message: "Rollback executed without edit-discard confirmation.") }
+        let checkbox = try require(labels.first { $0.0.contains("确认放弃") })
+        print("ROLLBACK_CHECKBOX_POINT=\(point(checkbox.1))")
+        try postMouseClick(CGPoint(x: window.frame.minX + 28, y: point(checkbox.1).y), window: window)
+        try await Task.sleep(for: .milliseconds(80))
+        let started = ProcessInfo.processInfo.systemUptime
+        try postMouseClick(point(confirm.1), window: window)
+        var visibleAt: Double?
+        for attempt in 0..<10 {
+            try await Task.sleep(for: .milliseconds(30))
+            let frame = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            let capturedAt = ProcessInfo.processInfo.systemUptime
+            let rows = try await Task.detached { try Self.recognize(frame) }.value
+            if attempt == 0 { print("ROLLBACK_AFTER_LABELS=\(rows.map(\.0)) confirmed=\(probe.confirmed)") }
+            if rows.contains(where: { $0.0.uppercased().filter(\.isLetter).contains("ROLLBACKCONFIRMED") }) {
+                visibleAt = capturedAt; break
+            }
+        }
+        let elapsed = (try require(visibleAt) - started) * 1_000
+        guard probe.confirmed, elapsed < 1_000 else { throw HarnessFailure(message: "Rollback confirmation did not reach the screen.") }
+        print("ROLLBACK_MOUSE_TO_VISIBLE_MS=\(elapsed)")
+        print("ROLLBACK_INTERACTION_PASSED")
     }
 
     static func runScenario() async throws {
@@ -173,7 +253,8 @@ private struct ConcurrentActivity: View {
             return frame.contains(point)
         }
         guard hit?[kCGWindowNumber as String] as? Int == window.windowNumber else {
-            throw NSError(domain: "CorptieInteractionTest", code: 1)
+            throw NSError(domain: "CorptieInteractionTest", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Mouse point \(point) hit window \(hit?[kCGWindowNumber as String] ?? -1), expected \(window.windowNumber)."])
         }
     }
 

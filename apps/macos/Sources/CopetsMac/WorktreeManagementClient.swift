@@ -784,6 +784,58 @@ final class WorktreeManagementClient: ObservableObject {
         candidateReview = review
     }
 
+    func prepareRollbackReview(expectedJobID: String) async throws -> (ClientWorktreeRollbackPreview?, Bool) {
+        guard let current = job, current.id == expectedJobID else {
+            throw WorktreeManagementClientError(message: "任务已变化，请返回当前任务。", code: "JOB_STATE_CHANGED")
+        }
+        struct Envelope: Decodable { let job: WorktreeIntegrationJob; let rollback: ClientWorktreeRollbackPreview? }
+        let result: Envelope = try await post("worktree-management/jobs/\(expectedJobID)/cancel-preview", body: [:])
+        guard selection.repositoryId == current.repositoryId, job?.id == expectedJobID else {
+            throw WorktreeManagementClientError(message: "仓库或任务已变化，请返回当前任务。", code: "JOB_STATE_CHANGED")
+        }
+        detailCache.removeValue(forKey: current.repositoryId)
+        applyJob(result.job)
+        return (result.rollback, !["completed", "canceled"].contains(result.job.status))
+    }
+
+    func resumeRollbackReview(expectedJobID: String) async throws {
+        guard job?.id == expectedJobID, !isMutating else {
+            throw WorktreeManagementClientError(message: "任务已变化，请返回当前任务。", code: "JOB_STATE_CHANGED")
+        }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let result: WorktreeIntegrationJobEnvelope = try await post("worktree-management/jobs/\(expectedJobID)/resume", body: [:])
+            guard job?.id == expectedJobID else { return }
+            detailCache.removeValue(forKey: result.job.repositoryId)
+            applyJob(result.job)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            throw error
+        }
+    }
+
+    func confirmRollback(expectedJobID: String, reviewID: String, discardChanges: Bool,
+                         includeAdditionalCommits: Bool) async throws {
+        guard job?.id == expectedJobID, !isMutating else {
+            throw WorktreeManagementClientError(message: "任务已变化，请刷新回滚范围。", code: "JOB_STATE_CHANGED")
+        }
+        isMutating = true
+        defer { isMutating = false }
+        let result: WorktreeIntegrationJobEnvelope = try await post("worktree-management/jobs/\(expectedJobID)/rollback",
+            body: ["confirmed": true, "reviewId": reviewID, "discardChanges": discardChanges,
+                   "includeAdditionalCommits": includeAdditionalCommits])
+        guard job?.id == expectedJobID else { return }
+        detailCache.removeValue(forKey: result.job.repositoryId)
+        applyJob(result.job)
+        if result.job.status != "canceled" {
+            throw WorktreeManagementClientError(message: result.job.diagnosticText ?? result.job.error ?? "回滚未完成，请重新核对范围。", code: nil)
+        }
+        operationNotice = "本次合并已取消并回滚，来源 Worktree 的提交已保留。"
+        await refreshSelected()
+    }
+
     func cancelIntegration(expectedJobID: String) async {
         guard !isMutating else {
             errorMessage = L10n("正在处理另一个 Worktree 操作，请稍后重试。")
