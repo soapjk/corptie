@@ -480,7 +480,9 @@ export class DetailDocumentService {
   }
   invalidate(change) {
     this.markDirty(change);
-    this.events.invalidate(change); this.v2Events.invalidate(change); this.nativeEvents.invalidate(change);
+    // Resource hints belong to the projection caches, not the stream's array
+    // of transport Session IDs (which may use a different Session alias).
+    this.events.invalidate(); this.v2Events.invalidate(); this.nativeEvents.invalidate();
   }
   markDirty(change) {
     for (const entry of this.nativeEntries?.values() ?? []) {

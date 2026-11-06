@@ -68,6 +68,41 @@ class Response extends EventEmitter {
   writeHead() {} write(frame) { this.frames.push(frame); return !this.writableNeedDrain; }
   destroy() { if (!this.destroyed) { this.destroyed = true; this.emit("close"); } }
 }
+test("resource invalidations refresh every Detail stream without breaking Session preparation", async () => {
+  const { SessionPreparationCoordinator } = await import("../src/application/sessionPreparationCoordinator.mjs");
+  const { service, session } = setup();
+  const responses = [];
+  for (const stream of [service.events, service.v2Events, service.nativeEvents]) {
+    stream.coalesceMs = 1;
+    const response = new Response();
+    // Exercise each real stream with a host-provided projection, including
+    // the legacy transport alias for a logical Session resource change.
+    stream.attach(response, () => ({ deviceId: "test" }), "legacy", null,
+      { snapshot: () => ({ summary: session.summary }),
+        eventForSnapshot: (_, value) => ({ name: "detail-snapshot", value }) });
+    responses.push(response);
+  }
+  const preparations = new SessionPreparationCoordinator({
+    resolveReference: async sessionId => ({ sessionId, logicalSessionId: "logical:sample", bindingId: "binding", providerId: "test" }),
+    verify: async () => ({ ready: true }), invalidate: () => {},
+    onChanged: () => service.invalidate({ resourceType: "session", sessionId: "logical:sample" }),
+    persistence: { read: () => null, write: () => {} }
+  });
+  try {
+    await delay(10);
+    session.summary = "Ready";
+    await preparations.start("legacy");
+    await delay(20);
+    assert.equal((await preparations.current("legacy")).state, "ready");
+    assert.equal(preparations.storageError, null);
+    for (const response of responses) {
+      assert.equal(response.frames.length, 2);
+      assert.match(response.frames[1], /Ready/);
+    }
+    assert.doesNotThrow(() => service.invalidate({ resourceType: "work", workId: "work" }));
+    assert.doesNotThrow(() => service.invalidate());
+  } finally { for (const response of responses) response.destroy(); }
+});
 test("Detail stream emits snapshot then patches and no changes after close", async () => {
   const { service, session } = setup(), response = new Response(); service.events.coalesceMs = 5;
   service.events.attach(response, () => ({ deviceId: "test" }), "legacy");
