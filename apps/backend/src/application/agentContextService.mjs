@@ -43,7 +43,7 @@ export class AgentContextService {
     let skills = [];
     if (typeof this.resolveAgentSkills === "function") {
       try {
-        skills = await this.resolveAgentSkills(agentId) ?? [];
+        skills = await this.resolveAgentSkills(agentId, scope) ?? [];
       } catch {
         skills = [];
       }

@@ -21,6 +21,22 @@ export const sessionSchemaSql = `
         raw_json TEXT NOT NULL DEFAULT '{}'
       );
 
+      CREATE TABLE IF NOT EXISTS session_ability_preferences (
+        logical_session_id TEXT PRIMARY KEY,
+        disabled_skills_json TEXT NOT NULL DEFAULT '[]',
+        disabled_mcps_json TEXT NOT NULL DEFAULT '[]',
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS session_ability_preference_receipts (
+        logical_session_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (logical_session_id, request_id)
+      );
+
       CREATE TABLE IF NOT EXISTS session_capability_grants (
         session_id TEXT NOT NULL,
         capability TEXT NOT NULL,
