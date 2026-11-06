@@ -77,6 +77,7 @@ struct SessionConversationSurface: View {
     @State private var cachedRowsRevision: UInt64 = 0
     @State private var updatingDisclosureRow = false
     @State private var cachedDisclosureRowIndices: [String: Int] = [:]
+    @State private var checklistEventPlan: ConversationExecutionPlan?
     @State private var cachedChecklistDock = ConversationChecklistDockProjection(rows: [])
     @State private var cachedAppKitRows: [AppKitChatTimelineRow] = [] {
         didSet {
@@ -103,8 +104,14 @@ struct SessionConversationSurface: View {
     private var quickMessageClearance: CGFloat {
         showsFloatingQuickMessages && !hasPinnedChecklist ? ConversationQuickMessages.rowHeight + 10 : 0
     }
+    private var currentChecklist: ConversationExecutionPlan? {
+        let cached = cachedSessionId == sessionId ? cachedChecklistDock.latestChecklist : nil
+        if let event = checklistEventPlan, event.taskId == selectedSession?.taskId,
+           event.revision >= (cached?.revision ?? 0) { return event }
+        return cached
+    }
     private var hasPinnedChecklist: Bool {
-        !showsWelcome && cachedSessionId == sessionId && cachedChecklistDock.checklist != nil
+        !showsWelcome && currentChecklist != nil && currentChecklist?.closed != true
     }
     private var showsFloatingQuickMessages: Bool {
         usesComposerJumpToLatest && !showsWelcome
@@ -372,9 +379,7 @@ struct SessionConversationSurface: View {
             expectedSelectionGeneration: backendClient.sessionSelectionController.generation)
     }
 
-    var body: some View {
-        let _ = legacyRevision
-        let _ = SessionSwitchTrace.shared.mark(.conversationBody, sessionID: sessionId)
+    private var conversationWithLifecycle: some View {
         conversationRoot
         .onAppear {
             guard acceptsPresentationUpdates else { return }
@@ -444,6 +449,12 @@ struct SessionConversationSurface: View {
             }
             restoreMissingHistoryAnchorIfNeeded()
         }
+    }
+
+    var body: some View {
+        let _ = legacyRevision
+        let _ = SessionSwitchTrace.shared.mark(.conversationBody, sessionID: sessionId)
+        conversationWithLifecycle
         .onReceive(backendClient.sessionSelectionController.$selectedSessionID) { selectedSessionID in
             if renderInputs == nil, selectedSessionID == sessionId { restoreMissingHistoryAnchorIfNeeded() }
         }
@@ -464,11 +475,20 @@ struct SessionConversationSurface: View {
         .onChange(of: appKitDetailRevision) { _, _ in
             Task { await applySearchTargetIfNeeded() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged), perform: receiveChecklistChange)
         .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn)) { notification in
             guard allowsPageActions, notification.userInfo?["sessionId"] as? String == sessionId,
                   let turnID = notification.userInfo?["turnId"] as? String else { return }
             scrollTargetTurnID = turnID
             scrollTargetTurnRevision &+= 1
+        }
+    }
+
+    private func receiveChecklistChange(_ event: Notification) {
+        guard acceptsPresentationUpdates, event.object as? String == selectedSession?.taskId,
+              let next = event.userInfo?["checklist"] as? ConversationExecutionPlan else { return }
+        if next.taskId != checklistEventPlan?.taskId || next.revision > (checklistEventPlan?.revision ?? -1) {
+            checklistEventPlan = next
         }
     }
 
@@ -593,7 +613,7 @@ struct SessionConversationSurface: View {
         VStack(spacing: 0) {
             // One editor at one structural position: placement changes must
             // not recreate the native text view, attachments or draft owner.
-            if hasPinnedChecklist, let plan = cachedChecklistDock.checklist {
+            if hasPinnedChecklist, let plan = currentChecklist {
                 PinnedExecutionChecklistCard(plan: plan)
                     .id(sessionId + ":" + plan.planId)
                     .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
@@ -1044,6 +1064,9 @@ struct SessionConversationSurface: View {
             row.contentRevision &+= 1
             updatingDisclosureRow = true
             cachedAppKitRows[index] = row
+            if let timelineIndex = cachedChecklistDock.timelineIndexByRowID[row.id] {
+                cachedChecklistDock.timelineRows[timelineIndex] = row
+            }
             updatingDisclosureRow = false
             return
         }

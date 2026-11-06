@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 import UserNotifications
 
 private struct AutomationClientActionEnvelope: Decodable {
@@ -58,7 +59,9 @@ final class BackendEventRouter {
         if eventName == "ExecutionChecklistChanged" {
             if let bytes = data.data(using: .utf8),
                let event = try? JSONDecoder().decode(ExecutionChecklistChangedEnvelope.self, from: bytes) {
-                NotificationCenter.default.post(name: .executionChecklistChanged, object: event.payload.taskId)
+                var info: [AnyHashable: Any] = [:]
+                if let plan = event.payload.checklist { info["checklist"] = plan }
+                NotificationCenter.default.post(name: .executionChecklistChanged, object: event.payload.taskId, userInfo: info)
             }
             return
         }
@@ -196,7 +199,7 @@ final class BackendEventRouter {
 
 private struct ExecutionChecklistChangedEnvelope: Decodable {
     let payload: Payload
-    struct Payload: Decodable { let taskId: String }
+    struct Payload: Decodable { let taskId: String; let checklist: ConversationExecutionPlan? }
 }
 
 private struct ChecklistTaskChangedEnvelope: Decodable {

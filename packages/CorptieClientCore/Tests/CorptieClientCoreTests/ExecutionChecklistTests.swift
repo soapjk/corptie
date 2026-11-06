@@ -33,8 +33,9 @@ struct ExecutionChecklistTests {
         #expect(firstObject["taskId"] == nil)
     }
     @Test func childAssignmentDecodesAndCommandsReuseTheExistingEndpointShape() throws {
-        let data = Data(#"{"schemaVersion":1,"planId":"plan:one","revision":1,"lifecycle":"active","updatedAt":"now","steps":[{"stepId":"one","ordinal":0,"text":"API","status":"pending","assignment":{"taskId":"task:child","dispatchId":"dispatch:one","title":"API child","status":"running"}},{"stepId":"two","ordinal":1,"text":"Verify","status":"pending"}]}"#.utf8)
+        let data = Data(#"{"schemaVersion":1,"planId":"plan:one","revision":1,"closed":true,"lifecycle":"active","updatedAt":"now","steps":[{"stepId":"one","ordinal":0,"text":"API","status":"pending","assignment":{"taskId":"task:child","dispatchId":"dispatch:one","title":"API child","status":"running"}},{"stepId":"two","ordinal":1,"text":"Verify","status":"pending"}]}"#.utf8)
         let plan = try JSONDecoder().decode(ConversationExecutionPlan.self, from: data)
+        #expect(plan.closed == true)
         #expect(plan.steps[0].assignment?.taskId == "task:child")
         #expect(plan.steps[1].assignment == nil)
         let command = ExecutionChecklistCommand(action: "assign", revision: 1, itemIDs: ["one", "two"], dispatchID: "dispatch:one")

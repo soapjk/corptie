@@ -102,6 +102,9 @@ test("desktop HTTP mutations require local user authority and preview remains re
   preview = false;
   const response = await fetch(url, { method: "POST", body: JSON.stringify({ action: "add", text: "User addition", operationId: "http-add", expectedRevision: 1 }) });
   assert.equal(response.status, 200); assert.equal((await response.json()).checklist.steps.length, 4);
+  const closed = await fetch(url, { method: "POST", body: JSON.stringify({ action: "close", operationId: "http-close", expectedRevision: 2 }) });
+  assert.equal(closed.status, 200);
+  assert.equal((await closed.json()).checklist.closed, true);
 });
 
 test("model tool creates through authenticated binding and returns bounded remaining pages", async t => {
@@ -201,4 +204,50 @@ test("missing linked tasks do not prevent checklist display or progress edits", 
   assert.equal(f.service.display(f.service.read(f.task.id)).steps[0].assignment.status, "unavailable");
   f.update({ action: "status", itemId: value.steps[1].stepId, status: "completed" });
   assert.equal(f.service.read(f.task.id).completedCount, 1);
+});
+
+test("successive batches preserve closed history and never control model execution", async t => {
+  const f = await fixture(t); f.create();
+  const first = f.service.read(f.task.id);
+  f.update({ action: "status", itemId: first.steps[0].stepId, status: "completed" });
+  const command = { action: "create", steps: [{ text: "Second batch" }],
+    expectedRevision: f.service.read(f.task.id).revision, operationId: "second-batch" };
+  const second = f.update(command).checklist;
+  assert.notEqual(second.planId, first.planId);
+  assert.equal(second.closed, false);
+  assert.equal(second.steps[0].text, "Second batch");
+  f.update(command);
+  let history = f.store.getItems(f.logical.legacySessionId).filter(i => i.type === "executionChecklist");
+  assert.equal(history.length, 2);
+  const previous = history.find(i => i.id === first.planId).executionPlan;
+  assert.equal(previous.closed, true);
+  assert.equal(previous.completedCount, 1);
+  assert.equal(previous.steps.length, 3);
+  f.update({ action: "close" });
+  assert.equal(f.service.read(f.task.id).closed, true);
+  assert.equal(f.service.read(f.task.id).steps[0].status, "pending");
+  f.update({ action: "status", itemId: second.steps[0].stepId, status: "completed" });
+  assert.equal(f.service.read(f.task.id).closed, true);
+  f.create();
+  const third = f.service.read(f.task.id);
+  assert.notEqual(third.planId, second.planId);
+  assert.equal(third.closed, false);
+  assert.equal(f.wakes.length, 0);
+  assert.equal(f.store.getSession(f.logical.legacySessionId).status, "running");
+});
+
+test("manual close and closed batch history survive a SQLite reopen", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "corptie-checklist-batches-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, "state.sqlite");
+  const f = await fixture(t, "codex-app-server", dbPath); f.create();
+  const first = f.service.read(f.task.id).planId;
+  f.create(); f.update({ action: "close" });
+  const reopened = new CorptieStore({ dbPath, configPath: "/unused-batch-config", manageProcessEnvironment: false });
+  await reopened.initialize({ resolveDataPath: false }); t.after(() => reopened.close());
+  const service = new ExecutionChecklistService({ store: reopened });
+  assert.equal(service.read(f.task.id).closed, true);
+  const history = reopened.getItems(f.logical.legacySessionId).filter(i => i.type === "executionChecklist");
+  assert.equal(history.length, 2);
+  assert.equal(history.find(i => i.id === first).executionPlan.closed, true);
 });

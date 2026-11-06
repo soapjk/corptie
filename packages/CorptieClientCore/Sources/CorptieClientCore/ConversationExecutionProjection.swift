@@ -31,6 +31,7 @@ public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
         }
     }
 
+    public var closed: Bool? = nil
     public var taskId: String? = nil
     public var stopReason: String? = nil
     public var completedCount: Int? = nil

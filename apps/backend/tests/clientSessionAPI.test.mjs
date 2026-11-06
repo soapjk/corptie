@@ -921,11 +921,12 @@ test("device keeps checklist child links and strips undeclared assignment fields
       readWindow: async () => ({ revision: 2, hasEarlier: false, items: [
         { id: "checklist:parent", turnId: "turn:one", type: "executionChecklist", text: "Checklist",
           executionPlan: { schemaVersion: 1, taskId: "task:parent", planId: "checklist:parent", revision: 2,
-            lifecycle: "active", steps: [{ stepId: "step:one", text: "API", status: "inProgress",
+            lifecycle: "active", closed: true, steps: [{ stepId: "step:one", text: "API", status: "inProgress",
               assignment: { taskId: "task:child", dispatchId: "dispatch:one", title: "API child", status: "running",
                 sessionId: "session:child", secret: "private" } }] } }
       ] }) });
     const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.equal(page.items[0].executionPlan.closed, true);
     const link = page.items[0].executionPlan.steps[0].assignment;
     assert.equal(link.taskId, "task:child"); assert.equal(link.status, "running");
     assert.equal(link.secret, undefined);
