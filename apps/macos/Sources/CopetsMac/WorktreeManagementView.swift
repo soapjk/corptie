@@ -752,7 +752,7 @@ struct WorktreeManagementView: View {
                                         Button(role: .destructive) {
                                             requestDeletion(of: worktree)
                                         } label: {
-                                            Label(L10n("Delete Worktree"), systemImage: "trash")
+                                            Label(L10n(worktree.isStaleRegistration ? "Clean Stale Registration" : "Delete Worktree"), systemImage: "trash")
                                         }
                                         .accessibilityIdentifier("worktree.delete.\(worktree.worktreeId)")
                                     }
@@ -1058,7 +1058,7 @@ struct WorktreeManagementView: View {
                     Button(role: .destructive) {
                         requestDeletion(of: worktree)
                     } label: {
-                        Label(L10n("Delete Worktree"), systemImage: "trash")
+                        Label(L10n(worktree.isStaleRegistration ? "Clean Stale Registration" : "Delete Worktree"), systemImage: "trash")
                     }
                     .disabled(client.isMutating)
                 }
@@ -1110,6 +1110,7 @@ struct WorktreeManagementView: View {
 
     private func worktreeActions(_ project: ManagedGitProject) -> some View {
         let eligible = ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: project.worktrees)
+        let stale = project.worktrees.filter { $0.isStaleRegistration && ManagedWorktreeDeletionPolicy.blocker(for: $0) == nil }
         return VStack(alignment: .leading, spacing: 8) {
             if let tree=client.selectedWorktree, let hierarchy=tree.hierarchy {
                 ConversationHierarchyActions(hierarchy:hierarchy,api:{
@@ -1132,6 +1133,12 @@ struct WorktreeManagementView: View {
                 .accessibilityIdentifier("worktree.integrate.preflight")
 
                 Menu {
+                    Button(role: .destructive) {
+                        pendingCleanup = WorktreeCleanupRequest(repositoryID: project.repositoryId, worktrees: stale)
+                    } label: {
+                        Label(L10n("Clean Stale Registrations"), systemImage: "trash")
+                    }
+                    .disabled(stale.isEmpty || client.isMutating)
                     Button(role: .destructive) {
                         pendingCleanup = WorktreeCleanupRequest(repositoryID: project.repositoryId, worktrees: eligible)
                     } label: {
@@ -1715,6 +1722,7 @@ struct WorktreeManagementView: View {
     }
 
     private func worktreeState(_ worktree: ManagedWorktree) -> (label: String, color: Color) {
+        if worktree.isStaleRegistration { return (L10n("Stale registration"), .orange) }
         if worktree.availability != "available" { return (L10n("Unavailable"), .red) }
         if !worktree.conflictFiles.isEmpty { return (L10n("Conflicts"), .orange) }
         if worktree.operationState != nil { return (L10n("Operation in progress"), .orange) }
@@ -2156,12 +2164,13 @@ struct WorktreeCleanupConfirmationView: View {
     let worktrees: [ManagedWorktree]
     let onConfirm: () -> Void
     let onCancel: () -> Void
+    private var registrationOnly: Bool { worktrees.first?.isStaleRegistration == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(L10nFormat("Clean up %d merged Worktrees?", worktrees.count))
+            Text(registrationOnly ? L10n("Clean stale registrations?") : L10nFormat("Clean up %d merged Worktrees?", worktrees.count))
                 .font(.title2.weight(.semibold))
-            Text(L10n("Only these Worktrees, whose branches are merged into main and have no unfinished CorptieTask or active Session association, will be removed with their local branches:"))
+            Text(L10n(registrationOnly ? "Only the listed stale Git registrations will be removed. Local branches will be retained." : "Only these Worktrees, whose branches are merged into main and have no unfinished CorptieTask or active Session association, will be removed with their local branches:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
 

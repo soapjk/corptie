@@ -96,6 +96,14 @@ public struct ClientManagedWorktree: Identifiable, Decodable, Equatable, Sendabl
     public let associations: [ClientWorktreeAssociation]
     public let deletionBlocker: ClientWorktreeDeletionBlocker?
     public var gitHubPush: ClientGitHubPushStatus?
+    public var cleanupAction: ClientWorktreeCleanupAction? = nil
+    public var isStaleRegistration: Bool { cleanupAction?.kind == "remove_stale_registration" }
+}
+
+public struct ClientWorktreeCleanupAction: Decodable, Equatable, Sendable {
+    public let kind: String
+    public let available: Bool
+    public let blocker: ClientWorktreeDeletionBlocker?
 }
 
 public struct ClientWorktreeAssociation: Decodable, Equatable, Sendable {
@@ -581,9 +589,10 @@ public struct ClientWorktreeAPI: Sendable {
         try await jobAction(jobId, "resolve-conflict", EmptyBody())
     }
 
-    public func delete(repositoryId: String, worktreeId: String) async throws {
+    public func delete(repositoryId: String, worktreeId: String, registrationOnly: Bool = false) async throws {
+        struct Body: Encodable { let action: String }
         let _: EmptyResponse = try await post(["client", "v1", "worktrees", "repositories", repositoryId,
-                                               "worktrees", worktreeId, "delete"], EmptyBody())
+                                               "worktrees", worktreeId, "delete"], Body(action: registrationOnly ? "remove_stale_registration" : "remove_worktree"))
     }
 
     public func workspaceAction(repositoryId: String, worktreeId: String, action: String,

@@ -2459,3 +2459,55 @@ test("permanent deletion removes a Git-locked Worktree with uncommitted files",a
     assert.ok(await gitOutput(["rev-parse","HEAD"],fixture.repository));
   }finally{await fixture.close();}
 });
+
+test("stale registration cleanup targets one missing Worktree and preserves branches and HEAD", async () => {
+  const f = await createFixture("stale-registration");
+  try {
+    const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+    const paths = [join(await realpath(f.directory), "missing-one"), join(await realpath(f.directory), "missing-two")];
+    for (const [index, path] of paths.entries()) await git(["worktree", "add", "-b", `retained-${index}`, path], f.repository);
+    await manager.managementInspectionForProject(f.repository, f.repositoryId, { forceFresh: true });
+    const originalID = f.store.listGitWorktrees(f.repositoryId).find(tree => tree.path === paths[0]).worktreeId;
+    for (const path of paths) await rm(path, { recursive: true });
+    const inspection = await manager.managementInspectionForProject(f.repository, f.repositoryId, { forceFresh: true });
+    const target = inspection.worktrees.find(tree => tree.path === paths[0]);
+    assert.equal(target.worktreeId, originalID, "missing-directory inspection retains persisted binding identity");
+    assert.equal(target.cleanupAction.available, true);
+    const before = await gitOutput(["rev-parse", "HEAD"], f.repository);
+    const result = await manager.removeStaleWorktreeRegistration({ repositoryId: f.repositoryId,
+      workingDirectory: f.repository, sourceWorktreeId: target.worktreeId });
+    assert.deepEqual(result, { removed: true, registrationOnly: true, branchDeleted: false });
+    const listed = await gitOutput(["worktree", "list", "--porcelain"], f.repository);
+    assert.equal(listed.includes(paths[0]), false);
+    assert.equal(listed.includes(paths[1]), true);
+    assert.equal(await gitOutput(["rev-parse", "HEAD"], f.repository), before);
+    for (const index of [0, 1]) assert.equal(await manager.gitSucceeds(f.repository, ["show-ref", "--verify", `refs/heads/retained-${index}`]), true);
+    await assert.rejects(manager.removeStaleWorktreeRegistration({ repositoryId: f.repositoryId,
+      workingDirectory: f.repository, sourceWorktreeId: target.worktreeId }), { code: "WORKTREE_SCOPE_CHANGED" });
+  } finally { await f.close(); }
+});
+
+test("stale cleanup refuses restored directories, symlinks, locks, bindings and unreferenced commits", async () => {
+  for (const mode of ["restored", "symlink", "locked", "bound", "unreferenced", "wrong-repository"]) {
+    const f = await createFixture(`stale-${mode}`, { activeFeatureWorktree: mode === "bound" });
+    try {
+      const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+      const path = mode === "bound" ? await realpath(f.activeWorktree) : join(await realpath(f.directory), "missing");
+      if (mode !== "bound") await git(["worktree", "add", "--detach", path], f.repository);
+      if (mode === "unreferenced") await git(["commit", "--allow-empty", "-m", "only in detached worktree"], path);
+      if (mode === "locked") await git(["worktree", "lock", path], f.repository);
+      const first = await manager.managementInspectionForProject(f.repository, f.repositoryId, { forceFresh: true });
+      const id = first.worktrees.find(tree => tree.path === path).worktreeId;
+      await rm(path, { recursive: true });
+      await manager.managementInspectionForProject(f.repository, f.repositoryId, { forceFresh: true });
+      if (mode === "restored") { await mkdir(path); await writeFile(join(path, "user-file"), "keep"); }
+      if (mode === "symlink") await symlink(join(f.directory, "nonexistent"), path);
+      await assert.rejects(manager.removeStaleWorktreeRegistration({ repositoryId: mode === "wrong-repository" ? "wrong" : f.repositoryId,
+        workingDirectory: f.repository, sourceWorktreeId: id }), {
+        code: mode === "bound" ? "WORKTREE_IN_USE" : mode === "unreferenced" ? "UNREFERENCED_WORKTREE_HEAD" : "WORKTREE_SCOPE_CHANGED"
+      });
+      assert.equal((await gitOutput(["worktree", "list", "--porcelain"], f.repository)).includes(path), true);
+      if (mode === "restored") assert.equal(await readFile(join(path, "user-file"), "utf8"), "keep");
+    } finally { await f.close(); }
+  }
+});
