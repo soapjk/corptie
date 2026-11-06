@@ -157,4 +157,27 @@ final class NativeMessageStatusGlowTests: XCTestCase {
         XCTAssertNil(glow.superview)
         XCTAssertEqual(cell.subviews.count, 1)
     }
+
+    func testWideImageUserGlowFollowsTrailingCardAfterHostingLayout() throws {
+        _ = NSApplication.shared
+        let message = AppKitChatTimelineRow(id: "wide-image-glow", contentRevision: 1,
+            nativeText: "为什么 worktree 合并过程中点击取消仍然没有取消", copyText: "为什么", nativeStyle: .user,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false, showsHeader: false,
+            messageStatus: try status("confirmed"),
+            images: [ChatTimelineImage(managedPath: "glow-test", displayURL: nil, originalPath: nil,
+                geometry: MessageImageGeometry(pixelWidth: 1400, pixelHeight: 420))])
+        let cell = AppKitSharedMessageTextCell(identifier: .init("wide-image-glow"))
+        for skin in [ConversationSkin.codexFlat, .classic] {
+            cell.updateAppearance(skin: skin)
+            for width: CGFloat in [1400, 1000, 1700, 900] {
+                cell.frame = NSRect(x: 0, y: 0, width: width, height: 340)
+                cell.setContent(message, availableWidth: width, onToggleExpansion: { _ in })
+                cell.layoutSubtreeIfNeeded()
+                let glow = try XCTUnwrap(cell.subviews.compactMap { $0 as? NativeMessageStatusGlow }.first)
+                XCTAssertEqual(glow.frame.maxX, width - ChatBubbleWidthPolicy.userTrailingInset, accuracy: 0.5,
+                    "The halo must follow the right-aligned card after its ancestors are placed")
+                XCTAssertGreaterThan(glow.frame.minX, 100)
+            }
+        }
+    }
 }
