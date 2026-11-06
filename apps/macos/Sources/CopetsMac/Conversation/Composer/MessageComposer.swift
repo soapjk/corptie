@@ -115,7 +115,6 @@ struct SessionMessageComposerSurface: View {
     let onSubmissionStarted: () -> Void
     let onJumpToLatest: (() -> Void)?
     let hasUnreadMessagesBelow: Bool
-    @State private var modelMenuWidth: CGFloat = 176
     @State private var editorController: ComposerEditorController
     @State private var hasSendableText: Bool
     @State private var isShowingScheduleSheet = false
@@ -230,14 +229,6 @@ struct SessionMessageComposerSurface: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .background {
-            if !compact && allowsModelSwitch {
-                GeometryReader { proxy in
-                    Color.clear.preference(key: ComposerWidthPreferenceKey.self,
-                        value: ComposerModelWidthPolicy.maximumWidth(for: proxy.size.width))
-                }
-            }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
             if acceptsPresentationUpdates, notification.object as? String == sessionId { editorController.focusIfRequested() }
         }
@@ -256,9 +247,6 @@ struct SessionMessageComposerSurface: View {
         .onChange(of: selectedPhotoItems) { _, items in importPhotoItems(items) }
         .onChange(of: selectedMentions) { _, mentions in
             if acceptsPresentationUpdates { editorController.draft.mentions = mentions }
-        }
-        .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
-            if acceptsPresentationUpdates, modelMenuWidth != width { modelMenuWidth = width }
         }
         .task(id: renderInputs?.activity.isActive) {
             guard acceptsPresentationUpdates, allowsActions, allowsModelSwitch,
@@ -694,7 +682,7 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var modelMenuMaxWidth: CGFloat {
-        modelMenuWidth
+        176
     }
 }
 
@@ -790,14 +778,6 @@ struct ComposerQuickMessagesBar: View {
                 .accessibilityIdentifier("conversation-jump-to-latest")
             }
         }
-    }
-}
-
-private struct ComposerWidthPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 176
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

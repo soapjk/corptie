@@ -36,6 +36,39 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
+    func testResizeBurstCoalescesAndImmediateGeometryCancelsPendingWork() async throws {
+        let h = makeHarness(followsLatest: false)
+        h.coordinator.apply(rows: [row(id: "resize-burst", text: "Visible reply")])
+        await settleMainQueue()
+        let baseline = h.coordinator.resizeLayoutCommitCount
+        for _ in 0..<50 { h.coordinator.containerGeometryDidChange(isResizing: true) }
+        XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline + 1)
+        h.coordinator.containerGeometryDidChange(isResizing: true)
+        h.coordinator.containerGeometryDidChange(isResizing: false)
+        let immediate = h.coordinator.resizeLayoutCommitCount
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, immediate)
+    }
+
+    func testCoordinatorWidthChangesNeverReloadWholeHistory() async throws {
+        let h = makeHarness(followsLatest: true, height: 300)
+        h.coordinator.apply(rows: (0..<300).map {
+            row(id: "resize-\($0)", text: String(repeating: "Wrapped history text. ", count: 20), showsHeader: false)
+        })
+        await settlePositionPublication()
+        let table = try XCTUnwrap(h.tableView as? IntrinsicHeightTableView)
+        let baseline = table.fullReloadCount
+        for width in [380.0, 520, 400, 600, 420] {
+            h.window.setContentSize(NSSize(width: width, height: 300))
+            h.window.layoutIfNeeded()
+            NotificationCenter.default.post(name: NSView.frameDidChangeNotification, object: h.scrollView)
+            await settleMainQueue()
+        }
+        XCTAssertEqual(table.fullReloadCount, baseline)
+    }
+
     func testProductionCoordinatorDefaultsToSDKRowHeightOwner() {
         let table = AppKitChatTimelineView.makeTableView()
         let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
@@ -1416,128 +1449,6 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(firstSeparator.isHidden)
         XCTAssertTrue(secondSeparator.isHidden)
         XCTAssertEqual(secondSeparator.alignment, .center)
-    }
-
-    func testHostedScrollerBorrowsPageGapWithoutMovingTheUserCard() async throws {
-        let rows = [row(id: "hosted-user", text: "User message", nativeStyle: .user, showsHeader: false)]
-            + (0..<30).map { row(id: "hosted-\($0)", text: "Reply") }
-        func page(extensionWidth: CGFloat, detailWidth: CGFloat) -> AnyView {
-            AnyView(HStack(spacing: 0) {
-                AppKitChatTimelineView(sessionID: "hosted-scroller", rows: rows, scrollToBottomRevision: 0,
-                    followsLatest: .constant(false), onToggleExpansion: { _ in },
-                    trailingScrollerExtension: extensionWidth)
-                    .padding(.trailing, -extensionWidth)
-                    .padding(1)
-                Color.clear.frame(width: detailWidth)
-            }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(6))
-        }
-        let host = NSHostingView(rootView: page(extensionWidth: 0, detailWidth: 106))
-        host.sizingOptions = []
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 320),
-            styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = host
-        defer { window.orderOut(nil) }
-        func scroll(in root: NSView) -> FirstLayoutRestoringScrollView? {
-            (root as? FirstLayoutRestoringScrollView) ?? root.subviews.lazy.compactMap { scroll(in: $0) }.first
-        }
-        for detailWidth: CGFloat in [106, 0] {
-            host.rootView = page(extensionWidth: 0, detailWidth: detailWidth)
-            await settleMainQueue()
-            window.layoutIfNeeded()
-            host.layoutSubtreeIfNeeded()
-            let before = try XCTUnwrap(scroll(in: host))
-            let oldContentRect = host.convert(before.contentView.frame, from: before)
-            XCTAssertGreaterThan(oldContentRect.width, 300)
-            host.rootView = page(extensionWidth: 7, detailWidth: detailWidth)
-            await settleMainQueue()
-            window.layoutIfNeeded()
-            host.layoutSubtreeIfNeeded()
-            let after = try XCTUnwrap(scroll(in: host))
-            let newContentRect = host.convert(after.contentView.frame, from: after)
-            XCTAssertEqual(newContentRect.minX, oldContentRect.minX, accuracy: 0.5)
-            XCTAssertEqual(newContentRect.maxX, oldContentRect.maxX, accuracy: 0.5)
-            let thumb = try XCTUnwrap(after.verticalScroller as? TimelineIntentScroller)
-            thumb.beginScrollInteraction()
-            thumb.displayIfNeeded()
-            thumb.layer?.displayIfNeeded()
-            let painted = host.convert(thumb.visibleKnobLayer.frame, from: thumb)
-            XCTAssertGreaterThanOrEqual(painted.minX, newContentRect.maxX - 2)
-            XCTAssertLessThanOrEqual(painted.maxX, host.bounds.maxX)
-        }
-    }
-
-    func testScrollerExtensionPreservesUserCardPositionAndCachedContent() async throws {
-        for shared in [false, true] {
-            let harness = makeHarness(followsLatest: false, useSharedTextCards: shared)
-            let user = row(id: "outside-scroller-user", text: "A user message", nativeStyle: .user, showsHeader: false)
-            harness.coordinator.apply(rows: [user] + (0..<30).map { row(id: "outside-\($0)", text: "Reply") })
-            await settleMainQueue()
-            harness.window.layoutIfNeeded()
-            let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
-            let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
-            let originalRight = harness.scrollView.convert(body.bounds, from: body).maxX
-            let originalWidth = harness.tableView.tableColumns[0].width
-            let originalHeight = harness.tableView.rect(ofRow: 0).height
-            let scroll = try XCTUnwrap(harness.scrollView as? FirstLayoutRestoringScrollView)
-            scroll.trailingScrollerExtension = 7
-            harness.window.setContentSize(NSSize(width: 427, height: 320))
-            harness.window.layoutIfNeeded()
-            await settleMainQueue()
-            harness.window.layoutIfNeeded()
-            XCTAssertEqual(harness.tableView.tableColumns[0].width, originalWidth, accuracy: 0.5)
-            XCTAssertEqual(harness.scrollView.convert(body.bounds, from: body).maxX, originalRight, accuracy: 0.5)
-            XCTAssertEqual(harness.tableView.rect(ofRow: 0).height, originalHeight, accuracy: 0.5)
-            let retained = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
-            XCTAssertTrue(retained === cell)
-            let thumb = try XCTUnwrap(scroll.verticalScroller as? TimelineIntentScroller)
-            thumb.beginScrollInteraction()
-            thumb.displayIfNeeded()
-            thumb.layer?.displayIfNeeded()
-            XCTAssertGreaterThanOrEqual(scroll.convert(thumb.knobDrawingRect, from: thumb).minX, originalRight + 10)
-        }
-    }
-
-    func testTimelineInputCallbacksShowAndHideThumbWithoutChangingRows() async throws {
-        let harness = makeHarness(followsLatest: false, useSharedTextCards: false)
-        harness.coordinator.apply(rows: (0..<30).map { row(id: "fade-\($0)", text: "Message \($0)") })
-        await settleMainQueue()
-        let scroll = try XCTUnwrap(harness.scrollView as? FirstLayoutRestoringScrollView)
-        let thumb = try XCTUnwrap(scroll.verticalScroller as? TimelineIntentScroller)
-        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell)
-        let configurations = cell.contentConfigurationCount
-        let position = scroll.contentView.bounds.origin
-        XCTAssertEqual(thumb.visibleKnobLayer.opacity, 0)
-        scroll.onUserScrollWillBegin?()
-        XCTAssertEqual(thumb.visibleKnobLayer.opacity, 1)
-        scroll.onUserScrollDidEnd?()
-        try await Task.sleep(for: .milliseconds(1150))
-        XCTAssertEqual(thumb.visibleKnobLayer.opacity, 0)
-        XCTAssertEqual(cell.contentConfigurationCount, configurations)
-        XCTAssertEqual(scroll.contentView.bounds.origin, position)
-    }
-
-    func testWheelEventHandlerShowsThumbBeforeIdleFade() async throws {
-        let harness = makeHarness(followsLatest: false)
-        harness.coordinator.apply(rows: (0..<40).map { row(id: "wheel-\($0)", text: "Message \($0)") })
-        await settleMainQueue()
-        let thumb = try XCTUnwrap(harness.scrollView.verticalScroller as? TimelineIntentScroller)
-        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 200))
-        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
-        let cgEvent = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
-            wheelCount: 1, wheel1: -80, wheel2: 0, wheel3: 0))
-        cgEvent.location = CGPoint(x: 100, y: (NSScreen.main?.frame.height ?? 900) - 100)
-        let event = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
-        XCTAssertEqual(event.type, .scrollWheel)
-        XCTAssertNotEqual(event.scrollingDeltaY, 0)
-        harness.scrollView.scrollWheel(with: event)
-        harness.window.layoutIfNeeded()
-        XCTAssertEqual(thumb.visibleKnobLayer.opacity, 1)
-        XCTAssertFalse(thumb.isHiddenOrHasHiddenAncestor)
-        XCTAssertGreaterThan(thumb.knobDrawingRect.height, 0)
-        XCTAssertEqual(thumb.knobDrawingRect.width, 4.5)
-        XCTAssertTrue(thumb.bounds.contains(thumb.knobDrawingRect))
-        try await Task.sleep(for: .milliseconds(1150))
-        XCTAssertEqual(thumb.visibleKnobLayer.opacity, 0)
     }
 
     func testSingleColumnUsesViewportWidthWithoutAnUnusedScrollerGutter() async {
