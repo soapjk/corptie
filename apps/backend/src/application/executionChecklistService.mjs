@@ -45,8 +45,8 @@ export class ExecutionChecklistService {
     this.store.db.run(`INSERT INTO execution_checklists(task_id,session_id,body_json,updated_at) VALUES(?,?,?,?)
       ON CONFLICT(task_id) DO UPDATE SET session_id=excluded.session_id,body_json=excluded.body_json,updated_at=excluded.updated_at`,
     [value.taskId, value.logicalSessionId, JSON.stringify(value), value.updatedAt]);
-    // A single stable item in the existing timeline. Status changes never
-    // append duplicate cards or become Provider plan/Goal authority.
+    // Stable timeline identity within a batch; a new batch retains the closed
+    // predecessor as a historical item. Closing never controls execution.
     const logical = this.store.getLogicalSession(value.logicalSessionId);
     if (logical?.legacySessionId) this.store.upsertTimelineItemProjection(logical.legacySessionId, {
       id: value.planId, type: "executionChecklist", title: "执行清单", text: `执行清单 ${value.completedCount}/${value.steps.length}`,
@@ -85,7 +85,7 @@ export class ExecutionChecklistService {
     if (!value) return null;
     const { schemaVersion, planId, taskId, revision, explanation, steps, completedCount, updatedAt } = value;
     const lifecycle = steps.length && steps.every(step => step.status === "completed") ? "completed" : "active";
-    return { schemaVersion, planId, taskId, revision, lifecycle, stopReason: null, explanation, steps: steps.map(step => ({ ...step,
+    return { schemaVersion, planId, taskId, revision, closed: value.closed === true, lifecycle, stopReason: null, explanation, steps: steps.map(step => ({ ...step,
       ...(step.assignment ? { assignment: enrichAssignments ? this.resolveAssignment(taskId, step.assignment) : step.assignment } : {}) })), completedCount, updatedAt };
   }
   publish(value) { this.changed(value); }
@@ -94,12 +94,14 @@ export class ExecutionChecklistService {
       instruction: "清单只记录事项进度，不控制会话执行；由模型继续已授权工作，完成后更新事项。" };
   }
   mutate(taskId, input, context = {}) {
-    this.task(taskId);
-    if (!["create", "add", "edit", "remove", "move", "status", "assign", "unassign"].includes(input.action)) fail("CHECKLIST_INVALID_ACTION", 400);
+    if (input.action === "close") {
+      if (!this.store.getTask(taskId)) fail("TASK_NOT_FOUND", 404);
+    } else this.task(taskId);
+    if (!["create", "add", "edit", "remove", "move", "status", "assign", "unassign", "close"].includes(input.action)) fail("CHECKLIST_INVALID_ACTION", 400);
     const operationId = text(input.operationId, 200);
     const allowed = ["operationId", "expectedRevision", "action", "itemId", "text", "condition", "status", "reason", "position", "steps", "itemIds", "taskId", "dispatchId"];
     if (Object.keys(input).some(key => !allowed.includes(key))) fail("CHECKLIST_UNKNOWN_FIELD", 400);
-    let value, receipt;
+    let value, receipt, archived;
     this.store.runInTransaction(() => {
       value = this.read(taskId);
       const replay = this.store.selectOne("SELECT * FROM execution_checklist_operations WHERE task_id=? AND operation_id=?", [taskId, operationId]);
@@ -110,18 +112,29 @@ export class ExecutionChecklistService {
       if ((value?.revision ?? 0) !== input.expectedRevision) fail("CHECKLIST_STALE_REVISION");
       if (value && context.logicalSessionId && value.logicalSessionId !== context.logicalSessionId) fail("CHECKLIST_SESSION_LEASE_CHANGED", 403);
       if (input.action === "create") {
-        if (value) fail("CHECKLIST_ALREADY_EXISTS");
         if (!context.logicalSessionId || !context.turnId || !context.bindingId) fail("CHECKLIST_ACTIVE_TURN_REQUIRED", 403);
         const steps = input.steps;
         if (!Array.isArray(steps) || steps.length < 1 || steps.length > 200) fail("CHECKLIST_INVALID_STEPS", 400);
-        value = { schemaVersion: 1, planId: `checklist:${taskId}`, taskId, revision: 0,
+        const previousRevision = value?.revision ?? 0;
+        const previousPlanId = value?.planId;
+        if (value) {
+          value.closed = true;
+          value.revision++;
+          this.save(value);
+          archived = value;
+        }
+        value = { schemaVersion: 1, planId: previousPlanId ? `checklist:${taskId}:${randomUUID()}` : `checklist:${taskId}`, taskId,
+          revision: previousRevision + (archived ? 1 : 0), closed: false,
           logicalSessionId: context.logicalSessionId, anchorTurnId: context.turnId, anchorBindingId: context.bindingId,
           lifecycle: "active", stopReason: null, explanation: null, createdAt: this.clock(), steps: steps.map((step, ordinal) => ({
             stepId: `item:${randomUUID()}`, ordinal, text: text(step.text), condition: step.condition ? text(step.condition) : "",
             status: "pending", reason: null })) };
+      } else if (input.action === "close") {
+        if (!value) fail("CHECKLIST_NOT_FOUND", 404);
+        value.closed = true;
       } else {
         if (!value) fail("CHECKLIST_NOT_FOUND", 404);
-        if (["assign", "unassign"].includes(input.action)) {
+        if (["assign", "unassign", "close"].includes(input.action)) {
           const ids = input.itemIds ?? (input.itemId ? [input.itemId] : []);
           if (!Array.isArray(ids) || !ids.length || ids.length > 200) fail("CHECKLIST_INVALID_ITEMS", 400);
           const selected = ids.map(id => value.steps.find(step => step.stepId === id));
@@ -172,6 +185,7 @@ export class ExecutionChecklistService {
       receipt = { operationId, revision: value.revision };
       this.store.db.run("INSERT INTO execution_checklist_operations VALUES(?,?,?,?)", [taskId, operationId, JSON.stringify(input), JSON.stringify(receipt)]);
     });
+    if (archived) this.publish(archived);
     this.publish(value);
     return this.result(this.read(taskId), receipt);
   }

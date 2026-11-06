@@ -16,13 +16,18 @@ func desktopExecutionChecklistAPI() throws -> ClientExecutionChecklistAPI {
 struct ConversationChecklistDockProjection {
     var timelineRows: [AppKitChatTimelineRow] = []
     var checklist: ConversationExecutionPlan?
+    var latestChecklist: ConversationExecutionPlan?
+    var timelineIndexByRowID: [String: Int] = [:]
 
     init(rows: [AppKitChatTimelineRow]) {
         timelineRows.reserveCapacity(rows.count)
         for row in rows {
-            if let plan = row.executionPlan, plan.taskId != nil {
+            if let plan = row.executionPlan, plan.taskId != nil,
+               plan.revision > (latestChecklist?.revision ?? -1) { latestChecklist = plan }
+            if let plan = row.executionPlan, plan.taskId != nil, plan.closed != true {
                 checklist = plan
             } else {
+                timelineIndexByRowID[row.id] = timelineRows.count
                 timelineRows.append(row)
             }
         }
@@ -70,15 +75,19 @@ struct TaskExecutionChecklistDetailCard: View {
     @State private var requestGeneration = UUID()
     var body: some View {
         Group {
-            if let plan {
-                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width, canEdit: writesAllowed, observesAssignments: false)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
-                    Text(error == nil ? "模型开始执行时将在这里建立清单" : "清单暂时无法加载")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                    if error != nil { Button("重试") { refresh() }.font(.system(size: 11)) }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+            if plan?.closed != true {
+                Group {
+                    if let plan {
+                        DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width, canEdit: writesAllowed, observesAssignments: false)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
+                            Text(error == nil ? "模型开始执行时将在这里建立清单" : "清单暂时无法加载")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                            if error != nil { Button("重试") { refresh() }.font(.system(size: 11)) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    }.modifier(ConversationDetailModuleSurface())
             }
         }
         .task(id: active ? taskID : nil) {
@@ -88,7 +97,9 @@ struct TaskExecutionChecklistDetailCard: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged)) { event in
             guard active, event.object as? String == taskID else { return }
-            refresh()
+            if let next = event.userInfo?["checklist"] as? ConversationExecutionPlan,
+               next.revision >= (plan?.revision ?? 0) { plan = next }
+            else { refresh() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged)) { event in
             guard active, event.object as? String == taskID,
@@ -135,6 +146,10 @@ struct DesktopExecutionChecklistContent: View {
             do {
                 let response = try await desktopExecutionChecklistAPI().update(taskID: taskID, command: command)
                 accept(response.checklist)
+                if command.action == "close", let next = response.checklist {
+                    NotificationCenter.default.post(name: .executionChecklistChanged, object: taskID,
+                        userInfo: ["checklist": next])
+                }
             } catch {
                 if let response = try? await desktopExecutionChecklistAPI().read(taskID: taskID) { accept(response.checklist) }
                 throw error
