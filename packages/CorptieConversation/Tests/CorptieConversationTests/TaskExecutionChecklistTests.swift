@@ -7,7 +7,7 @@ import CorptieClientCore
 
 @MainActor @Suite(.serialized)
 struct TaskExecutionChecklistTests {
-    private func plan(count: Int, blocked: Bool = false, assigned: Bool = false) throws -> ConversationExecutionPlan {
+    private func plan(count: Int, blocked: Bool = false, assigned: Bool = false, closed: Bool = false) throws -> ConversationExecutionPlan {
         let steps: [[String: Any]] = (0..<count).map { index in
             var item: [String: Any] = ["stepId": "item:\(index)", "ordinal": index, "text": String(repeating: "长事项说明", count: 40), "status": "pending"]
             if blocked && index % 3 == 0 { item["reason"] = "等待用户输入"; item["status"] = "blocked" }
@@ -15,7 +15,7 @@ struct TaskExecutionChecklistTests {
             return item
         }
         let source: [String: Any] = ["schemaVersion": 1, "planId": "checklist:task:one", "taskId": "task:one",
-            "revision": 1, "lifecycle": "active", "completedCount": 0, "updatedAt": "2026-11-03T00:00:00Z", "steps": steps]
+            "revision": 1, "closed": closed, "lifecycle": "active", "completedCount": 0, "updatedAt": "2026-11-03T00:00:00Z", "steps": steps]
         return try JSONDecoder().decode(ConversationExecutionPlan.self, from: JSONSerialization.data(withJSONObject: source))
     }
     @Test func twoHundredLongItemsKeepPreviewBoundedAcrossColumnWidths() throws {
@@ -152,6 +152,50 @@ struct TaskExecutionChecklistTests {
         }
         try await Task.sleep(for: .milliseconds(60))
         #expect(opened == "task:child")
+    }
+
+    @Test func closedHistoryExtentsRemainBoundedAndExpandWithoutEditing() throws {
+        for count in [0, 2, 200] {
+            let value = try plan(count: count, blocked: true, assigned: true, closed: true)
+            for width: CGFloat in [240, 520, 780] {
+                let heights = TaskExecutionChecklist.heights(plan: value, width: width)
+                #expect(heights.collapsed == 20)
+                for expanded in [false, true] {
+                    let expected = expanded ? heights.expanded : heights.collapsed
+                    let host = NSHostingView(rootView: TaskExecutionChecklist(plan: value, width: width,
+                        canEdit: false, isExpanded: expanded) { _ in Issue.record("History must not edit") }.frame(width: width))
+                    host.frame = NSRect(x: 0, y: 0, width: width, height: expected)
+                    host.layoutSubtreeIfNeeded()
+                    #expect(abs(host.fittingSize.height - expected) <= 1)
+                }
+            }
+        }
+    }
+    @Test func nativeMouseCloseSubmitsOnlyTheCloseCommand() async throws {
+        let value = try plan(count: 200)
+        var commands: [ExecutionChecklistCommand] = []
+        let host = NSHostingView(rootView: TaskExecutionChecklist(plan: value, width: 520) { commands.append($0) }
+            .frame(width: 520, height: 240, alignment: .topLeading))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 240),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(80))
+        host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let point = NSPoint(x: 511, y: host.isFlipped ? 10 : host.bounds.height - 10)
+        let location = host.convert(point, to: nil)
+        for (number, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: number + 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            window.sendEvent(event)
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(commands.count == 1)
+        #expect(commands.first?.action == "close")
+        #expect(commands.first?.expectedRevision == 1)
+        #expect(commands.first?.itemId == nil)
     }
 
 }
