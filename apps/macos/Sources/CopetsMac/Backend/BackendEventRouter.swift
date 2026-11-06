@@ -48,6 +48,12 @@ final class BackendEventRouter {
     init(ports: Ports) { self.ports = ports }
 
     func handle(_ eventName: String, data: String) async {
+        if eventName == "SessionAbilitiesChanged", let bytes = data.data(using: .utf8),
+           let envelope = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+           let payload = envelope["payload"] as? [String: Any], let id = payload["sessionId"] as? String {
+            NotificationCenter.default.post(name: .sessionAbilitiesChanged, object: id)
+            return
+        }
         if eventName == "TaskChanged", let bytes = data.data(using: .utf8),
            let event = try? JSONDecoder().decode(ChecklistTaskChangedEnvelope.self, from: bytes) {
             let taskID = event.payload.taskId ?? event.payload.entity?.id

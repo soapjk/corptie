@@ -48,10 +48,10 @@ export async function callSkillDynamicTool(skillRegistryService, input = {}) {
     throw error;
   }
   if (input.tool === "corptie_skill_search") {
-    return skillRegistryService.searchForAgent(agentId, input.arguments?.intent ?? "");
+    return skillRegistryService.searchForAgent(agentId, input.arguments?.intent ?? "", input.metadata?.logicalSessionId ?? input.metadata?.sessionId);
   }
   if (input.tool === "corptie_skill_load") {
-    return skillRegistryService.loadForAgent(agentId, String(input.arguments?.skill_id ?? "").trim());
+    return skillRegistryService.loadForAgent(agentId, String(input.arguments?.skill_id ?? "").trim(), input.metadata?.logicalSessionId ?? input.metadata?.sessionId);
   }
   const error = new Error(`Unsupported Skill tool: ${input.tool}`);
   error.code = "HOST_TOOL_UNSUPPORTED";

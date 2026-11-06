@@ -199,13 +199,13 @@ export function handleCollaborationHttpRequest({
         if (!onSearchSkills) throw apiError("SKILL_TOOLS_UNAVAILABLE", "Skill search is unavailable.", 503);
         const intent = String(url.searchParams.get("intent") ?? "").trim();
         if (!intent) throw apiError("INVALID_INPUT", "intent is required.", 400);
-        return sendJson(response, 200, await onSearchSkills(actorAgentId, intent));
+        return sendJson(response, 200, await onSearchSkills(actorAgentId, intent, sessionMetadata));
       }
 
       const skillLoadMatch = url.pathname.match(/^\/internal\/collaboration\/skills\/([^/]+)$/);
       if (request.method === "GET" && skillLoadMatch) {
         if (!onLoadSkill) throw apiError("SKILL_TOOLS_UNAVAILABLE", "Skill loading is unavailable.", 503);
-        return sendJson(response, 200, await onLoadSkill(actorAgentId, decodeURIComponent(skillLoadMatch[1])));
+        return sendJson(response, 200, await onLoadSkill(actorAgentId, decodeURIComponent(skillLoadMatch[1]), sessionMetadata));
       }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/agents") {
