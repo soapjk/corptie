@@ -25,7 +25,8 @@ struct SessionRestartInteractionTests {
         let header = source[headerStart.lowerBound...]
 
         #expect(header.contains("let session: TaskSession?"))
-        #expect(header.contains("session?.title"))
+        #expect(header.contains("Self.displayTitle(session: session, workName: workName)"))
+        #expect(header.contains("return session.title"))
         #expect(!header.contains("backendClient.selectedSession?.title"))
         #expect(try contents(of: "Conversation/SessionConversationContent.swift")
             .contains("DetailHeaderView(session: selectedSession, historicalWorkspacePath: displayedDetail?.cwd)"))
@@ -89,8 +90,9 @@ struct SessionRestartInteractionTests {
         ))
         let menu = source[menuStart.lowerBound..<menuEnd.upperBound]
 
-        #expect(menu.contains("Button(action: openWorkspaceInVSCode)"))
-        #expect(menu.contains("Button(action: openWorkspaceInFinder)"))
+        #expect(menu.contains("headerActionMenu"))
+        #expect(source.components(separatedBy: "Button(action: openWorkspaceInVSCode)").count - 1 == 1)
+        #expect(source.components(separatedBy: "Button(action: openWorkspaceInFinder)").count - 1 == 1)
         #expect(menu.contains(".menuIndicator(.hidden)"))
         #expect(!menu.contains("SessionContextMenuContent("))
     }
