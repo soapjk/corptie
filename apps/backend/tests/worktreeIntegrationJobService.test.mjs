@@ -553,6 +553,118 @@ async function waitForJob(service, id, status) {
   assert.fail(`job ${id} did not reach ${status}`);
 }
 
+function enableRollback(fixture) {
+  const { service, worktrees } = fixture;
+  service.inspectRollbackTarget = async ({ target }) => {
+    const tree = worktrees.find(tree => tree.worktreeId === target.worktreeId);
+    return { ...target, currentHead: tree.headOid, changedFiles: [], additionalCommits: [], published: false,
+      requiresPreservation: false, mode: tree.headOid === target.baselineHead ? "already_restored" : "restore_baseline",
+      reviewState: { head: tree.headOid } };
+  };
+  service.rollbackTarget = async ({ target }) => {
+    const tree = worktrees.find(tree => tree.worktreeId === target.worktreeId);
+    tree.headOid = target.baselineHead;
+    return { mainHead: tree.headOid, aborted: false };
+  };
+  return fixture;
+}
+
+test("cancel review stops the Job but does not reset Git until explicit confirmation", async () => {
+  const fixture = enableRollback(memoryFixture({ featureDirty: false, conflictOnce: true }));
+  const { service, worktrees } = fixture;
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  const source = worktrees[1].headOid;
+  worktrees[0].headOid = "manually-resolved";
+  const review = await service.prepareRollback(plan.id);
+  assert.equal(review.job.phase, "rollback_review");
+  assert.equal(worktrees[0].headOid, "manually-resolved");
+  assert.ok(!JSON.stringify(review.rollback).includes("reviewState"));
+  assert.throws(() => service.retry(plan.id), { code: "JOB_ACTION_UNAVAILABLE" });
+  const canceled = await service.confirmRollback(plan.id, { confirmed: true, reviewId: review.rollback.id });
+  assert.equal(canceled.phase, "canceled_rolled_back");
+  assert.equal(worktrees[0].headOid, "main:1");
+  assert.equal(worktrees[1].headOid, source);
+  assert.equal((await service.confirmRollback(plan.id, { reviewId: review.rollback.id })).status, "canceled");
+});
+
+test("changed or lost rollback previews cannot reset a target", async () => {
+  const { service, worktrees } = enableRollback(memoryFixture({ featureDirty: false, conflictOnce: true }));
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  const review = await service.prepareRollback(plan.id);
+  worktrees[0].headOid = "later-head";
+  await assert.rejects(service.confirmRollback(plan.id, { confirmed: true, reviewId: review.rollback.id }),
+    { code: "ROLLBACK_REVIEW_REQUIRED" });
+  assert.equal(worktrees[0].headOid, "later-head");
+  const replacement = await service.prepareRollback(plan.id);
+  service.rollbackReviews.clear(); // A process restart discards only the ephemeral review.
+  await assert.rejects(service.confirmRollback(plan.id, { confirmed: true, reviewId: replacement.rollback.id }),
+    { code: "ROLLBACK_REVIEW_REQUIRED" });
+  assert.equal(service.get(plan.id).phase, "rollback_review");
+  assert.equal(worktrees[0].headOid, "later-head");
+});
+
+test("a rollback review can explicitly return to integration without resetting branches", async () => {
+  const { service, worktrees } = enableRollback(memoryFixture({ featureDirty: false, conflictOnce: true }));
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.prepareRollback(plan.id);
+  const before = worktrees[0].headOid;
+  assert.equal(service.resumeRollbackReview(plan.id).status, "queued");
+  await waitForJob(service, plan.id, "completed");
+  assert.notEqual(worktrees[0].headOid, before);
+  assert.equal(service.get(plan.id).phase, "completed");
+});
+
+test("failed rollback names its target and a fresh review can finish it", async () => {
+  const { service, worktrees } = enableRollback(memoryFixture({ featureDirty: false, conflictOnce: true }));
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  worktrees[0].headOid = "manually-resolved";
+  const preview = await service.prepareRollback(plan.id);
+  const reset = service.rollbackTarget;
+  service.rollbackTarget = async () => { throw Object.assign(new Error("permission failure with full details"), { code: "GIT_WRITE_FAILED" }); };
+  const failed = await service.confirmRollback(plan.id, { confirmed: true, reviewId: preview.rollback.id });
+  assert.equal(failed.status, "paused");
+  assert.equal(failed.cleanupResult.targetPath, "/repo");
+  assert.equal(failed.failureDiagnostic.targetPath, "/repo");
+  assert.match(failed.diagnosticText, /full details/);
+  assert.ok(failed.availableActions.includes("rollback"));
+  assert.equal(worktrees[0].headOid, "manually-resolved");
+  service.rollbackTarget = reset;
+  const retry = await service.prepareRollback(plan.id);
+  assert.equal((await service.confirmRollback(plan.id, { confirmed: true, reviewId: retry.rollback.id })).status, "canceled");
+});
+
+test("canceling an in-flight Git step drains it and waits for rollback review", async () => {
+  const { service, worktrees } = enableRollback(memoryFixture({ featureDirty: false }));
+  let release, entered;
+  const admitted = new Promise(resolve => { entered = resolve; });
+  service.mergeSource = async () => {
+    entered(); await new Promise(resolve => { release = resolve; });
+    worktrees[0].headOid = "just-merged";
+    return { mainHead: "just-merged", merged: true };
+  };
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await admitted;
+  const pending = await service.prepareRollback(plan.id);
+  assert.equal(pending.job.phase, "rollback_stopping");
+  assert.equal(pending.rollback, null);
+  release();
+  await waitForJobWhere(service, plan.id, job => job.phase === "rollback_review");
+  assert.equal(worktrees[0].headOid, "just-merged");
+  const review = await service.prepareRollback(plan.id);
+  assert.equal(review.rollback.targets[0].baselineHead, "main:1");
+  assert.equal((await service.confirmRollback(plan.id, { confirmed: true, reviewId: review.rollback.id })).status, "canceled");
+  assert.equal(worktrees[0].headOid, "main:1");
+});
+
 test("dispatch safety coalesces inspections, fails closed and discards stale lifecycle results", async () => {
   const { service, store, worktrees } = memoryFixture({ featureDirty: false });
   const plan = await service.preflight("repository:1");
@@ -1924,7 +2036,42 @@ test("retry is rejected while the conflict Agent is still running", async () => 
   await service.resolveConflictWithAgent(plan.id);
 
   assert.throws(() => service.retry(plan.id), { code: "CONFLICT_AGENT_RUNNING" });
+  assert.ok(service.get(plan.id).availableActions.includes("cancel"));
   assert.equal(calls.filter((call) => call.startsWith("merge:")).length, 1);
+});
+
+test("a missing conflict Session exposes recovery instead of remaining running forever", async () => {
+  const { service, store } = memoryFixture({ conflictOnce: true, conflictSessionStatus: "running" });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.resolveConflictWithAgent(plan.id);
+  store.getSession = () => null;
+  const recovered = service.get(plan.id);
+  assert.equal(recovered.conflictResolution.status, "failed");
+  assert.equal(recovered.conflictResolution.failureCode, "CONFLICT_SESSION_MISSING");
+  assert.ok(recovered.availableActions.includes("resolve_conflict_with_agent"));
+  assert.ok(recovered.availableActions.includes("cancel"));
+});
+
+test("dispatch safety uses live Git conflicts after an external resolution", async () => {
+  const { service, store, worktrees } = memoryFixture({ featureDirty: false });
+  const plan = await service.preflight("repository:1");
+  const raw = store.getWorktreeIntegrationJob(plan.id);
+  store.updateWorktreeIntegrationJob(plan.id, { status: "paused", details: {
+    ...raw.details, plan: { ...raw.details.plan, items: raw.details.plan.items.map(item =>
+      item.isMain ? item : { ...item, mergeStatus: "conflict" }) }
+  } });
+  worktrees[0].operationState = "merge";
+  worktrees[0].conflictFiles = ["shared.txt"];
+  await service.reconcileDispatchSafety(plan.id);
+  assert.ok(service.get(plan.id).dispatchSafety.blockedWorktreeIds.includes("wt:main"));
+  worktrees[0].operationState = null;
+  worktrees[0].conflictFiles = [];
+  worktrees[0].headOid = "externally-resolved";
+  await service.reconcileDispatchSafety(plan.id);
+  assert.ok(!service.get(plan.id).dispatchSafety.blockedWorktreeIds.includes("wt:main"));
+  assert.ok(service.get(plan.id).dispatchSafety.safeWorktrees.some(tree => tree.worktreeId === "wt:main"));
 });
 
 test("one Agent trigger resolves successive conflicting Worktrees across the complete plan", async () => {

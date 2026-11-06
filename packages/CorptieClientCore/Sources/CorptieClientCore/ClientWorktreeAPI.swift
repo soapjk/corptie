@@ -186,7 +186,62 @@ public struct ClientGitCommitProtectionStatus: Decodable, Equatable, Sendable {
     public let requiresDecision: Bool
 }
 
+public struct ClientWorktreeCommitPolicyBlocker: Decodable, Equatable, Sendable {
+    public let id: String
+    public let version: Int
+    public let worktreeId: String
+    public let files: [ClientWorktreeCommitPolicyFile]
+}
+
+public struct ClientWorktreeCommitPolicyFile: Identifiable, Decodable, Equatable, Sendable {
+    public var id: String { path }
+    public let path: String
+    public let supportedActions: [String]
+    public let appliedAction: String?
+}
+
+public struct ClientWorktreeCommitPolicyResidue: Decodable, Equatable, Sendable {
+    public let id: String
+    public let paths: [String]
+    public let supportedActions: [String]
+}
+
+public struct ClientWorktreeMarkdownDecision: Encodable, Sendable {
+    public let path: String
+    public let action: String
+    public init(path: String, action: String) { self.path = path; self.action = action }
+}
+
+public struct ClientWorktreeRollbackPreview: Decodable, Equatable, Sendable {
+    public let id: String
+    public let jobId: String
+    public let targets: [ClientWorktreeRollbackTarget]
+}
+
+public struct ClientWorktreeRollbackTarget: Identifiable, Decodable, Equatable, Sendable {
+    public var id: String { worktreeId }
+    public let worktreeId: String
+    public let path: String
+    public let branchName: String?
+    public let baselineHead: String
+    public let currentHead: String
+    public let operation: String?
+    public let changedFiles: [String]
+    public let ownedCommits: [String]
+    public let additionalCommits: [String]
+    public let requiresPreservation: Bool
+    public let published: Bool
+    public let mode: String
+}
+
+public struct ClientWorktreeRollbackEnvelope: Decodable, Sendable {
+    public let job: ClientWorktreeJob
+    public let rollback: ClientWorktreeRollbackPreview?
+}
+
 public struct ClientWorktreeJob: Identifiable, Decodable, Equatable, Sendable {
+    public var commitPolicyBlocker: ClientWorktreeCommitPolicyBlocker? = nil
+    public var commitPolicyResidue: ClientWorktreeCommitPolicyResidue? = nil
     public var graphExecution: ClientWorktreeGraphExecution? = nil
     public var availableActions: [String]? = nil
     public var recovery: ClientWorktreeRecovery? = nil
@@ -475,6 +530,43 @@ public struct ClientWorktreeAPI: Sendable {
         return try await jobAction(jobId, "cancel", Body(replan: replan))
     }
 
+    public func prepareCommitPolicy(jobId: String) async throws -> ClientWorktreeJob {
+        try await jobAction(jobId, "commit-policy-prepare", EmptyBody())
+    }
+
+    public func prepareRollback(jobId: String) async throws -> ClientWorktreeRollbackEnvelope {
+        try await post(["client", "v1", "worktrees", "jobs", jobId, "actions", "cancel-preview"], EmptyBody())
+    }
+
+    public func resumeRollbackReview(jobId: String) async throws -> ClientWorktreeJob {
+        try await jobAction(jobId, "resume", EmptyBody())
+    }
+
+    public func rollback(jobId: String, reviewId: String, discardChanges: Bool,
+                          includeAdditionalCommits: Bool) async throws -> ClientWorktreeJob {
+        struct Body: Encodable {
+            let confirmed = true
+            let reviewId: String
+            let discardChanges: Bool
+            let includeAdditionalCommits: Bool
+        }
+        return try await jobAction(jobId, "rollback", Body(reviewId: reviewId, discardChanges: discardChanges,
+            includeAdditionalCommits: includeAdditionalCommits))
+    }
+
+    public func resolveCommitPolicy(jobId: String, blocker: ClientWorktreeCommitPolicyBlocker,
+                                    decisions: [ClientWorktreeMarkdownDecision]) async throws -> ClientWorktreeJob {
+        struct Body: Encodable { let blockerId: String; let version: Int; let decisions: [ClientWorktreeMarkdownDecision] }
+        return try await jobAction(jobId, "commit-policy-decisions",
+            Body(blockerId: blocker.id, version: blocker.version, decisions: decisions))
+    }
+
+    public func resolveCommitPolicyResidue(jobId: String,
+                                           decisions: [ClientWorktreeMarkdownDecision]) async throws -> ClientWorktreeJob {
+        struct Body: Encodable { let decisions: [ClientWorktreeMarkdownDecision] }
+        return try await jobAction(jobId, "commit-policy-residue", Body(decisions: decisions))
+    }
+
     public func deletionNotification(operationId: String) async throws -> OperationJobSnapshot {
         struct Envelope: Decodable { let notification: OperationJobSnapshot }
         let response: Envelope = try await get(["client", "v1", "task-deletion-operations", operationId])
@@ -507,6 +599,14 @@ public struct ClientWorktreeAPI: Sendable {
                                                    privateFilesDecision: privateFilesDecision,
                                                    neverRemindPrivateFiles: neverRemindPrivateFiles,
                                                    synchronizeSource: synchronizeSource))
+    }
+
+    public func recoverGitOperation(repositoryId: String, worktree: ClientManagedWorktree,
+                                    action: String) async throws {
+        struct Body: Encodable { let action: String; let expectedOperation: String?; let expectedHead: String? }
+        let _: EmptyResponse = try await post(["client", "v1", "worktrees", "repositories", repositoryId,
+            "workspaces", worktree.worktreeId, "actions", "git-operation"],
+            Body(action: action, expectedOperation: worktree.operationState, expectedHead: worktree.headOid))
     }
 
     public func push(repositoryId: String, worktreeId: String) async throws -> ClientGitHubPushResult {

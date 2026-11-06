@@ -31,6 +31,20 @@ function fixture() {
 }
 
 const input = { marker: true };
+test("rollback preview and confirmation use distinct routes and exact job identities", async () => {
+  const f = fixture();
+  const preview = { job: { id: "job:one" }, rollback: { id: "review:one", targets: [] } };
+  f.dependencies.worktreeIntegrationJobService.prepareRollback = async id => {
+    assert.equal(id, "job:one"); return preview;
+  };
+  f.dependencies.worktreeIntegrationJobService.confirmRollback = async (id, body) => {
+    assert.equal(id, "job:one"); assert.equal(body.reviewId, "review:one"); return { id, status: "canceled" };
+  };
+  f.dependencies.worktreeIntegrationJobService.resumeRollbackReview = id => ({ id, status: "queued" });
+  assert.deepEqual((await f.dispatch("/worktree-management/jobs/job:one/cancel-preview", "POST", {}).response).body, preview);
+  assert.equal((await f.dispatch("/worktree-management/jobs/job:one/rollback", "POST", { reviewId: "review:one", confirmed: true }).response).body.job.status, "canceled");
+  assert.equal((await f.dispatch("/worktree-management/jobs/job:one/resume", "POST", {}).response).body.job.status, "queued");
+});
 test("Worktree local-state route reads without repair and only accepts empty explicit repair", async () => {
   const f = fixture();
   const path = "/worktree-management/repositories/repo/worktrees/tree/local-state";
