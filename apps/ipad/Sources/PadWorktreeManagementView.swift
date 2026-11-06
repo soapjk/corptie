@@ -8,6 +8,12 @@ private struct PadWorktreeLocalStateTarget: Identifiable {
     var id: String { "\(repositoryID):\(worktree.worktreeId)" }
 }
 
+private struct PadPendingGitOperation: Identifiable {
+    let worktree: ClientManagedWorktree
+    let action: String
+    var id: String { "\(worktree.worktreeId):\(action)" }
+}
+
 private struct PadWorktreeLocalStateSheet: View {
     let repositoryID: String
     let worktree: ClientManagedWorktree
@@ -66,6 +72,9 @@ struct PadWorktreeManagementView: View {
     @State private var operationDraft: PadWorktreeOperationDraft?
     @State private var pendingDelete: ClientManagedWorktree?
     @State private var localStateWorktree: PadWorktreeLocalStateTarget?
+    @State private var markdownJob: ClientWorktreeJob?
+    @State private var rollbackJob: ClientWorktreeJob?
+    @State private var pendingGitOperation: PadPendingGitOperation?
     @State private var pendingSync: ClientManagedWorktree?
     @State private var pendingCleanup: [ClientManagedWorktree] = []
     @State private var showingPlan = false
@@ -115,6 +124,37 @@ struct PadWorktreeManagementView: View {
         }
         .sheet(item: $localStateWorktree) { target in
             PadWorktreeLocalStateSheet(repositoryID: target.repositoryID, worktree: target.worktree, connection: connection)
+        }
+        .sheet(item: $markdownJob) { target in
+            PadWorktreeMarkdownSheet(jobID: target.id, manager: manager, connection: connection)
+        }
+        .sheet(item: $rollbackJob) { selected in
+            WorktreeRollbackReviewView(prepare: {
+                try await manager.prepareRollback(jobID: selected.id, connection: connection)
+            }, confirm: { reviewID, discardChanges, includeAdditional in
+                try await manager.confirmRollback(jobID: selected.id, reviewID: reviewID,
+                    discardChanges: discardChanges, includeAdditionalCommits: includeAdditional, connection: connection)
+            }, resume: {
+                guard manager.job?.id == selected.id,
+                      await manager.jobAction("resume", connection: connection) else {
+                    throw NSError(domain: "CorptieWorktree", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: manager.errorMessage ?? "任务已变化，请返回当前任务。"])
+                }
+            })
+        }
+        .confirmationDialog("处理当前 Git 操作", isPresented: Binding(
+            get: { pendingGitOperation != nil }, set: { if !$0 { pendingGitOperation = nil } }
+        ), titleVisibility: .visible, presenting: pendingGitOperation) { request in
+            Button(request.action == "abort" ? "中止 Git 操作" : "继续 Git 操作",
+                   role: request.action == "abort" ? .destructive : nil) {
+                pendingGitOperation = nil
+                Task { await manager.recoverGitOperation(request.worktree, action: request.action, connection: connection) }
+            }
+            Button("返回", role: .cancel) {}
+        } message: { request in
+            Text("\(request.worktree.branchName ?? request.worktree.path)\n" + (request.action == "abort"
+                ? "中止当前未完成的 Git 操作会撤销该操作中的冲突解决修改。此操作不会撤销此前已经完成的其他合并。"
+                : "请先解决并暂存所有冲突。完成后可回到集成任务继续验证。"))
         }
         .sheet(isPresented: $showingPlan, onDismiss: {
             planSheetDismissed = true
@@ -395,6 +435,14 @@ struct PadWorktreeManagementView: View {
                 .disabled(worktree.availability != "available")
                 .accessibilityIdentifier("worktree.local-state.inspect")
             let busy = manager.busyWorktreeIDs.contains(worktree.worktreeId)
+            if worktree.operationState != nil {
+                Button("继续 Git 操作", systemImage: "play.fill") {
+                    pendingGitOperation = .init(worktree: worktree, action: "continue")
+                }.disabled(busy || !worktree.conflictFiles.isEmpty)
+                Button("中止 Git 操作", systemImage: "xmark.circle", role: .destructive) {
+                    pendingGitOperation = .init(worktree: worktree, action: "abort")
+                }.disabled(busy)
+            }
             if let hierarchy=worktree.hierarchy {
                 ConversationHierarchyActions(hierarchy:hierarchy,api:{
                     ClientTaskHierarchyAPI(transport:try await connection.transport(),surface:.pairedDevice)
@@ -472,6 +520,10 @@ struct PadWorktreeManagementView: View {
                 Text("\(job.progress.completed) / \(job.progress.total)").foregroundStyle(.secondary)
             }
             ProgressView(value: job.progress.fraction)
+            if job.phase == "canceled_rolled_back" {
+                Text("本轮合并已取消并回滚，来源 Worktree 提交已保留。")
+                    .font(.footnote).foregroundStyle(.green)
+            }
             if job.status == "completed", let evidence = job.completionEvidence {
                 Text("\(evidence.branchName ?? "main") @ \(evidence.mainHead)\n\(evidence.verifiedAt)")
                     .font(.caption.monospaced()).textSelection(.enabled)
@@ -520,6 +572,11 @@ struct PadWorktreeManagementView: View {
                                manager.job?.status == "awaiting_confirmation" { showingJobReview = true }
                         }
                     }
+                } else if job.supports("resolve_commit_policy") || job.supports("resolve_commit_policy_residue") {
+                    Button("处理 Markdown 并继续", systemImage: "doc.badge.gearshape") {
+                        markdownJob = job
+                    }
+                    .accessibilityIdentifier("worktree.commit-policy.open")
                 } else if job.status == "paused",job.phase != "awaiting_integration_acceptance" {
                     if job.supports("retry") {
                     Button("重新验证并继续", systemImage: "arrow.clockwise") {
@@ -532,9 +589,16 @@ struct PadWorktreeManagementView: View {
                         }
                     }
                 }
+                if job.supports("resume") {
+                    Button("继续合并") { Task { await manager.jobAction("resume", connection: connection) } }
+                }
                 if job.canCancel {
-                    Button("取消任务", role: .destructive) {
-                        Task { await manager.jobAction("cancel", connection: connection) }
+                    Button(job.supports("rollback") ? "查看回滚范围" : "取消任务", role: .destructive) {
+                        if job.plan.operationType == "sync" || job.status == "awaiting_confirmation" {
+                            Task { await manager.jobAction("cancel", connection: connection) }
+                        } else {
+                            rollbackJob = job
+                        }
                     }
                 }
             }.disabled(manager.jobBusy || manager.planning)

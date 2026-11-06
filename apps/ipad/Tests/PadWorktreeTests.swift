@@ -5,6 +5,15 @@ import CorptieClientCore
 
 @Suite(.serialized) @MainActor
 struct PadWorktreeTests {
+    @Test func markdownDecisionsCannotBeSentToAReplacementOrUnrelatedJob() async throws {
+        let (store, connection) = try fixture()
+        store.job = try JSONDecoder().decode(ClientWorktreeJob.self, from: Data(Self.job.utf8))
+        #expect(!(await store.handleMarkdown(jobID: "another-job", decisions: [.init(path: "plan.md", action: "delete")], connection: connection)))
+        #expect(WorktreeStateProtocol.calls.isEmpty)
+        #expect(!(await store.handleMarkdown(jobID: "job:test", decisions: [.init(path: "plan.md", action: "delete")], connection: connection)))
+        #expect(WorktreeStateProtocol.calls.isEmpty)
+        #expect(store.errorMessage?.contains("处理要求已变化") == true)
+    }
     @Test func serverFailurePreservesFullTextAndUnavailableRetryIsExplained() async throws {
         let full = String(repeating: "Git error line\n", count: 2_000) + "LAST_GIT_DETAIL"
         let message = PadWorktreeFailure.describe(ClientServiceFailure(statusCode: 500,

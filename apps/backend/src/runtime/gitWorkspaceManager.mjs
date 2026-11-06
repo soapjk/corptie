@@ -17,6 +17,7 @@ import { withWorktreeOperationLock } from "./worktreeOperationLock.mjs";
 import { mergeWorkspaceSnapshot, synchronizeWorkspaceSnapshot, prepareSnapshotConflictWorkspace, snapshotBaseForWorktree } from "./workspaceSnapshotIntegration.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 import { ProjectWorkspaceSnapshotService } from "../application/projectWorkspaceSnapshotService.mjs";
+import { classifyIntegrationRollback } from "../domain/integrationRollbackPlan.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -591,6 +592,10 @@ export class GitWorkspaceManager {
   }
 
   async recoverGitOperation(input) {
+    return withWorktreeOperationLock(input.path, () => this.recoverGitOperationLocked(input));
+  }
+
+  async recoverGitOperationLocked(input) {
     const path = absolutePath(input.path);
     const requestedAction = String(input.action ?? "").trim();
     if (!["continue", "abort"].includes(requestedAction)) {
@@ -1272,6 +1277,74 @@ export class GitWorkspaceManager {
       throw integrationGitError("CONVERGENCE_VERIFICATION_FAILED", "The selected branch did not reach the unified commit.");
     }
     return { headOid: updatedHead };
+  }
+
+  async inspectIntegrationRollbackTarget(input) {
+    return withWorktreeOperationLock(input.target.path, async () => {
+      const { target } = input;
+      const identity = await inspectGitWorkspace(target.path, { execFile: this.execFile });
+      if (identity.repositoryId !== input.repositoryId || identity.worktreeId !== target.worktreeId) {
+        throw integrationGitError("WORKTREE_IDENTITY_CHANGED", "The rollback target changed. Refresh the rollback preview before acting.");
+      }
+      const [head, branch, operation, status] = await Promise.all([
+        this.gitOutput(target.path, ["rev-parse", "HEAD"]),
+        this.gitOutput(target.path, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
+        this.integrationOperationState(target.path),
+        this.gitOutput(target.path, ["status", "--porcelain=v1"])
+      ]);
+      if (!target.baselineHead || branch.trim() !== target.branchName) {
+        throw integrationGitError("ROLLBACK_BASELINE_UNAVAILABLE", "The target branch or recorded merge baseline is unavailable. Review the target before rolling back.");
+      }
+      const baselineIsAncestor = await this.gitSucceeds(target.path, ["merge-base", "--is-ancestor", target.baselineHead, head.trim()]);
+      const commits = (await this.gitOutput(target.path,
+        ["rev-list", "--first-parent", "--reverse", "--parents", `${target.baselineHead}..${head.trim()}`]))
+        .trim().split(/\r?\n/u).filter(Boolean).map(line => {
+          const [head, ...parents] = line.split(/\s+/u);
+          return { head, parents };
+        });
+      const mergeHead = operation === "merge"
+        ? (await this.gitOutput(target.path, ["rev-parse", "MERGE_HEAD"])).trim() : null;
+      const observation = { head: head.trim(), baselineIsAncestor, commits, operation, mergeHead,
+        dirty: status.trim().length > 0, changedFiles: status.trimEnd().split(/\r?\n/u).filter(Boolean) };
+      const classified = classifyIntegrationRollback(target, observation);
+      let published = false;
+      for (const commit of classified.ownedCommits) {
+        if ((await this.gitOutput(target.path, ["for-each-ref", "--format=%(refname)", "--contains", commit, "refs/remotes/"])).trim()) {
+          published = true; break;
+        }
+      }
+      const diff = await this.gitOutput(target.path, ["diff", "HEAD", "--binary"]);
+      return { ...classifyIntegrationRollback(target, { ...observation, published }), published,
+        reviewState: { head: head.trim(), branch: branch.trim(), operation, mergeHead, status, diff } };
+    });
+  }
+
+  async rollbackIntegrationTarget(input) {
+    return withWorktreeOperationLock(input.target.path, async () => {
+      const target = input.target;
+      const current = await this.inspectIntegrationRollbackTarget(input);
+      if (current.mode === "already_restored") return { mainHead: target.baselineHead, aborted: false };
+      if (JSON.stringify(current.reviewState) !== JSON.stringify(target.reviewState)) throw integrationGitError(
+        "ROLLBACK_REVIEW_REQUIRED", "The target changed after the rollback review. Refresh the preview before continuing.");
+      if (current.operation && !current.operationOwned) throw integrationGitError(
+        "ROLLBACK_GIT_RECOVERY_REQUIRED", `Finish or abort the ${current.operation} in ${target.path}, then refresh the rollback preview.`);
+      if ((current.additionalCommits.length || current.published) && input.includeAdditionalCommits !== true) throw integrationGitError(
+        "ROLLBACK_ADDITIONAL_COMMITS", "Review and confirm the additional or published history listed in the rollback preview before resetting this local branch.");
+      if (current.dirty && input.discardChanges !== true) throw integrationGitError(
+        "ROLLBACK_EDITS_REQUIRE_CONFIRMATION", "The target contains uncommitted or conflict-resolution changes. Preserve them first, or confirm discarding the changes listed in the rollback preview.");
+      this.store.assertStandaloneWorktreeMutation?.({ paths: [target.path], jobId: input.jobId });
+      this.invalidateInspectionCache(input.repositoryId, "integration_rollback");
+      try {
+        await this.runGit(target.path, ["reset", input.discardChanges === true ? "--hard" : "--merge", target.baselineHead]);
+        const head = (await this.gitOutput(target.path, ["rev-parse", "HEAD"])).trim();
+        const conflicts = (await this.gitOutput(target.path, ["diff", "--name-only", "--diff-filter=U"])).trim();
+        if (head !== target.baselineHead || await this.integrationOperationState(target.path) || conflicts) throw integrationGitError(
+          "MAIN_NOT_RESTORED", `Git did not restore ${target.branchName} to the reviewed merge baseline. Refresh the rollback preview to continue.`);
+        return { mainHead: head, aborted: current.operationOwned };
+      } finally {
+        this.invalidateInspectionCache(input.repositoryId, "integration_rollback_completed");
+      }
+    });
   }
 
   async abortIntegrationMerge(input) {

@@ -83,11 +83,18 @@ export class WorktreeAutoFollowService {
     const entries = this.entries();
     const previous = entries[tree.worktreeId];
     if (previous?.enabled === input.enabled && previous.sessionId === sessionId && previous.mainWorktreeId===detail.mainWorktreeId && sameScope(previous.taskScope,detail.taskScope)) return this.state(tree.worktreeId);
+    let previousJobId = previous?.jobId ?? null;
+    if (input.enabled && previousJobId) {
+      let previousJob;
+      try { previousJob = this.jobs.get(previousJobId); }
+      catch (error) { if (error.code !== "INTEGRATION_JOB_NOT_FOUND") throw error; }
+      if (!previousJob || ["canceled", "cancelled", "failed"].includes(previousJob.status)) previousJobId = null;
+    }
     entries[tree.worktreeId] = { sessionId, repositoryId: detail.repositoryId, worktreeId: tree.worktreeId,
       mainWorktreeId: detail.mainWorktreeId, sourceBranch: tree.branchName, targetBranch: detail.mainBranch,
       ...(detail.taskScope ? {taskScope:detail.taskScope} : {}),
       enabled: input.enabled, revision: (previous?.revision ?? 0) + 1,
-      status: input.enabled ? "waiting" : "off", reason: null, jobId: previous?.jobId ?? null };
+      status: input.enabled ? "waiting" : "off", reason: null, jobId: previousJobId };
     this.store.setRuntimeState(STATE_KEY, entries);
     this.signatures.delete(tree.worktreeId);
     this.onEvent("WorktreeAutoFollowChanged", { sessionId, worktreeId: tree.worktreeId, autoFollow: this.state(tree.worktreeId) });

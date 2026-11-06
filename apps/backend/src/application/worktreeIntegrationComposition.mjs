@@ -204,6 +204,8 @@ export function createWorktreeIntegrationServices({
     }),
     mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
     abortMerge: (input) => gitWorkspaces.abortIntegrationMerge(input),
+    inspectRollbackTarget: input => gitWorkspaces.inspectIntegrationRollbackTarget(input),
+    rollbackTarget: input => gitWorkspaces.rollbackIntegrationTarget(input),
     rebaseSource: (input) => gitWorkspaces.rebaseIntegrationSource(input),
     inspectSyncWorktree: input => gitWorkspaces.inspectSyncWorktree(input),
     fastForwardSource: (input) => gitWorkspaces.fastForwardIntegrationSource(input),

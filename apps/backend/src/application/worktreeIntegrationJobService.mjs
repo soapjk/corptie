@@ -6,6 +6,7 @@ import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs
 import { WorktreeIntegrationGraph } from "./worktreeIntegrationGraph.mjs";
 import { MARKDOWN_COMMIT_ACTIONS, validateDecisions } from "./markdownCommitPolicyService.mjs";
 import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
+import { integrationRollbackTargets } from "../domain/integrationRollbackPlan.mjs";
 
 const ACTIVE_JOB_STATUSES = Object.freeze([
   "queued", "running", "paused", "cancellation_requested", "replanning"
@@ -49,6 +50,9 @@ export class WorktreeIntegrationJobService {
     this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
+    this.inspectRollbackTarget = options.inspectRollbackTarget ?? null;
+    this.rollbackTarget = options.rollbackTarget ?? null;
+    this.rollbackReviews = new Map();
     this.rebaseSource = options.rebaseSource ?? null;
     this.inspectSyncWorktree = options.inspectSyncWorktree ?? null;
     this.syncConcurrency = Math.max(1, Math.min(4, Math.floor(Number(options.syncConcurrency) || 3)));
@@ -951,7 +955,112 @@ export class WorktreeIntegrationJobService {
     return presentJob(await this.#finishCancellation(job, { replan }));
   }
 
+  async prepareRollback(jobId) {
+    let job = this.#requireJob(jobId);
+    const preparingConflict = this.activeConflictResolutions.get(jobId);
+    if (preparingConflict) {
+      await preparingConflict.catch(() => {});
+      job = this.#requireJob(jobId);
+    }
+    if (["completed", "canceled"].includes(job.status)) return { job: presentJob(job), rollback: null };
+    if (!this.inspectRollbackTarget || !this.rollbackTarget) throw new WorktreeIntegrationJobError(
+      "ROLLBACK_UNAVAILABLE", "This backend does not support merge rollback. Update the backend before continuing.", 503);
+    if (job.details.plan.operationType === "sync") return { job: await this.cancel(jobId), rollback: null };
+    if (job.phase === "rollback_running") return { job: presentJob(job), rollback: null };
+    if (this.activeJobs.has(jobId) || job.status === "running") {
+      if (job.phase !== "rollback_stopping") job = this.#update(job, { status: "cancellation_requested", phase: "rollback_stopping", error: null,
+        auditEvent: "cancellation_requested" });
+      return { job: presentJob(job), rollback: null };
+    }
+    // Stop scheduling first. No Git reset is performed until this exact review
+    // is confirmed. Existing Job status/phase provide the restart boundary.
+    if (job.phase !== "rollback_review") job = this.#update(job, { status: "paused", phase: "rollback_review", error: null,
+      auditEvent: "cancellation_requested" });
+    const targets = [];
+    for (const target of integrationRollbackTargets(job)) {
+      targets.push(await this.inspectRollbackTarget({ repositoryId: job.repositoryId, target }));
+    }
+    const review = { id: randomUUID(), jobId, targets };
+    for (const [id, entry] of this.rollbackReviews) if (entry.jobId === jobId) this.rollbackReviews.delete(id);
+    if (this.rollbackReviews.size >= MAX_CACHED_CANDIDATES) this.rollbackReviews.delete(this.rollbackReviews.keys().next().value);
+    this.rollbackReviews.set(review.id, review);
+    return { job: presentJob(this.#requireJob(jobId)), rollback: { id: review.id, jobId,
+      targets: targets.map(({ reviewState, ...target }) => target) } };
+  }
+
+  async confirmRollback(jobId, input = {}) {
+    let job = this.#requireJob(jobId);
+    if (job.status === "canceled") return presentJob(job);
+    const review = this.rollbackReviews.get(input.reviewId);
+    if (input.confirmed !== true || !review || review.jobId !== jobId
+      || job.status !== "paused" || job.phase !== "rollback_review" || this.activeJobs.has(jobId)) {
+      throw new WorktreeIntegrationJobError("ROLLBACK_REVIEW_REQUIRED", "Read and confirm a fresh rollback preview before restoring these branches.", 409);
+    }
+    // Validate every target before changing any of them. The Git writer also
+    // checks again under its per-Worktree lock immediately before resetting.
+    for (const target of review.targets) {
+      const current = await this.inspectRollbackTarget({ repositoryId: job.repositoryId, target });
+      if (JSON.stringify(current.reviewState) !== JSON.stringify(target.reviewState)) throw new WorktreeIntegrationJobError(
+        "ROLLBACK_REVIEW_REQUIRED", "Repository contents changed after the preview. Refresh the rollback preview to see the current impact.", 409);
+      if (["resolve_git_operation", "review_diverged_history"].includes(target.mode)) throw new WorktreeIntegrationJobError(
+        "ROLLBACK_GIT_RECOVERY_REQUIRED", "Finish or abort the named Git operation, or restore the target's branch history, then refresh this rollback preview.", 409);
+      if ((target.additionalCommits.length || target.published) && input.includeAdditionalCommits !== true) throw new WorktreeIntegrationJobError(
+        "ROLLBACK_ADDITIONAL_COMMITS", "The preview lists additional or published commits. Confirm the listed branch-history impact before restoring the baseline.", 409);
+    }
+    const admitted = this.#requireJob(jobId);
+    if (this.activeJobs.has(jobId) || admitted.status !== "paused" || admitted.phase !== "rollback_review") throw new WorktreeIntegrationJobError(
+      "ROLLBACK_REVIEW_REQUIRED", "The task is already changing. Refresh its current state before confirming rollback.", 409);
+    this.activeJobs.add(jobId);
+    job = this.#update(job, { status: "cancellation_requested", phase: "rollback_running", error: null,
+      auditEvent: "cancellation_requested" });
+    let activeTarget;
+    try {
+      for (const target of review.targets) {
+        activeTarget = target;
+        const result = await this.rollbackTarget({ repositoryId: job.repositoryId, jobId, target,
+          discardChanges: input.discardChanges === true, includeAdditionalCommits: input.includeAdditionalCommits === true });
+        job = this.#update(this.#requireJob(jobId), {
+          details: { ...this.#requireJob(jobId).details, cleanupResult: { schemaVersion: 1, status: "completed",
+            at: new Date().toISOString(), targetWorktreeId: target.worktreeId, targetPath: target.path,
+            restoredHead: result.mainHead, expectedHead: target.baselineHead, aborted: result.aborted === true } },
+          auditEvent: "conflict_merge_cleanup_verified", auditData: { worktreeId: target.worktreeId }
+        });
+      }
+      return presentJob(this.#update(job, { status: "canceled", phase: "canceled_rolled_back", error: null,
+        currentWorktreeId: null, completedAt: new Date().toISOString(), auditEvent: "execution_canceled" }));
+    } catch (error) {
+      const diagnosticJob = activeTarget ? { ...job, details: { ...job.details,
+        plan: { ...job.details.plan, mainPath: activeTarget.path, executionPath: activeTarget.path,
+          mainWorktreeId: activeTarget.worktreeId, targetBranchName: activeTarget.branchName } } } : job;
+      return presentJob(this.#update(this.#requireJob(jobId), { status: "paused", phase: "cancellation_cleanup_failed",
+        error: error.message, details: { ...this.#requireJob(jobId).details,
+          cleanupResult: { schemaVersion: 1, status: "blocked", at: new Date().toISOString(),
+            targetWorktreeId: activeTarget?.worktreeId, targetPath: activeTarget?.path,
+            failureCode: error.code ?? "MERGE_CLEANUP_FAILED" },
+          failureDiagnostic: integrationFailureDiagnostic(diagnosticJob, error) },
+        auditEvent: "conflict_merge_cleanup_failed", auditData: { code: error.code ?? "MERGE_CLEANUP_FAILED" } }));
+    } finally {
+      this.activeJobs.delete(jobId);
+      this.rollbackReviews.delete(review.id);
+      await this.reconcileDispatchSafety(jobId);
+    }
+  }
+
+  resumeRollbackReview(jobId) {
+    const job = this.#requireJob(jobId);
+    if (job.status !== "paused" || job.phase !== "rollback_review") throw new WorktreeIntegrationJobError(
+      "JOB_ACTION_UNAVAILABLE", "Only a rollback review can return to integration. Refresh the task before continuing.", 409);
+    const resolving = job.details.conflictResolution?.status === "running";
+    const updated = this.#update(job, { status: resolving ? "paused" : "queued",
+      phase: resolving ? "conflict" : "retry_queued", error: null, auditEvent: "retry_requested" });
+    if (!resolving) this.#schedule(jobId);
+    return presentJob(this.#reconcileConflictResolution(updated));
+  }
+
   async #finishCancellation(job, { replan = false, conflictPreserved = false } = {}) {
+    if (["rollback_stopping", "rollback_running"].includes(job.phase)) return this.#update(job, {
+      status: "paused", phase: "rollback_review", error: null, auditEvent: "cancellation_requested"
+    });
     const conflictItem = job.details.plan.items.find((candidate) =>
       candidate.worktreeId === job.details.currentWorktreeId);
     const isSync = job.details.plan.operationType === "sync";
@@ -1106,6 +1215,8 @@ export class WorktreeIntegrationJobService {
 
   retry(jobId) {
     const job = this.#reconcileConflictResolution(this.#requireJob(jobId));
+    if (job.phase.startsWith("rollback_")) throw new WorktreeIntegrationJobError(
+      "JOB_ACTION_UNAVAILABLE", "Review the rollback or explicitly return to integration before retrying.", 409);
     if (job.status !== "paused") {
       throw new WorktreeIntegrationJobError("JOB_NOT_PAUSED", "Only a paused task can be retried.", 409);
     }
@@ -1408,6 +1519,8 @@ export class WorktreeIntegrationJobService {
 
   async resolveConflictWithAgent(jobId) {
     const key = String(jobId);
+    const observed = this.#requireJob(key);
+    if (observed.phase.startsWith("rollback_") || ["completed", "canceled"].includes(observed.status)) return presentJob(observed);
     const active = this.activeConflictResolutions.get(key);
     if (active) return active;
     const operation = this.#resolveConflictWithAgent(key);
@@ -2167,11 +2280,11 @@ export class WorktreeIntegrationJobService {
     const ids = new Set([...(job.details.plan.reservedWorktreeIds ?? []),
       ...job.details.plan.items.map(item => item.worktreeId)]);
     const safeWorktrees = [], blockedWorktreeIds = [];
-    const conflictTargets = new Set(job.details.plan.items.filter(item => item.mergeStatus === "conflict")
-      .map(item => job.details.plan.operationType === "sync" ? item.worktreeId : job.details.plan.mainWorktreeId));
     for (const id of ids) {
       const tree = inspection.worktrees.find(item => item.worktreeId === id);
-      if (conflictTargets.has(id) || !tree || tree.availability !== "available" || !tree.headOid || tree.operationState
+      // The plan records history, not the current Git operation. An external
+      // resolution may have finished the merge since the Job was paused.
+      if (!tree || tree.availability !== "available" || !tree.headOid || tree.operationState
         || tree.isLocked || (tree.conflictFiles ?? []).length) {
         blockedWorktreeIds.push(id);
       } else {
@@ -2615,7 +2728,7 @@ export class WorktreeIntegrationJobService {
       ? withoutConflictResolution(latest.details)
       : latest.details;
     return this.#update(latest, {
-      phase: latest.status === "cancellation_requested" ? "stopping" : phase,
+      phase: latest.status === "cancellation_requested" ? (latest.phase.startsWith("rollback_") ? latest.phase : "stopping") : phase,
       details: { ...details, plan: { ...details.plan, items }, progress: progressFor(items) },
       currentWorktreeId: worktreeId,
       auditEvent: event,
@@ -2696,7 +2809,8 @@ export class WorktreeIntegrationJobService {
   }
 
   #reconcileConflictResolution(job) {
-    if (["completed", "canceled"].includes(job.status)) return job;
+    if (["completed", "canceled"].includes(job.status) || job.phase.startsWith("rollback_")
+      || job.phase === "cancellation_cleanup_failed") return job;
     const resolution = job.details.conflictResolution;
     const item = job.details.plan.items.find((candidate) => candidate.worktreeId === job.details.currentWorktreeId);
     const sourceHead = item ? (item.commitHead ?? item.sourceHeadBefore) : null;
@@ -2724,7 +2838,10 @@ export class WorktreeIntegrationJobService {
     }
     if (!["running", "failed"].includes(resolution?.status) || !resolution.sessionId) return job;
     const session = this.store.getSession(resolution.sessionId);
-    if (!session) return job;
+    if (!session) return this.#rejectConflictResolution(job, item, resolution, {
+      code: "CONFLICT_SESSION_MISSING",
+      message: "The conflict-resolution Session no longer exists. Start another resolution Session, resolve the conflict manually, or cancel the integration."
+    });
     const operations = this.store.listAgentTasksForSession?.(resolution.sessionId) ?? [];
     const instruction = resolution.instructionId
       ? operations.find(operation => operation.taskId === resolution.instructionId)
@@ -3607,12 +3724,14 @@ function integrationJobAvailableActions(job) {
     return ["cancel"];
   }
   if (job.status !== "paused") return [];
+  if (job.phase === "rollback_review") return ["rollback", "resume", "cancel"];
+  if (job.phase === "cancellation_cleanup_failed") return ["rollback", "cancel"];
   const latestCode = [...(job.audit ?? [])].reverse().find(event => event.code)?.code;
   const failureCode = job.failureDiagnostic && job.failureDiagnostic.code === latestCode
     ? job.failureDiagnostic.rootCauseCode ?? latestCode : latestCode;
   if (job.resumeRequiresReplan) return ["retry", "cancel"];
   if (job.phase === "awaiting_integration_acceptance") return ["retry", "cancel"];
-  if (job.conflictResolution?.status === "running") return ["open_agent_session"];
+  if (job.conflictResolution?.status === "running") return ["open_agent_session", "cancel"];
   if (job.commitPolicyBlocker || legacyCommitPolicyPaths(job.error).length > 0) {
     return ["resolve_commit_policy", "cancel"];
   }
@@ -3629,6 +3748,10 @@ function integrationJobAvailableActions(job) {
 function integrationJobRecovery(job, availableActions) {
   if (!["paused", "canceled"].includes(job.status)) return null;
   const action = availableActions[0] ?? null;
+  if (job.phase === "canceled_rolled_back") return { kind: action,
+    message: "This integration was canceled and its merge targets were restored. Source Worktree commits were retained." };
+  if (job.phase === "rollback_review" || job.phase === "cancellation_cleanup_failed") return { kind: "rollback",
+    message: "Further integration steps have stopped. Review and confirm restoring this round's merge targets; source Worktree commits will be retained." };
   if (job.cleanupResult?.status === "blocked") return { kind: action,
     message: `The task stopped, but Git cleanup is blocked in ${job.cleanupResult.targetPath}. Existing edits were preserved. Review the complete error, preserve or finish those edits, then use an available recovery action.` };
   if (job.status === "canceled" && job.cleanupResult?.status === "completed") return { kind: action,

@@ -302,6 +302,7 @@ struct WorktreeManagementView: View {
     @State private var showingCommitPolicyResidueResolution = false
     @State private var pendingGitOperationAction: PendingGitOperationAction?
     @State private var pendingIntegrationCancellationJobID: String?
+    @State private var pendingRollbackJob: WorktreeIntegrationJob?
     @State private var showingIntegrationSelection = false
     @State private var integrationSources: [String]?
 
@@ -501,6 +502,17 @@ struct WorktreeManagementView: View {
         .modifier(WorktreeIntegrationCancellationDialog(jobID: $pendingIntegrationCancellationJobID) { jobID in
             Task { await client.cancelIntegration(expectedJobID: jobID) }
         })
+        .sheet(item: $pendingRollbackJob) { selected in
+            WorktreeRollbackReviewView(prepare: {
+                try await client.prepareRollbackReview(expectedJobID: selected.id)
+            }, confirm: { reviewID, discardChanges, includeAdditional in
+                try await client.confirmRollback(expectedJobID: selected.id, reviewID: reviewID,
+                    discardChanges: discardChanges, includeAdditionalCommits: includeAdditional)
+            }, resume: {
+                try await client.resumeRollbackReview(expectedJobID: selected.id)
+            })
+            .frame(minWidth: 640, minHeight: 420)
+        }
         .sheet(item: $pendingDeletion) { review in
             WorktreeDeletionConfirmation(review: review) {
                 Task { _ = await client.deleteWorktree(review.tree, expectedRepositoryID: review.repositoryID) }
@@ -987,7 +999,7 @@ struct WorktreeManagementView: View {
                 )
                 .help(worktreePushExplanation(worktree))
                 .accessibilityIdentifier("worktree.push-github.\(worktree.worktreeId)")
-                if worktree.hierarchy == nil, worktree.operationState != nil {
+                if worktree.operationState != nil {
                     Button {
                         pendingGitOperationAction = PendingGitOperationAction(
                             worktree: worktree,
@@ -1283,9 +1295,18 @@ struct WorktreeManagementView: View {
                         openConflictSession(sessionId: sessionId, taskId: resolution.taskId)
                     }.controlSize(.small)
                 }
+                if job.supports("resume") {
+                    Button(L10n("继续合并")) {
+                        Task { try? await client.resumeRollbackReview(expectedJobID: job.id) }
+                    }.controlSize(.small).disabled(client.isMutating)
+                }
                 if job.canCancel {
-                    Button(L10n("Cancel"), role: .destructive) {
-                        pendingIntegrationCancellationJobID = job.id
+                    Button(L10n(job.supports("rollback") ? "查看回滚范围" : "Cancel"), role: .destructive) {
+                        if job.plan.operationType == "sync" || job.status == "awaiting_confirmation" {
+                            pendingIntegrationCancellationJobID = job.id
+                        } else {
+                            pendingRollbackJob = job
+                        }
                     }
                     .controlSize(.small)
                     .disabled(client.isMutating)
@@ -2321,6 +2342,10 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "validating": L10n("Validating")
     case "committing": L10n("Creating local commits")
     case "merging": L10n("Merging branches")
+    case "rollback_stopping": L10n("正在停止后续合并")
+    case "rollback_review": L10n("等待确认取消并回滚")
+    case "rollback_running": L10n("正在回滚本轮合并")
+    case "canceled_rolled_back": L10n("已取消并回滚，来源提交已保留")
     case "rebasing": L10n("Rebasing source Worktrees")
     case "preparing_convergence": L10n("Preparing isolated convergence Worktree")
     case "fast_forwarding": L10n("Publishing the unified commit")
