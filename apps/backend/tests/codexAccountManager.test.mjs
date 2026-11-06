@@ -98,3 +98,27 @@ test("discovery lists only readable credentials without reading the keychain imp
   const imported = await manager.operation({ action: "import", source: result.discovered[0] });
   assert.equal(imported.accounts.accounts.find(account => account.origin === "imported")?.name, "ChatGPT 账号");
 });
+
+test("removing a native listing preserves its credentials and existing thread binding after restart", async t => {
+  const { manager, registry, options } = await fixture(t);
+  const native = registry.selection({ mode: "native" });
+  await mkdir(native.home);
+  const authPath = join(native.home, "auth.json");
+  const auth = credential("native-account");
+  await writeFile(authPath, auth);
+  await registry.register(native, { threadId: "native-thread" });
+  await manager.initialize();
+
+  const row = (await manager.list()).accounts.find(account => account.id === native.profileId);
+  assert.equal(row.canDelete, true);
+  assert.equal(row.removesListingOnly, true);
+  assert.equal(row.sessionCount, 1);
+  await manager.operation({ action: "delete", accountId: native.profileId });
+
+  const restored = new CodexAccountManager(options);
+  await restored.initialize();
+  assert.ok(!(await restored.list()).accounts.some(account => account.id === native.profileId));
+  assert.equal(registry.forThread("native-thread").profileId, native.profileId);
+  await restored.assertProfileReady(registry.forThread("native-thread"));
+  assert.equal(await readFile(authPath, "utf8"), auth);
+});

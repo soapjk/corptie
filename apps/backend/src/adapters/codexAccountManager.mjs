@@ -94,7 +94,7 @@ export class CodexAccountManager {
 
   record(id) {
     const record = this.state.accounts[id];
-    if (!record || record.deletedAt || !this.registry.state.profiles[record.profileId]) throw fail("CODEX_ACCOUNT_NOT_FOUND", "所选账号不存在，请重新选择。");
+    if (!record || record.deletedAt || record.removedFromListAt || !this.registry.state.profiles[record.profileId]) throw fail("CODEX_ACCOUNT_NOT_FOUND", "所选账号不存在，请重新选择。");
     return record;
   }
 
@@ -123,21 +123,24 @@ export class CodexAccountManager {
     const current = this.registry.current.profileId;
     const accounts = [];
     for (const record of Object.values(this.state.accounts)) {
-      if (record.deletedAt || record.state === "signing_in") continue;
+      if (record.deletedAt || record.removedFromListAt || record.state === "signing_in") continue;
       const profile = this.profile(record);
       if (!profile) continue;
       const count = this.bindingCount(profile), busy = this.isBusy(profile);
       const status = await this.status(record);
       const signingIn = [...this.logins.values()].some(login => login.state === "pending" && login.record.updateFor === record.id);
-      const deletionReason = signingIn ? "请先完成或取消登录。" : record.legacy ? "原有环境保留，不自动删除其凭证或数据。" : current === profile.profileId
-        ? "请先选择其他当前使用账号并保存设置。" : count ? "仍有会话绑定此账号，不能删除。" : busy ? "账号正在使用，请等待请求结束。" : null;
+      const removesListingOnly = record.legacy && profile.mode === "native";
+      const deletionReason = current === profile.profileId ? "请先选择其他当前使用账号并保存设置。"
+        : removesListingOnly ? null : signingIn ? "请先完成或取消登录。"
+          : record.legacy ? "原有环境保留，不自动删除其凭证或数据。"
+            : count ? "仍有会话绑定此账号，不能删除。" : busy ? "账号正在使用，请等待请求结束。" : null;
       accounts.push({ id: record.id, name: record.name, accountLabel: status.label ?? "未验证账号",
         state: status.state, kind: record.kind, runtimeDirectory: profile.home,
         credentialPath: join(profile.home, "auth.json"), importedFrom: record.importedFrom ?? null,
         origin: record.legacy ? (profile.mode === "native" ? "native" : "legacy") : record.importedFrom ? "imported" : "login",
         isDefault: current === profile.profileId, isLegacy: Boolean(record.legacy), sessionCount: count,
         canSelect: status.state === "ready" && profile.mode === "isolated",
-        canDelete: !deletionReason, deletionReason, canReauthorize: profile.mode === "isolated" && !busy,
+        canDelete: !deletionReason, removesListingOnly, deletionReason, canReauthorize: profile.mode === "isolated" && !busy,
         createdAt: record.createdAt });
     }
     const active = [...this.logins.values()].find(login => login.state === "pending");
@@ -336,6 +339,13 @@ export class CodexAccountManager {
     const record = this.record(id), profile = this.profile(record);
     const row = (await this.list()).accounts.find(account => account.id === id);
     if (!row.canDelete) throw fail("CODEX_ACCOUNT_IN_USE", row.deletionReason);
+    if (row.removesListingOnly) {
+      // Native bindings still resolve through this record. Only hide the settings entry.
+      record.removedFromListAt = now();
+      try { await this.persist(); }
+      catch (error) { delete record.removedFromListAt; throw error; }
+      return;
+    }
     const canonical = await realpath(profile.home);
     if (!record.owned || canonical !== profile.home || !canonical.startsWith(`${await realpath(this.accountRoot)}${sep}`)) {
       throw fail("CODEX_ACCOUNT_PATH_UNSAFE", "账号目录不属于 Corptie 管理，不能删除。");
