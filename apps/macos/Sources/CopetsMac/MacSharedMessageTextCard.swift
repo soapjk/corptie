@@ -474,8 +474,8 @@ private struct MacExecutionPlanCard: View {
     var body: some View {
         Group {
             if let taskID = plan.taskId {
-                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: cardWidth - 28,
-                    isExpanded: expanded, onToggleExpansion: toggle)
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: cardWidth - 28, canEdit: plan.closed != true,
+                    isExpanded: expanded, onToggleExpansion: toggle, observesAssignments: plan.closed != true)
             } else {
                 IntrinsicCappedContent(maximumHeight: 300, content: ExecutionPlanChecklist(plan: plan))
             }

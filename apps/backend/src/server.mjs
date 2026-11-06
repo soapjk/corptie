@@ -559,7 +559,7 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
 });
 channelMailbox.sessionMailbox = sessionMailbox;
 const executionChecklistService = new ExecutionChecklistService({ store,
-  changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision },
+  changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision, checklist: executionChecklistService.display(value, false) },
     { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId })
 });
 const {

@@ -46,12 +46,14 @@ public struct TaskExecutionChecklist: View {
             if row < 2 { preview += height + (row > 0 ? 4 : 0) }
             row += 1
         }
-        let chrome: CGFloat = 20 + 16 + 12 + (plan.steps.count > columns * 2 ? 24 : 0)
+        let chrome: CGFloat = 20 + 16 + 12 + (plan.closed != true && plan.steps.count > columns * 2 ? 24 : 0)
+        if plan.closed == true { return (20, chrome + max(20, full)) }
         return (chrome + max(20, preview), chrome + max(20, full))
     }
     private static func itemHeight(_ item: ConversationExecutionPlan.Step) -> CGFloat {
         (item.reason?.isEmpty == false ? 34 : 20) + (item.assignment == nil ? 0 : 14)
     }
+    private var isClosed: Bool { plan.closed == true }
     private var expanded: Bool { isExpanded ?? showsAll }
     private var columns: Int { Self.columns(for: width) }
     private var grid: [GridItem] { Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: columns) }
@@ -59,38 +61,49 @@ public struct TaskExecutionChecklist: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Label("执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
+                Label(isClosed ? "执行清单 · 已关闭" : "执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
                 Spacer(minLength: 0)
                 Text("已完成 \(completed)/\(plan.steps.count)").font(.system(size: 11)).foregroundStyle(.secondary)
-                if canEdit {
+                if isClosed {
+                    Button(expanded ? "收起" : "查看") {
+                        if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
+                    }.font(.system(size: 11))
+                } else if canEdit {
                     Button { editor = Editor(itemID: nil, text: "", condition: "") } label: { Image(systemName: "plus") }
                         .help("添加事项").accessibilityLabel("添加事项")
+                    Button { send(.init(action: "close", revision: plan.revision)) } label: {
+                        Image(systemName: "xmark").frame(width: 18, height: 20).contentShape(Rectangle())
+                    }
+                    .help("关闭本批清单，不停止任务").accessibilityLabel("关闭本批清单")
+                    .accessibilityIdentifier("task-execution-checklist.close")
                 }
             }
             .frame(height: 20)
-            if plan.steps.isEmpty {
-                Text("暂无事项").font(.system(size: 12)).foregroundStyle(.secondary).frame(height: 20)
-            } else {
-                LazyVGrid(columns: grid, alignment: .leading, spacing: 4) {
-                    // Collapsed cards instantiate only their visible prefix;
-                    // expansion reveals the remaining items inside this card.
-                    ForEach(plan.steps.prefix(expanded ? plan.steps.count : columns * 2)) { item in itemRow(item) }
+            if !isClosed || expanded {
+                if plan.steps.isEmpty {
+                    Text("暂无事项").font(.system(size: 12)).foregroundStyle(.secondary).frame(height: 20)
+                } else {
+                    LazyVGrid(columns: grid, alignment: .leading, spacing: 4) {
+                        // Collapsed cards instantiate only their visible prefix;
+                        // expansion reveals the remaining items inside this card.
+                        ForEach(plan.steps.prefix(expanded ? plan.steps.count : columns * 2)) { item in itemRow(item) }
+                    }
                 }
-            }
-            if plan.steps.count > columns * 2 {
-                Button(expanded ? "收起" : "展开全部 \(plan.steps.count) 项") {
-                    if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
+                if !isClosed && plan.steps.count > columns * 2 {
+                    Button(expanded ? "收起" : "展开全部 \(plan.steps.count) 项") {
+                        if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
+                    }
+                    .font(.system(size: 11)).frame(height: 18)
+                    .accessibilityIdentifier("task-execution-checklist.disclosure")
+                    .accessibilityValue(expanded ? "已展开" : "已收起")
                 }
-                .font(.system(size: 11)).frame(height: 18)
-                .accessibilityIdentifier("task-execution-checklist.disclosure")
-                .accessibilityValue(expanded ? "已展开" : "已收起")
+                HStack(spacing: 6) {
+                    if let error {
+                        Text("保存失败：\(error)").foregroundStyle(.red).help(error)
+                    } else { Text(stateLabel).foregroundStyle(.secondary) }
+                    if busy { Text("正在保存…").foregroundStyle(.secondary) }
+                }.font(.system(size: 10)).lineLimit(1).frame(height: 16)
             }
-            HStack(spacing: 6) {
-                if let error {
-                    Text("保存失败：\(error)").foregroundStyle(.red).help(error)
-                } else { Text(stateLabel).foregroundStyle(.secondary) }
-                if busy { Text("正在保存…").foregroundStyle(.secondary) }
-            }.font(.system(size: 10)).lineLimit(1).frame(height: 16)
         }
         .font(.system(size: 12))
         .buttonStyle(.plain)
@@ -115,6 +128,7 @@ public struct TaskExecutionChecklist: View {
         .accessibilityIdentifier("task-execution-checklist")
     }
     private var stateLabel: String {
+        if isClosed { return "本批清单已关闭" }
         if !plan.steps.isEmpty && completed == plan.steps.count {
             return "清单已完成 · Task 验收独立进行"
         }
@@ -130,7 +144,7 @@ public struct TaskExecutionChecklist: View {
                     .foregroundStyle(item.status == "completed" ? Color.green : item.status == "blocked" ? .orange : .secondary)
                     .frame(width: 16, height: 20).contentShape(Rectangle())
             }
-            .disabled(!canEdit).accessibilityLabel(item.status == "completed" ? "撤销完成：\(item.text)" : "标记完成：\(item.text)")
+            .disabled(!canEdit || isClosed).accessibilityLabel(item.status == "completed" ? "撤销完成：\(item.text)" : "标记完成：\(item.text)")
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(item.ordinal + 1). \(item.text)")
                     .font(.system(size: 12)).lineLimit(1)
@@ -154,7 +168,7 @@ public struct TaskExecutionChecklist: View {
         .frame(height: Self.itemHeight(item), alignment: .topLeading)
         .help([item.text, item.condition, item.reason].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"))
         .contextMenu {
-            if canEdit {
+            if canEdit && !isClosed {
                 Button("编辑事项（已完成项将撤销完成）") { editor = Editor(itemID: item.stepId, text: item.text, condition: item.condition ?? "") }
                 if item.ordinal > 0 { Button("上移") { send(.init(action: "move", revision: plan.revision, itemID: item.stepId, position: item.ordinal - 1)) } }
                 if item.ordinal + 1 < plan.steps.count { Button("下移") { send(.init(action: "move", revision: plan.revision, itemID: item.stepId, position: item.ordinal + 1)) } }
