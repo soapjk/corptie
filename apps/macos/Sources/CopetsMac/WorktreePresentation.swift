@@ -230,19 +230,19 @@ struct WorktreeDeletionConfirmation: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(L10n("Delete this Worktree?")).font(WorkbenchTypography.font(for: .pageTitle))
+            Text(L10n(review.tree.isStaleRegistration ? "Clean stale registration?" : "Delete this Worktree?")).font(WorkbenchTypography.font(for: .pageTitle))
             Text(review.repositoryName).font(.headline)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(review.tree.branchName ?? L10n("Detached HEAD")).font(.headline)
                     Text(review.tree.path).textSelection(.enabled)
-                    Text(L10n("The Worktree directory and its local branch will be permanently removed. This action cannot be undone here."))
+                    Text(L10n(review.tree.isStaleRegistration ? "The Worktree directory no longer exists. Only its Git registration will be removed. Local branches will be retained." : "The Worktree directory and its local branch will be permanently removed. This action cannot be undone here."))
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
                 Spacer()
                 Button(L10n("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L10n("Delete Worktree and Local Branch"), role: .destructive) {
+                Button(L10n(review.tree.isStaleRegistration ? "Clean Stale Registration" : "Delete Worktree and Local Branch"), role: .destructive) {
                     dismiss()
                     onConfirm()
                 }.accessibilityIdentifier("worktree.delete.confirm")

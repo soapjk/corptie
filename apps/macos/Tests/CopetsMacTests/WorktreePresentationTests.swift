@@ -7,6 +7,20 @@ import XCTest
 
 @MainActor
 final class WorktreePresentationTests: XCTestCase {
+    func testStaleRegistrationUsesServerCapabilityAndSeparateCleanupScope() throws {
+        let json = #"{"worktreeId":"stale","path":"/isolated/missing","isMain":false,"availability":"missing","isDetached":true,"isLocked":false,"isPrunable":true,"state":"unavailable","changedFiles":[],"conflictFiles":[],"pendingIntegration":true,"associations":[],"cleanupAction":{"kind":"remove_stale_registration","available":true}}"#
+        let tree = try JSONDecoder().decode(ManagedWorktree.self, from: Data(json.utf8))
+        XCTAssertTrue(tree.isStaleRegistration)
+        XCTAssertNil(ManagedWorktreeDeletionPolicy.blocker(for: tree))
+        XCTAssertTrue(ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: [tree]).isEmpty)
+        let blockedJSON = json.replacingOccurrences(of: "\"available\":true", with:
+            "\"available\":false,\"blocker\":{\"code\":\"WORKTREE_IN_USE\",\"reason\":\"Bound Session\"}")
+            .replacingOccurrences(of: "\"associations\":[]", with:
+                "\"associations\":[],\"deletionBlocker\":{\"code\":\"WORKTREE_IN_USE\",\"reason\":\"Bound Session\"}")
+        let blocked = try JSONDecoder().decode(ManagedWorktree.self, from: Data(blockedJSON.utf8))
+        XCTAssertEqual(ManagedWorktreeDeletionPolicy.blocker(for: blocked)?.code, "WORKTREE_IN_USE")
+    }
+
     func testColumnBackgroundCoversCornersAndEmptyHeight() async throws {
         _ = NSApplication.shared
         let host = NSHostingView(rootView: Text("Fixture")
