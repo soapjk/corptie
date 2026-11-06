@@ -226,9 +226,9 @@ test("Worker message context injects bounded selected references after authorita
   const context = await service.resolveMessageContext(reference, { message: { text: "Use the reference" } });
   assert.match(context.prompt, /corptie_message_presentation/);
   assert.match(context.prompt, /corptie_tool_discovery/);
-  assert.ok(context.contextBudget.sectionBytes["tool-discovery"] > 0);
+  assert.ok(context.contextSections.some(section => section.id === "tool-discovery" && section.prompt));
   assert.match(context.prompt, /prefer a native fenced/);
-  assert.deepEqual(calls, [[session.id, { characterBudget: 4_096 }]]);
+  assert.deepEqual(calls, [[session.id, undefined]]);
   assert.match(context.prompt, /Authoritative bound Task definition/);
   assert.match(context.prompt, /Reference: test document/);
   assert.ok(context.prompt.indexOf("Authoritative bound Task definition") < context.prompt.indexOf("Reference: test document"));

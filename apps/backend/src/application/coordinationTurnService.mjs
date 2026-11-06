@@ -386,7 +386,6 @@ export class CoordinationTurnService {
         readBudget:{remainingMs:Math.max(0,deadline-this.now()),pageCalls:3},readResults:reads});
       while(Buffer.byteLength(render())>64*1024 && payload.history.length){payload.history.shift();payload.historyTruncated=true;}
       const prompt=render();
-      if (Buffer.byteLength(prompt) > 64 * 1024) throw failure("COORDINATION_CONTEXT_TOO_LARGE", "协调输入超出预算，未派发。");
       const callStartedAt = this.now();
       let warning;
       let result;

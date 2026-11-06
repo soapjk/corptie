@@ -1,4 +1,3 @@
-import { assertSessionContextBudget } from "./workSessionContext.mjs";
 
 const encoder = new TextEncoder();
 const UPDATE_NOTICE = "<corptie_context_update>Updated sections below supersede their earlier snapshots. Previously supplied sections omitted from this update remain applicable.</corptie_context_update>";
@@ -20,12 +19,6 @@ export class SessionContextDelivery {
   }
 
   prepare(reference, context, policy) {
-    const maximum = context?.contextBudget?.maxTurnUtf8Bytes;
-    // A reusable delta is never permission to accept an oversized baseline:
-    // reconnects, compaction and cache eviction must still permit full delivery.
-    if (maximum !== undefined) assertSessionContextBudget(context.prompt, maximum, {
-      sectionBytes: context.contextBudget.sectionBytes, stage: "context_delivery"
-    });
     const sections = context?.contextSections;
     if (policy?.mode !== "append" || !Array.isArray(sections)
       || sections.filter(section => section.prompt).map(section => section.prompt).join("\n\n") !== context.prompt
@@ -74,16 +67,9 @@ export class SessionContextDelivery {
     if (delta && sections.some(section => section.reusable && sent.includes(section.id))) {
       prompt = [UPDATE_NOTICE, prompt].filter(Boolean).join("\n\n");
     }
-    // Extra change markers must never overflow the already validated budget.
-    if (encoder.encode(prompt).byteLength > (maximum
-      ?? Math.max(encoder.encode(context.prompt).byteLength, 20_480))) {
-      prompt = context.prompt;
-      reused.length = 0;
-    }
     const actualDelta = prompt !== context.prompt;
     const { contextSections: _sections, ...outgoing } = context;
     const sentBytes = encoder.encode(prompt).byteLength;
-    if (maximum !== undefined) assertSessionContextBudget(prompt, maximum, { stage: "context_delivery" });
     const canonicalBytes = encoder.encode(context.prompt).byteLength;
     outgoing.prompt = prompt;
     outgoing.contextDelivery = { mode: actualDelta ? "delta" : "full",
