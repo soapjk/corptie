@@ -446,7 +446,8 @@ struct FirstRunProviderCard: View {
                 .accessibilityLabel(L10nFormat("启用 %@", provider.name))
                 .disabled(controlsBusy || testing || (!displayEnabled && path.isEmpty))
             }
-            if available && !editingPath && result.program == nil {
+            Text(L10n("程序路径")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            if settingsDraft == nil && available && !editingPath && result.program == nil {
                 HStack {
                     Text(L10n("已通过实际回复检测"))
                         .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
@@ -457,7 +458,6 @@ struct FirstRunProviderCard: View {
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     if let program = result.program { programSelection(program) }
-                    Text(L10n("程序路径")).font(.callout.weight(.medium))
                     ViewThatFits(in: .horizontal) {
                         HStack {
                             pathField.frame(minWidth: 180)
@@ -478,6 +478,10 @@ struct FirstRunProviderCard: View {
                 Text(L10n("当前默认执行引擎已关闭；请启用或手动更改默认设置，不会自动改用其他引擎。"))
                     .font(.caption).foregroundStyle(.orange)
             }
+            if result.accounts != nil || result.runtime != nil {
+                Divider()
+                Text(L10n("账号")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            }
             if let accounts = result.accounts {
                 ProviderAccountsView(provider: result, projection: accounts, draft: settingsDraft,
                     disabled: controlsBusy || testing) { row in
@@ -494,6 +498,7 @@ struct FirstRunProviderCard: View {
                     updated(row)
                 }
             }
+            connectionActions
             if let checkedAt = result.lastCheckedAt {
                 Text(L10nFormat("最近检测：%@", checkedAt)).font(.caption).foregroundStyle(.secondary)
             }
@@ -624,8 +629,15 @@ struct FirstRunProviderCard: View {
                 Button(L10n("采用程序")) { Task { await adoptProgram() } }
                     .disabled(controlsBusy || result.program?.mode == "controlled")
             }
-                Button(L10n(settingsDraft != nil ? "检测连接" : (result.program != nil ? "检测并采用" : "检测连接"))) { checkGeneration += 1 }
-                .disabled(testing || controlsBusy || path.isEmpty || hasPendingSettings)
+        }
+    }
+
+    private var connectionActions: some View {
+        HStack {
+            Button(L10n(settingsDraft != nil ? "检测连接" : (result.program != nil ? "检测并采用" : "检测连接"))) {
+                checkGeneration += 1
+            }
+            .disabled(testing || controlsBusy || path.isEmpty || hasPendingSettings)
             if testing {
                 Button(L10n("取消")) { cancelCheck() }
             }
