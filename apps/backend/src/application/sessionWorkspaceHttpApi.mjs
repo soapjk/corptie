@@ -2,7 +2,7 @@ import { storedSessionDetail } from "./storedSessionDetail.mjs";
 
 export function handleSessionWorkspaceHttpRequest({
   request, response, url, store, sessionApplicationService, requireSessionReference,
-  ensureLogicalRouteForProviderSession, createGitWorkspaceSnapshot, reconcileMovedWorkspaceRoutes,
+  ensureLogicalRouteForProviderSession, reconcileMovedWorkspaceRoutes,
   sessionWorkspaceRecoveryStatus, switchSessionWorkspace, recoverableAgentWorkDir, ensureAgentWorkDir,
   gitWorkspaces, switchSessionProvider, decorateSessionForClient,
   readJson, sendJson, emitEvent, errorStatus, unifiedErrorStatus
@@ -21,16 +21,6 @@ export function handleSessionWorkspaceHttpRequest({
           const error = new Error("Session workspace route not found.");
           error.code = "SESSION_NOT_FOUND";
           throw error;
-        }
-        if (logical.activeBinding?.boundCwd) {
-          try {
-            const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-            store.upsertGitWorkspaceSnapshot(snapshot);
-            await reconcileMovedWorkspaceRoutes(snapshot.worktrees);
-            logical = store.getLogicalSession(logical.logicalSessionId);
-          } catch (error) {
-            console.warn(`[workspace-inventory] session workspace refresh failed session=${sessionId} error=${error.message}`);
-          }
         }
         sendJson(response, 200, {
           logicalSession: logical,

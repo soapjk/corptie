@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
+import { createScopedGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureProjectLocalState } from "./projectLocalStateDirectory.mjs";
 import { pinToolsetExecution, verifyToolsetExecution } from "./projectToolsetExecutionSnapshot.mjs";
 
@@ -391,7 +391,7 @@ export class ProjectToolsetManager {
 
   async layout(workingDirectory) {
     const identity = await inspectGitWorkspace(workingDirectory);
-    const snapshot = await createGitWorkspaceSnapshot(workingDirectory);
+    const snapshot = await createScopedGitWorkspaceSnapshot(dirname(identity.commonGitDirCanonicalPath));
     const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
     if (!main) throw new Error("The repository's main worktree is unavailable.");
     const mainPath = main.canonicalPath || main.path;

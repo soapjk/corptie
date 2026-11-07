@@ -29,7 +29,7 @@ test("fork worktree is inventoried and gated before its identity is returned", a
       calls.push("create");
       return { path: targetPath };
     },
-    createGitWorkspaceSnapshot: async (path) => ({
+    createScopedGitWorkspaceSnapshot: async (path) => ({
       repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
     }),
     ensureArtifactCommitHook: async (_path, options) => {
@@ -59,7 +59,7 @@ test("fork workspace rolls back when post-allocation preparation fails", async (
       path: "/worktrees/one/fork-target",
       rollback: async () => calls.push("rollback")
     }),
-    createGitWorkspaceSnapshot: async path => ({
+    createScopedGitWorkspaceSnapshot: async path => ({
       repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
     }),
     ensureArtifactCommitHook: async () => { throw new Error("gate failed"); }
@@ -85,7 +85,7 @@ test("chat fork removes its allocated worktree when session creation fails", asy
       path: "/worktrees/one/fork-target",
       rollback: async () => calls.push("rollback")
     }),
-    createGitWorkspaceSnapshot: async path => ({
+    createScopedGitWorkspaceSnapshot: async path => ({
       repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
     }),
     ensureArtifactCommitHook: async () => calls.push("gate"),

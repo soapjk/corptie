@@ -611,7 +611,6 @@ const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle
   store, emitEvent, sessionMailbox,
   recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
   settleEntityTaskFromSession, collaborationCore,
-  refreshWorkspaceInventoryAfterTurn: (...args) => refreshWorkspaceInventoryAfterTurn(...args),
   continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
   continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args),
   resumeWorkAfterTransition, scheduleAgentWorkDrain
@@ -1145,7 +1144,6 @@ const claudeNotificationReceiver = createClaudeNotificationReceiver({
   sessionStateDiagnostics, now, workspaceContinuationCoordinator,
   settleEntityTaskFromSession, collaborationCore, resumeWorkAfterTransition,
   scheduleAgentWorkDrain,
-  refreshWorkspaceInventoryAfterTurn: (...args) => refreshWorkspaceInventoryAfterTurn(...args),
   continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
   continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args)
 });
@@ -1659,7 +1657,7 @@ const { sessionDeletionPlan, sessionWorkspaceRecoveryStatus } = createSessionWor
 const taskWorkspaceService = new TaskWorkspaceService({
   store,
   requireProject: (repositoryId) => projectApplicationService.requireProject(repositoryId),
-  inspectProject: (mainPath, repositoryId) => gitWorkspaces.projectStatusForPath(mainPath, repositoryId),
+  inspectProject: (mainPath, repositoryId, options) => gitWorkspaces.projectStatusForPath(mainPath, repositoryId, options),
   ensureWorktree: (input) => gitWorkspaces.ensureTaskWorktreeForProject(input),
   restoreMissingWorktree: (input) => gitWorkspaces.restoreMissingWorktree(input)
 });
@@ -1743,7 +1741,7 @@ const { sessionForkService, prepareConversationForkWorkspace } = createSessionFo
   workSessionStartApplicationService, chatResourceService, collaborationCore,
   createSessionThroughApplication: (...args) => createSessionThroughApplication(...args),
   emitEvent, createForkWorktree,
-  createGitWorkspaceSnapshot, ensureArtifactCommitHook: ensureRepositoryArtifactCommitHook
+  ensureArtifactCommitHook: ensureRepositoryArtifactCommitHook
 });
 const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
   onDispatchReleased: worktreeIds => {
@@ -1798,11 +1796,11 @@ const { resolveCollaborationConfirmation, resolveSessionChannelRequest } = creat
 });
 const {
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
-  enqueueWorkspaceContinuationSafely, refreshWorkspaceInventoryAfterTurn, reconcileMovedWorkspaceRoutes
+  enqueueWorkspaceContinuationSafely, reconcileMovedWorkspaceRoutes
 } = createPostTurnWorkspaceOperations({
   store, workspaceTransitionRuntimeForLogicalSession, sessionBindingRepository,
   sessionProviderSwitchCoordinator, workspaceContinuationCoordinator,
-  createGitWorkspaceSnapshot, emitEvent
+  emitEvent
 });
 const { createSessionThroughApplication } = createSessionCreationOperation({
   store, sessionApplicationService, sessionForkService, sessionTitleReservations,
@@ -1885,7 +1883,7 @@ function now() {
 }
 
 const providerSessionRouteBootstrap = createProviderSessionRouteBootstrap({
-  store, createGitWorkspaceSnapshot, inspectGitWorkspace,
+  store, inspectGitWorkspace,
   defaultWorkspacePath, normalizeSessionId, codexPermissionsForSession
 });
 const sessionProviderAttachments = createSessionProviderAttachments({

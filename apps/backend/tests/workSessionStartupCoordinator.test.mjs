@@ -20,69 +20,19 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 const COMMIT = "a".repeat(40);
 const TREE = "b".repeat(40);
 
-for (const dirty of [false,true]) test(`ready delivery binding and ${dirty ? "workspace snapshot" : "frozen HEAD"} survive parent commits, sibling creation and recovery`, async () => {
-  const f = await fixture();
-  const exec = promisify(execFileCallback);
-  const git = async (path,...args)=>(await exec("git",["-C",path,...args],{encoding:"utf8"})).stdout.trim();
-  try {
-    const repo=join(f.directory,"repo");
-    await mkdir(repo);
-    await git(repo,"init","-b","main");
-    await git(repo,"config","user.name","Corptie Tests");
-    await git(repo,"config","user.email","tests@corptie.local");
-    await git(repo,"commit","--allow-empty","-m","initial");
-    await mkdir(join(f.directory,"worktrees"));
-    const parentPath=f.allocation.canonicalWorktreePath;
-    await git(repo,"worktree","add","-b","task/one",parentPath,"HEAD");
-    await f.service.start({...input(),dispatchInitialTurn:false});
-    const binding=f.store.getTaskDeliveryBinding(f.task.id);
-    assert.equal(binding.worktree_id,"worktree:one");
-    const parent=f.store.getTask(f.task.id);
-    const createChild=(id)=>f.store.createTask({id,workId:parent.work_id,title:"Child",parentTaskId:parent.id,mainAgentId:"agent:worker"},{},{expectedParentResourceVersion:parent.resource_version});
-    const child=createChild("task:child");
-    const now=new Date().toISOString();
-    const allocate=(id,task)=>f.store.db.run(`INSERT INTO work_session_startup_operations
-      (startup_operation_id,work_id,task_id,assignee_agent_id,expected_task_version,provider_id,repository_id,
-       source_session_id,idempotency_key,request_fingerprint,state,correlation_id,allocated_at,updated_at)
-      VALUES (?,?,?,?,1,'test','repository:one','session:source',?,?,'allocated',?,?,?)`,
-    [id,task.work_id,task.id,"agent:worker",id,id,id,now,now]);
-    allocate("startup:child",child);
-    // Production injects raw stdout through the startup preparer, not the
-    // hierarchy service's standalone Git runner. Exercise that exact edge.
-    const childPath = join(f.directory, "worktrees", "child workspace ");
-    let allocations = 0;
-    const preparer = new WorktreeStartupPreparer({ store: f.store, ensureWorkspace: async ({ baseContext }) => {
-      allocations += 1;
-      await git(repo, "worktree", "add", "-b", "task/child", childPath, baseContext.baseCommitOid);
-      f.store.db.run(`INSERT INTO git_worktrees
-        (worktree_id,repository_id,path,canonical_path,availability,inventory_version,observed_at,branch_name)
-        VALUES ('worktree:child','repository:one',?,?,'available','inventory:child',?,'task/child')`, [childPath, childPath, now]);
-      return { worktreeId: "worktree:child", path: childPath, branchName: "task/child", localState: {} };
-    } });
-    if (dirty) await writeFile(join(parentPath,"inherited.txt"),"inherited working content");
-    const childStart = { startupOperationId: "startup:child", taskId: child.id, repositoryId: "repository:one" };
-    const allocation = await preparer.prepare(childStart);
-    assert.equal(allocation.sourceCommitOid, dirty ? allocation.baseContext.baseCommitOid : await git(parentPath, "rev-parse", "HEAD"));
-    if(dirty) assert.equal(await git(childPath,"show","HEAD:inherited.txt"),"inherited working content");
-    assert.equal(allocation.canonicalWorktreePath, await realpath(childPath));
-    assert.equal((await preparer.prepare(childStart)).reused, true);
-    assert.equal(allocations, 1);
-    const hierarchy=preparer.hierarchy;
-    const base=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
-    assert.equal(dirty ? base.parentHeadOid : base.baseCommitOid,await git(parentPath,"rev-parse","HEAD"));
-    await writeFile(join(parentPath,"parent.txt"),"next");
-    await assert.doesNotReject(hierarchy.validateCreate({workId:parent.work_id,parentTaskId:parent.id},{expectedParentResourceVersion:parent.resource_version}));
-    await git(parentPath,"add","parent.txt"); await git(parentPath,"commit","-m","parent advanced");
-    const sibling=createChild("task:sibling"); allocate("startup:sibling",sibling);
-    const restored=await new TaskWorktreeHierarchyService({store:f.store}).freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"});
-    assert.deepEqual(restored,base);
-    const siblingBase=await hierarchy.freezeBaseForStartup({startupOperationId:"startup:sibling",taskId:sibling.id,repositoryId:"repository:one"});
-    assert.notEqual(siblingBase.baseCommitOid,base.baseCommitOid);
-    assert.equal(await git(repo,"rev-parse","HEAD"),dirty ? base.parentHeadOid : base.baseCommitOid);
-    f.store.db.run("UPDATE task_delivery_worktrees SET binding_revision=binding_revision+1 WHERE task_id=?",[parent.id]);
-    assert.deepEqual(await hierarchy.freezeBaseForStartup({startupOperationId:"startup:child",taskId:child.id,repositoryId:"repository:one"}),base);
-  } finally { await cleanup(f); }
-});
+for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
+  test(`${providerId}: child startup uses prepared directory directly without inventory inspection`, async () => {
+    const f = await fixture({ child: true });
+    try {
+      f.service.inspectWorktree = async () => assert.fail("Child startup must never inspect or compare inventory");
+      const result = await f.service.start({ ...input(), providerId, dispatchInitialTurn: false });
+      assert.equal(result.status, "ready");
+      assert.equal(f.calls.prepare, 1);
+      assert.equal(f.calls.inspectWorktree, 0);
+      assert.equal(f.calls.create, 1);
+    } finally { await cleanup(f); }
+  });
+}
 
 async function fixture(overrides = {}) {
   const directory = await mkdtemp(join(tmpdir(), "corptie-authoritative-startup-"));
@@ -109,7 +59,9 @@ async function fixture(overrides = {}) {
     id: "work:one", name: "Work", contributorAgentIds: [agent.agentId],
     workspaceId: "workspace:one"
   });
+  const parent = overrides.child ? workService.createTask({ workId: work.id, title: "Parent", mainAgentId: agent.agentId }) : null;
   const task = workService.createTask({
+    ...(parent ? { parentTaskId: parent.id } : {}),
     id: "task:one", workId: work.id, title: "Authoritative_startup",
     mainAgentId: agent.agentId
   });

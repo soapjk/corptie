@@ -27,7 +27,19 @@ export class WorktreeStartupPreparer {
       throw coded("START_REFERENCE_INVALID", "Task Repository binding changed before Worktree preparation.", false);
     }
     const timing = input.startupTiming;
-    const baseContext = await measureStartup(timing, "worktree.freeze-parent-base", () => this.hierarchy.freezeBaseForStartup(input));
+    if (task.parent_task_id) {
+      const workspace = await this.ensureWorkspace({ task, session: null, startupTiming: timing });
+      this.store.db.run(`UPDATE git_worktrees SET dedicated=1,created_by_startup_operation_id=? WHERE worktree_id=?`,
+        [input.startupOperationId, workspace.worktreeId]);
+      this.store.scheduleSave();
+      return { repositoryId: input.repositoryId, worktreeId: workspace.worktreeId,
+        canonicalWorktreePath: workspace.path, headIdentity: { kind: "branch", branch: workspace.branchName },
+        sourceCommitOid: workspace.headOid, sourceTreeOid: workspace.sourceTreeOid,
+        repositoryInventoryVersion: workspace.inventoryVersion, workspaceResourceVersion: 1,
+        createdByStartupOperationId: input.startupOperationId, reused: workspace.reused === true,
+        baseContext: workspace.baseContext };
+    }
+    const baseContext = null;
     const owned = this.store.selectOne(
       `SELECT worktree_id FROM git_worktrees
        WHERE repository_id=? AND created_by_startup_operation_id=? AND dedicated=1
@@ -107,13 +119,6 @@ export class WorktreeStartupPreparer {
     if (canonicalWorktreePath !== inventoryPath) {
       throw coded("START_WORKTREE_INVENTORY_MISMATCH", "Worktree canonical path differs from Store inventory.", true);
     }
-    await measureStartup(startupTiming, "worktree.verify.registered-paths", async () => { for (const other of this.store.listGitWorktrees(repositoryId)) {
-      if (other.worktreeId === inventory.worktreeId || other.availability !== "available") continue;
-      const otherPath = await canonical(other.canonicalPath || other.path);
-      if (pathContains(otherPath, canonicalWorktreePath)) {
-        throw coded("START_WORKTREE_COLLISION", "Dedicated Worktree is nested inside another Git Worktree.", false);
-      }
-    } });
     const commonGitDirText = await measureStartup(startupTiming, "worktree.verify.git-common-dir", () => this.execGit(canonicalWorktreePath, ["rev-parse", "--git-common-dir"]));
     const commonGitDir = await canonical(resolve(canonicalWorktreePath, gitScalarOutput(commonGitDirText)));
     const registeredCommonGitDir = await canonical(repository.commonGitDirCanonicalPath);

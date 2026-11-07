@@ -46,14 +46,6 @@ export class TaskHierarchyRepository {
     if (parent.archived || parent.lifecycle_state === "done" || parent.deletion_status || parent.creation_state !== "ready") {
       throw taskHierarchyError("TASK_PARENT_UNAVAILABLE");
     }
-    const context = this.getTaskWorkspaceContext(parent);
-    if (context?.repository) {
-      const binding = this.getTaskDeliveryBinding(parent.id);
-      const jobs = this.selectAll(`SELECT id,phase,status,details_json FROM worktree_integration_jobs
-        WHERE repository_id=? AND status IN ('queued','running','paused','cancellation_requested','replanning')`, [context.repository.id]);
-      if (binding && jobs.some(job=>integrationBlocksWorkspaceCapture(job,binding.worktree_id,
-        this.listGitWorktrees?.(context.repository.id) ?? []))) throw taskHierarchyError('TASK_HIERARCHY_BUSY');
-    }
     return parent;
   }
 

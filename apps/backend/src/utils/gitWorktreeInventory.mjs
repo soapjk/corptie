@@ -123,6 +123,52 @@ export async function inspectGitWorkspace(workingDirectory, options = {}) {
   };
 }
 
+// Reads only explicit operation participants. It never enumerates sibling worktrees
+// or computes an inventory fingerprint. Existing registration accepts partial rows.
+export async function createScopedGitWorkspaceSnapshot(workingDirectory, options = {}) {
+  const run = options.execFile ?? execFileAsync;
+  const anchor = await inspectGitWorkspace(workingDirectory, options);
+  const observedAt = options.inspectedAt ?? new Date().toISOString();
+  const records = [anchor, ...(options.worktrees ?? [])];
+  if (options.includeMain) records.push(dirname(anchor.commonGitDirCanonicalPath));
+  const seen = new Set();
+  const worktrees = [];
+  for (const item of records) {
+    const path = typeof item === "string" ? item : item.canonicalPath || item.path;
+    if (!path || seen.has(resolve(path))) continue;
+    seen.add(resolve(path));
+    try {
+      const identity = item === anchor ? anchor : await inspectGitWorkspace(path, options);
+      if (worktrees.some(row => row.worktreeId === identity.worktreeId)) continue;
+      if (identity.repositoryId !== anchor.repositoryId) throw new Error("Operation directory belongs to another repository.");
+      const head = await run("git", ["-C", path, "rev-parse", "--verify", "HEAD"],
+        { encoding: "utf8", maxBuffer: 1024 * 1024 }).catch(() => null);
+      const branch = await run("git", ["-C", path, "symbolic-ref", "--quiet", "HEAD"],
+        { encoding: "utf8", maxBuffer: 1024 * 1024 }).catch(() => null);
+      const branchRef = String(branch?.stdout ?? "").trim() || null;
+      const lockReason = await readFile(resolve(identity.gitDirCanonicalPath, "locked"), "utf8").catch(() => null);
+      worktrees.push({ ...identity, headOid: normalizedHeadOid(head?.stdout), branchRef,
+        branchName: shortBranchName(branchRef ?? ""), isDetached: !branchRef, isBare: false,
+        isLocked: lockReason !== null, lockReason, isPrunable: false, pruneReason: null,
+        availability: "available", observedAt });
+    } catch (error) {
+      if (typeof item === "string" || !item.worktreeId) throw error;
+      const absent = await stat(path).then(() => false, failure => failure.code === "ENOENT");
+      const marker = item.gitDirCanonicalPath && await stat(item.gitDirCanonicalPath).then(() => true, () => false);
+      const lockReason = item.gitDirCanonicalPath
+        ? await readFile(resolve(item.gitDirCanonicalPath, "locked"), "utf8").catch(() => null) : null;
+      worktrees.push({ ...item, availability: absent ? "missing" : "invalid",
+        isPrunable: absent && (item.gitDirCanonicalPath ? Boolean(marker) : item.isPrunable === true),
+        isLocked: item.gitDirCanonicalPath ? lockReason !== null : item.isLocked === true,
+        lockReason: item.gitDirCanonicalPath ? lockReason : item.lockReason,
+        inspectionError: error.message, observedAt });
+    }
+  }
+  return { partial: true, repository: { id: anchor.repositoryId,
+    commonGitDirCanonicalPath: anchor.commonGitDirCanonicalPath },
+    worktrees, inventoryVersion: anchor.worktreeId, observedAt };
+}
+
 export async function createGitWorkspaceSnapshot(workingDirectory, options = {}) {
   const inspectedAt = options.inspectedAt ?? new Date().toISOString();
   const anchor = await inspectGitWorkspace(workingDirectory, options);

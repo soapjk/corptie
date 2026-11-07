@@ -144,7 +144,7 @@ export class WorktreeIntegrationJobService {
 
   async worktreeLocalState(repositoryId, worktreeId, { repair = false } = {}) {
     const repository = this.#requireRepository(repositoryId);
-    const inventory = await this.inspectRepository(repository.id, { forceFresh: true });
+    const inventory = await this.inspectRepository(repository.id, { forceFresh: true, worktreeIds: [worktreeId] });
     const tree = inventory.worktrees.find(item => item.worktreeId === worktreeId);
     if (!tree || tree.availability !== "available") {
       throw new WorktreeIntegrationJobError("WORKTREE_UNAVAILABLE", "The selected Worktree is unavailable.", 409);
@@ -201,7 +201,7 @@ export class WorktreeIntegrationJobService {
 
   async handleWorktreeGitOperation(repositoryId, worktreeId, input = {}) {
     const repository = this.#requireRepository(repositoryId);
-    const inspection = await this.inspectRepository(repository.id, { forceFresh: true });
+    const inspection = await this.inspectRepository(repository.id, { forceFresh: true, worktreeIds: [worktreeId] });
     const worktree = inspection.worktrees.find((entry) => entry.worktreeId === worktreeId);
     if (!worktree) {
       throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
@@ -255,7 +255,7 @@ export class WorktreeIntegrationJobService {
       if (typeof this.removeWorktree !== "function") {
         throw new TypeError("removeWorktree() is required for Worktree deletion.");
       }
-      const inspection = await this.inspectRepository(repository.id, { forceFresh: true });
+      const inspection = await this.inspectRepository(repository.id, { forceFresh: true, worktreeIds: [requestedWorktreeId] });
       const inspectedWorktree = inspection.worktrees.find((entry) => entry.worktreeId === requestedWorktreeId);
       if (!inspectedWorktree) {
         throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
@@ -293,7 +293,7 @@ export class WorktreeIntegrationJobService {
     if (typeof this.removeWorktree !== "function") {
       throw new TypeError("removeWorktree() is required for Worktree cleanup.");
     }
-    const inspection = await this.inspectRepository(repository.id);
+    const inspection = await this.inspectRepository(repository.id, { worktreeIds: input.worktreeIds ?? [] });
     const removed = [];
     const skipped = [];
     const failed = [];
@@ -467,7 +467,15 @@ export class WorktreeIntegrationJobService {
   }
 
   async #buildIntegrationGraphPlan(repository, options, inspectionOptions) {
-    const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
+    const requested = options.sourceWorktreeIds;
+    const ancestors = requested.length ? this.store.selectAll?.(`WITH RECURSIVE ancestors(id,parent_task_id) AS (
+      SELECT t.id,t.parent_task_id FROM tasks t JOIN task_delivery_worktrees d ON d.task_id=t.id
+      WHERE d.worktree_id IN (${requested.map(() => "?").join(",")})
+      UNION SELECT t.id,t.parent_task_id FROM tasks t JOIN ancestors a ON t.id=a.parent_task_id
+    ) SELECT d.worktree_id FROM ancestors a JOIN task_delivery_worktrees d ON d.task_id=a.id`, requested) ?? [] : [];
+    const inspection = this.#associate(await this.inspectRepository(repository.id, {
+      ...inspectionOptions, worktreeIds: [...requested, options.targetWorktreeId, ...ancestors.map(row => row.worktree_id)].filter(Boolean)
+    }));
     inspection.repositoryId = repository.id;
     if (options.targetWorktreeId !== inspection.mainWorktreeId) throw new WorktreeIntegrationJobError("INVALID_INTEGRATION_TARGET", "Hierarchical integration must target main.", 409);
     const notices=[];
@@ -504,7 +512,9 @@ export class WorktreeIntegrationJobService {
   }
 
   async #buildBranchOperationPlan(repository, operation, inspectionOptions = {}) {
-    const inspection = this.#associate(await this.inspectRepository(repository.id, inspectionOptions));
+    const inspection = this.#associate(await this.inspectRepository(repository.id, {
+      ...inspectionOptions, worktreeIds: [operation.targetWorktreeId, ...operation.sourceWorktreeIds].filter(Boolean)
+    }));
     const byId = new Map(inspection.worktrees.map((worktree) => [worktree.worktreeId, worktree]));
     const selectedIds = operation.type === "converge"
       ? operation.sourceWorktreeIds
@@ -1878,6 +1888,7 @@ export class WorktreeIntegrationJobService {
       if (job.details.executionValidationCompleted !== true && !executionProgressed) {
         const current = await this.inspectRepository(job.repositoryId, {
           forceFresh: true,
+          worktreeIds: [job.details.plan.mainWorktreeId, ...(job.details.plan.validationSnapshot ?? job.details.plan.items).map(item => item.worktreeId)],
           reason: "integration_execution_validation"
         });
         const relevant = job.details.plan.orchestration
@@ -2080,7 +2091,7 @@ export class WorktreeIntegrationJobService {
           for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
             try {
               await this.#assertIntegrationScopeFresh(job);
-              const live=await this.inspectRepository(job.repositoryId,{forceFresh:true});
+              const live=await this.inspectRepository(job.repositoryId,{forceFresh:true,worktreeIds:[job.details.plan.mainWorktreeId,item.worktreeId]});
               const target=live.worktrees.find(tree=>tree.worktreeId===job.details.plan.mainWorktreeId);
               if(!target || target.availability!=="available") throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND","Integration target is unavailable.",404);
               expectedMainHead=target.headOid;
@@ -2109,7 +2120,7 @@ export class WorktreeIntegrationJobService {
               if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
                 throw conflictFallbackFailure(error, "merge_source", attempt + 1);
               }
-              const inspection = await this.inspectRepository(job.repositoryId);
+              const inspection = await this.inspectRepository(job.repositoryId, { worktreeIds: [job.details.plan.mainWorktreeId, item.worktreeId] });
               const main = inspection.worktrees.find((candidate) =>
                 candidate.worktreeId === (job.details.plan.targetWorktreeId ?? job.details.plan.mainWorktreeId)
               );
@@ -2279,7 +2290,7 @@ export class WorktreeIntegrationJobService {
       || job.details.commitPolicyBlocker) return;
     let inspection;
     try {
-      inspection = await this.inspectRepository(job.repositoryId, { forceFresh: true, reason: "integration_dispatch_safety" });
+      inspection = await this.inspectRepository(job.repositoryId, { forceFresh: true, worktreeIds: [job.details.plan.mainWorktreeId, ...job.details.plan.items.map(item => item.worktreeId)], reason: "integration_dispatch_safety" });
     } catch { return; }
     const latest = this.store.getWorktreeIntegrationJob(jobId);
     if (!latest) return;
@@ -2356,7 +2367,7 @@ export class WorktreeIntegrationJobService {
         job=this.#update(job,{details:{...job.details,graphExecution:state},auditEvent:"legacy_acceptance_gate_skipped"});
         continue;
       }
-      const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { forceFresh: true, reason: "integration_graph_step" }));
+      const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { forceFresh: true, worktreeIds: state.reviewedItems.map(item => item.worktreeId), reason: "integration_graph_step" }));
       if (await this.#stopIfRequested(job.id)) return null;
       const byId = new Map(inspection.worktrees.map(tree => [tree.worktreeId, tree]));
       // Compare only the reviewed dependency closure. HEAD changes created by
@@ -2470,7 +2481,7 @@ export class WorktreeIntegrationJobService {
           }
           const current = this.inspectSyncWorktree
             ? await this.inspectSyncWorktree({ repositoryId: latest.repositoryId, item: recorded, targetHead, allowResume, jobId, syncStrategy:latest.details.plan.syncStrategy })
-            : (await this.inspectRepository(latest.repositoryId)).worktrees.find(item => item.worktreeId === recorded.worktreeId);
+            : (await this.inspectRepository(latest.repositoryId, { worktreeIds: [latest.details.plan.mainWorktreeId, recorded.worktreeId] })).worktrees.find(item => item.worktreeId === recorded.worktreeId);
           if (!current || current.path !== recorded.path || current.branchName !== recorded.branchName
             || current.isDetached && current.operationState !== "rebase"
             || current.availability !== "available") {
@@ -2552,7 +2563,7 @@ export class WorktreeIntegrationJobService {
     if (!this.authorizeAutomaticFollow(job)) {
       throw new WorktreeIntegrationJobError("AUTO_FOLLOW_NOT_AUTHORIZED", "Automatic follow is disabled or its binding changed.", 409);
     }
-    const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { forceFresh: true }));
+    const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { forceFresh: true, worktreeIds: [job.details.plan.mainWorktreeId, ...job.details.plan.items.map(item => item.worktreeId)] }));
     for (const recorded of job.details.plan.items) {
       const current = inspection.worktrees.find(item => item.worktreeId === recorded.worktreeId);
       if (!current || current.availability !== "available"
@@ -2566,7 +2577,7 @@ export class WorktreeIntegrationJobService {
   }
 
   async #assertWorktreeIdle(repositoryId, worktreeId) {
-    const inspection = this.#associate(await this.inspectRepository(repositoryId));
+    const inspection = this.#associate(await this.inspectRepository(repositoryId, { worktreeIds: [worktreeId] }));
     const worktree = inspection.worktrees.find((candidate) => candidate.worktreeId === worktreeId);
     this.hierarchy.assertIdle([worktreeId], false);
     const activeSessions = (worktree?.associations ?? []).filter((association) => association.active === true);
@@ -2579,7 +2590,7 @@ export class WorktreeIntegrationJobService {
   }
 
   async #refreshWorktreeItem(job, worktreeId, { requireClean = false } = {}) {
-    const inspection = this.#associate(await this.inspectRepository(job.repositoryId));
+    const inspection = this.#associate(await this.inspectRepository(job.repositoryId, { worktreeIds: [worktreeId] }));
     const current = inspection.worktrees.find((candidate) => candidate.worktreeId === worktreeId);
     const recorded = job.details.plan.items.find((candidate) => candidate.worktreeId === worktreeId);
     if (!current || current.availability !== "available" || current.path !== recorded?.path

@@ -32,7 +32,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     projectToolsetStatus, projectWorkingDirectoryForSession, projectToolsetAuthenticatedSession, projectToolsetInitializer, projectToolsets,
     projectToolsetRunIsolationOptions, handleSessionMutationHttpRequest, sessionDeletionPlan, reserveSessionTitle, deleteSessionWithOptionalMerge,
     mergeSessionWorktreeBeforeDeletion, gitWorkspaces, handleSessionExecutionHttpRequest, sessionBindingReadinessProbe, handleSessionWorkspaceHttpRequest,
-    ensureLogicalRouteForProviderSession, createGitWorkspaceSnapshot, reconcileMovedWorkspaceRoutes, sessionWorkspaceRecoveryStatus, switchSessionWorkspace,
+    ensureLogicalRouteForProviderSession, reconcileMovedWorkspaceRoutes, sessionWorkspaceRecoveryStatus, switchSessionWorkspace,
     recoverableAgentWorkDir, ensureAgentWorkDir, switchSessionProvider, decorateSessionForClient, handleSessionTurnHttpRequest,
     handleStateSyncHttpRequest, eventLog, sseClients, stateSyncService, stateSyncClients,
     sessionStateDiagnostics, writeStateSyncFrame
@@ -306,7 +306,7 @@ export function routeBackendHttpRequest(request, response, ports) {
 
   if (handleSessionWorkspaceHttpRequest({
     request, response, url, store, sessionApplicationService, requireSessionReference,
-    ensureLogicalRouteForProviderSession, createGitWorkspaceSnapshot, reconcileMovedWorkspaceRoutes,
+    ensureLogicalRouteForProviderSession, reconcileMovedWorkspaceRoutes,
     sessionWorkspaceRecoveryStatus, switchSessionWorkspace, recoverableAgentWorkDir, ensureAgentWorkDir,
     gitWorkspaces, switchSessionProvider, decorateSessionForClient,
     readJson, sendJson, emitEvent, errorStatus, unifiedErrorStatus

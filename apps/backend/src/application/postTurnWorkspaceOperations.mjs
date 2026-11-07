@@ -5,7 +5,7 @@ import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 export function createPostTurnWorkspaceOperations({
   store, workspaceTransitionRuntimeForLogicalSession, sessionBindingRepository,
   sessionProviderSwitchCoordinator, workspaceContinuationCoordinator,
-  createGitWorkspaceSnapshot, emitEvent
+  emitEvent
 }) {
   const reconcilingWorkspacePaths = new Set();
   function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
@@ -66,34 +66,6 @@ export function createPostTurnWorkspaceOperations({
     }
   }
 
-  function refreshWorkspaceInventoryAfterTurn(logical) {
-    if (!logical?.repositoryId || !logical.activeBinding?.boundCwd) return;
-    const previousWorktrees = store.listGitWorktrees(logical.repositoryId);
-    const previousWorktreeIds = new Set(previousWorktrees.map((worktree) => worktree.worktreeId));
-    const previousVersion = logical.activeWorkspaceId
-      ? store.getGitWorktree(logical.activeWorkspaceId)?.inventoryVersion
-      : null;
-    createGitWorkspaceSnapshot(logical.activeBinding.boundCwd)
-      .then(async (snapshot) => {
-        store.upsertGitWorkspaceSnapshot(snapshot);
-        await reconcileMovedWorkspaceRoutes(snapshot.worktrees);
-        if (snapshot.inventoryVersion === previousVersion) return;
-        emitEvent("WorkspaceInventoryChanged", {
-          sessionId: logical.legacySessionId,
-          logicalSessionId: logical.logicalSessionId,
-          repositoryId: logical.repositoryId,
-          inventoryVersion: snapshot.inventoryVersion,
-          workspaces: store.listGitWorktrees(logical.repositoryId),
-          newlyDiscoveredWorkspaces: snapshot.worktrees.filter((worktree) => {
-            return !previousWorktreeIds.has(worktree.worktreeId);
-          })
-        }, { sessionId: logical.legacySessionId });
-      })
-      .catch((error) => {
-        console.warn(`[workspace-inventory] refresh failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
-      });
-  }
-
   async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
     for (const worktree of worktrees) {
       if (worktree.availability !== "available") continue;
@@ -147,6 +119,6 @@ export function createPostTurnWorkspaceOperations({
 
   return {
     continuePendingWorkspaceTransition, continuePendingProviderSwitch,
-    enqueueWorkspaceContinuationSafely, refreshWorkspaceInventoryAfterTurn, reconcileMovedWorkspaceRoutes
+    enqueueWorkspaceContinuationSafely, reconcileMovedWorkspaceRoutes
   };
 }
