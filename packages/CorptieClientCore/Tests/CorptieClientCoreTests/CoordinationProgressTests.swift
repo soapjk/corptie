@@ -28,7 +28,7 @@ struct CoordinationProgressNativeTests {
         #expect(ClientDetailCardPolicy.isVisible(card, context: .init(sessionKind: "worker", taskID: "task:parent", workID: "work:one")))
         guard case .coordinationProgress(let progress) = card.payload else { Issue.record("Progress payload missing"); return }
         #expect(progress.items[0].state == "needs_review")
-        #expect(progress.previewHeight == 142)
+        #expect(progress.items[0].statusTitle == "待审查")
     }
     @Test func futureCardVersionDoesNotBreakTheDocument() throws {
         let value = try ClientDetailBusinessDocument.decode(document(version: 2))

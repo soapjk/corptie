@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "CorptieConversation",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [.library(name: "CorptieConversation", targets: ["CorptieConversation"])],
     dependencies: [
@@ -17,7 +18,7 @@ let package = Package(
             .product(name: "Nuke", package: "Nuke"),
             .product(name: "Markdown", package: "swift-markdown"),
             .product(name: "SwiftMath", package: "SwiftMath")
-        ], resources: [.copy("Resources/DetailWeb")]),
+        ], resources: [.copy("Resources/DetailWeb"), .process("Resources/Localization")]),
         .testTarget(name: "CorptieConversationTests", dependencies: ["CorptieConversation"])
     ]
 )

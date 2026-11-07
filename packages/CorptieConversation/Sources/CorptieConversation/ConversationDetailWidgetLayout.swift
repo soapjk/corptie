@@ -50,7 +50,14 @@ enum DetailWidgetSizing {
         let base = card.kind == "contextReferences" || card.actions.contains(where: { $0.operation == "editor.open" }) ? 68 : 54
         let page = card.nextCursor != nil
         switch card.payload {
-        case .coordinationProgress(let value): return .fitted(height: Int(value.previewHeight))
+        case .coordinationProgress(let value):
+            // Only the bounded visible preview participates in the grid estimate.
+            // Timeline hosts use the shared SwiftUI card's natural fitted size.
+            let rows = value.items.prefix(3).map { item in
+                max(20, textHeight(item.title, lines: 2)) + (item.previewSummary.isEmpty ? 0 : 3 + textHeight(item.previewSummary, lines: 2))
+            }
+            return listSize(rows, base: 46 + blockHeight(value.focus.trimmingCharacters(in: .whitespacesAndNewlines))
+                + blockHeight(value.decision.trimmingCharacters(in: .whitespacesAndNewlines)), page: value.hasMore || value.total > 3)
         case .session(let value): return .fitted(height: value.workName.isEmpty ? 84 : 96)
         case .summary(let value): return .fitted(height: base + textHeight(value.text))
         case .work(let value): return .fitted(height: base + textHeight(value.name, lines: 2) + blockHeight(value.description))
