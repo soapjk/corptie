@@ -771,7 +771,7 @@ function matchesDesired(record, version, catalogVersion, domains, plan) {
     // Older generated-MCP replacement rows persisted `create`. Ownership
     // hashes are identical, but the observation protocol must still be repaired
     // through the normal desired-state CAS before waiting for tools/list.
-    && (plan.surface !== "generated_authenticated_mcp"
+    && (plan.refreshMode !== "generated_mcp_refresh"
       || record.exposurePlan?.refreshMode === plan.refreshMode);
 }
 

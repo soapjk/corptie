@@ -861,11 +861,11 @@ test("an active Turn records desired state but never mutates Provider tool schem
   }
 });
 
-test("generated MCP stays applying until the Provider performs tools/list for the exact generation", async () => {
+for (const gatewayOnly of [false, true]) test(`generated MCP ${gatewayOnly ? "fixed gateway" : "direct"} stays applying until the Provider performs tools/list for the exact generation`, async () => {
   const value = await fixture({
     capability: {
       bootstrapAttach: false, appendInPlace: false, replaceAtTurnBoundary: false,
-      generatedMcpRefresh: true, restrictedGateway: false, bindingReplacement: false,
+      generatedMcpRefresh: true, restrictedGateway: gatewayOnly, bindingReplacement: false,
       capabilityRevision: "fake:mcp:1"
     },
     apply: async () => ({
