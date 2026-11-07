@@ -2288,16 +2288,17 @@ export class WorktreeIntegrationJobService {
     const job = this.store.getWorktreeIntegrationJob(jobId);
     if (!job || !["paused", "canceled"].includes(job.status) || this.activeJobs.has(jobId)
       || job.details.commitPolicyBlocker) return;
+    const ids = new Set([job.details.plan.mainWorktreeId,
+      ...(job.details.plan.reservedWorktreeIds ?? []),
+      ...job.details.plan.items.map(item => item.worktreeId)]);
     let inspection;
     try {
-      inspection = await this.inspectRepository(job.repositoryId, { forceFresh: true, worktreeIds: [job.details.plan.mainWorktreeId, ...job.details.plan.items.map(item => item.worktreeId)], reason: "integration_dispatch_safety" });
+      inspection = await this.inspectRepository(job.repositoryId, { forceFresh: true, worktreeIds: [...ids], reason: "integration_dispatch_safety" });
     } catch { return; }
     const latest = this.store.getWorktreeIntegrationJob(jobId);
     if (!latest) return;
     if (latest.status !== job.status || latest.updatedAt !== job.updatedAt
       || latest.details.dispatchRevision !== job.details.dispatchRevision || this.activeJobs.has(jobId)) return true;
-    const ids = new Set([...(job.details.plan.reservedWorktreeIds ?? []),
-      ...job.details.plan.items.map(item => item.worktreeId)]);
     const safeWorktrees = [], blockedWorktreeIds = [];
     for (const id of ids) {
       const tree = inspection.worktrees.find(item => item.worktreeId === id);

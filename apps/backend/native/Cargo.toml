@@ -15,4 +15,7 @@ napi-build = "2"
 
 [profile.release]
 lto = true
-strip = "symbols"
+# Rust 1.96's Mach-O stripper can leave LC_SYMTAB.stroff misaligned,
+# causing dyld to reject this Node addon on macOS 27 (rust-lang/rust#157750).
+# Keep linker-produced alignment; LTO and release optimizations remain enabled.
+strip = "none"

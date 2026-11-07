@@ -695,6 +695,29 @@ test("startup reconciles legacy paused reservations without replaying their Git 
   assert.deepEqual(calls, []);
 });
 
+test("canceled graph jobs inspect reservations outside the current step before releasing dispatch", async () => {
+  const { service, store, worktrees } = memoryFixture({ featureDirty: false });
+  const plan = await service.preflight("repository:1");
+  const job = store.getWorktreeIntegrationJob(plan.id);
+  store.updateWorktreeIntegrationJob(plan.id, { status: "canceled", phase: "canceled_conflict_preserved",
+    details: { ...job.details, plan: { ...job.details.plan,
+      items: job.details.plan.items.filter(item => item.isMain),
+      reservedWorktreeIds: ["wt:main", "wt:feature"] } } });
+  const requested = [];
+  service.inspectRepository = async (_, options) => {
+    requested.push(options.worktreeIds);
+    return { worktrees: structuredClone(worktrees.filter(tree => options.worktreeIds.includes(tree.worktreeId))) };
+  };
+  await service.reconcileDispatchSafety(plan.id);
+  assert.deepEqual(new Set(requested[0]), new Set(["wt:main", "wt:feature"]));
+  assert.ok(service.get(plan.id).dispatchSafety.safeWorktrees.some(tree => tree.worktreeId === "wt:feature"));
+  const feature = worktrees.find(tree => tree.worktreeId === "wt:feature");
+  feature.operationState = "merge";
+  feature.conflictFiles = ["conflict.txt"];
+  await service.reconcileDispatchSafety(plan.id);
+  assert.ok(service.get(plan.id).dispatchSafety.blockedWorktreeIds.includes("wt:feature"));
+});
+
 async function pausedAcceptanceFixture() {
   const f = memoryFixture({ featureDirty: false });
   const plan = await f.service.preflight("repository:1");
