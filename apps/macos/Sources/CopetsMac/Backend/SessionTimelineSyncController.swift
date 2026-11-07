@@ -145,8 +145,10 @@ final class SessionTimelineSyncController {
             case .applied(let detail, let revision):
                 guard sessionRouteIsCurrent(session) else { return false }
                 let reconciledDetail = mergePending(detail)
+                SessionTimelineRepository.shared.state(for: session.id).discardRetainedContext(
+                    for: (envelope.changes ?? []).filter { $0.operation == "delete" }.map(\.itemId))
                 storeDetail(reconciledDetail, session.id, revision)
-                await warmPresentationCache(reconciledDetail, for: session.id)
+                await warmPresentationCache(for: session.id)
                 return true
             case .duplicate:
                 return true
@@ -172,7 +174,7 @@ final class SessionTimelineSyncController {
         guard sessionRouteIsCurrent(session) else { return false }
         let reconciledDetail = mergePending(snapshot.detail)
         storeDetail(reconciledDetail, session.id, snapshot.timelineRevision)
-        await warmPresentationCache(reconciledDetail, for: session.id)
+        await warmPresentationCache(for: session.id)
         if selectedSession?.id == session.id {
             clearSelectedLoadError()
         }
@@ -202,19 +204,32 @@ final class SessionTimelineSyncController {
         }
     }
 
-    private func warmPresentationCache(_ detail: CodexThreadDetail, for sessionID: String) async {
+    private func warmPresentationCache(for sessionID: String) async {
+        // The active page owns its projection. Prewarming it duplicates work
+        // and can overwrite a larger user-requested display window.
+        guard selectedSession?.id != sessionID else { return }
+        let state = SessionTimelineRepository.shared.state(for: sessionID)
+        guard let detail = state.presentationDetail else { return }
+        let revision = state.presentationRevision
         let visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
         let restorationAnchorRowID = SessionViewportController.shared.position(for: sessionID).flatMap {
             $0.followsLatest ? nil : $0.rowID
         }
-        let cache = await Task.detached(priority: .utility) {
+        let sourceSignature = "\(sessionID)|\(revision)|\(visibleMessageLimit)|\(restorationAnchorRowID ?? "latest")"
+        let worker = Task.detached(priority: .utility) {
             makeDetailDisplayCache(
                 for: detail,
                 sessionId: sessionID,
                 visibleMessageLimit: visibleMessageLimit,
-                restorationAnchorRowID: restorationAnchorRowID
+                restorationAnchorRowID: restorationAnchorRowID,
+                preparedSourceSignature: sourceSignature
             )
-        }.value
+        }
+        let cache = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: { worker.cancel() }
+        guard !Task.isCancelled, selectedSession?.id != sessionID,
+              state.presentationRevision == revision else { return }
         guard sessions.contains(where: { $0.id == sessionID })
                 || selectedSession?.id == sessionID else { return }
         SessionPresentationCache.shared.store(cache)

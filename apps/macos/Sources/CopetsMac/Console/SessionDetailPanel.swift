@@ -17,8 +17,6 @@ struct SessionDetailPanel: View {
         return activity.allows(generation: activity.generation)
     }
     private func allows(_ generation: UInt64) -> Bool { activity?.allows(generation: generation) ?? true }
-    @State private var selectedDetailTab = "detail"
-    @Environment(\.detailColumnVisibility) private var detailColumnVisibility
     @State private var contextReferenceAddMode: ContextReferenceAddMode?
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
@@ -128,9 +126,6 @@ struct SessionDetailPanel: View {
 
     private var liveDetailBody: some View {
         sessionCard
-        .safeAreaInset(edge: .top, spacing: 8) {
-            detailTabToolbar
-        }
         .frame(width: railWidth)
         .task(id: isPresentationActive ? session.id : nil) {
             guard isPresentationActive else { return }
@@ -140,23 +135,23 @@ struct SessionDetailPanel: View {
             guard !Task.isCancelled, allows(generation) else { return }
             await loadProviderCatalogIfNeeded()
         }
-        .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
+        .onReceive(backendClient.supplementaryDataController.$selectedContextReferences.whilePresented(isPresentationActive)) { references in
             guard isPresentationActive, backendClient.supplementaryDataController.contextReferencesSessionID == session.id else { return }
             let owned = references.filter { $0.ownerSessionId == session.id || $0.ownerSessionId == session.external?.logicalSessionId }
             if contextReferences != owned { contextReferences = owned }
         }
-        .onReceive(backendClient.supplementaryDataController.$isLoadingContextReferences) { isLoading in
+        .onReceive(backendClient.supplementaryDataController.$isLoadingContextReferences.whilePresented(isPresentationActive)) { isLoading in
             if isPresentationActive && backendClient.selectedSession?.id == session.id { isLoadingContextReferences = isLoading }
         }
-        .onReceive(modelCatalog.objectWillChange.receive(on: DispatchQueue.main)) { _ in
+        .onReceive(modelCatalog.objectWillChange.receive(on: DispatchQueue.main).whilePresented(isPresentationActive)) { _ in
             guard isPresentationActive else { return }
             updateDisplayValues()
         }
-        .onReceive(entityClient.sessionGroupingDidChange) { _ in
+        .onReceive(entityClient.sessionGroupingDidChange.whilePresented(isPresentationActive)) { _ in
             guard isPresentationActive else { return }
             updateDisplayValues()
         }
-        .onReceive(backendClient.sessionCommandController.objectWillChange.receive(on: DispatchQueue.main)) { _ in
+        .onReceive(backendClient.sessionCommandController.objectWillChange.receive(on: DispatchQueue.main).whilePresented(isPresentationActive)) { _ in
             guard isPresentationActive else { return }
             updateDisplayValues()
         }
@@ -204,11 +199,7 @@ struct SessionDetailPanel: View {
                 }.padding(20).frame(minWidth: 360)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .sessionMailboxRequested)) { notification in
-            guard isPresentationActive, notification.object as? String == session.id else { return }
-            selectedDetailTab = "mailbox"
-        }
-        .onChange(of: session.id) { _, _ in selectedDetailTab = "detail"; richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
+        .onChange(of: session.id) { _, _ in richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
         .onChange(of: session.taskId) { _, _ in retireDetailDestination() }
         .onChange(of: session.workId) { _, _ in updateDisplayValues(); retireDetailDestination() }
         .onChange(of: session.external?.provider) { _, _ in retireDetailDestination() }
@@ -225,64 +216,21 @@ struct SessionDetailPanel: View {
     }
 
     private var sessionCard: some View {
-        ConversationDetailDashboard {
+        ConversationDetailDashboard(fixedContentWidth: railWidth - 24) {
             sessionDetailContent
-            if selectedDetailTab == "detail", isPresentationActive {
+            if isPresentationActive {
                 SessionAbilityPanel(sessionID: session.id, logicalSessionID: session.external?.logicalSessionId)
                     .modifier(ConversationDetailModuleSurface())
             }
-            if selectedDetailTab == "detail", let taskID = session.taskId {
+            if let taskID = session.taskId {
                 TaskExecutionChecklistDetailCard(taskID: taskID, width: railWidth - 28,
                     active: isPresentationActive)
             }
         }
     }
 
-    private var detailTabToolbar: some View {
-        HStack(spacing: 2) {
-            Spacer(minLength: 4)
-            detailTabButton("详情", tab: "detail")
-            detailTabButton("信箱\((session.mailboxPendingCount ?? 0) > 0 ? " · \(session.mailboxPendingCount ?? 0)" : "")", tab: "mailbox")
-            Spacer(minLength: 4)
-            if let detailColumnVisibility {
-                Button { detailColumnVisibility.wrappedValue = false } label: {
-                    Image(systemName: "xmark").frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain).help(L10n("Close details"))
-                .accessibilityLabel(L10n("Close details"))
-            }
-        }
-        .padding(2)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.top, 8)
-    }
-
-    private func detailTabButton(_ title: String, tab: String) -> some View {
-        Button {
-            selectedDetailTab = tab
-        } label: {
-            Text(title)
-                .font(.system(size: 12, weight: selectedDetailTab == tab ? .semibold : .regular))
-                .foregroundStyle(selectedDetailTab == tab ? .primary : .secondary)
-                .padding(.horizontal, 14)
-                .frame(height: 26)
-                .background {
-                    if selectedDetailTab == tab {
-                        Capsule().fill(Color.primary.opacity(0.10))
-                    }
-                }
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selectedDetailTab == tab ? .isSelected : [])
-        .accessibilityIdentifier("session.detail.tab.\(tab)")
-    }
-
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if selectedDetailTab == "mailbox" {
-                SessionMailboxPanel(sessionID: session.id, pendingRevision: "\(session.mailboxPendingCount ?? 0):\(session.executionStatus ?? session.status.rawValue)", activity: activity)
-            } else {
             ConversationServerDetail(scope: "\(CorptieAppEnvironment.backendBaseURL):\(session.id)", sessionID: session.id,
                 context: ClientDetailContext(sessionKind: session.resolvedSessionKind.rawValue, taskID: session.taskId, workID: session.workId),
                 actions: nativeDetailNavigation,
@@ -301,7 +249,6 @@ struct SessionDetailPanel: View {
             if richDetailReady != false {
                 if !detailResourceItems.isEmpty { ConversationDetailResourceMenu(items: detailResourceItems) }
             } else { nativeDetailContent }
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

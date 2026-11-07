@@ -160,6 +160,26 @@ private final class EarlierHistoryURLProtocol: URLProtocol, @unchecked Sendable 
 @Suite(.serialized)
 @MainActor
 struct DetachedHistoryControllerTests {
+    @Test func automaticHistoryBootstrapDoesNotPinTheResidentWindow() async {
+        let selection = SessionSelectionController()
+        let value = session("automatic-history-" + UUID().uuidString)
+        let state = SessionTimelineRepository.shared.state(for: value.id)
+        defer { SessionTimelineRepository.shared.remove(value.id) }
+        var current = detail(value.id, items: [item("tail")], hasMore: true)
+        let controller = SessionTimelineHistoryController(baseURL: URL(string: "http://127.0.0.1:9999")!,
+            selection: selection, sessionForID: { $0 == value.id ? value : nil },
+            detailForSession: { $0 == value.id ? current : nil },
+            publishSessionDetail: { updated, _ in current = updated },
+            requestEarlierHistoryPage: { _ in
+                SessionHistoryResponse(sessionId: value.id, logicalSessionId: nil,
+                    items: [item("older")], hasMoreHistory: true, historyItemsCount: nil, cursorStatus: nil)
+            })
+        _ = await controller.loadEarlierMessages(for: value, protectsHistoryWindow: false)
+        #expect(!state.protectsHistoryWindow)
+        _ = await controller.loadEarlierMessages(for: value)
+        #expect(state.protectsHistoryWindow)
+    }
+
     @Test func removedWindowSessionDiscardsAnInFlightHistoryPage() async {
         let selection = SessionSelectionController()
         let windowSession = session("window")

@@ -112,6 +112,9 @@ public struct ConversationDetailTurnCard: View {
                             }
                         }
                     }
+                    #if os(macOS)
+                    .modifier(DetailScrollOwnerRegistration())
+                    #endif
                 }.frame(maxHeight: 240)
                 Text("显示最慢 \(slowest.count) 项；本次读取 \(trace.spans.count) 个操作").font(.caption2).foregroundStyle(.secondary)
                 if trace.windowClipped { Text("已达本次诊断窗口上限，未继续读取").font(.caption2).foregroundStyle(.secondary) }

@@ -48,6 +48,9 @@ public struct WorktreeErrorDetailsView: View {
                                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
+                    #if os(macOS)
+                    .modifier(DetailScrollOwnerRegistration())
+                    #endif
                 }.frame(maxHeight: 260)
             }
         }
@@ -249,7 +252,12 @@ public struct ConversationWorktreeCard: View {
                         Text(localize("忽略并继续")).tag("ignore")
                         Text(localize("包含并继续")).tag("include")
                     }
-                    ScrollView { VStack(alignment: .leading) { ForEach(draft.protection.protectedPaths, id: \.self) { Text($0).font(.caption.monospaced()) } } }.frame(maxHeight: 140)
+                    ScrollView {
+                        VStack(alignment: .leading) { ForEach(draft.protection.protectedPaths, id: \.self) { Text($0).font(.caption.monospaced()) } }
+                            #if os(macOS)
+                            .modifier(DetailScrollOwnerRegistration())
+                            #endif
+                    }.frame(maxHeight: 140)
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack {

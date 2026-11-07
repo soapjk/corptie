@@ -48,6 +48,9 @@ struct DetailCardReorderDraft: Equatable {
     @ObservationIgnored private weak var container: NSView?
     @ObservationIgnored private var cards = NSMapTable<NSString, NSView>.strongToWeakObjects()
     @ObservationIgnored private var frames: [String: CGRect] = [:]
+    #if DEBUG
+    @ObservationIgnored private(set) var frameCalculationCount = 0
+    #endif
     @ObservationIgnored private var pointerOffset = CGPoint.zero
     @ObservationIgnored private var lastRetarget = -Double.infinity
     @ObservationIgnored private var settling = false
@@ -66,10 +69,13 @@ struct DetailCardReorderDraft: Equatable {
             if draft.reconcile(value.items.map(\.id)) { self.draft = draft }
             else { cancel() }
         }
-        updateFrames()
+        if draft != nil { updateFrames() }
     }
 
-    func attach(_ view: NSView) { container = view; updateFrames() }
+    func attach(_ view: NSView) {
+        container = view
+        if draft != nil { updateFrames() }
+    }
     func detach(_ view: NSView) {
         guard container === view else { return }
         cancel(); container = nil
@@ -83,6 +89,9 @@ struct DetailCardReorderDraft: Equatable {
 
     private func updateFrames() {
         guard let container else { return }
+        #if DEBUG
+        frameCalculationCount += 1
+        #endif
         let ids = displayOrder(input.items.map(\.id))
         let sizes = ids.compactMap { id in input.items.first { $0.id == id }?.size }
         let placement = DetailWidgetPlacement.make(width: container.bounds.width, widgets: sizes)
@@ -157,7 +166,7 @@ struct DetailCardReorderDraft: Equatable {
         epoch &+= 1
         settling = false
         draft = nil; preview.clear()
-        updateFrames()
+        frames.removeAll(keepingCapacity: true)
     }
 
     func cancelGesture(for id: String) {

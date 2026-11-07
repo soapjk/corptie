@@ -206,6 +206,9 @@ struct ConversationDetailBoundedScroll<Content: View>: View {
                 .fixedSize(horizontal: false, vertical: true)
             ScrollView(.vertical) {
                 content.frame(maxWidth: .infinity, alignment: .leading)
+                    #if os(macOS)
+                    .modifier(DetailScrollOwnerRegistration())
+                    #endif
             }.frame(height: 320)
         }.frame(maxHeight: 320, alignment: .top)
     }

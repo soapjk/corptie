@@ -19,15 +19,14 @@ extension EnvironmentValues {
 @MainActor final class DetailScrollRouter {
     weak var rail: DetailRailProbe.View?
     private let cards = NSHashTable<DetailCardProbe.View>.weakObjects()
-    private var scrolls: [WeakScroll] = []
+    private let scrolls = NSHashTable<NSScrollView>.weakObjects()
     private var monitor: Any?
-    private var refreshScheduled = false
     private(set) var activeID: UUID?
     private weak var gestureTarget: NSScrollView?
 
-    private struct WeakScroll { weak var view: NSScrollView? }
 
     func attach(_ rail: DetailRailProbe.View) {
+        guard self.rail !== rail || monitor == nil else { return }
         stop()
         self.rail = rail
         guard rail.window != nil else { return }
@@ -35,7 +34,7 @@ extension EnvironmentValues {
             guard let self else { return event }
             return self.route(event)
         }
-        scheduleRefresh()
+        if let outer = rail.enclosingScrollView { configure(outer) }
     }
 
     func stop() {
@@ -43,13 +42,11 @@ extension EnvironmentValues {
         monitor = nil
         gestureTarget = nil
         activate(nil)
-        scrolls.removeAll()
     }
 
     func register(_ card: DetailCardProbe.View) {
         cards.add(card)
         card.isActive = card.id == activeID
-        scheduleRefresh()
     }
 
     func unregister(_ card: DetailCardProbe.View) {
@@ -66,39 +63,17 @@ extension EnvironmentValues {
         }
     }
 
-    func scheduleRefresh() {
-        guard !refreshScheduled else { return }
-        refreshScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.refreshScheduled = false
-            self.refreshScrolls()
-        }
+    func register(_ scroll: NSScrollView) {
+        scrolls.add(scroll)
+        configure(scroll)
     }
+    func unregister(_ scroll: NSScrollView) { scrolls.remove(scroll) }
 
-    func refreshScrolls() {
-        guard let outer = rail?.enclosingScrollView, let document = outer.documentView else { return }
-        var found: [WeakScroll] = []
-        func configure(_ scroll: NSScrollView) {
-            if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
-            if !scroll.autohidesScrollers { scroll.autohidesScrollers = true }
-            if scroll.hasVerticalScroller, !(scroll.verticalScroller is DetailThinScroller) {
-                scroll.verticalScroller = DetailThinScroller()
-            }
-            if scroll.hasHorizontalScroller, !(scroll.horizontalScroller is DetailThinScroller) {
-                scroll.horizontalScroller = DetailThinScroller()
-            }
-        }
-        configure(outer)
-        func visit(_ view: NSView) {
-            if let scroll = view as? NSScrollView {
-                found.append(WeakScroll(view: scroll))
-                configure(scroll)
-            }
-            for child in view.subviews { visit(child) }
-        }
-        visit(document)
-        scrolls = found
+    private func configure(_ scroll: NSScrollView) {
+        if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
+        if !scroll.autohidesScrollers { scroll.autohidesScrollers = true }
+        if scroll.verticalScroller?.controlSize != .small { scroll.verticalScroller?.controlSize = .small }
+        if scroll.horizontalScroller?.controlSize != .small { scroll.horizontalScroller?.controlSize = .small }
     }
 
     private func contains(_ view: NSView, event: NSEvent) -> Bool {
@@ -132,7 +107,7 @@ extension EnvironmentValues {
         } else {
             guard let card = card(at: event) else { return event }
             if activeID == card.id {
-                let inner = scrolls.compactMap(\.view).filter {
+                let inner = scrolls.allObjects.filter {
                     card.bounds.insetBy(dx: -0.5, dy: -0.5).contains(card.convert($0.bounds, from: $0))
                 }
                 target = inner.last(where: { contains($0, event: event) }) ?? inner.first ?? outer
@@ -147,43 +122,50 @@ extension EnvironmentValues {
     }
 }
 
-final class DetailThinScroller: NSScroller {
-    override var isOpaque: Bool { false }
-    override class var isCompatibleWithOverlayScrollers: Bool { true }
-    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat {
-        scrollerStyle == .overlay ? 8 : super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle)
-    }
-    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
-    override func draw(_ dirtyRect: NSRect) { drawKnob() }
-    override func drawKnob() {
-        guard isEnabled, knobProportion < 1 else { return }
-        let native = rect(for: .knob)
-        guard !native.isEmpty else { return }
-        let vertical = bounds.height >= bounds.width
-        let knob = vertical
-            ? CGRect(x: native.midX - 1.5, y: native.minY, width: 3, height: native.height)
-            : CGRect(x: native.minX, y: native.midY - 1.5, width: native.width, height: 3)
-        NSColor.secondaryLabelColor.withAlphaComponent(0.55).setFill()
-        NSBezierPath(roundedRect: knob, xRadius: 1.5, yRadius: 1.5).fill()
-    }
-}
-
 struct DetailRailProbe: NSViewRepresentable {
     let router: DetailScrollRouter
     func makeNSView(context: Context) -> View { View(router: router) }
-    func updateNSView(_ view: View, context: Context) { router.scheduleRefresh() }
+    func updateNSView(_ view: View, context: Context) { if view.window != nil { router.attach(view) } }
     static func dismantleNSView(_ view: View, coordinator: ()) { view.router.stop() }
     final class View: NSView {
         let router: DetailScrollRouter
-        private var lastSize = CGSize.zero
         init(router: DetailScrollRouter) { self.router = router; super.init(frame: .zero) }
         required init?(coder: NSCoder) { fatalError() }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); router.attach(self) }
-        override func layout() {
-            super.layout()
-            if bounds.size != lastSize { lastSize = bounds.size; router.scheduleRefresh() }
+    }
+}
+
+struct DetailScrollOwnerRegistration: ViewModifier {
+    @Environment(\.detailScrollRouter) private var router
+    func body(content: Content) -> some View {
+        content.background {
+            if let router { DetailScrollOwnerProbe(router: router) }
         }
+    }
+}
+
+private struct DetailScrollOwnerProbe: NSViewRepresentable {
+    let router: DetailScrollRouter
+    func makeNSView(context: Context) -> View { View(router: router) }
+    func updateNSView(_ view: View, context: Context) { view.attach() }
+    static func dismantleNSView(_ view: View, coordinator: ()) { view.detach() }
+    final class View: NSView {
+        let router: DetailScrollRouter
+        private weak var owner: NSScrollView?
+        init(router: DetailScrollRouter) { self.router = router; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError() }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil { detach() } else { attach() }
+        }
+        func attach() {
+            let next = enclosingScrollView
+            if owner !== next { detach(); owner = next }
+            if let owner { router.register(owner) }
+        }
+        func detach() { if let owner { router.unregister(owner) }; owner = nil }
     }
 }
 
@@ -194,14 +176,12 @@ struct DetailCardProbe: NSViewRepresentable {
     var cardID: String? = nil
     func makeNSView(context: Context) -> View { View(router: router, id: id) }
     func updateNSView(_ view: View, context: Context) {
-        router.scheduleRefresh()
         if let cardID { reordering?.register(view, id: cardID) }
     }
     static func dismantleNSView(_ view: View, coordinator: ()) { view.router.unregister(view) }
     final class View: NSView {
         let router: DetailScrollRouter
         let id: UUID
-        private var lastSize = CGSize.zero
         var isActive = false { didSet { if oldValue != isActive { needsDisplay = true } } }
         init(router: DetailScrollRouter, id: UUID) {
             self.router = router; self.id = id; super.init(frame: .zero)
@@ -212,10 +192,6 @@ struct DetailCardProbe: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if window == nil { router.unregister(self) } else { router.register(self) }
-        }
-        override func layout() {
-            super.layout()
-            if bounds.size != lastSize { lastSize = bounds.size; router.scheduleRefresh() }
         }
         override func draw(_ dirtyRect: NSRect) {
             guard isActive else { return }

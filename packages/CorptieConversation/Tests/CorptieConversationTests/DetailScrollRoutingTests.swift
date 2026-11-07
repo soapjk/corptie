@@ -16,6 +16,30 @@ import Testing
         }
     }
 
+    @Test func simpleWidgetOmitsInnerScrollAndStillFallsBackForOverflow() async {
+        for long in [false, true] {
+            let host = NSHostingView(rootView: ConversationDetailDashboard {
+                ConversationDetailModuleCard(title: "Session", systemImage: "info.circle") {
+                    Text(long ? String(repeating: "Long property\n", count: 40) : "Short property")
+                }.detailWidget(.medium).environment(\.detailPrefersNaturalContent, true)
+            })
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 324, height: 500),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(40))
+            func scrolls(_ view: NSView) -> [NSScrollView] {
+                (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls)
+            }
+            // Include descendants of a found scroll owner too.
+            func count(_ view: NSView) -> Int {
+                (view is NSScrollView ? 1 : 0) + view.subviews.reduce(0) { $0 + count($1) }
+            }
+            #expect(count(host) == (long ? 2 : 1))
+            window.contentView = nil; window.close()
+        }
+    }
+
     @Test func inactiveCardsScrollRailAndActivationTransfersExclusively() throws {
         let fixture = Fixture()
         defer { fixture.close() }
@@ -61,11 +85,11 @@ import Testing
     @Test func nestedIndicatorsAreThinOverlayAndReconfigurationKeepsTheirIdentity() throws {
         let fixture = Fixture()
         defer { fixture.close() }
-        let scroller = try #require(fixture.innerA.verticalScroller as? DetailThinScroller)
+        let scroller = try #require(fixture.innerA.verticalScroller)
         #expect(fixture.innerA.scrollerStyle == .overlay)
         #expect(fixture.innerA.autohidesScrollers)
-        #expect(DetailThinScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay) == 8)
-        for _ in 0..<20 { fixture.router.refreshScrolls() }
+        #expect(scroller.controlSize == .small)
+        for _ in 0..<20 { fixture.router.register(fixture.innerA) }
         #expect(fixture.innerA.verticalScroller === scroller)
         fixture.router.activate(fixture.cardA.id)
         fixture.router.unregister(fixture.cardA)
@@ -272,7 +296,8 @@ import Testing
             window.orderFront(nil)
             outer.layoutSubtreeIfNeeded()
             router.attach(rail)
-            router.refreshScrolls()
+            router.register(innerA)
+            router.register(innerB)
         }
         func event(_ type: NSEvent.EventType, at point: CGPoint) throws -> NSEvent {
             let location = document.convert(point, to: nil)

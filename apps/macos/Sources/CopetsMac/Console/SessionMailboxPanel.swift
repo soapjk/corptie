@@ -3,10 +3,6 @@ import Combine
 import Foundation
 import SwiftUI
 
-extension Notification.Name {
-    static let sessionMailboxRequested = Notification.Name("Corptie.sessionMailboxRequested")
-}
-
 struct SessionMailboxMessage: Decodable, Identifiable, Equatable {
     var id: String { messageId }
     let messageId: String

@@ -42,6 +42,7 @@ struct SessionConversationHeaderSurface: View {
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsMailbox = false
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
@@ -86,7 +87,7 @@ struct SessionConversationHeaderSurface: View {
                 guard let status else { return }
                 lastProjectStatus = ProjectStatusSnapshot(serverID: backendClient.baseURL.absoluteString, sessionID: session?.id, workspacePath: workspacePath, status: status)
             }
-            .onReceive(backendClient.gitHubPushController.$preparation.dropFirst()) { preparation in
+            .onReceive(backendClient.gitHubPushController.$preparation.dropFirst().whilePresented(isPresentationActive)) { preparation in
                 guard canAct else { return }
                 if let preparation {
                     GitHubPushConfirmationWindowManager.shared.show(
@@ -97,7 +98,24 @@ struct SessionConversationHeaderSurface: View {
                     GitHubPushConfirmationWindowManager.shared.close()
                 }
             }
+            .sheet(isPresented: $showsMailbox) {
+                if let session {
+                    VStack(spacing: 12) {
+                        HStack {
+                            Text("会话信箱").font(.headline)
+                            Spacer()
+                            Button("关闭") { showsMailbox = false }
+                        }
+                        SessionMailboxPanel(sessionID: session.id,
+                            pendingRevision: "\(session.mailboxPendingCount ?? 0):\(session.executionStatus ?? session.status.rawValue)",
+                            activity: activity)
+                    }
+                    .padding(16)
+                    .frame(minWidth: 520, idealWidth: 620, minHeight: 400, idealHeight: 560)
+                }
+            }
             .onChange(of: session?.id) { _, _ in
+                showsMailbox = false
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
                 didCopySessionTitle = false
@@ -106,11 +124,13 @@ struct SessionConversationHeaderSurface: View {
             }
             .onChange(of: isPresentationActive) { _, active in
                 guard !active else { return }
+                showsMailbox = false
                 sessionTitleCopyFeedbackTask?.cancel(); sessionTitleCopyFeedbackTask = nil
                 workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
                 didCopySessionTitle = false; didCopyWorkspacePath = false
             }
             .onDisappear {
+                showsMailbox = false
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
                 workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
@@ -156,9 +176,8 @@ struct SessionConversationHeaderSurface: View {
                 if session != nil {
                     if let visibility = detailColumnVisibility {
                         Button {
-                            guard canAct, let session else { return }
-                            visibility.wrappedValue = true
-                            NotificationCenter.default.post(name: .sessionMailboxRequested, object: session.id)
+                            guard canAct else { return }
+                            showsMailbox = true
                         } label: {
                             HStack(spacing: 2) {
                                 Image(systemName: "envelope")

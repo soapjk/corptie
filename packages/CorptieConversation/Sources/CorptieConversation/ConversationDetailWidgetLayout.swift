@@ -30,6 +30,19 @@ public enum ConversationDetailWidgetMetrics {
 }
 
 enum DetailWidgetSizing {
+    /// Called only at a content publication boundary, never from layout.
+    static func prepare(previous: [ClientDetailBusinessCard], current: [ClientDetailBusinessCard],
+                        cached: [String: DetailWidgetSize]) -> (sizes: [String: DetailWidgetSize], count: Int) {
+        let old = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
+        var sizes: [String: DetailWidgetSize] = [:]
+        var count = 0
+        for card in current {
+            if old[card.id] == card, let size = cached[card.id] { sizes[card.id] = size }
+            else { sizes[card.id] = preferredSize(for: card); count += 1 }
+        }
+        return (sizes, count)
+    }
+
     /// Bounded estimates of the default visible preview only. No native text
     /// measurement, geometry publication, transcript scanning or deferred work.
     static func preferredSize(for card: ClientDetailBusinessCard) -> DetailWidgetSize {
@@ -135,6 +148,7 @@ struct DetailWidgetLayout: Layout {
     // Reorderable containers wrap each row and don't forward LayoutValueKey
     // traits. Keep the bounded size directory alongside the ordered card data.
     let sizes: [DetailWidgetSize]
+    var fixedWidth: CGFloat? = nil
     struct Cache { var widgets: [DetailWidgetSize] = []; var placements: [DetailWidgetPlacement] = [] }
     func makeCache(subviews: Subviews) -> Cache { Cache() }
     func updateCache(_ cache: inout Cache, subviews: Subviews) {
@@ -142,7 +156,7 @@ struct DetailWidgetLayout: Layout {
         if cache.widgets != widgets { cache.widgets = widgets; cache.placements.removeAll(keepingCapacity: true) }
     }
     private func plan(width: CGFloat?, subviews: Subviews, cache: inout Cache) -> DetailWidgetPlacement {
-        let width = width.flatMap { $0.isFinite ? $0 : nil } ?? ConversationDetailWidgetMetrics.railWidth - 24
+        let width = fixedWidth ?? width.flatMap { $0.isFinite ? $0 : nil } ?? ConversationDetailWidgetMetrics.railWidth - 24
         let widgets = subviews.indices.map { $0 < sizes.count ? sizes[$0] : .medium }
         if cache.widgets != widgets { cache.widgets = widgets; cache.placements.removeAll(keepingCapacity: true) }
         if let value = cache.placements.first(where: { $0.size.width == max(1, width) }) { return value }
@@ -189,5 +203,21 @@ extension EnvironmentValues {
 extension View {
     func detailWidget(_ size: DetailWidgetSize) -> some View {
         environment(\.detailWidgetSize, size)
+    }
+}
+
+private struct DetailPrefersNaturalContentKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var detailPrefersNaturalContent: Bool {
+        get { self[DetailPrefersNaturalContentKey.self] }
+        set { self[DetailPrefersNaturalContentKey.self] = newValue }
+    }
+}
+
+private struct DetailFixedContentWidthKey: EnvironmentKey { static let defaultValue: CGFloat? = nil }
+extension EnvironmentValues {
+    var detailFixedContentWidth: CGFloat? {
+        get { self[DetailFixedContentWidthKey.self] }
+        set { self[DetailFixedContentWidthKey.self] = newValue }
     }
 }

@@ -170,7 +170,8 @@ final class SessionTimelineHistoryController: ObservableObject {
     @discardableResult
     func loadEarlierMessages(
         for session: TaskSession,
-        expectedSelectionGeneration: UInt64? = nil
+        expectedSelectionGeneration: UInt64? = nil,
+        protectsHistoryWindow: Bool = true
     ) async -> EarlierHistoryLoadState {
         let threadId = session.external?.threadId ?? session.id
         guard (expectedSelectionGeneration == nil || Self.historyPageRequestIsCurrent(
@@ -193,7 +194,9 @@ final class SessionTimelineHistoryController: ObservableObject {
         guard earlierHistoryLoadSessionIDs.insert(session.id).inserted else {
             return earlierHistoryLoadState(for: session.id)
         }
-        SessionTimelineRepository.shared.state(for: session.id).setProtectsHistoryWindow(true)
+        if protectsHistoryWindow {
+            SessionTimelineRepository.shared.state(for: session.id).setProtectsHistoryWindow(true)
+        }
         setEarlierHistoryLoadState(.loading, for: session.id)
         defer { earlierHistoryLoadSessionIDs.remove(session.id) }
 

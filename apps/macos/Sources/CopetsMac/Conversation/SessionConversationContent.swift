@@ -233,7 +233,7 @@ struct SessionConversationSurface: View {
 
     private var displayedDetail: CodexThreadDetail? {
         if let renderInputs { return renderInputs.detail }
-        return timelineState.detail
+        return timelineState.presentationDetail
     }
 
     private var selectedSession: TaskSession? {
@@ -453,25 +453,25 @@ struct SessionConversationSurface: View {
         let _ = legacyRevision
         let _ = SessionSwitchTrace.shared.mark(.conversationBody, sessionID: sessionId)
         conversationWithLifecycle
-        .onReceive(backendClient.sessionSelectionController.$selectedSessionID) { selectedSessionID in
+        .onReceive(backendClient.sessionSelectionController.$selectedSessionID.whilePresented(renderInputs == nil && acceptsPresentationUpdates)) { selectedSessionID in
             if renderInputs == nil, selectedSessionID == sessionId { restoreMissingHistoryAnchorIfNeeded() }
         }
-        .onReceive(backendClient.$isLoadingDetail) { isLoading in
+        .onReceive(backendClient.$isLoadingDetail.whilePresented(renderInputs == nil && acceptsPresentationUpdates)) { isLoading in
             guard renderInputs == nil, backendClient.selectedSession?.id == sessionId else { return }
             displaysLoadingDetail = isLoading
         }
-        .onReceive(timelineHistory.$earlierHistoryLoadStateBySessionID, perform: receiveHistoryState)
+        .onReceive(timelineHistory.$earlierHistoryLoadStateBySessionID.whilePresented(renderInputs == nil && acceptsPresentationUpdates), perform: receiveHistoryState)
         .onChange(of: renderInputs?.historyState) { _, next in
             guard acceptsPresentationUpdates, let next else { return }
             applyHistoryState(next)
         }
-        .onReceive(backendClient.supplementaryDataController.$workspaceRecoveryStatus) { status in
+        .onReceive(backendClient.supplementaryDataController.$workspaceRecoveryStatus.whilePresented(renderInputs == nil && acceptsPresentationUpdates)) { status in
             guard renderInputs == nil, backendClient.selectedSession?.id == sessionId else { return }
             displayedWorkspaceRecoveryStatus = status
         }
         .task(id: displayedSearchTarget?.token) { await applySearchTargetIfNeeded() }
-        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged), perform: receiveChecklistChange)
-        .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged).whilePresented(acceptsPresentationUpdates), perform: receiveChecklistChange)
+        .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn).whilePresented(acceptsPresentationUpdates)) { notification in
             guard allowsPageActions, notification.userInfo?["sessionId"] as? String == sessionId,
                   let turnID = notification.userInfo?["turnId"] as? String else { return }
             scrollTargetTurnID = turnID
@@ -503,20 +503,23 @@ struct SessionConversationSurface: View {
     }
 
     private var conversationLayout: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            conversationTopChrome
-            ConversationRegionStack {
-                messageViewport
-            } accessory: {
-                inputDock
-            }
-
+        ConversationRegionStack {
+            messageViewport
+        } accessory: {
+            inputDock
         }
         .padding(1)
         .background(Color.white.opacity(0.001))
     }
 
     private var messageViewport: some View {
+        VStack(spacing: 0) {
+            conversationTopChrome
+            messageViewportBody
+        }
+    }
+
+    private var messageViewportBody: some View {
             // The input dock owns both the editor and quick actions.
             // Neither floats over the message viewport.
             Group {
@@ -633,6 +636,13 @@ struct SessionConversationSurface: View {
     private var conversationTopChrome: some View {
         VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
             if showsHeader { conversationHeader }
+            if let inputs = renderInputs {
+                SearchMessageNavigationSurface(sessionID: inputs.scope.sessionID,
+                    target: inputs.searchTarget, matches: inputs.searchMatches) { delta in
+                    guard inputs.actionSession(generation: inputs.activity.generation) != nil else { return }
+                    UnifiedSearchNavigation.shared.step(delta)
+                }
+            }
             backendConnectionBanner
             if let recovery = pageWorkspaceRecovery, recovery.orphaned {
                 OrphanedWorkspaceRecoveryView(status: recovery)
@@ -780,7 +790,7 @@ struct SessionConversationSurface: View {
                     return row
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in
+            .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted).whilePresented(acceptsPresentationUpdates)) { notification in
                 guard notification.object as? String == sessionId else { return }
                 if viewportState.followsLatest {
                     timelineState.setProtectsHistoryWindow(false)
@@ -1069,6 +1079,7 @@ struct SessionConversationSurface: View {
     private func loadEarlierMessages(preservingLatestFollow: Bool) {
         guard let detail = displayedDetail,
               let session = selectedSession else { return }
+        if preservingLatestFollow, detail.items.count >= ResidentTimelineWindow.itemBudget { return }
         let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
         let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
         viewportState.prepareForHistoryPrepend(preservingLatestFollow: preservingLatestFollow)
@@ -1088,7 +1099,8 @@ struct SessionConversationSurface: View {
                 let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
                 let result = await backendClient.loadEarlierMessages(
                     for: session,
-                    expectedSelectionGeneration: selectionGeneration
+                    expectedSelectionGeneration: selectionGeneration,
+                    protectsHistoryWindow: !preservingLatestFollow
                 )
                 if case .failed = result {
                     visibleMessageLimit = previousVisibleMessageLimit
@@ -1284,16 +1296,20 @@ struct SessionConversationSurface: View {
         ChatPerformanceRecorder.shared.increment(.displayProjectionRequests)
 
         displayProjectionTask = Task { @MainActor in
-            let cache = await Task.detached(priority: .userInitiated) {
+            let worker = Task.detached(priority: .userInitiated) {
                 ChatPerformanceTrace.measure("timeline.display.project.background") {
                     makeDetailDisplayCache(
                         for: detail,
                         sessionId: requestedSessionID,
                         visibleMessageLimit: requestedLimit,
-                        restorationAnchorRowID: requestedAnchorRowID
+                        restorationAnchorRowID: requestedAnchorRowID,
+                        preparedSourceSignature: sourceSignature
                     )
                 }
-            }.value
+            }
+            let cache = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: { worker.cancel() }
             guard request.isCurrent(
                 sessionID: sessionId,
                 sourceSignature: cache.sourceSignature,
@@ -1413,7 +1429,8 @@ struct SessionConversationSurface: View {
             cachedVisibleMessageLimit: cachedVisibleMessageLimit,
             cachedItemsSignature: cachedItemsSignature
         ).project(for: detail, sessionId: sessionId, visibleMessageLimit: visibleMessageLimit,
-                  requestedRestorationAnchorRowID: requestedRestorationAnchorRowID)
+                  requestedRestorationAnchorRowID: requestedRestorationAnchorRowID,
+                  preparedSourceSignature: appKitDetailRevision)
     }
 
     private func updateCachedSourceTail(from items: [CodexThreadItem]) {
@@ -1531,12 +1548,8 @@ struct SessionConversationSurface: View {
         cachedDetailSourceSignature = ""
     }
 
-    private func detailSourceSignature(for detail: CodexThreadDetail) -> String {
-        makeDetailSourceSignature(
-            for: detail,
-            visibleMessageLimit: visibleMessageLimit,
-            restorationAnchorRowID: requestedRestorationAnchorRowID
-        )
+    private func detailSourceSignature(for _: CodexThreadDetail) -> String {
+        appKitDetailRevision
     }
 
 

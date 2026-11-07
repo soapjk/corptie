@@ -106,6 +106,7 @@ final class SessionPageRenderInputs {
     @ObservationIgnored private let entities: EntityAPIClient
     @ObservationIgnored private let search: UnifiedSearchNavigation
     @ObservationIgnored private var subscriptions: [AnyCancellable] = []
+    @ObservationIgnored private var subscriptionGeneration: UInt64 = 0
     @ObservationIgnored private var pending: Changes = .all
     @ObservationIgnored private var active = false
     @ObservationIgnored private var scheduled = false
@@ -154,9 +155,12 @@ final class SessionPageRenderInputs {
         self.businessHandle = backend.detailBusinessRepository.entry(for: scope)
         self.sourceState = sourceState ?? backend.appState
         self.timeline = timeline; self.projection = projection; self.entities = entities; self.search = search
-        // Subscribe once per retained entry, never once per click. Combine's
-        // will-change notifications are read after the source mutation commits.
-        observe(self.sourceState.objectWillChange, .metadata)
+    }
+
+    /// Hidden pages retain their view/editor values, not upstream subscriptions.
+    private func subscribe() {
+        guard subscriptions.isEmpty else { return }
+        observe(sourceState.objectWillChange, .metadata)
         observe(backend.archivedSessionController.objectWillChange, .metadata)
         observe(timeline.objectWillChange, .timeline)
         observe(projection.objectWillChange, .projection)
@@ -169,14 +173,14 @@ final class SessionPageRenderInputs {
         observe(backend.sessionRestartActivityController.objectWillChange, .restart)
         observe(backend.timelineHistoryController.objectWillChange, .history)
         observe(backend.sessionSelectionController.$selectedSessionID.map { _ in () }, [.backend, .supplementary])
-        let handle = businessHandle
-        withObservationTracking { _ = handle.retired } onChange: { [weak self, weak handle] in
-            Task { @MainActor in
-                guard let self, handle?.retired == true else { return }
-                self.retire()
-            }
-        }
     }
+    private func stopSubscriptions() {
+        subscriptionGeneration &+= 1
+        subscriptions.removeAll()
+        scheduled = false
+        pending = []
+    }
+    var subscriptionCount: Int { subscriptions.count }
 
     var acceptsPresentationUpdates: Bool { active && !retired }
     var acceptsScopeResults: Bool { !retired && validBinding() }
@@ -199,17 +203,20 @@ final class SessionPageRenderInputs {
     func didSendMessage() {
         if active { quickMessageRevision &+= 1 } else { needsQuickMessageRefresh = true }
     }
-    func suspendActions() { active = false; activity.suspendActions(); suspendNativePresentation?() }
+    func suspendActions() { active = false; stopSubscriptions(); activity.suspendActions(); suspendNativePresentation?() }
     func freeze() {
         guard active || activity.isActive else { return }
-        active = false; suspendNativePresentation?(); retainedEditor?.suspendPresentation(); activity.deactivate()
+        active = false; stopSubscriptions(); suspendNativePresentation?(); retainedEditor?.suspendPresentation(); activity.deactivate()
     }
     func resume() {
         guard !retired else { return }
+        guard validBinding() else { retire(); return }
         let trace = SessionSwitchTrace.shared.start(.pageResume, sessionID: scope.sessionID)
         defer { SessionSwitchTrace.shared.finish(trace) }
         guard !active else { flush(); return }
         active = true
+        pending = .all
+        subscribe()
         flush()
         if needsQuickMessageRefresh { needsQuickMessageRefresh = false; quickMessageRevision &+= 1 }
         activity.activate()
@@ -221,7 +228,7 @@ final class SessionPageRenderInputs {
         SessionSwitchTrace.shared.recordCache(sessionID: scope.sessionID, layer: "page-inputs", reason: businessHandle.retired ? "business-retired" : "retired", count: 0)
         active = false; retired = true; activity.deactivate()
         retainedEditor?.suspendPresentation(); suspendNativePresentation?()
-        subscriptions.removeAll(); pending = []
+        stopSubscriptions(); pending = []
         detail = nil; displayCache = nil; cacheKey = nil
         workspaceRecovery = nil; projectStatus = nil; usage = nil
     }
@@ -244,8 +251,9 @@ final class SessionPageRenderInputs {
             && Binding(current) == binding
     }
     private func observe<P: Publisher>(_ publisher: P, _ change: Changes) where P.Failure == Never {
+        let generation = subscriptionGeneration
         publisher.receive(on: DispatchQueue.main).sink { [weak self] _ in
-            guard let self, !self.retired else { return }
+            guard let self, self.active, !self.retired, self.subscriptionGeneration == generation else { return }
             self.pending.formUnion(change)
             // Binding/permission invalidation is an intentional exception to
             // freezing: an invalid cached surface must become unusable at once.
@@ -253,7 +261,7 @@ final class SessionPageRenderInputs {
             guard self.active, !self.scheduled else { return }
             self.scheduled = true
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, self.subscriptionGeneration == generation else { return }
                 self.scheduled = false
                 if self.active { self.flush() }
             }
@@ -269,8 +277,8 @@ final class SessionPageRenderInputs {
             if session.external?.provider != value.external?.provider { changes.insert(.catalog) }
             session = value
         }
-        if changes.contains(.timeline), detail != timeline.detail {
-            detail = timeline.detail
+        if changes.contains(.timeline), detailPresentationRevision != timeline.presentationRevision || detail != timeline.presentationDetail {
+            detail = timeline.presentationDetail
             detailPresentationRevision = timeline.presentationRevision
             detailTailContentRevision = timeline.tailContentRevision
         }
@@ -319,5 +327,12 @@ final class SessionPageRenderInputs {
         }
         if changes.contains(.restart) { restart = backend.sessionRestartActivityController.activityBySessionID[scope.sessionID] }
         if changes.contains(.history) { historyState = backend.earlierHistoryLoadState(for: scope.sessionID) }
+    }
+}
+
+/// Switching to Empty cancels the upstream subscription while keeping view state.
+extension Publisher where Failure == Never {
+    func whilePresented(_ active: Bool) -> AnyPublisher<Output, Never> {
+        active ? eraseToAnyPublisher() : Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 }

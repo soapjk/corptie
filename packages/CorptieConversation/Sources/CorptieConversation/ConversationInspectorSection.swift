@@ -3,12 +3,14 @@ import SwiftUI
 /// One scroll owner for both platform Detail rails.
 public struct ConversationDetailDashboard<Content: View>: View {
     private let content: Content
+    private let fixedContentWidth: CGFloat?
     #if os(macOS)
     @State private var scrollRouter = DetailScrollRouter()
     #endif
 
-    public init(@ViewBuilder content: () -> Content) {
+    public init(fixedContentWidth: CGFloat? = nil, @ViewBuilder content: () -> Content) {
         self.content = content()
+        self.fixedContentWidth = fixedContentWidth
     }
 
     public var body: some View {
@@ -32,6 +34,7 @@ public struct ConversationDetailDashboard<Content: View>: View {
                 .environment(\.detailScrollRouter, scrollRouter)
                 #endif
         }
+        .environment(\.detailFixedContentWidth, fixedContentWidth)
         .coordinateSpace(name: "conversation.detail.rail")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WorkbenchCanvasSurface.color)
@@ -68,23 +71,26 @@ public struct ConversationDetailContentSurface: ViewModifier {
     }
 
     public func body(content: Content) -> some View {
-        content.modifier(ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true))
+        content.modifier(ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true, allowsMaterial: false))
     }
 }
 
 /// One static material and color surface per Detail module; no nested glass.
 public struct ConversationDetailModuleSurface: ViewModifier {
     @Environment(\.detailWidgetSize) private var widgetSize
+    @Environment(\.detailPrefersNaturalContent) private var prefersNaturalContent
     public init() {}
 
     public func body(content: Content) -> some View {
         Group {
             if let widgetSize {
                 DetailWidgetViewport(size: widgetSize) {
-                    ScrollView(.vertical) {
-                        content.frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(widgetSize.columns == 1 || widgetSize == .strip ? 12 : 16)
-                    }
+                    if prefersNaturalContent {
+                        ViewThatFits(in: .vertical) {
+                            padded(content, size: widgetSize).fixedSize(horizontal: false, vertical: true)
+                            scrollable(content, size: widgetSize)
+                        }
+                    } else { scrollable(content, size: widgetSize) }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             } else {
@@ -98,6 +104,19 @@ public struct ConversationDetailModuleSurface: ViewModifier {
             .modifier(DetailCardScrollActivation())
             #endif
     }
+    private func padded(_ content: Content, size: DetailWidgetSize) -> some View {
+        content.frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(size.columns == 1 || size == .strip ? 12 : 16)
+    }
+    private func scrollable(_ content: Content, size: DetailWidgetSize) -> some View {
+        ScrollView(.vertical) {
+            padded(content, size: size)
+                #if os(macOS)
+                .modifier(DetailScrollOwnerRegistration())
+                #endif
+        }
+    }
+
 }
 
 public struct ConversationDetailModuleCard<Content: View, HeaderActions: View>: View {
