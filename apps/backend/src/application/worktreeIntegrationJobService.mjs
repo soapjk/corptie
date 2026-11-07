@@ -2449,7 +2449,13 @@ export class WorktreeIntegrationJobService {
     if (!["running", "queued"].includes(latest.status)) {
       throw new WorktreeIntegrationJobError("JOB_STATE_CHANGED", "The task state changed during completion verification. Refresh before continuing.", 409);
     }
-    return this.#update(latest, { ...patch, details: { ...(patch.details ?? latest.details),
+    const details = patch.details ?? latest.details;
+    return this.#update(latest, { ...patch, details: { ...details,
+      ...(patch.status === "completed" && details.conflictAutomation ? {
+        conflictAutomation: { ...details.conflictAutomation, status: "completed",
+          currentWorktreeId: null, blockedWorktreeId: null, conflictFiles: [],
+          failureCode: null, failureReason: null, completedAt: patch.completedAt }
+      } : {}),
       ...(completionEvidence ? { completionEvidence } : {}) } });
   }
 

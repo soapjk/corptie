@@ -637,3 +637,32 @@ test("one-click graph commits dirty children to their branches before any merge"
     assert.match(await git(source.path, ["show", "-s", "--format=%B", "HEAD"]), /Corptie-Integration-Job:/);
   }
 });
+
+test("graph step changes retain the plan Session and workspace and completion settles automation", async t => {
+  const f = await fixture(t);
+  await f.commit(f.children[0], "retained-session.js");
+  let jobID;
+  const checkedTargets = new Set();
+  const jobs = integrationJobs(f, { beforeMerge: async input => {
+    const automation = f.store.getWorktreeIntegrationJob(jobID).details.conflictAutomation;
+    assert.equal(automation.sessionId, "session:plan");
+    assert.equal(automation.workspaceId, "worktree:plan");
+    assert.equal(automation.workspacePath, "/plan-fixed");
+    checkedTargets.add(input.mainPath);
+  } });
+  const options = { operationType: "integrate", sourceWorktreeIds: [f.trees.get(f.children[0].id).worktreeId], targetWorktreeId: "worktree:main" };
+  const candidate = await jobs.createCandidate("repository:integration", options);
+  const job = await jobs.startCandidate("repository:integration", { ...options,
+    candidateId: candidate.id, candidateFingerprint: candidate.planFingerprint, idempotencyKey: `retained:${candidate.id}` });
+  jobID = job.id;
+  const stored = f.store.getWorktreeIntegrationJob(jobID);
+  f.store.updateWorktreeIntegrationJob(jobID, { details: { ...stored.details, conflictAutomation: {
+    status: "running", sessionId: "session:plan", workspaceId: "worktree:plan", workspacePath: "/plan-fixed"
+  } } });
+  const result = await waitForTerminal(jobs, jobID);
+  assert.equal(result.status, "completed", result.error);
+  assert.ok(checkedTargets.size >= 2);
+  assert.equal(result.conflictAutomation.sessionId, "session:plan");
+  assert.equal(result.conflictAutomation.workspaceId, "worktree:plan");
+  assert.equal(result.conflictAutomation.status, "completed");
+});
