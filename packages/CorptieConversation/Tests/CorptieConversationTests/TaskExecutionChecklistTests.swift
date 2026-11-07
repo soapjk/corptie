@@ -198,5 +198,44 @@ struct TaskExecutionChecklistTests {
         #expect(commands.first?.itemId == nil)
     }
 
+    @Test func compactHeaderStaysOneLineAndMouseArrowExpandsInlineWithoutAMutation() async throws {
+        let value = try plan(count: 8)
+        for width: CGFloat in [240, 520, 780] {
+            let host = NSHostingView(rootView: TaskExecutionChecklist(plan: value, width: width,
+                compactSummary: String(repeating: "当前事项", count: 100)) { _ in Issue.record("Preview must not submit") }
+                .frame(width: width))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 20)
+            host.layoutSubtreeIfNeeded()
+            #expect(abs(host.fittingSize.height - 20) <= 1)
+            #expect(host.fittingSize.width <= width + 1)
+        }
+        let host = NSHostingView(rootView: TaskExecutionChecklist(plan: value, width: 520,
+            compactSummary: "当前事项") { _ in Issue.record("Disclosure must not submit operations") }
+            .frame(width: 520))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 240),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(80))
+        let windows = NSApp.windows.filter(\.isVisible).count
+        for expanded in [true, false, true, false] {
+            host.layoutSubtreeIfNeeded()
+            let point = NSPoint(x: 487, y: host.isFlipped ? 10 : host.bounds.height - 10)
+            let location = host.convert(point, to: nil)
+            for (number, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+                let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: number + 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                window.sendEvent(event)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+            let expected = expanded ? TaskExecutionChecklist.heights(plan: value, width: 520).expanded - 24 : 20
+            #expect(abs(host.fittingSize.height - expected) <= 1)
+            #expect(window.childWindows?.isEmpty != false)
+            #expect(NSApp.windows.filter(\.isVisible).count == windows)
+        }
+    }
+
 }
 #endif
