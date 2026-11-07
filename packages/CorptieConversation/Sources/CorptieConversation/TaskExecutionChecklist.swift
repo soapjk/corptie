@@ -9,6 +9,7 @@ public struct TaskExecutionChecklist: View {
     public var canEdit: Bool
     public var isExpanded: Bool?
     public var onToggleExpansion: (() -> Void)?
+    public var compactSummary: String?
     public var openAssignment: ((ConversationExecutionPlan.Assignment) -> Void)?
     public var submit: (ExecutionChecklistCommand) async throws -> Void
     @State private var showsAll = false
@@ -24,9 +25,9 @@ public struct TaskExecutionChecklist: View {
         var condition: String
     }
     public init(plan: ConversationExecutionPlan, width: CGFloat, canEdit: Bool = true,
-                isExpanded: Bool? = nil, onToggleExpansion: (() -> Void)? = nil, openAssignment: ((ConversationExecutionPlan.Assignment) -> Void)? = nil, submit: @escaping (ExecutionChecklistCommand) async throws -> Void) {
+                isExpanded: Bool? = nil, onToggleExpansion: (() -> Void)? = nil, compactSummary: String? = nil, openAssignment: ((ConversationExecutionPlan.Assignment) -> Void)? = nil, submit: @escaping (ExecutionChecklistCommand) async throws -> Void) {
         self.plan = plan; self.width = width; self.canEdit = canEdit; self.submit = submit
-        self.isExpanded = isExpanded; self.onToggleExpansion = onToggleExpansion; self.openAssignment = openAssignment
+        self.isExpanded = isExpanded; self.onToggleExpansion = onToggleExpansion; self.openAssignment = openAssignment; self.compactSummary = compactSummary
     }
     public static func columns(for width: CGFloat) -> Int { max(1, min(3, Int((width + 12) / 252))) }
     public static func previewHeight(plan: ConversationExecutionPlan, width: CGFloat) -> CGFloat {
@@ -53,6 +54,7 @@ public struct TaskExecutionChecklist: View {
     private static func itemHeight(_ item: ConversationExecutionPlan.Step) -> CGFloat {
         (item.reason?.isEmpty == false ? 34 : 20) + (item.assignment == nil ? 0 : 14)
     }
+    private var isCompact: Bool { compactSummary != nil }
     private var isClosed: Bool { plan.closed == true }
     private var expanded: Bool { isExpanded ?? showsAll }
     private var columns: Int { Self.columns(for: width) }
@@ -61,16 +63,34 @@ public struct TaskExecutionChecklist: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Label(isClosed ? "执行清单 · 已关闭" : "执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
+                Label(heading,
+                      systemImage: "list.bullet.clipboard")
+                    .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    .help(heading)
+                    .frame(maxWidth: isCompact ? .infinity : nil, alignment: .leading)
                 Spacer(minLength: 0)
-                Text("已完成 \(completed)/\(plan.steps.count)").font(.system(size: 11)).foregroundStyle(.secondary)
-                if isClosed {
+                Text(isCompact ? "\(completed)/\(plan.steps.count)" : "已完成 \(completed)/\(plan.steps.count)")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
+                if !isClosed && canEdit && (!isCompact || expanded) {
+                    Button { editor = Editor(itemID: nil, text: "", condition: "") } label: { Image(systemName: "plus") }
+                        .help("添加事项").accessibilityLabel("添加事项")
+                }
+                if isCompact {
+                    Button {
+                        if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .frame(width: 18, height: 20).contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("task-execution-checklist.disclosure")
+                    .accessibilityLabel(expanded ? "收起清单" : "展开清单")
+                    .help(expanded ? "收起清单" : "展开清单")
+                } else if isClosed {
                     Button(expanded ? "收起" : "查看") {
                         if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
                     }.font(.system(size: 11))
-                } else if canEdit {
-                    Button { editor = Editor(itemID: nil, text: "", condition: "") } label: { Image(systemName: "plus") }
-                        .help("添加事项").accessibilityLabel("添加事项")
+                }
+                if !isClosed && canEdit {
                     Button { send(.init(action: "close", revision: plan.revision)) } label: {
                         Image(systemName: "xmark").frame(width: 18, height: 20).contentShape(Rectangle())
                     }
@@ -79,7 +99,7 @@ public struct TaskExecutionChecklist: View {
                 }
             }
             .frame(height: 20)
-            if !isClosed || expanded {
+            if (!isClosed && !isCompact) || expanded {
                 if plan.steps.isEmpty {
                     Text("暂无事项").font(.system(size: 12)).foregroundStyle(.secondary).frame(height: 20)
                 } else {
@@ -89,7 +109,7 @@ public struct TaskExecutionChecklist: View {
                         ForEach(plan.steps.prefix(expanded ? plan.steps.count : columns * 2)) { item in itemRow(item) }
                     }
                 }
-                if !isClosed && plan.steps.count > columns * 2 {
+                if !isCompact && !isClosed && plan.steps.count > columns * 2 {
                     Button(expanded ? "收起" : "展开全部 \(plan.steps.count) 项") {
                         if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
                     }
@@ -126,6 +146,13 @@ public struct TaskExecutionChecklist: View {
             Button("取消", role: .cancel) { pendingRemoval = nil }
         }
         .accessibilityIdentifier("task-execution-checklist")
+    }
+    private var heading: String {
+        if isCompact && !expanded {
+            if let error { return "保存失败：\(error)" }
+            return compactSummary ?? "执行清单"
+        }
+        return isClosed ? "执行清单 · 已关闭" : "执行清单"
     }
     private var stateLabel: String {
         if isClosed { return "本批清单已关闭" }

@@ -41,15 +41,20 @@ struct PinnedExecutionChecklistCard: View {
     @State private var expanded = false
 
     static func height(plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool) -> CGFloat {
-        min(280, NativePlanChecklistHeightCache.shared.height(of: plan, width: width - 28, expanded: expanded) + 28)
+        // Preparing while collapsed keeps the disclosure click a cache lookup.
+        let contentWidth = width - 20
+        let full = NativePlanChecklistHeightCache.shared.height(of: plan, width: contentWidth, expanded: true)
+        if !expanded { return 36 }
+        let oldDisclosure: CGFloat = plan.closed != true && plan.steps.count > TaskExecutionChecklist.columns(for: contentWidth) * 2 ? 24 : 0
+        return min(280, full - oldDisclosure + 16)
     }
 
     var body: some View {
         ScrollView(.vertical) {
             if let taskID = plan.taskId {
-                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width - 28,
-                    isExpanded: expanded, onToggleExpansion: { expanded.toggle() })
-                    .padding(14)
+                DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width - 20,
+                    isExpanded: expanded, onToggleExpansion: { expanded.toggle() }, compact: true)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
             }
         }
         .frame(height: Self.height(plan: plan, width: width, expanded: expanded))
@@ -78,7 +83,7 @@ struct TaskExecutionChecklistDetailCard: View {
             if plan?.closed != true {
                 Group {
                     if let plan {
-                        DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width, canEdit: writesAllowed, observesAssignments: false)
+                        DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width, canEdit: writesAllowed, compact: true, observesAssignments: false)
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
                             Label("执行清单", systemImage: "list.bullet.clipboard").font(.system(size: 12, weight: .semibold))
@@ -134,12 +139,14 @@ struct DesktopExecutionChecklistContent: View {
     var canEdit = true
     var isExpanded: Bool? = nil
     var onToggleExpansion: (() -> Void)? = nil
+    var compact = false
     var observesAssignments = true
     @State private var assignmentRefresh: Task<Void, Never>?
     @State private var savedPlan: ConversationExecutionPlan?
     var body: some View {
         TaskExecutionChecklist(plan: currentPlan, width: width, canEdit: canEdit,
-                               isExpanded: isExpanded, onToggleExpansion: onToggleExpansion, openAssignment: { assignment in
+                               isExpanded: isExpanded, onToggleExpansion: onToggleExpansion,
+                               compactSummary: compact ? NativePlanChecklistHeightCache.shared.summary(of: currentPlan, width: width) : nil, openAssignment: { assignment in
                                    guard let childID = assignment.taskId, let childSessionID = assignment.sessionId else { return }
                                    AppTabRouter.shared.openTaskSession(taskId: childID, sessionId: childSessionID, source: .userSelection)
                                }) { command in
