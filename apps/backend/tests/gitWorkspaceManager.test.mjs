@@ -2507,3 +2507,45 @@ test("stale cleanup refuses restored directories, symlinks, locks, bindings and 
     } finally { await f.close(); }
   }
 });
+
+test("one Job retains its conflict Worktree across parent and main targets without losing results", async () => {
+  const f = await createFixture("cross-target-conflict");
+  const manager = new GitWorkspaceManager({ store: f.store, transitions: {} });
+  try {
+    const parentPath = join(await realpath(f.directory), "parent");
+    await git(["worktree", "add", "-b", "parent-target", parentPath], f.repository);
+    const first = await manager.createIntegrationWorktreeForProject({ repositoryId: f.repositoryId,
+      workingDirectory: parentPath, targetPath: parentPath, runId: "job:cross-target" });
+    await writeFile(join(first.path, "resolved.js"), "export const resolved = true;\n");
+    await git(["add", "resolved.js"], first.path);
+    await git(["commit", "-m", "Resolve parent conflict"], first.path);
+    const resolved = (await gitOutput(["rev-parse", "HEAD"], first.path)).trim();
+    await git(["merge", "--ff-only", first.branchName], parentPath);
+    const snapshot = await createGitWorkspaceSnapshot(f.repository);
+    f.store.upsertGitWorkspaceSnapshot(snapshot);
+    const parent = snapshot.worktrees.find(tree => tree.path === parentPath);
+    const main = snapshot.worktrees.find(tree => tree.isMain);
+    const originalGet = f.store.getWorktreeIntegrationJob.bind(f.store);
+    f.store.getWorktreeIntegrationJob = id => id === "job:cross-target" ? { details: {
+      audit: [{ event: "conflict_workspace_created", worktreeId: first.worktreeId }],
+      plan: { reservedWorktreeIds: [parent.worktreeId, main.worktreeId] }
+    } } : originalGet(id);
+    const reused = await manager.createIntegrationWorktreeForProject({ repositoryId: f.repositoryId,
+      workingDirectory: f.repository, runId: "job:cross-target" });
+    assert.equal(reused.worktreeId, first.worktreeId);
+    assert.equal(reused.path, first.path);
+    assert.equal(reused.branchName, first.branchName);
+    assert.equal(reused.headOid, main.headOid);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], parentPath)).trim(), resolved);
+    assert.equal(await readFile(join(parentPath, "resolved.js"), "utf8"), "export const resolved = true;\n");
+    await writeFile(join(first.path, "unfinished.js"), "keep\n");
+    await assert.rejects(manager.createIntegrationWorktreeForProject({ repositoryId: f.repositoryId,
+      workingDirectory: f.repository, runId: "job:cross-target" }), { code: "INTEGRATION_WORKSPACE_NOT_CLEAN" });
+    await git(["add", "unfinished.js"], first.path);
+    await git(["commit", "-m", "Result not yet delivered"], first.path);
+    const undelivered = (await gitOutput(["rev-parse", "HEAD"], first.path)).trim();
+    await assert.rejects(manager.createIntegrationWorktreeForProject({ repositoryId: f.repositoryId,
+      workingDirectory: f.repository, runId: "job:cross-target" }), { code: "INTEGRATION_WORKSPACE_DIVERGED" });
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], first.path)).trim(), undelivered);
+  } finally { await f.close(); }
+});

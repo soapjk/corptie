@@ -2400,7 +2400,7 @@ export class WorktreeIntegrationJobService {
       state = { ...state, activeStepId: step.id, steps: state.steps.map((entry, index) => index === state.index ? { ...entry, status: "running", startedAt: new Date().toISOString() } : entry) };
       return this.#update(job, { phase: "step_running", currentWorktreeId: null,
         details: { ...job.details, plan, graphExecution: state, executionValidationCompleted: true,
-          conflictResolution: null, conflictAutomation: null, commitPolicyBlocker: null },
+          conflictResolution: null, commitPolicyBlocker: null },
         auditEvent: "integration_graph_step_started", auditData: { stepId: step.id, kind: step.kind } });
     }
     await this.#completeJob(job, { status: "completed", phase: "completed", completedAt: new Date().toISOString(), error: null, currentWorktreeId: null,

@@ -1554,6 +1554,53 @@ export class GitWorkspaceManager {
     }
     let main = await this.#resolveIntegrationTarget(input, snapshot);
     if (!main) throw new Error("The repository's main worktree is unavailable.");
+    // The job owns one conflict workspace across all graph targets. Recover its
+    // original identity from existing job records, including pre-fix jobs.
+    const job = input.runId && this.store.getWorktreeIntegrationJob?.(input.runId);
+    const firstWorkspace = job?.details?.audit?.find(entry => entry.event === "conflict_workspace_created");
+    const workspaceId = firstWorkspace?.worktreeId ?? job?.details?.conflictAutomation?.workspaceId;
+    if (workspaceId) {
+      const workspace = snapshot.worktrees.find(tree => tree.worktreeId === workspaceId);
+      const stored = this.store.getGitWorktree(workspaceId);
+      if (!workspace || workspace.availability !== "available" || workspace.isMain
+        || workspace.worktreeId === main.worktreeId || workspace.path !== stored?.path
+        || workspace.branchName !== stored?.branchName
+        || (firstWorkspace?.branchName && workspace.branchName !== firstWorkspace.branchName)
+        || (firstWorkspace?.worktreePath && workspace.path !== firstWorkspace.worktreePath)
+        || !workspace.branchName?.startsWith("integration/")) {
+        throw integrationGitError("CONFLICT_PLAN_WORKSPACE_UNAVAILABLE", "The plan-owned conflict Worktree changed or is unavailable. Restore it before continuing.");
+      }
+      return withWorktreeOperationLock(workspace.path, async () => {
+        for (const route of this.store.listLogicalSessionsByWorkspaceId(workspaceId)) {
+          const session = this.store.getSession(route.legacySessionId);
+          if (["running", "blocked"].includes(session?.status)
+            || this.store.getSessionRuntimeBlocker?.(route.legacySessionId, { includeQueued: true })) {
+            throw integrationGitError("CONFLICT_PLAN_SESSION_BUSY", "The plan Session still has unfinished work.");
+          }
+        }
+        if (workspace.isLocked || await this.integrationOperationState(workspace.path)
+          || (await this.gitOutput(workspace.path, ["status", "--porcelain=v1"])).trim()) {
+          throw integrationGitError("INTEGRATION_WORKSPACE_NOT_CLEAN", "The plan-owned conflict Worktree still contains unfinished changes.");
+        }
+        const head = (await this.gitOutput(workspace.path, ["rev-parse", "HEAD"])).trim();
+        if (head !== main.headOid) {
+          const targets = snapshot.worktrees.filter(tree => tree.availability === "available"
+            && tree.worktreeId !== workspaceId && (job.details.plan.reservedWorktreeIds ?? []).includes(tree.worktreeId));
+          let retained = false;
+          for (const target of targets) {
+            if (await this.gitSucceeds(main.path, ["merge-base", "--is-ancestor", head, target.headOid])) { retained = true; break; }
+          }
+          if (!retained) throw integrationGitError("INTEGRATION_WORKSPACE_DIVERGED", "The previous conflict result has not been retained in a plan target. No workspace was reset.");
+          // This clean scratch branch can move only after its old result is
+          // retained by a reviewed target. Never reset a source or target tree.
+          await this.runGit(workspace.path, ["reset", "--hard", main.headOid]);
+        }
+        const refreshed = await createGitWorkspaceSnapshot(workspace.path);
+        this.store.upsertGitWorkspaceSnapshot(refreshed);
+        return this.#presentIntegrationWorkspace(refreshed, main,
+          refreshed.worktrees.find(tree => tree.worktreeId === workspaceId), 0, true);
+      });
+    }
     const baseSuffix = String(input.runId ?? "integration")
       .replace(/^integration:/, "")
       .replace(/[^a-zA-Z0-9]+/g, "-")
