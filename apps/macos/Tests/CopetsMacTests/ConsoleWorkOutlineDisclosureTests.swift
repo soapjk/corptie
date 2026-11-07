@@ -47,6 +47,47 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         }
     }
 
+    private struct RefreshProbeRow: Identifiable { let id: String }
+    private final class RefreshProbe { var configurations = 0 }
+
+    func testLayoutOnlyPresentationDoesNotReconfigureWorkRows() throws {
+        _ = NSApplication.shared
+        let probe = RefreshProbe()
+        func root(_ revision: UInt64, showsAll: Bool = false) -> ConsoleNativeOutline<RefreshProbeRow, Text> {
+            ConsoleNativeOutline(groups: {
+                [ConsoleNativeOutlineGroup(id: "work", header: AnyView(Text("Work")),
+                    rows: (showsAll ? ["session", "older"] : ["session"]).map { RefreshProbeRow(id: $0) }, isExpanded: true)]
+            }, presentation: .init(entityRevision: revision, sessionRevision: 1, archiveRevision: 1,
+                projectionCount: 1, projectionKey: nil, selectedSessionID: nil, selectedTaskID: nil,
+                selectedWorkID: nil, online: true, language: "en", search: "",
+                fullyExpandedWorkIDs: showsAll ? ["work"] : [])) { row in
+                probe.configurations += 1
+                return Text(row.id)
+            }
+        }
+        let host = NSHostingView(rootView: root(1))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 400),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; window.orderOut(nil) }
+        settle(0.1)
+        let outline = try XCTUnwrap(findTable(in: host))
+        _ = outline.view(atColumn: 0, row: 1, makeIfNecessary: true)
+        let initial = probe.configurations
+        XCTAssertGreaterThan(initial, 0)
+        window.setContentSize(.init(width: 360, height: 500))
+        host.rootView = root(1)
+        settle(0.1)
+        XCTAssertEqual(probe.configurations, initial)
+        host.rootView = root(2)
+        settle(0.1)
+        XCTAssertGreaterThan(probe.configurations, initial, "Real data publications must still refresh mounted rows")
+        host.rootView = root(2, showsAll: true)
+        settle(0.1)
+        XCTAssertEqual(outline.numberOfRows, 3, "Show more changes must not be mistaken for layout-only updates")
+    }
+
     func testNativeSubtaskDisclosureAnimatesAndKeepsLongChildrenVirtualized() throws {
         _ = NSApplication.shared
         let state = State(), session = try motionSession()

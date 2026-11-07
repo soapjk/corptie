@@ -16,6 +16,9 @@ enum ReplyIdentityLayout {
 }
 
 struct AppKitChatTimelineRow: Identifiable {
+    var processParentID: String? = nil
+    var processStep: NativeExecutionTimelineStep? = nil
+    var hasVirtualProcessChildren = false
     var coordinationProgress: ClientCoordinationProgress? = nil
     var scheduledTrigger: ScheduledTriggerPresentation? = nil
     var replyIdentity: ConversationReplyIdentity? = nil
@@ -58,7 +61,7 @@ struct AppKitChatTimelineRow: Identifiable {
 
     let id: String
     var contentRevision: Int
-    let nativeText: String
+    var nativeText: String
     let rawStatusText: String
     let copyText: String
     let nativeStyle: NativeStyle
@@ -72,7 +75,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let processDuration: String?
     let processStartedAt: Date?
     let processState: ProcessState
-    let processSteps: [NativeExecutionTimelineStep]
+    var processSteps: [NativeExecutionTimelineStep]
     let processPlan: ConversationExecutionPlan?
     let processCurrentStepTitle: String?
     let showsHeader: Bool

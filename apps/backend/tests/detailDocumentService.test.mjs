@@ -128,3 +128,26 @@ test("patch baseline advances only per queued frame and coalesces under backpres
     assert.match(response.frames[1], /"summary":"B"/);
   } finally { response.destroy(); }
 });
+
+test("business invalidations target matching streams across logical and legacy aliases", async () => {
+  const { service, session } = setup(), response = new Response();
+  service.events.coalesceMs = 1;
+  let reads = 0;
+  const snapshot = service.snapshot.bind(service);
+  service.snapshot = (...args) => { reads++; return snapshot(...args); };
+  service.events.attach(response, () => ({ deviceId: "test" }), "logical:sample");
+  try {
+    await delay(15);
+    const baseline = reads;
+    service.invalidate({ resourceType: "sessionMetadata", sessionId: "unrelated" });
+    await delay(15); assert.equal(reads, baseline);
+    session.summary = "Changed after execution";
+    assert.doesNotThrow(() => service.invalidate({ resourceType: "sessionMetadata", sessionId: "legacy" }));
+    await delay(15);
+    assert.equal(reads, baseline + 1);
+    assert.match(response.frames.at(-1), /Changed after execution/);
+    session.summary = "Canonical update";
+    service.invalidate({ sessionId: "logical:sample" });
+    await delay(15); assert.equal(reads, baseline + 2);
+  } finally { response.destroy(); }
+});

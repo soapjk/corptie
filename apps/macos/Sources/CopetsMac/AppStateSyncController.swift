@@ -78,6 +78,9 @@ final class AppStateSyncController {
     }
 
     func refreshSnapshot() async {
+        // The deterministic performance fixture owns its in-memory snapshot.
+        // Entity refreshes and activation recovery must not replace it.
+        guard ChatTimelineFeatureFlags.current.fixtureMode == .disabled else { return }
         snapshotRequestGeneration &+= 1
         let requestGeneration = snapshotRequestGeneration
         do {
@@ -101,6 +104,7 @@ final class AppStateSyncController {
     }
 
     private func restartStream(refreshSnapshotFirst: Bool) {
+        guard ChatTimelineFeatureFlags.current.fixtureMode == .disabled else { return }
         beginBackgroundActivityIfNeeded()
         streamTask?.cancel()
         streamWatchdogTask?.cancel()
