@@ -506,10 +506,11 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(composer.contains("struct ComposerQuickMessagesBar: View"))
         #expect(composer.contains("Button(action: onJumpToLatest)"))
         #expect(composer.contains("JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow)"))
-        #expect(source.contains("bottomClearance: quickMessageClearance"))
+        #expect(source.contains("bottomClearance: 0"))
         #expect(!source.contains(".onPreferenceChange(ConversationChromeFramePreferenceKey.self)"))
         #expect(!source.contains("conversationChromeFrame(.composer)"))
-        #expect(source.contains("ConversationQuickMessages.rowHeight + 10"))
+        #expect(source.contains("ConversationComposerDock"))
+        #expect(!source.contains("quickMessageClearance"))
         #expect(source.contains("quickMessagePresentation: quickMessagePresentation"))
         #expect(source.contains("appKitScrollToBottomRevision &+= 1"))
     }

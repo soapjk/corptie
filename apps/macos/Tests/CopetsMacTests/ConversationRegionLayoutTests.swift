@@ -61,4 +61,57 @@ import XCTest
         XCTAssertTrue(received.allSatisfy { $0 === marker })
         XCTAssertEqual(locales, ["zh_CN", "zh_CN"])
     }
+
+    private struct DockMarker: NSViewRepresentable {
+        let name: String
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView()
+            view.identifier = .init(name)
+            return view
+        }
+        func updateNSView(_ nsView: NSView, context: Context) {}
+    }
+
+    private struct DockFixture: View {
+        let showsQuickMessages: Bool
+        let editorHeight: CGFloat
+        var body: some View {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                ConversationComposerDock {
+                    if showsQuickMessages { DockMarker(name: "quick").frame(height: 28) }
+                } composer: {
+                    DockMarker(name: "editor").frame(height: editorHeight)
+                }
+            }
+        }
+    }
+
+    func testQuickMessagesAndEditorShareFixedBottomLayout() throws {
+        let host = NSHostingView(rootView: DockFixture(showsQuickMessages: true, editorHeight: 80))
+        func marker(_ name: String, in view: NSView) -> NSView? {
+            if view.identifier?.rawValue == name { return view }
+            return view.subviews.lazy.compactMap { marker(name, in: $0) }.first
+        }
+        var editor: NSView?
+        for (height, editorHeight, showsQuick) in [(400.0, 80.0, true), (700.0, 80.0, true),
+                                                  (500.0, 150.0, true), (600.0, 80.0, false),
+                                                  (400.0, 80.0, true)] {
+            host.rootView = DockFixture(showsQuickMessages: showsQuick, editorHeight: editorHeight)
+            host.frame = .init(x: 0, y: 0, width: 600, height: height)
+            host.layoutSubtreeIfNeeded()
+            let current = try XCTUnwrap(marker("editor", in: host))
+            if let editor { XCTAssertTrue(current === editor, "Quick-action visibility must retain the editor") }
+            else { editor = current }
+            let frame = current.convert(current.bounds, to: host)
+            let bottom = host.isFlipped ? host.bounds.maxY - frame.maxY : frame.minY
+            XCTAssertEqual(bottom, 4, accuracy: 0.5)
+            if showsQuick {
+                let quick = try XCTUnwrap(marker("quick", in: host))
+                let quickFrame = quick.convert(quick.bounds, to: host)
+                let gap = host.isFlipped ? frame.minY - quickFrame.maxY : quickFrame.minY - frame.maxY
+                XCTAssertEqual(gap, 4, accuracy: 0.5)
+            } else { XCTAssertNil(marker("quick", in: host)) }
+        }
+    }
 }
