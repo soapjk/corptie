@@ -81,6 +81,7 @@ final class SessionConfigurationController {
                 }
                 sendStatusMessage = L10nFormat("Switching model to %@", model.name)
             } catch {
+                ClientFailureDiagnostics.log(error, operation: "SessionConfigurationController.switchSelectedCodexModel")
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Model switch failed: %@", error.localizedDescription)
             }
@@ -176,6 +177,7 @@ final class SessionConfigurationController {
                 }
                 sendStatusMessage = L10nFormat("Switching Codex reasoning to %@", reasoningLabel(trimmedReasoningLevel))
             } catch {
+                ClientFailureDiagnostics.log(error, operation: "SessionConfigurationController.switchSelectedCodexReasoning")
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Reasoning switch failed: %@", error.localizedDescription)
             }
@@ -208,6 +210,7 @@ final class SessionConfigurationController {
             sendStatusMessage = L10n("Session permissions updated.")
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "SessionConfigurationController.updateSessionPermissions")
             lastError = error.localizedDescription
             sendStatusMessage = L10nFormat("Permission update failed: %@", error.localizedDescription)
             return false

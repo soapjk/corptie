@@ -59,7 +59,10 @@ public actor PersistentTimelineCache {
         writer = Task {
             do { try await Task.sleep(for: .milliseconds(500)); try await self.writePending() }
             catch is CancellationError { }
-            catch { Self.log.error("Timeline cache write unavailable; live state retained") }
+            catch {
+                ClientFailureDiagnostics.log(error, operation: "timelineCache.write")
+                Self.log.error("Timeline cache write unavailable; live state retained")
+            }
             if self.writerGeneration == generation { self.writer = nil; self.writerGeneration = nil }
         }
     }
@@ -106,7 +109,10 @@ public actor PersistentTimelineCache {
                 guard record.schemaVersion == 1, record.revision >= 0,
                       file.url.lastPathComponent == prefix + hash(record.sessionID) + ".sealed" else { continue }
                 records.append(record)
-            } catch { Self.log.error("Timeline cache record unavailable; resync required") }
+            } catch {
+                ClientFailureDiagnostics.log(error, operation: "timelineCache.loadRecord")
+                Self.log.error("Timeline cache record unavailable; resync required")
+            }
         }
         return records
     }

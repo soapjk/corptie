@@ -168,7 +168,10 @@ public final class BackendTransport: Sendable {
                let body = try? JSONDecoder().decode(ServiceFailureBody.self, from: data) {
                 throw ClientServiceFailure(statusCode: response.statusCode, code: body.code, message: body.message ?? body.error, busyContext: body.busyContext)
             }
-            guard (200..<300).contains(response.statusCode) else { throw ClientConnectionError.httpStatus(response.statusCode) }
+            guard (200..<300).contains(response.statusCode) else {
+                if response.statusCode >= 500 { ClientFailureDiagnostics.log(NSError(domain: "HTTP", code: response.statusCode), operation: "BackendTransport.dataResponse") }
+                throw ClientConnectionError.httpStatus(response.statusCode)
+            }
             return (data, response)
         }
         guard let session else { throw ClientConnectionError.invalidResponse }
@@ -200,7 +203,10 @@ public final class BackendTransport: Sendable {
                 do {
                     for try await byte in bytes { continuation.yield(byte) }
                     continuation.finish()
-                } catch { continuation.finish(throwing: error) }
+                } catch {
+                    ClientFailureDiagnostics.log(error, operation: "BackendTransport.stream")
+                    continuation.finish(throwing: error)
+                }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
@@ -235,6 +241,9 @@ public final class BackendTransport: Sendable {
     private static func requireByteSuccess<Bytes: AsyncSequence>(_ bytes: Bytes,
         response: HTTPURLResponse) async throws where Bytes.Element == UInt8 {
         guard !(200..<300).contains(response.statusCode) else { return }
+        if response.statusCode >= 500 {
+            ClientFailureDiagnostics.log(NSError(domain: "HTTP", code: response.statusCode), operation: "BackendTransport.byteResponse")
+        }
         var body = Data()
         for try await byte in bytes {
             guard body.count < 64 * 1024 else { throw ClientConnectionError.httpStatus(response.statusCode) }
@@ -248,7 +257,10 @@ public final class BackendTransport: Sendable {
 
     private static func requireSuccess(_ response: URLResponse) throws -> HTTPURLResponse {
         guard let http = response as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { throw ClientConnectionError.httpStatus(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode >= 500 { ClientFailureDiagnostics.log(NSError(domain: "HTTP", code: http.statusCode), operation: "BackendTransport.response") }
+            throw ClientConnectionError.httpStatus(http.statusCode)
+        }
         return http
     }
 }
