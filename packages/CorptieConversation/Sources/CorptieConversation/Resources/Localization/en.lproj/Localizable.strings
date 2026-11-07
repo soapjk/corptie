@@ -1,0 +1,17 @@
+"子任务进展" = "Subtask progress";
+"准备中" = "Preparing";
+"排队中" = "Queued";
+"执行中" = "Running";
+"等待补充" = "Waiting for input";
+"受阻" = "Blocked";
+"待审查" = "Awaiting review";
+"已交付" = "Delivered";
+"已验收" = "Accepted";
+"已取消" = "Cancelled";
+"状态待确认" = "Status unconfirmed";
+"查看任务详情" = "View task details";
+"已交付 %lld/%lld" = "Delivered %lld/%lld";
+"当前重点：%@" = "Current focus: %@";
+"需要你决定：%@" = "Your decision: %@";
+"查看全部 %lld 项" = "View all %lld tasks";
+"已交付或验收 %lld 项，共 %lld 项" = "Delivered or accepted %lld of %lld tasks";

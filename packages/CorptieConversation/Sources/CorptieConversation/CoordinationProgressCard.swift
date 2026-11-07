@@ -9,7 +9,6 @@ public struct CoordinationProgressCard: View {
     public var api: (() async throws -> ClientDetailAPI)?
     @State private var selection: ClientCoordinationProgressItem?
     @State private var showingAll = false
-    @ScaledMetric private var scale = 1.0
     public init(progress: ClientCoordinationProgress, api: (() async throws -> ClientDetailAPI)? = nil,
                 openSession: @escaping (String) -> Void) {
         self.progress = progress; self.api = api; self.openSession = openSession
@@ -17,24 +16,22 @@ public struct CoordinationProgressCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("子任务进展").font(.headline)
+                Text("子任务进展", bundle: .module).font(.headline)
                 Spacer(minLength: 8)
-                Text("\(progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0])/\(progress.total)")
+                Text("已交付 \(progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0])/\(progress.total)", bundle: .module)
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    .accessibilityLabel(Text("已交付或验收 \(progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0]) 项，共 \(progress.total) 项"))
+                    .accessibilityLabel(Text("已交付或验收 \(progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0]) 项，共 \(progress.total) 项", bundle: .module))
             }
             ForEach(progress.items.prefix(3)) { item in
                 Button { selection = item } label: { CoordinationProgressRow(item: item) }
-                    .buttonStyle(.plain).frame(height: 58 * scale, alignment: .top)
-                    .accessibilityHint(Text("查看任务详情"))
+                    .buttonStyle(.plain)
+                    .accessibilityHint(Text("查看任务详情", bundle: .module))
             }
-            if !progress.focus.isEmpty { Text(progress.focus).font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(height: 32 * scale, alignment: .topLeading) }
-            if !progress.decision.isEmpty { Label(progress.decision, systemImage: "questionmark.circle").font(.caption).lineLimit(2).frame(height: 32 * scale, alignment: .topLeading) }
-            if progress.hasMore { Button("查看全部 \(progress.total) 项") { showingAll = true }.font(.caption) }
-            Spacer(minLength: 0)
+            if !progress.focus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text("当前重点：\(progress.focus)", bundle: .module).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
+            if !progress.decision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Label { Text("需要你决定：\(progress.decision)", bundle: .module) } icon: { Image(systemName: "questionmark.circle") }.font(.caption).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
+            if progress.hasMore || progress.total > 3 { Button { showingAll = true } label: { Text("查看全部 \(progress.total) 项", bundle: .module) }.font(.caption) }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: progress.previewHeight * scale, alignment: .top)
         .modifier(ConversationSkinSurface(role: .structured, radius: 12, legacyFill: Color.secondary.opacity(0.05)))
         .sheet(item: $selection) { item in
             NavigationStack { CoordinationProgressItemDetail(item: item, progress: progress, api: api, openSession: openSession) }
@@ -48,37 +45,34 @@ public struct CoordinationProgressCard: View {
 }
 private struct CoordinationProgressRow: View {
     let item: ClientCoordinationProgressItem
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var description: String { item.previewSummary }
+    private var status: some View {
+        Label { Text(LocalizedStringKey(item.statusTitle), bundle: .module) } icon: { Image(systemName: item.statusSymbol) }
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: true, vertical: false)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(item.title).font(.subheadline).lineLimit(2)
-                Spacer(minLength: 8)
-                Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: true, vertical: false)
+            if dynamicTypeSize.isAccessibilitySize {
+                Text(item.title).font(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                status
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.title).font(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    status
+                }
             }
-            if !item.summary.isEmpty { Text(item.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-    }
-    private var title: LocalizedStringKey {
-        switch item.state {
-        case "preparing": "准备中"
-        case "queued": "排队中"
-        case "running": "执行中"
-        case "waiting_input": "等待输入"
-        case "blocked": "阻塞"
-        case "delivered": "已交付"
-        case "accepted": "已验收"
-        case "cancelled": "已取消"
-        default: "待核实"
+            if !description.isEmpty {
+                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-    }
-    private var symbol: String {
-        switch item.state {
-        case "running": "play.circle"
-        case "blocked", "waiting_input": "exclamationmark.circle"
-        case "delivered", "accepted": "checkmark.circle"
-        case "cancelled": "xmark.circle"
-        default: "clock"
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        #if os(iOS)
+        .frame(minHeight: 44, alignment: .leading)
+        #endif
+        .contentShape(Rectangle())
     }
 }
 private struct CoordinationProgressList: View {
@@ -133,7 +127,7 @@ private struct CoordinationProgressItemDetail: View {
             VStack(alignment: .leading, spacing: 12) {
                 CoordinationProgressRow(item: item)
                 if !item.reason.isEmpty { Text(item.reason).font(.callout).textSelection(.enabled) }
-                if let session = item.sessionId { Button("打开子会话") { openSession(session) } }
+                if let session = item.sessionId { Button("打开子会话") { dismiss(); openSession(session) } }
                 if item.reportMessageId != nil, nextOffset != nil {
                     Button(loading ? "正在加载…" : report.isEmpty ? "查看报告" : "继续读取报告") { request = Task { await loadReport() } }.disabled(loading)
                 }

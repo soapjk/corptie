@@ -301,7 +301,7 @@ final class LegacyTimelineLayoutReference {
             ? Self.processSummaryExtraHeight(for: row, cardWidth: cardWidth,
                 includesCurrentStep: !MacSharedMessageTextCard.supportsProcess(row)) : 0
         if let progress = row.coordinationProgress {
-            cardHeight = progress.previewHeight
+            cardHeight = CGFloat(54 + min(3, progress.items.count) * 30) // Legacy estimate; production uses the fitted SwiftUI card.
             rowHeight = MessageCardMetrics.rowHeight(cardHeight: cardHeight, separatorHeight: row.timeSeparatorHeight, typography: typography)
         } else if row.nativeStyle == .process && !row.isExpanded {
             rowHeight = (row.processCurrentStepTitle == nil ? 32 : 48) + processSummaryExtraHeight

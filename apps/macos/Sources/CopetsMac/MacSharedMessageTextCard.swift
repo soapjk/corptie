@@ -240,9 +240,7 @@ struct MacSharedMessageTextCard: View {
                     MacProcessBlockView(block: block, cardWidth: layout.cardWidth, baseDirectory: baseDirectory)
                 }
                 else if let progress = row.coordinationProgress {
-                    CoordinationProgressCard(progress: progress, api: {
-                        ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
-                    }, openSession: { AppTabRouter.shared.openSession($0, source: .userSelection) })
+                    MacCoordinationProgressCard(progress: progress)
                 }
                 else if let trigger = row.scheduledTrigger {
                     MacScheduledTriggerCard(trigger: trigger, title: row.title, metadata: row.metadata,
@@ -1065,5 +1063,16 @@ struct MeasuredMessageText: NSViewRepresentable {
         manager.ensureLayout(for: container)
         let used = manager.usedRect(for: container)
         return .init(width: width ?? ceil(used.width), height: ceil(used.height))
+    }
+}
+
+private struct MacCoordinationProgressCard: View {
+    let progress: ClientCoordinationProgress
+    @ObservedObject private var language = AppLanguageController.shared
+    var body: some View {
+        CoordinationProgressCard(progress: progress, api: {
+            ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
+        }, openSession: { AppTabRouter.shared.openSession($0, source: .userSelection) })
+        .environment(\.locale, language.locale)
     }
 }
