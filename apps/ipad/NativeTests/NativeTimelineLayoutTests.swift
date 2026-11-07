@@ -5,6 +5,41 @@ import CorptieClientCore
 import CorptieConversation
 @testable import CorptieMobile
 
+@MainActor final class RunningRingLayoutTests: XCTestCase {
+    func testLayoutAndUpdatesKeepOneRotationWithoutPositionAnimation() throws {
+        let host = UIHostingController(rootView: TaskActivityIndicator(activity: .processing)
+            .environment(\.scenePhase, .active))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 640))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil }
+        host.view.layoutIfNeeded()
+        func find(_ layer: CALayer) -> CAShapeLayer? {
+            if let ring = layer as? CAShapeLayer, ring.strokeEnd == 0.75 { return ring }
+            return layer.sublayers?.lazy.compactMap { find($0) }.first
+        }
+        let ring = try XCTUnwrap(find(host.view.layer))
+        let owner = try XCTUnwrap(ring.superlayer)
+        // onAppear may not have run yet; verify after the hosting update settles.
+        let settled = expectation(description: "hosting update")
+        DispatchQueue.main.async { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+        let animation = try XCTUnwrap(ring.animation(forKey: "runningRotation") as? CABasicAnimation)
+        XCTAssertEqual(animation.keyPath, "transform.rotation.z")
+        XCTAssertEqual(animation.toValue as? Double, 2 * Double.pi)
+        XCTAssertTrue(animation.repeatCount.isInfinite)
+        let beginTime = animation.beginTime
+        owner.position.y += 100
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        XCTAssertEqual(ring.animation(forKey: "runningRotation")?.beginTime, beginTime)
+        XCTAssertEqual(ring.animationKeys(), ["runningRotation"])
+        XCTAssertEqual(ring.position, CGPoint(x: ring.bounds.midX, y: ring.bounds.midY))
+        window.rootViewController = nil
+        XCTAssertNil(ring.animation(forKey: "runningRotation"))
+    }
+}
+
 @MainActor final class MessageImageDecodeTests: XCTestCase {
     func testLargeImageIsDownsampledWithoutChangingAspectRatio() async throws {
         let format = UIGraphicsImageRendererFormat()

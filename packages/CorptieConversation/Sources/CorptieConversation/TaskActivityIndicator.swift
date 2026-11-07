@@ -2,6 +2,8 @@ import CorptieClientCore
 import SwiftUI
 #if os(macOS)
 import AppKit
+#else
+import UIKit
 #endif
 
 public struct TaskActivityIndicator: View {
@@ -39,12 +41,7 @@ public struct TaskActivityIndicator: View {
                 #if os(macOS)
                 TaskRunningRing(animates: isActive && !reduceMotion, color: color)
                 #else
-                Circle().trim(from: 0, to: 0.75)
-                    .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                    .padding(1)
-                    .rotationEffect(.degrees(animates ? 360 : 0))
-                    .animation(animates ? .linear(duration: 0.8).repeatForever(autoreverses: false) : nil,
-                               value: animates)
+                TaskRunningRing(animates: animates, color: color)
                     .onAppear { isVisible = true }
                     .onDisappear { isVisible = false }
                 #endif
@@ -120,6 +117,73 @@ final class TaskRunningRingView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        synchronizeAnimation()
+    }
+
+    func synchronizeAnimation() {
+        guard animates, window != nil else {
+            ring.removeAnimation(forKey: "runningRotation")
+            return
+        }
+        guard ring.animation(forKey: "runningRotation") == nil else { return }
+        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        rotation.fromValue = 0
+        rotation.toValue = 2 * Double.pi
+        rotation.duration = 0.8
+        rotation.repeatCount = .infinity
+        ring.add(rotation, forKey: "runningRotation")
+    }
+}
+#else
+/// Keep rotation on a leaf layer, outside SwiftUI's list layout transactions.
+struct TaskRunningRing: UIViewRepresentable {
+    let animates: Bool
+    let color: Color
+
+    func makeUIView(context: Context) -> TaskRunningRingView { TaskRunningRingView() }
+    func updateUIView(_ view: TaskRunningRingView, context: Context) {
+        view.animates = animates
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.ring.strokeColor = UIColor(color).cgColor
+        CATransaction.commit()
+        view.synchronizeAnimation()
+    }
+    static func dismantleUIView(_ view: TaskRunningRingView, coordinator: ()) {
+        view.animates = false
+        view.synchronizeAnimation()
+    }
+}
+
+final class TaskRunningRingView: UIView {
+    let ring = CAShapeLayer()
+    var animates = true
+
+    init() {
+        super.init(frame: CGRect(x: 0, y: 0, width: 12, height: 12))
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        ring.fillColor = nil
+        ring.strokeColor = UIColor.systemBlue.cgColor
+        ring.lineWidth = 1.5
+        ring.lineCap = .round
+        ring.strokeEnd = 0.75
+        layer.addSublayer(ring)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ring.bounds = CGRect(origin: .zero, size: bounds.size)
+        ring.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        ring.path = CGPath(ellipseIn: ring.bounds.insetBy(dx: 1.75, dy: 1.75), transform: nil)
+        CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
         synchronizeAnimation()
     }
 
