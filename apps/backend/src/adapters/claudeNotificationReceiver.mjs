@@ -6,7 +6,7 @@ import { agentWorkFailureMessage } from "../utils/agentWorkQueue.mjs";
 export function createClaudeNotificationReceiver({
   store, emitEvent, sessionWithLogicalWorkspace, providerEventIngestion,
   sessionStateDiagnostics, now, workspaceContinuationCoordinator,
-  settleEntityTaskFromSession, collaborationCore, refreshWorkspaceInventoryAfterTurn,
+  settleEntityTaskFromSession, collaborationCore,
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
   resumeWorkAfterTransition, scheduleAgentWorkDrain
 }) {
@@ -120,7 +120,6 @@ async function handleClaudeTurnSettled(event) {
   settleEntityTaskFromSession(store.getSession(sessionId));
   const agent = collaborationCore.getAgentForSession(sessionId);
   if (event.status === "completed") {
-    refreshWorkspaceInventoryAfterTurn(logical);
     const continuation = continuePendingWorkspaceTransition(logical, event.turnId);
     const providerSwitch = continuePendingProviderSwitch(logical);
     resumeWorkAfterTransition(continuation, () => {

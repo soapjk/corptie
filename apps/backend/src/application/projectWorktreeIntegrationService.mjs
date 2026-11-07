@@ -95,7 +95,7 @@ export class ProjectWorktreeIntegrationService {
       for (const item of run.items) {
         this.store.updateProjectIntegrationItem(run.id, item.worktreeId, { status: "merging", error: null });
         try {
-          const current = await this.inspectProject(scope.projectId, { forceFresh: true, reason: "integration_item_preflight" });
+          const current = await this.inspectProject(scope.projectId, { forceFresh: true, worktreeIds: [initial.mainWorktreeId, item.worktreeId], reason: "integration_item_preflight" });
           const worktree = current.worktrees.find((entry) => entry.worktreeId === item.worktreeId);
           if (!worktree || worktree.availability !== "available") {
             throw new ProjectWorktreeIntegrationError(
@@ -143,7 +143,7 @@ export class ProjectWorktreeIntegrationService {
         }
       }
 
-      const finalInspection = await this.inspectProject(scope.projectId, { forceFresh: true, reason: "integration_completed" });
+      const finalInspection = await this.inspectProject(scope.projectId, { forceFresh: true, worktreeIds: [initial.mainWorktreeId, ...run.items.map(item => item.worktreeId)], reason: "integration_completed" });
       const completed = this.store.getProjectIntegrationRun(run.id);
       const hasConflicts = completed.items.some((item) => item.status === "conflict");
       const hasFailures = completed.items.some((item) => item.status === "failed");

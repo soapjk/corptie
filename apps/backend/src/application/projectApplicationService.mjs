@@ -33,24 +33,17 @@ export class ProjectApplicationService {
 
   async readProject(projectId) {
     const project = await this.requireProject(projectId);
-    const workspaces = await this.inspectWorkspaces(project, { inspectionLevel: "management", reason: "project_read" });
-    return {
-      project: {
-        id: project.id,
-        mainWorkspaceId: workspaces.mainWorktreeId ?? project.mainWorkspaceId ?? null,
-        mainPath: workspaces.mainPath ?? project.mainPath,
-        mainBranch: workspaces.mainBranch ?? null,
-        workspaceCount: workspaces.worktrees?.length ?? 0,
-        pendingWorkspaceCount: workspaces.pendingWorktreeCount ?? 0
-      }
-    };
+    return { project: { id: project.id, mainWorkspaceId: project.mainWorkspaceId ?? null,
+      mainPath: project.mainPath, mainBranch: project.mainBranch ?? null,
+      workspaceCount: project.workspaceCount ?? null,
+      pendingWorkspaceCount: project.pendingWorkspaceCount ?? null } };
   }
 
   async listWorkspaces(projectId, options = {}) {
     const project = await this.requireProject(projectId);
     const [status, development] = await Promise.all([
       this.inspectWorkspaces(project, {
-        inspectionLevel: options.activeWorkspaceId ? "session" : "management",
+        inspectionLevel: "session",
         activeWorkspaceId: options.activeWorkspaceId,
         reason: options.activeWorkspaceId ? "session_detail" : "worktree_management"
       }),
@@ -92,7 +85,7 @@ export class ProjectApplicationService {
       action,
       result,
       project: await this.inspectWorkspaces(project, {
-        inspectionLevel: "management",
+        inspectionLevel: "session", activeWorkspaceId: normalizedWorkspaceId,
         forceFresh: true,
         reason: `workspace_action_${action}_completed`
       })

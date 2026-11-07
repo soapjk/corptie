@@ -91,7 +91,7 @@ test("existing Session execution preserves route inspection and Worktree reuse s
     reused: true,
     requiresSessionTransition: false
   });
-  assert.deepEqual(calls.map(([name]) => name), ["project", "access", "inspect", "route"]);
+  assert.deepEqual(calls.map(([name]) => name), ["project", "access", "route", "inspect"]);
 });
 
 test("a stale registered Worktree is rebuilt from its preserved task branch", async () => {
@@ -127,7 +127,7 @@ test("a stale registered Worktree is rebuilt from its preserved task branch", as
     rebuilt: true,
     requiresSessionTransition: true
   });
-  assert.deepEqual(calls.map(([name]) => name), ["project", "access", "inspect", "route", "restore"]);
+  assert.deepEqual(calls.map(([name]) => name), ["project", "access", "route", "inspect", "restore"]);
   assert.deepEqual(calls.at(-1)[1], { logicalSessionId: "logical:one" });
 });
 
@@ -142,7 +142,7 @@ test("a missing Worktree inventory record is recreated through the deterministic
   assert.equal(result.worktreeId, "worktree:new");
   assert.equal(result.rebuilt, true);
   assert.equal(result.requiresSessionTransition, true);
-  assert.deepEqual(calls.map(([name]) => name), ["project", "access", "inspect", "route", "ensure"]);
+  assert.deepEqual(calls.map(([name]) => name), ["project", "access", "route", "inspect", "ensure"]);
   assert.deepEqual(calls.at(-1)[1], {
     repositoryId: "repository:one",
     workingDirectory: "/repo",

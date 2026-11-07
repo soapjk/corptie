@@ -1,3 +1,4 @@
+import { createScopedGitWorkspaceSnapshot as readScopedWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { SessionForkService } from "./sessionForkService.mjs";
@@ -9,7 +10,7 @@ export function createSessionForkOperations({
   store, agentProviderRegistry, sessionApplicationService, workService,
   workSessionStartApplicationService, chatResourceService, collaborationCore,
   createSessionThroughApplication, emitEvent, createForkWorktree,
-  createGitWorkspaceSnapshot, ensureArtifactCommitHook
+  ensureArtifactCommitHook, createScopedGitWorkspaceSnapshot = readScopedWorkspace
 }) {
 const sessionForkService = new SessionForkService({
   store, registry: agentProviderRegistry, sessionService: sessionApplicationService, workService,
@@ -52,7 +53,7 @@ async function prepareConversationForkWorkspace(source, targetId) {
   const targetPath = resolve(store.layout.worktreesDirectory, logical.repositoryId.split(":").at(-1), `fork-${suffix}`);
   const created = await createForkWorktree({ sourcePath, targetPath, branchName: `fork/${suffix}` });
   try {
-    const snapshot = await createGitWorkspaceSnapshot(targetPath);
+    const snapshot = await createScopedGitWorkspaceSnapshot(targetPath);
     if (snapshot.repository.id !== logical.repositoryId) throw new Error("Fork Repository identity changed.");
     store.upsertGitWorkspaceSnapshot(snapshot);
     const worktree = snapshot.worktrees.find(row => resolve(row.canonicalPath || row.path) === targetPath);

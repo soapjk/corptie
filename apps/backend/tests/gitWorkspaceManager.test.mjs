@@ -246,28 +246,16 @@ test("createWorktree uses parameterized Git arguments, validates identity, and s
   }
 });
 
-test("createWorktree rejects a stale inventory before changing Git", async () => {
+test("createWorktree ignores unrelated stale inventory and registers only its new directory", async () => {
   const fixture = await createFixture("stale");
-  const manager = new GitWorkspaceManager({
-    store: fixture.store,
-    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
-  });
+  const manager = new GitWorkspaceManager({ store: fixture.store });
   const target = join(fixture.directory, "stale target");
-
   try {
-    await assert.rejects(
-      () => manager.createWorktree({
-        logicalSessionId: "logical:one",
-        targetPath: target,
-        branch: "feature/stale",
-        inventoryVersion: "old-inventory"
-      }),
-      /inventory changed/
-    );
-    await assert.rejects(() => inspectGitWorkspace(target));
-  } finally {
-    await fixture.close();
-  }
+    const result = await manager.createWorktree({ logicalSessionId: "logical:one", targetPath: target,
+      branch: "feature/stale", inventoryVersion: "old-inventory", switchAfterCreate: false });
+    assert.equal(result.worktree.branchName, "feature/stale");
+    assert.equal((await inspectGitWorkspace(target)).repositoryId, fixture.repositoryId);
+  } finally { await fixture.close(); }
 });
 
 test("createWorktree rejects a branch already checked out by another worktree", async () => {
@@ -685,6 +673,7 @@ test("session inspection probes status only for main and the active Worktree", a
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") },
     execFile: async (file, args, options) => {
+      assert.equal(args.includes("worktree") && args.includes("list"), false, "session status must not enumerate siblings");
       if (["status", "rev-list", "diff"].includes(args[2])) calls.push([args[1], ...args.slice(2)]);
       return execFileAsync(file, args, options);
     }
@@ -1276,7 +1265,7 @@ test("ensures one deterministic Task Worktree and reuses it on retry", async () 
   }
 });
 
-test("child Worktree uses its frozen parent commit, never current main; legacy writes are blocked", async () => {
+test("child Worktree starts from parent HEAD without a frozen context; unrelated integration rules remain unchanged", async () => {
   const f=await createFixture("frozen-parent");
   const store=f.store;
   const manager=new GitWorkspaceManager({store,transitions:{switchWorkspace:async()=>assert.fail("must not switch")}});
@@ -1300,12 +1289,25 @@ test("child Worktree uses its frozen parent commit, never current main; legacy w
     await git(["commit","--allow-empty","-m","main advanced"],f.repository);
     await git(["commit","--allow-empty","-m","parent advanced"],workspace.path);
     const mainHead=(await gitOutput(["rev-parse","HEAD"],f.repository)).trim();
+    const currentParentHead=(await gitOutput(["rev-parse","HEAD"],workspace.path)).trim();
     const created=await manager.ensureTaskWorktreeForProject({repositoryId:f.repositoryId,taskId:child.id,workingDirectory:f.repository,baseContext:base});
-    assert.equal(created.headOid,oid);
+    assert.equal(created.headOid,currentParentHead);
     assert.equal(await readFile(join(created.path,"parent.txt"),"utf8"),"parent\n");
     assert.notEqual(created.path,workspace.path);
     assert.equal((await gitOutput(["rev-parse","HEAD"],f.repository)).trim(),mainHead);
-    await assert.rejects(manager.ensureTaskWorktreeForProject({repositoryId:f.repositoryId,taskId:child.id,workingDirectory:f.repository}),{code:"PARENT_WORKTREE_REQUIRED"});
+    await writeFile(join(workspace.path,"pending.txt"),"uncommitted parent change");
+    const child2=store.createTask({workId:work.id,title:"Child_two",parentTaskId:parent.id},{},{expectedParentResourceVersion:store.getTask(parent.id).resource_version});
+    const child3=store.createTask({workId:work.id,title:"Child_three",parentTaskId:parent.id},{},{expectedParentResourceVersion:store.getTask(parent.id).resource_version});
+    const [second,third]=await Promise.all([child2,child3].map(task=>manager.ensureTaskWorktreeForProject({taskId:task.id})));
+    for(const next of [second,third]) {
+      assert.equal(next.headOid,currentParentHead);
+      assert.equal(await readFile(join(next.path,"parent.txt"),"utf8"),"parent\n");
+      await assert.rejects(readFile(join(next.path,"pending.txt")),{code:"ENOENT"});
+      assert.equal(store.getGitWorktree(next.worktreeId).availability,"available");
+    }
+    assert.notEqual(second.path,third.path);
+    assert.equal(store.getGitWorktree(workspace.worktreeId).availability,"available");
+    assert.equal(await readFile(join(workspace.path,"pending.txt"),"utf8"),"uncommitted parent change");
     await assert.rejects(manager.mergeWorktreeIntoMainForProject({repositoryId:f.repositoryId,sourceWorktreeId:workspace.worktreeId,workingDirectory:f.repository}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
     await assert.rejects(manager.synchronizeWorktreeWithMainForProject({repositoryId:f.repositoryId,sourceWorktreeId:workspace.worktreeId,workingDirectory:f.repository}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
     await assert.rejects(manager.removeWorktreeForProject({repositoryId:f.repositoryId,sourceWorktreeId:workspace.worktreeId,workingDirectory:f.repository}),{code:"TASK_HIERARCHY_SCOPE_REQUIRED"});
@@ -1462,26 +1464,20 @@ test("allocates distinct Task Worktrees for names that normalize to the same rea
   }
 });
 
-test("refuses a managed Task Worktree root nested inside any registered Worktree", async () => {
+test("Task allocation does not enumerate sibling paths to reject a configured nested root", async () => {
   const fixture = await createFixture("task-nested-root");
-  const manager = new GitWorkspaceManager({
-    store: fixture.store,
-    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
-    taskWorktreesRoot: join(fixture.repository, ".corptie", "worktrees")
-  });
+  const manager = new GitWorkspaceManager({ store: fixture.store,
+    taskWorktreesRoot: join(fixture.repository, "nested-task-worktrees"),
+    execFile: async (file, args, options) => {
+      assert.equal(args.includes("worktree") && args.includes("list"), false);
+      return execFileAsync(file, args, options);
+    } });
   try {
-    await assert.rejects(
-      () => manager.ensureTaskWorktreeForProject({
-        repositoryId: fixture.repositoryId,
-        workingDirectory: fixture.repository,
-        taskId: "task:nested"
-      }),
-      /must not be nested inside another Git Worktree/
-    );
-    assert.equal((await gitOutput(["worktree", "list", "--porcelain"], fixture.repository)).match(/^worktree /gm)?.length, 1);
-  } finally {
-    await fixture.close();
-  }
+    const created = await manager.ensureTaskWorktreeForProject({ repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository, taskId: "task:nested" });
+    assert.equal(created.branchName, "task/nested");
+    assert.equal((await inspectGitWorkspace(created.path)).repositoryId, fixture.repositoryId);
+  } finally { await fixture.close(); }
 });
 
 test("reports an explicit error when the managed Worktree target is occupied", async () => {

@@ -14,7 +14,8 @@ export function createProjectActionHandlers({
     return {
       id: repository.id,
       mainPath: main.canonicalPath || main.path,
-      mainWorkspaceId: main.worktreeId
+      mainWorkspaceId: main.worktreeId,
+      mainBranch: main.branchName, workspaceCount: worktrees.length
     };
   }
 
@@ -48,7 +49,7 @@ export function createProjectActionHandlers({
       throw error;
     }
     const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id, {
-      inspectionLevel: "management",
+      inspectionLevel: "session", activeWorkspaceId: workspaceId,
       forceFresh: true,
       reason: `workspace_action_${action}_preflight`
     });

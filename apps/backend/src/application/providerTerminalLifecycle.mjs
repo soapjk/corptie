@@ -1,6 +1,6 @@
 export function createProviderTerminalLifecycle({
   store, emitEvent, recordWorkSettled, sessionMailbox, settleEntityTaskFromSession,
-  collaborationCore, refreshWorkspaceInventoryAfterTurn,
+  collaborationCore,
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
   resumeWorkAfterTransition, scheduleAgentWorkDrain
 }) {
@@ -35,7 +35,6 @@ export function createProviderTerminalLifecycle({
     if (event.payload?.suppressAutomaticContinuation === true) return;
     const agent = collaborationCore.getAgentForSession(nextSession.id);
     if (!failed && !cancelled) {
-      refreshWorkspaceInventoryAfterTurn(logicalRoute);
       const continuation = continuePendingWorkspaceTransition(logicalRoute, event.turnId);
       const providerSwitch = continuePendingProviderSwitch(logicalRoute);
       resumeWorkAfterTransition(continuation, () => {

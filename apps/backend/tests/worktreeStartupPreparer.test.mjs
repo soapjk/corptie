@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -153,5 +153,27 @@ test("revalidates a programmatically prepared Worktree owned by the startup oper
     assert.equal(allocation.worktreeId, target.worktreeId);
     assert.equal(allocation.reused, true);
     assert.equal(f.store.getGitWorktree(target.worktreeId).createdByStartupOperationId, "startup:integration");
+  } finally { await cleanup(f); }
+});
+
+test("child preparation returns the created directory without freezing or verifying it", async () => {
+  const f = await fixture();
+  try {
+    const child = f.store.createTask({ workId: f.task.work_id, title: "Child", parentTaskId: f.task.id });
+    let creates = 0;
+    const preparer = new WorktreeStartupPreparer({ store: f.store,
+      execGit: async () => assert.fail("No verification Git calls for child startup"),
+      ensureWorkspace: async input => {
+        creates++;
+        assert.equal(input.task.id, child.id);
+        const workspace = await f.preparer.ensureWorkspace(input);
+        return { ...workspace, sourceTreeOid: await git(workspace.path, "rev-parse", "HEAD^{tree}") };
+      } });
+    preparer.hierarchy.freezeBaseForStartup = async () => assert.fail("Do not freeze the parent workspace");
+    const allocation = await preparer.prepare({ startupOperationId: "startup:child", taskId: child.id,
+      repositoryId: f.repositoryId });
+    assert.equal(creates, 1);
+    assert.equal(allocation.canonicalWorktreePath, await realpath(f.target));
+    assert.equal(f.store.getGitWorktree(allocation.worktreeId).createdByStartupOperationId, "startup:child");
   } finally { await cleanup(f); }
 });

@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   createGitWorkspaceSnapshot,
+  createScopedGitWorkspaceSnapshot,
   inspectGitWorkspace,
   listGitWorktrees,
   parseGitWorktreePorcelain
@@ -229,3 +230,31 @@ async function git(arguments_, cwd) {
     }
   });
 }
+
+test("scoped reads include only named worktrees, retain detached/unborn identity and never list siblings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-scoped-worktrees-"));
+  const main = join(directory, "main"), child = join(directory, "child"), sibling = join(directory, "sibling");
+  await mkdir(main);
+  try {
+    await git(["init", "-b", "main"], main);
+    const unborn = await createScopedGitWorkspaceSnapshot(main);
+    assert.equal(unborn.partial, true);
+    assert.equal(unborn.worktrees[0].headOid, null);
+    assert.equal(unborn.worktrees[0].branchName, "main");
+    await git(["commit", "--allow-empty", "-m", "initial"], main);
+    await git(["worktree", "add", "--detach", child, "HEAD"], main);
+    await git(["worktree", "add", "-b", "sibling", sibling], main);
+    const calls = [];
+    const snapshot = await createScopedGitWorkspaceSnapshot(child, { includeMain: true,
+      execFile: async (file, args, options) => {
+        calls.push(args);
+        assert.equal(args.includes("worktree"), false);
+        assert.equal(args.includes(sibling), false);
+        return execFileAsync(file, args, options);
+      } });
+    assert.equal(snapshot.worktrees.length, 2);
+    assert.equal(snapshot.worktrees.find(row => !row.isMain).isDetached, true);
+    assert.equal(snapshot.worktrees.find(row => row.isMain).branchName, "main");
+    assert.ok(calls.length > 0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

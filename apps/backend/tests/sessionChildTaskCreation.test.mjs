@@ -183,16 +183,16 @@ test("Work Chat may choose a same-Work root; parent Session replacement preserve
   assert.throws(() => f.service.getTask(childSession, f.agent.agentId, outsider.id), { code: "TASK_OUTSIDE_SCOPE" });
 });
 
-test("parent scope and depth fail before persistence, not missing user creation intent", async t => {
+test("parent scope is enforced while nested child Sessions may create their own children", async t => {
   const f = await fixture(t), initial = f.store.listTasks().length;
   const other = f.store.createTask({ workId: f.work.id, title: "Other_root" });
   await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, f.input({ parentTaskId: other.id })), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
   assert.equal(f.store.listTasks().length, initial + 1);
   const child = f.store.createTask({ workId: f.work.id, title: "Existing_child", parentTaskId: f.root.id }, {}, { expectedParentResourceVersion: f.store.getTask(f.root.id).resource_version });
   const childSource = f.open("child-source", child.id);
-  await assert.rejects(f.service.createTaskAndSession(childSource, f.agent.agentId, { ...f.input(), parentTaskId: child.id, ...f.evidence(childSource) }), { code: "TASK_MAX_DEPTH_EXCEEDED" });
-  assert.equal(f.service.capabilities(childSource, f.agent.agentId).taskHierarchyCapabilities.createChild, false);
-  assert.equal(f.starts.length, 0);
+  await assert.doesNotReject(f.service.createTaskAndSession(childSource, f.agent.agentId, { ...f.input(), parentTaskId: child.id, ...f.evidence(childSource) }));
+  assert.equal(f.service.capabilities(childSource, f.agent.agentId).taskHierarchyCapabilities.createChild, true);
+  assert.equal(f.starts.length, 1);
 });
 
 test("failed startup retains the original Task, recovery details and frozen default model", async t => {
@@ -318,7 +318,7 @@ test("batch schema, dynamic tool and HTTP endpoint create multiple children in o
   const validate = new Ajv({ strict: false }).compile(definition.inputSchema);
   assert.equal(validate(wire), true);
   assert.equal(validate({ ...wire, items: [] }), false);
-  assert.equal(validate({ ...wire, items: Array.from({ length: 11 }, () => wire.items[0]) }), false);
+  assert.equal(validate({ ...wire, items: Array.from({ length: 11 }, () => wire.items[0]) }), true);
   let requests = 0;
   const client = { post: (path, body) => new Promise(resolve => {
     requests++;

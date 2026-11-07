@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
+import { createScopedGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -20,7 +20,7 @@ export async function registerGitRepository({
   dirPath,
   initializeIfNeeded = false,
   store,
-  createSnapshot = createGitWorkspaceSnapshot,
+  createSnapshot = createScopedGitWorkspaceSnapshot,
   run = execFileAsync,
   inspectPath = stat
 }) {

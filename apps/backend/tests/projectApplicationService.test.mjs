@@ -7,7 +7,7 @@ function fixture() {
   const calls = [];
   const service = new ProjectApplicationService({
     resolveProject: (projectId) => projectId === "project:one"
-      ? { id: projectId, mainPath: "/repo/main", mainWorkspaceId: "worktree:main" }
+      ? { id: projectId, mainPath: "/repo/main", mainWorkspaceId: "worktree:main", workspaceCount: 2, pendingWorkspaceCount: 1 }
       : null,
     inspectWorkspaces: async (project) => {
       calls.push(["workspaces", project.id]);
@@ -65,7 +65,6 @@ test("Project APIs operate without constructing an Agent Session", async () => {
   assert.equal(preparation.action, "commit-prepare");
   assert.deepEqual(calls, [
     ["workspaces", "project:one"],
-    ["workspaces", "project:one"],
     ["service", "project:one"],
     ["pushStatus", "worktree:main"],
     ["pushStatus", "worktree:feature"],
@@ -96,4 +95,13 @@ test("workspace listing inspects only main and the active workspace for push sta
     calls.filter(([kind]) => kind === "pushStatus"),
     [["pushStatus", "worktree:main"]]
   );
+});
+
+test("workspace status without an active binding never falls back to a full management scan", async () => {
+  const { service } = fixture();
+  service.inspectWorkspaces = async (_project, options) => {
+    assert.equal(options.inspectionLevel, "session");
+    return { mainWorktreeId: "worktree:main", worktrees: [] };
+  };
+  await service.listWorkspaces("project:one");
 });

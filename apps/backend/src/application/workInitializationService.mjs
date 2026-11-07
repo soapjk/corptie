@@ -4,7 +4,7 @@ import { lstat, mkdir, realpath, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
-import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
+import { createScopedGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 import { EntityCreationConflictError, workCreationMatches } from "./workApplicationService.mjs";
 import { ensureProjectLocalState, inspectProjectLocalState, verifyProjectLocalState, rollbackProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
@@ -16,7 +16,7 @@ const fail = (code, message) => Object.assign(new Error(message), { code, status
 // filesystem/Provider awaits. Only resources allocated by this attempt are undone.
 export class WorkInitializationService {
   constructor({ store, workService, discussionService, resolveProviderId, deleteSession,
-    run = execFileAsync, snapshot = createGitWorkspaceSnapshot }) {
+    run = execFileAsync, snapshot = createScopedGitWorkspaceSnapshot }) {
     Object.assign(this, { store, workService, discussionService, resolveProviderId, deleteSession, run, snapshot });
     this.tail = Promise.resolve();
   }

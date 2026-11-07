@@ -25,7 +25,7 @@ export class WorkspaceRepository {
       "SELECT workspace_id, common_git_dir FROM git_repositories WHERE repository_id = ?",
       [repository.id]
     );
-    const existingWorktrees = this.selectAll(
+    const existingWorktrees = snapshot.partial ? [] : this.selectAll(
       `SELECT repository_id, worktree_id, path, canonical_path, git_dir, is_main, availability,
               head_oid, branch_ref, branch_name, detached, locked, lock_reason,
               prunable, prune_reason, inventory_version, observed_at
@@ -33,7 +33,7 @@ export class WorkspaceRepository {
        FROM git_worktrees WHERE repository_id = ?`,
       [repository.id]
     );
-    if (existingRepo?.common_git_dir === repository.commonGitDirCanonicalPath
+    if (!snapshot.partial && existingRepo?.common_git_dir === repository.commonGitDirCanonicalPath
       && gitWorkspaceSnapshotPersistenceMatches(snapshot, existingWorktrees)) {
       return existingWorktrees
         .sort(compareGitWorktreeRows)
@@ -87,7 +87,7 @@ export class WorkspaceRepository {
           ]
         );
       }
-      this.db.run(
+      if (!snapshot.partial) this.db.run(
         `UPDATE git_worktrees
          SET availability = 'missing', observed_at = ?, inventory_version = ?
          WHERE repository_id = ?`,
@@ -167,7 +167,7 @@ export class WorkspaceRepository {
       throw error;
     }
     this.scheduleSave();
-    return this.listGitWorktrees(repository.id);
+    return snapshot.partial ? snapshot.worktrees : this.listGitWorktrees(repository.id);
   }
 
   listGitRepositories() {

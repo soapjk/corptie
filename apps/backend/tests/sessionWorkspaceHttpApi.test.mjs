@@ -48,11 +48,11 @@ function fixture() {
   return { calls, events, logical, dependencies, dispatch };
 }
 
-test("workspace inventory refresh precedes projection and retired bindings remain read-only", async () => {
+test("workspace history reads stored bindings without scanning or changing inventory", async () => {
   const f = fixture();
   const result = await f.dispatch("/sessions/public/workspaces").result;
   assert.equal(result.status, 200);
-  assert.deepEqual(f.calls.map(([name]) => name), ["inspect", "snapshot", "reconcile"]);
+  assert.deepEqual(f.calls.map(([name]) => name), []);
   assert.equal(result.body.history[0].readOnly, true);
   assert.equal(result.body.history[0].branchName, "feature");
 });

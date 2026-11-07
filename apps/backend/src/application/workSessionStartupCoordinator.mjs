@@ -208,12 +208,14 @@ export class WorkSessionStartupCoordinator {
             idempotencyKey: operation.idempotency_key,
             expectedTaskVersion: operation.expected_task_version, startupTiming: span
           }));
-          allocation = await timing.measure("startup.worktree.verify", span => this.#verifiedAllocation(operation, allocation, span));
+          allocation = this.store.getTask(operation.task_id)?.parent_task_id
+            ? normalizeAllocation(allocation, operation)
+            : await timing.measure("startup.worktree.verify", span => this.#verifiedAllocation(operation, allocation, span));
         } catch (error) {
           throw phaseFailure(error, "START_WORKTREE_PREPARATION_FAILED", "worktree_preparation");
         }
         operation = this.#transition(operation, "worktree_prepared", { allocation });
-      } else if (allocation) {
+      } else if (allocation && !this.store.getTask(operation.task_id)?.parent_task_id) {
         allocation = await timing.measure("startup.worktree.reverify", span => this.#verifiedAllocation(operation, allocation, span));
       }
 
@@ -425,7 +427,7 @@ export class WorkSessionStartupCoordinator {
     );
     const fields = [
       "repositoryId", "worktreeId", "canonicalWorktreePath", "sourceCommitOid",
-      "sourceTreeOid", "repositoryInventoryVersion", "workspaceResourceVersion",
+      "sourceTreeOid",
       "createdByStartupOperationId", "baseRef", "reused"
     ];
     if (fields.some((field) => inspected[field] !== allocation[field])

@@ -1,8 +1,9 @@
+import { createScopedGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 
 export function createProviderSessionRouteBootstrap({
-  store, createGitWorkspaceSnapshot, inspectGitWorkspace,
+  store, inspectGitWorkspace,
   defaultWorkspacePath, normalizeSessionId, codexPermissionsForSession
 }) {
   async function ensureLogicalRouteForProviderSession(session, providerId, options = {}) {
@@ -13,7 +14,7 @@ export function createProviderSessionRouteBootstrap({
     let repositoryId = null;
     let worktreeId = null;
     try {
-      const snapshot = await createGitWorkspaceSnapshot(cwd);
+      const snapshot = await createScopedGitWorkspaceSnapshot(cwd);
       store.upsertGitWorkspaceSnapshot(snapshot);
       const identity = await inspectGitWorkspace(cwd);
       repositoryId = identity.repositoryId;

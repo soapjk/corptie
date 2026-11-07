@@ -23,6 +23,9 @@ export class TaskWorkspaceService {
   }
 
   async ensure({ task, session = null, baseContext = null, startupTiming = null }) {
+    if (task.parent_task_id && !session?.id) {
+      return { ...(await this.ensureWorktree({ taskId: task.id, startupTiming })), requiresSessionTransition: false };
+    }
     const context = this.store.getTaskWorkspaceContext(task);
     if (!context?.workspace) throw workspaceRequiredError();
     const repositoryId = context.repository?.id ?? "";
@@ -57,8 +60,10 @@ export class TaskWorkspaceService {
       };
     }
 
-    const inspection = await this.inspectProject(project.mainPath, repositoryId);
     const route = this.store.getLogicalSessionByLegacySessionId(session.id);
+    const inspection = await this.inspectProject(project.mainPath, repositoryId, {
+      inspectionLevel: "session", activeWorkspaceId: route?.activeWorkspaceId
+    });
     const previous = route?.activeWorkspaceId
       ? inspection.worktrees.find((candidate) => candidate.worktreeId === route.activeWorkspaceId)
       : null;
