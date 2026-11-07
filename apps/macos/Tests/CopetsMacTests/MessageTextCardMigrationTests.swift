@@ -102,7 +102,7 @@ final class MessageTextCardMigrationTests: XCTestCase {
                 cell.layoutSubtreeIfNeeded()
                 XCTAssertEqual(host.frame.width, cell.bounds.width)
                 XCTAssertGreaterThan(body.bounds.width, bodyWidth)
-                XCTAssertEqual(cell.hostUpdateCount, hostUpdates + 1)
+                XCTAssertEqual(cell.hostUpdateCount, hostUpdates, "Width changes update the retained layout state without assigning a new root")
                 // End-of-drag exact width reaches the same retained host.
                 XCTAssertTrue(cell.updateLayoutIfContentUnchanged(model, availableWidth: 403))
                 cell.layoutSubtreeIfNeeded()

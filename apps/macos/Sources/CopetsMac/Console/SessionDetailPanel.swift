@@ -23,6 +23,7 @@ struct SessionDetailPanel: View {
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
     @State private var displayValues = SessionDetailPanelValues()
+    @State private var focusTaskSource: [CorptieTask] = []
     @State private var focusWorkID: String?
     @State private var focusTasks: [ConversationFocusTask] = []
     @State private var pendingProviderId: String?
@@ -57,13 +58,14 @@ struct SessionDetailPanel: View {
             models: modelCatalog.models(for: session.external?.provider),
             defaultReasoning: modelCatalog.defaultReasoning(for: session.external?.provider),
             isSwitchingModel: backendClient.isSwitchingModel, isSwitchingReasoning: backendClient.isSwitchingReasoning)
-        let tasksChanged = displayValues.tasks != value.tasks || focusWorkID != session.workId
+        let relevantTasks = value.tasks.filter {
+            $0.workId == session.workId && $0.archived != true && $0.deletionStatus == nil && $0.lifecycleState != "done"
+        }
         if displayValues != value { displayValues = value }
-        if tasksChanged {
+        if focusTaskSource != relevantTasks || focusWorkID != session.workId {
             focusWorkID = session.workId
-            focusTasks = value.tasks.filter {
-                $0.workId == session.workId && $0.archived != true && $0.deletionStatus == nil && $0.lifecycleState != "done"
-            }.sorted {
+            focusTaskSource = relevantTasks
+            focusTasks = relevantTasks.sorted {
                 if $0.summaryNeedsIntervention != $1.summaryNeedsIntervention { return $0.summaryNeedsIntervention }
                 return $0.updatedAt > $1.updatedAt
             }.prefix(3).map {

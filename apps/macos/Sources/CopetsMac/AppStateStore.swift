@@ -347,6 +347,9 @@ final class AppStateStore: ObservableObject {
         next.sessions = next.sessions.filter { $0.value.archived == true }
         next.sessions[session.id] = session
         state = next
+        // A local fixture is ready immediately; it deliberately has no State SSE.
+        syncError = nil
+        isReachable = true
     }
 
     func hydrate(works: [Work]) {

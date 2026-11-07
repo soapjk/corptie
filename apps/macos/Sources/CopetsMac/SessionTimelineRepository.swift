@@ -10,11 +10,21 @@ final class SessionTimelineState: ObservableObject {
     let sessionID: String
     @Published private(set) var detail: CodexThreadDetail?
     private(set) var timelineRevision: Int
+    private(set) var presentationRevision: UInt64 = 0
+    private(set) var protectsHistoryWindow = false
+    private(set) var tailContentRevision: String
 
     init(sessionID: String, detail: CodexThreadDetail? = nil, timelineRevision: Int = 0) {
         self.sessionID = sessionID
         self.detail = detail
         self.timelineRevision = max(0, timelineRevision)
+        self.tailContentRevision = detail.map { timelineTailContentRevision(for: $0.items) } ?? "none"
+    }
+
+    func setProtectsHistoryWindow(_ protects: Bool) {
+        guard protectsHistoryWindow != protects else { return }
+        protectsHistoryWindow = protects
+        if !protects, let detail { apply(detail) }
     }
 
     func apply(_ detail: CodexThreadDetail, timelineRevision: Int? = nil) {
@@ -27,9 +37,12 @@ final class SessionTimelineState: ObservableObject {
             // projection. The stored snapshot is authoritative for message
             // delivery state even when no newer item revision is required.
         }
+        let detail = ResidentTimelineWindow.compact(detail, protectingHistory: protectsHistoryWindow)
         let nextRevision = max(self.timelineRevision, timelineRevision ?? self.timelineRevision)
         guard self.detail != detail || self.timelineRevision != nextRevision else { return }
         self.timelineRevision = nextRevision
+        presentationRevision &+= 1
+        tailContentRevision = timelineTailContentRevision(for: detail.items)
         self.detail = detail
     }
 }
@@ -146,5 +159,45 @@ enum SessionTimelineBindingReconciler {
             historyItemsCount: detail.historyItemsCount,
             actions: session.actions ?? detail.actions
         )
+    }
+}
+
+/// Bound resident history without splitting an execution turn or losing unsent input.
+/// The full current turn is a semantic exception to the ordinary item budget;
+/// its expanded steps are independently virtualized by NSTableView.
+enum ResidentTimelineWindow {
+    static let itemBudget = 400
+
+    static func compact(_ detail: CodexThreadDetail, protectingHistory: Bool, budget: Int = itemBudget) -> CodexThreadDetail {
+        guard !protectingHistory, budget > 0, detail.items.count > budget else { return detail }
+        var start = detail.items.count - budget
+        let boundaryTurn = detail.items[start].turnId
+        if !boundaryTurn.isEmpty {
+            let turn = boundaryTurn
+            while start > 0 && detail.items[start - 1].turnId == turn { start -= 1 }
+        }
+        let pendingStates: Set<String> = ["queued", "pending", "processing", "sending", "failed"]
+        if let pending = detail.items[..<start].firstIndex(where: { item in
+            item.userMessageStatus.map(pendingStates.contains) == true
+                || (item.type == "approval" && !["completed", "approved", "declined", "cancelled"].contains(item.status ?? ""))
+        }) {
+            start = min(start, pending)
+            let turn = detail.items[start].turnId
+            if !turn.isEmpty {
+                while start > 0 && detail.items[start - 1].turnId == turn { start -= 1 }
+            }
+        }
+        guard start > 0 else { return detail }
+        return CodexThreadDetail(id: detail.id, title: detail.title, status: detail.status,
+            source: detail.source, connectionStatus: detail.connectionStatus,
+            currentModel: detail.currentModel, currentReasoningLevel: detail.currentReasoningLevel,
+            activityStatus: detail.activityStatus, cwd: detail.cwd, createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt, canSend: detail.canSend, sendUnavailableReason: detail.sendUnavailableReason,
+            transitionState: detail.transitionState, readiness: detail.readiness, notReadyReason: detail.notReadyReason,
+            capabilities: detail.capabilities, turnCount: detail.turnCount, items: Array(detail.items[start...]),
+            lastAgentMessageSequence: detail.lastAgentMessageSequence, hasMoreHistory: true,
+            // A dropped item can receive a later historical upsert. Without an
+            // authoritative total, adding local drops would invent a count.
+            historyItemsCount: nil, actions: detail.actions)
     }
 }

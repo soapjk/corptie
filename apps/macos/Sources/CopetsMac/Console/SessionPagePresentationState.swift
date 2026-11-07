@@ -54,6 +54,8 @@ final class SessionPageRenderInputs {
     let activity = ConversationDetailPresentationActivity()
     private(set) var session: TaskSession
     private(set) var detail: CodexThreadDetail?
+    private(set) var detailPresentationRevision: UInt64 = 0
+    private(set) var detailTailContentRevision = "none"
     private(set) var displayCache: DetailDisplayCache?
     private(set) var online = false
     private(set) var loading = false
@@ -267,7 +269,11 @@ final class SessionPageRenderInputs {
             if session.external?.provider != value.external?.provider { changes.insert(.catalog) }
             session = value
         }
-        if changes.contains(.timeline), detail != timeline.detail { detail = timeline.detail }
+        if changes.contains(.timeline), detail != timeline.detail {
+            detail = timeline.detail
+            detailPresentationRevision = timeline.presentationRevision
+            detailTailContentRevision = timeline.tailContentRevision
+        }
         if changes.contains(.projection) {
             let next = projection.cache.map(CacheKey.init)
             if cacheKey != next { cacheKey = next; displayCache = projection.cache }

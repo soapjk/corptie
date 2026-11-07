@@ -39,13 +39,39 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var workOrderDrop: ((String, Bool) -> Bool)? = nil
 }
 
+struct ConsoleOutlinePresentationStamp: Equatable {
+    let entityRevision: UInt64
+    let sessionRevision: UInt64
+    let archiveRevision: UInt64
+    let projectionCount: Int
+    let projectionKey: ConsoleOutlineProjectionKey?
+    let selectedSessionID: String?
+    let selectedTaskID: String?
+    let selectedWorkID: String?
+    let online: Bool
+    let language: String
+    let search: String
+    var fullyExpandedWorkIDs: Set<String> = []
+    var expandedTaskIDs: Set<String> = []
+    var showingArchive = false
+    var sidebarActive = true
+}
+
 struct ConsoleNativeOutline<Row: Identifiable, Content: View>: View where Row.ID == String {
     let groups: () -> [ConsoleNativeOutlineGroup<Row>]
     @ViewBuilder let rowContent: (Row) -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    let presentation: ConsoleOutlinePresentationStamp?
+
+    init(groups: @escaping () -> [ConsoleNativeOutlineGroup<Row>],
+         presentation: ConsoleOutlinePresentationStamp? = nil, @ViewBuilder rowContent: @escaping (Row) -> Content) {
+        self.groups = groups; self.presentation = presentation; self.rowContent = rowContent
+    }
 
     var body: some View {
-        ConsoleNativeOutlineBridge(groups: groups(), reduceMotion: reduceMotion, rowContent: rowContent)
+        ConsoleNativeOutlineBridge(groups: groups(), reduceMotion: reduceMotion, rowContent: rowContent,
+            presentation: presentation, darkAppearance: colorScheme == .dark)
     }
 }
 
@@ -53,6 +79,8 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
     let groups: [ConsoleNativeOutlineGroup<Row>]
     let reduceMotion: Bool
     let rowContent: (Row) -> Content
+    let presentation: ConsoleOutlinePresentationStamp?
+    let darkAppearance: Bool
 
     @MainActor final class Node: NSObject {
         let id: String
@@ -68,10 +96,25 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         var parent: ConsoleNativeOutlineBridge
         var roots: [Node] = []
         var applyingExpansion = false
+        private var lastPresentation: ConsoleOutlinePresentationStamp?
+        private var lastShape: [GroupShape] = []
+        private var lastDarkAppearance: Bool?
+        private struct GroupShape: Equatable {
+            let id: String
+            let expanded: Bool
+            let structure: Int
+            let data: Int
+            let collapsible: Bool
+        }
 
         init(_ parent: ConsoleNativeOutlineBridge) { self.parent = parent }
 
         func update(_ outline: NSOutlineView, initial: Bool = false) {
+            let shape = parent.groups.map { GroupShape(id: $0.id, expanded: $0.isExpanded,
+                structure: $0.structureRevision, data: $0.dataRevision, collapsible: $0.allowsCollapse) }
+            if !initial, let stamp = parent.presentation, stamp == lastPresentation,
+               shape == lastShape, lastDarkAppearance == parent.darkAppearance { return }
+            lastPresentation = parent.presentation; lastShape = shape; lastDarkAppearance = parent.darkAppearance
             let oldRoots = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
             let rootIDsChanged = roots.map(\.id) != parent.groups.map(\.id)
             var changedChildren: [Node] = []

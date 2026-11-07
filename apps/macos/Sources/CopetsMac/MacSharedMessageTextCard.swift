@@ -167,6 +167,7 @@ struct MacSharedMessageTextCard: View {
     var skin: ConversationSkin = .classic
     let row: AppKitChatTimelineRow
     let layout: NativeTimelineLayoutCache.Layout
+    var mountedLayout: MountedMessageLayout? = nil
     var processSummaryOverride: ProcessCardSummary? = nil
     var baseDirectory: String?
     var copy: () -> Void = {}
@@ -181,7 +182,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
+        row.processStep != nil || row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.isEmpty || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
@@ -198,6 +199,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     var body: some View {
+        let layout = mountedLayout?.value ?? self.layout
         VStack(spacing: 0) {
             if layout.timeSeparatorHeight > 0, let timeSeparatorText = row.timeSeparatorText {
                 Text(timeSeparatorText)
@@ -212,7 +214,10 @@ struct MacSharedMessageTextCard: View {
                     .padding(.horizontal, ReplyLeadingLayout.contentLeading).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
-                if let progress = row.coordinationProgress {
+                if row.processStep != nil, let block = layout.processBlocks.first {
+                    MacProcessBlockView(block: block, cardWidth: layout.cardWidth, baseDirectory: baseDirectory)
+                }
+                else if let progress = row.coordinationProgress {
                     CoordinationProgressCard(progress: progress, api: {
                         ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
                     }, openSession: { AppTabRouter.shared.openSession($0, source: .userSelection) })
@@ -239,7 +244,7 @@ struct MacSharedMessageTextCard: View {
                         blocks: layout.processBlocks, text: layout.attributedText,
                         rawStatusText: layout.rawStatusText,
                         cardWidth: layout.cardWidth,
-                        baseDirectory: baseDirectory, toggle: toggle)
+                        baseDirectory: baseDirectory, toggle: toggle, hasVirtualChildren: row.hasVirtualProcessChildren)
                 }
                 else {
                     MacOrdinaryMessageCardRegion(messageID: row.id, style: row.nativeStyle,
@@ -499,6 +504,7 @@ private struct MacProcessCardRegion: View {
     let cardWidth: CGFloat
     let baseDirectory: String?
     let toggle: () -> Void
+    var hasVirtualChildren = false
 
     var body: some View {
         ProcessCard(summary: summary, summaryOverride: summaryOverride, secondary: secondary,
@@ -506,28 +512,30 @@ private struct MacProcessCardRegion: View {
                     tint: Color(nsColor: state.color), expanded: expanded,
                     progress: progress, progressLabel: progressLabel,
                     toggle: toggle) {
-            VStack(alignment: .leading, spacing: 8) {
-                if blocks.isEmpty {
-                    MeasuredMessageText(text: text,
-                        size: nil,
-                        baseDirectory: baseDirectory)
-                        .frame(width: cardWidth - 20, height: nil)
-                } else {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(blocks, id: \.step.id) { block in
-                            MacProcessBlockView(block: block, cardWidth: cardWidth,
-                                                baseDirectory: baseDirectory)
+            if !hasVirtualChildren {
+                VStack(alignment: .leading, spacing: 8) {
+                    if blocks.isEmpty {
+                        MeasuredMessageText(text: text,
+                            size: nil,
+                            baseDirectory: baseDirectory)
+                            .frame(width: cardWidth - 20, height: nil)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(blocks, id: \.step.id) { block in
+                                MacProcessBlockView(block: block, cardWidth: cardWidth,
+                                                    baseDirectory: baseDirectory)
+                            }
                         }
+                        .frame(width: cardWidth - 20, height: nil,
+                               alignment: .topLeading)
                     }
-                    .frame(width: cardWidth - 20, height: nil,
-                           alignment: .topLeading)
-                }
-                if let rawStatusText, rawStatusText.length > 0 {
-                    IntrinsicCappedContent(maximumHeight: 160, content:
-                        MeasuredMessageText(text: rawStatusText, identifier: .init("chat.timeline.raw-status"))
-                            .padding(4))
-                        .frame(width: cardWidth - 20).frame(minHeight: 48)
-                        .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+                    if let rawStatusText, rawStatusText.length > 0 {
+                        IntrinsicCappedContent(maximumHeight: 160, content:
+                            MeasuredMessageText(text: rawStatusText, identifier: .init("chat.timeline.raw-status"))
+                                .padding(4))
+                            .frame(width: cardWidth - 20).frame(minHeight: 48)
+                            .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
+                    }
                 }
             }
         }
@@ -691,6 +699,11 @@ protocol AppKitChatRowRendering: AnyObject {
     func refreshProcessElapsed(now: Date)
 }
 
+@Observable @MainActor
+final class MountedMessageLayout {
+    var value: NativeTimelineLayoutCache.Layout?
+}
+
 /// One hosting tree per reusable native row; no duplicate legacy view tree.
 final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering {
     var onImageGeometryChanged: (() -> Void)?
@@ -701,6 +714,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
     private var baseDirectory: String?
     private var measuredWidth: CGFloat?
+    private let mountedLayout = MountedMessageLayout()
     private let elapsedSummary = ProcessCardSummary()
     var displayedProcessSummary: String? { elapsedSummary.text }
     private var onToggleExpansion: (String) -> Void = { _ in }
@@ -771,7 +785,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         measuredLayout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin, reusing: measuredLayout)
         widthLayoutUpdateCount += 1
         ChatPerformanceRecorder.shared.increment(.appKitRowWidthUpdates)
-        updateHost()
+        mountedLayout.value = measuredLayout
         return true
     }
 
@@ -780,7 +794,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         let trace = SessionSwitchTrace.shared.start(.cardHost, sessionID: row.sessionID)
         defer { SessionSwitchTrace.shared.finish(trace) }
         hostUpdateCount += 1
-        let root = MacSharedMessageTextCard(skin: skin, row: row, layout: measuredLayout,
+        mountedLayout.value = measuredLayout
+        let root = MacSharedMessageTextCard(skin: skin, row: row, layout: measuredLayout, mountedLayout: mountedLayout,
             processSummaryOverride: elapsedSummary, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
             toggle: { [weak self] in self?.toggleRepresentedProcess() },
@@ -810,9 +825,11 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         // Reconcile the new width/content proposal before NSTableView asks
         // its SDK-owned row height. Invalidate the host, not a second height
         // cache; only a mounted cell's tree participates in this transaction.
-        host?.needsLayout = true
-        host?.invalidateIntrinsicContentSize()
-        invalidateIntrinsicContentSize()
+        if needsLayout {
+            host?.needsLayout = true
+            host?.invalidateIntrinsicContentSize()
+            invalidateIntrinsicContentSize()
+        }
 
         configureHostedTextViews(resetTextSelection: resetTextSelection)
         DispatchQueue.main.async { [weak self] in
@@ -1001,8 +1018,11 @@ struct MeasuredMessageText: NSViewRepresentable {
         // The SDK also asks for a natural size with an unspecified proposal.
         // Returning nil would collapse NSTextView's non-intrinsic height.
         container.widthTracksTextView = false
-        container.containerSize = .init(width: width ?? .greatestFiniteMagnitude,
-            height: .greatestFiniteMagnitude)
+        let previousWidth = container.containerSize.width
+        let naturalWidth = previousWidth > 0 && previousWidth < .greatestFiniteMagnitude
+            ? previousWidth : CGFloat.greatestFiniteMagnitude
+        let proposedSize = NSSize(width: width ?? naturalWidth, height: CGFloat.greatestFiniteMagnitude)
+        if container.containerSize != proposedSize { container.containerSize = proposedSize }
         manager.ensureLayout(for: container)
         let used = manager.usedRect(for: container)
         return .init(width: width ?? ceil(used.width), height: ceil(used.height))
