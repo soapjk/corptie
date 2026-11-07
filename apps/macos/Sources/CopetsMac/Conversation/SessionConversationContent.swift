@@ -101,9 +101,6 @@ struct SessionConversationSurface: View {
     @State private var viewportState = ConversationViewportState()
     @State private var appKitScrollToBottomRevision = 0
     @State private var quickMessagePresentation = ComposerQuickMessagePresentation()
-    private var quickMessageClearance: CGFloat {
-        showsFloatingQuickMessages && !hasPinnedChecklist ? ConversationQuickMessages.rowHeight + 10 : 0
-    }
     private var currentChecklist: ConversationExecutionPlan? {
         let cached = cachedSessionId == sessionId ? cachedChecklistDock.latestChecklist : nil
         if let event = checklistEventPlan, event.taskId == selectedSession?.taskId,
@@ -113,7 +110,7 @@ struct SessionConversationSurface: View {
     private var hasPinnedChecklist: Bool {
         !showsWelcome && currentChecklist != nil && currentChecklist?.closed != true
     }
-    private var showsFloatingQuickMessages: Bool {
+    private var showsDockQuickMessages: Bool {
         usesComposerJumpToLatest && !showsWelcome
             && (quickMessagePresentation.showsMessages || composerJumpToLatestAction != nil)
     }
@@ -520,8 +517,8 @@ struct SessionConversationSurface: View {
     }
 
     private var messageViewport: some View {
-            // The editor participates in normal layout. Only the fixed-height
-            // quick actions float over the clipped message viewport.
+            // The input dock owns both the editor and quick actions.
+            // Neither floats over the message viewport.
             Group {
                 switch contentPhase {
                 case .live:
@@ -583,7 +580,6 @@ struct SessionConversationSurface: View {
                         .id(sessionId + ":" + (displayedDetail?.id ?? ""))
                         .padding(.leading, 2)
                         .padding(.top, topChromeClearance)
-                        .padding(.bottom, quickMessageClearance)
                         .alert("无法定位消息", isPresented: Binding(get: { navigationError != nil },
                             set: { if !$0 { navigationError = nil } })) {
                             Button("好", role: .cancel) { navigationError = nil }
@@ -593,18 +589,9 @@ struct SessionConversationSurface: View {
             .overlay(alignment: .bottom) {
                 if !usesComposerJumpToLatest {
                     jumpToLatestButton
-                        .padding(.bottom, max(0, quickMessageClearance - 6))
                 }
             }
-            .overlay(alignment: .bottom) {
-                if showsFloatingQuickMessages && !hasPinnedChecklist {
-                    floatingQuickMessages
-                        .frame(maxWidth: WorkbenchStyle.readingWidth)
-                        .padding(.horizontal, WorkbenchStyle.readingInset)
-                        .padding(.bottom, 4)
-                        .frame(maxWidth: .infinity)
-                }
-            }
+
     }
 
     private var inputDock: some View {
@@ -619,13 +606,6 @@ struct SessionConversationSurface: View {
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 6)
             }
-            if hasPinnedChecklist && showsFloatingQuickMessages {
-                floatingQuickMessages
-                    .frame(maxWidth: WorkbenchStyle.readingWidth)
-                    .padding(.horizontal, WorkbenchStyle.readingInset)
-                    .padding(.bottom, 4)
-                    .frame(maxWidth: .infinity)
-            }
             VStack(spacing: 24) {
                 if showsWelcome {
                     ConversationWelcomeView(
@@ -638,9 +618,12 @@ struct SessionConversationSurface: View {
                         else { SessionSendFailureView(sessionID: session.id) }
                     }
                     sessionReadinessNotice
-                    sessionComposer
+                    ConversationComposerDock {
+                        if showsDockQuickMessages { dockQuickMessages }
+                    } composer: {
+                        sessionComposer
+                    }
                 }
-                .padding(.bottom, 4)
             }
             .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
             .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
@@ -657,7 +640,7 @@ struct SessionConversationSurface: View {
         }
     }
 
-    private var floatingQuickMessages: some View {
+    private var dockQuickMessages: some View {
         ComposerQuickMessagesBar(backendClient: backendClient, sessionId: sessionId,
             taskID: selectedSession?.taskId, online: displayedOnline,
             refreshRevision: renderInputs?.quickMessageRevision ?? quickMessagePresentation.refreshRevision,
@@ -744,7 +727,7 @@ struct SessionConversationSurface: View {
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
                 topClearance: topChromeClearance,
-                bottomClearance: quickMessageClearance,
+                bottomClearance: 0,
                 reservesVerticalScrollerGutter: !compactComposer,
                 trailingScrollerExtension: scrollerExtension
             )
