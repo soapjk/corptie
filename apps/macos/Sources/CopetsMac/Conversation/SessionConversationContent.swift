@@ -448,6 +448,7 @@ struct SessionConversationSurface: View {
                 updateCachedDisplayEntries(for: detail)
             }
             restoreMissingHistoryAnchorIfNeeded()
+            if displayedSearchTarget != nil { Task { await applySearchTargetIfNeeded() } }
         }
     }
 
@@ -472,9 +473,6 @@ struct SessionConversationSurface: View {
             displayedWorkspaceRecoveryStatus = status
         }
         .task(id: displayedSearchTarget?.token) { await applySearchTargetIfNeeded() }
-        .onChange(of: appKitDetailRevision) { _, _ in
-            Task { await applySearchTargetIfNeeded() }
-        }
         .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged), perform: receiveChecklistChange)
         .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn)) { notification in
             guard allowsPageActions, notification.userInfo?["sessionId"] as? String == sessionId,
@@ -773,11 +771,7 @@ struct SessionConversationSurface: View {
                 }
             }
             .onAppear {
-                if let currentDetail = displayedDetail {
-                    updateCachedDisplayEntries(for: currentDetail)
-                }
-            }
-            .onChange(of: appKitDetailRevision) { _, _ in
+                timelineState.setProtectsHistoryWindow(!viewportState.followsLatest || requestedRestorationAnchorRowID != nil)
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
                 }
@@ -806,6 +800,7 @@ struct SessionConversationSurface: View {
             .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in
                 guard notification.object as? String == sessionId else { return }
                 if viewportState.followsLatest {
+                    timelineState.setProtectsHistoryWindow(false)
                     timelineRestorationIntent.clearAnchor()
                     refreshAfterRestorationAnchorRelinquished()
                 }
@@ -814,6 +809,7 @@ struct SessionConversationSurface: View {
                 _ = viewportState.timelineTailDidChange()
             }
             .onChange(of: viewportState.followsLatest) { _, followsLatest in
+                timelineState.setProtectsHistoryWindow(!followsLatest)
                 if followsLatest {
                     relinquishRestorationAnchorIfNeeded()
                 }
@@ -830,6 +826,7 @@ struct SessionConversationSurface: View {
     }
 
     private func jumpToLatest() {
+        timelineState.setProtectsHistoryWindow(false)
         timelineRestorationIntent.clearAnchor()
         viewportState.jumpToLatest()
         if let currentDetail = displayedDetail {
@@ -852,8 +849,9 @@ struct SessionConversationSurface: View {
     }
 
     private var appKitDetailRevision: String {
-        guard let detail = displayedDetail else { return "none" }
-        return detailSourceSignature(for: detail)
+        // Layout reevaluations read scalar state, never message contents.
+        let revision = renderInputs?.detailPresentationRevision ?? timelineState.presentationRevision
+        return "\(sessionId)|\(revision)|\(visibleMessageLimit)|\(requestedRestorationAnchorRowID ?? "latest")"
     }
 
     private var followsLatestBinding: Binding<Bool> {
@@ -883,8 +881,7 @@ struct SessionConversationSurface: View {
     /// history prepend changes the full detail revision but leaves this value
     /// unchanged, so loading older messages does not create a false unread cue.
     private var latestTimelineContentRevision: String {
-        guard let detail = displayedDetail else { return "none" }
-        return timelineTailContentRevision(for: detail.items)
+        renderInputs?.detailTailContentRevision ?? timelineState.tailContentRevision
     }
 
     private func appKitRow(

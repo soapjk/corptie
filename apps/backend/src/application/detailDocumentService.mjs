@@ -369,7 +369,8 @@ export class DetailDocumentService {
     return page;
   }
   #attachScoped(events, response, authenticate, id, request, options, profile) {
-    const initial = cacheScope(trustedIdentity(authenticate(), true), this.scope(id).logicalSessionId, profile.catalog, profile.clientCapabilities);
+    const scope = this.scope(id);
+    const initial = cacheScope(trustedIdentity(authenticate(), true), scope.logicalSessionId, profile.catalog, profile.clientCapabilities);
     // New consumers check current facts, including changes while no consumer was attached.
     this.markDirty({ sessionId: initial.sessionId });
     const guarded = () => {
@@ -385,7 +386,7 @@ export class DetailDocumentService {
     };
     this.#streamAttachments.get(events)(response, guarded, id, request, options);
     const client = [...events.clients].find(client => client.response === response);
-    if (client) client.detailCacheScope = initial;
+    if (client) { client.detailCacheScope = initial; client.detailResourceScope = resourceScope(scope); }
   }
   /** Internal async contract only; not mounted by any HTTP handler.
    * Promise<{state, revalidate}>. revalidate is synchronous and host-only;
@@ -480,7 +481,19 @@ export class DetailDocumentService {
   }
   invalidate(change) {
     this.markDirty(change);
-    this.events.invalidate(change); this.v2Events.invalidate(change); this.nativeEvents.invalidate(change);
+    for (const events of [this.events, this.v2Events, this.nativeEvents]) {
+      if (!change) { events.invalidate(); continue; }
+      // Stream invalidation accepts route IDs, while business changes carry
+      // resource filters. Match retained scope metadata without another read.
+      const ids = [...events.clients].filter(client => {
+        const scope = client.detailResourceScope;
+        if (change.sessionId && ![client.sessionId, scope?.session?.id, scope?.logicalSessionId].includes(change.sessionId)) return false;
+        if (change.taskId && scope?.task?.id !== change.taskId) return false;
+        if (change.workId && scope?.work?.id !== change.workId) return false;
+        return true;
+      }).map(client => client.sessionId);
+      events.invalidate(ids);
+    }
   }
   markDirty(change) {
     for (const entry of this.nativeEntries?.values() ?? []) {

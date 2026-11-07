@@ -2,9 +2,20 @@ import Testing
 @testable import CorptieMac
 
 struct ChatPerformanceFixtureTests {
+    @Test @MainActor
+    func installedFixtureOpensStoreReadinessGateWithoutStateStream() {
+        let store = AppStateStore()
+        let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 1, rawItemCount: 3, longMessageCharacters: 100))
+        store.installPerformanceFixtureSession(fixture.session)
+        #expect(store.isReachable)
+        #expect(store.session(fixture.session.id) == fixture.session)
+    }
+
     @Test
     func standardFixtureIsDeterministicAndCoversHighPressureContent() {
         let fixture = ChatPerformanceFixture.make()
+        #expect(fixture.session.hasValidProductClassification)
+        #expect(fixture.session.resolvedSessionKind == .assistantChat)
         let items = fixture.detail.items
 
         #expect(items.count == 10_000)
