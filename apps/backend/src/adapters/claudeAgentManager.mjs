@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { randomUUID } from "node:crypto";
 import { publicUserInput, validateInteractionAnswers } from "../application/interactionInput.mjs";
 import { question, elicitationInput, elicitationResponse, interactionError } from "../application/structuredInteraction.mjs";
@@ -278,6 +279,7 @@ export class ClaudeAgentManager {
       }
       throw new Error("Claude connection closed before returning a result.");
     } catch (error) {
+      logError("claude-sdk.connection-test", error);
       throw normalizeClaudeProviderError(error, { secretValues: resolved.secretValues });
     } finally {
       clearTimeout(timeout);
@@ -862,6 +864,7 @@ export class ClaudeAgentManager {
       }));
       return startedQuery;
     } catch (error) {
+      if (!session.interruptRequested && error?.name !== "AbortError") logError("claude-sdk.query-startup", error, { sessionId: session.id });
       console.error("[claude-sdk] query startup", JSON.stringify({
         sessionId: session.id, agentSessionId: session.agentSessionId ?? null, status: "failed"
       }));
@@ -923,6 +926,7 @@ export class ClaudeAgentManager {
         }
       }
     } catch (error) {
+      if (!session.interruptRequested && error?.name !== "AbortError") logError("claude-sdk.query", error, { sessionId: session.id });
       const secretValues = [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean);
       const failure = normalizeClaudeProviderError(error, {
         secretValues
@@ -1206,7 +1210,7 @@ export class ClaudeAgentManager {
       hasAgentMessage,
       ...event
     })).catch((error) => {
-      console.error(`[claude-sdk] turn-settled callback failed id=${session.id}: ${error.message}`);
+      if (error?.name !== "AbortError") logError("claude-sdk.turn-settled-callback", error, { sessionId: session.id });
     }));
   }
 
@@ -1220,7 +1224,7 @@ export class ClaudeAgentManager {
       occurredAt: event.occurredAt ?? session.updatedAt,
       ...event
     })).catch((error) => {
-      console.error(`[claude-sdk] Provider event callback failed id=${session.id} type=${event.type}: ${error.message}`);
+      if (error?.name !== "AbortError") logError("claude-sdk.provider-event-callback", error, { sessionId: session.id });
     }));
   }
 }

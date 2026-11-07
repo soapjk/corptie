@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { createMcpCredentialMigration } from "./mcpCredentialMigration.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -33,10 +34,11 @@ export class McpRegistryService {
 
   async #discardUncommittedCredential(reference, serverId) {
     try { await this.secretStore.delete(reference); }
-    catch {
+    catch (error) {
+      logError("mcp-registry.credential-compensation", error, { serverId });
       // Keep a durable retry when compensation fails, without replacing the
       // original registration/SQL error with a storage cleanup error.
-      try { this.#enqueueCleanup("credential_ref", reference, serverId); } catch { /* original DB error wins */ }
+      try { this.#enqueueCleanup("credential_ref", reference, serverId); } catch (error) { logError("mcp-registry.enqueue-cleanup", error, { serverId }); /* original DB error wins */ }
     }
   }
 
@@ -133,10 +135,11 @@ export class McpRegistryService {
       return { ...publicConfig,
         toolCount: tools.length, toolNames: tools.map((tool) => tool.name) };
     } catch (error) {
+      logError("mcp-registry.verify", error);
       if (error?.code && String(error.code).startsWith("MCP_")) throw error;
       throw registryError("MCP_CONNECTION_FAILED", "MCP Server connection or tools/list failed.", 422);
     } finally {
-      await client.close().catch(() => {});
+      await client.close().catch((error) => { logError("mcp-registry.close", error); });
     }
   }
 
@@ -310,7 +313,8 @@ export class McpRegistryService {
         } else throw registryError("MCP_CLEANUP_INVALID", "MCP cleanup item is invalid.", 409);
         this.store.db.run(`DELETE FROM mcp_cleanup_queue
           WHERE cleanup_kind = ? AND target = ?`, [row.cleanup_kind, row.target]);
-      } catch {
+      } catch (error) {
+        logError("mcp-registry.cleanup", error);
         this.store.db.run(`UPDATE mcp_cleanup_queue SET attempts = attempts + 1
           WHERE cleanup_kind = ? AND target = ?`, [row.cleanup_kind, row.target]);
       }
@@ -454,7 +458,8 @@ export class McpRegistryService {
     assertManagedPackagePath(this.packageRoot, serverId, target.package_root);
     try {
       if (!(await stat(target.package_root)).isDirectory()) throw new Error("not a directory");
-    } catch {
+    } catch (error) {
+      logError("mcp-registry.retained-package", error, { serverId });
       throw registryError("MCP_PACKAGE_VERSION_MISSING", "Retained package files are unavailable.", 409);
     }
     const explicitCredentials = input.headers != null || input.env != null;
@@ -653,7 +658,7 @@ export class McpRegistryService {
     if (!server) throw registryError("MCP_SERVER_NOT_FOUND", "MCP Server not found.", 404);
     let credentials;
     try { credentials = server.credentialRef ? this.secretStore.get(server.credentialRef) : null; }
-    catch { credentials = null; }
+    catch (error) { logError("mcp-registry.credentials", error, { serverId }); credentials = null; }
     const config = server.transport === "stdio"
       ? { name: server.name, transport: server.transport, command: server.command,
         args: server.args, cwd: server.cwd, ...(credentials?.env ? { env: credentials.env } : {}) }
@@ -672,6 +677,7 @@ export class McpRegistryService {
       this.#recordRuntimeEventBestEffort({ serverId, stage: "tools-list", status: "success",
         toolCount: verified.toolCount });
     } catch (error) {
+      logError("mcp-registry.check", error, { serverId });
       const safeCode = ["MCP_CONNECTION_FAILED", "MCP_RUNTIME_TIMEOUT", "MCP_TOOLS_EMPTY",
         "MCP_TOOLS_TOO_MANY", "MCP_TOOL_SCHEMA_INVALID", "MCP_TOOL_NAME_CONFLICT",
         "MCP_CREDENTIAL_MISSING"].includes(error?.code)
@@ -858,7 +864,7 @@ export class McpRegistryService {
 
   #recordRuntimeEventBestEffort(input) {
     try { this.recordRuntimeEvent(input); }
-    catch { /* diagnostics must not change an installation or verification result */ }
+    catch (error) { logError("mcp-registry.record-runtime-event", error); /* diagnostics must not change an installation or verification result */ }
   }
 
   runtimeEvents(serverId, limit = 50) {
@@ -934,7 +940,7 @@ export class McpRegistryService {
       const toolAllowlist = row.tool_allowlist_json === null ? null : JSON.parse(row.tool_allowlist_json);
       let credentials, storageError;
       try { credentials = selectedRef ? this.secretStore.get(selectedRef) : null; }
-      catch (error) { credentials = null; storageError = error.code ?? "MCP_CREDENTIAL_STORAGE_UNAVAILABLE"; }
+      catch (error) { logError("mcp-registry.assignment-credentials", error, { serverId: row.server_id }); credentials = null; storageError = error.code ?? "MCP_CREDENTIAL_STORAGE_UNAVAILABLE"; }
       const unavailableCode = selectedRef && !credentials ? storageError ?? "MCP_CREDENTIAL_MISSING" : null;
       return [serverKey(row.server_id), row.transport === "stdio"
         ? { serverId: row.server_id, type: "stdio", command: row.command, args: JSON.parse(row.args_json), cwd: row.cwd,
@@ -984,7 +990,8 @@ async function normalizedConfig(input = {}) {
     try {
       await access(command, constants.X_OK);
       if (!(await stat(cwd)).isDirectory()) throw new Error("not a directory");
-    } catch {
+    } catch (error) {
+      logError("mcp-registry.local-command", error);
       throw registryError("MCP_COMMAND_INVALID", "Local MCP executable or working directory is unavailable.", 400);
     }
     return { name, transport, command, args, cwd, ...(env ? { env } : {}) };

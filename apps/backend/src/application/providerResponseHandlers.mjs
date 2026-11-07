@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 // Watchdog policy bridges timers to the same durable Provider event path used
 // by normal execution. Terminal projection precedes best-effort interruption.
 export function createProviderResponseHandlers({
@@ -107,6 +108,7 @@ export function createProviderResponseHandlers({
         source: { type: "system", reason: "provider_response_timeout" }
       });
     } catch (error) {
+      logError("provider-response-watchdog.interrupt", error, { sessionId: entry.sessionId });
       console.warn(`[provider-response-watchdog] Provider interrupt failed session=${entry.sessionId} turn=${entry.turnId} code=${error?.code ?? "UNKNOWN"}`);
     }
   }

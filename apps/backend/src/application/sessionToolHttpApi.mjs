@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { assertSessionToolScope } from "./sessionToolScope.mjs";
 
 // Invoked after the server readiness, preview and maintenance gates.
@@ -27,9 +28,12 @@ export function handleSessionToolHttpRequest({
         });
         sendJson(response, 200, result);
       })
-      .catch((error) => sendJson(response, errorStatus(error, 403), {
-        error: error.message, code: error.code ?? "SESSION_TOOL_FAILED"
-      }));
+      .catch((error) => {
+        logError("session-tool-http.execute", error);
+        sendJson(response, errorStatus(error, 403), {
+          error: error.message, code: error.code ?? "SESSION_TOOL_FAILED"
+        });
+      });
     return true;
   }
 
@@ -77,12 +81,14 @@ export function handleSessionToolHttpRequest({
         recordObservation("catalog-returned");
         sendJson(response, 200, result);
       }).catch((error) => {
+        logError("session-tool-http.catalog", error);
         recordObservation("observation-rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
         sendJson(response, errorStatus(error, 403), {
           error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED"
         });
       });
     } catch (error) {
+      logError("session-tool-http.authorize", error);
       recordObservation("authorization-rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
       sendJson(response, errorStatus(error, 403), { error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED" });
     }
@@ -116,10 +122,13 @@ export function handleSessionToolHttpRequest({
         });
         sendJson(response, 200, result);
       })
-      .catch((error) => sendJson(response, errorStatus(error, 403), {
-        error: error.message,
-        code: error.code ?? "WORK_CHAT_TOOL_FAILED"
-      }));
+      .catch((error) => {
+        logError("work-chat-tool-http.execute", error);
+        sendJson(response, errorStatus(error, 403), {
+          error: error.message,
+          code: error.code ?? "WORK_CHAT_TOOL_FAILED"
+        });
+      });
     return true;
   }
 
