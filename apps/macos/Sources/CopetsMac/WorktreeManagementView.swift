@@ -400,21 +400,6 @@ struct WorktreeManagementView: View {
                 router.consumeWorktreeNavigation(request.id)
             }
         }
-        .task(id: client.jobPollingTaskID) {
-            guard let jobId = client.job?.id else { return }
-            var unchangedPolls = 0
-            // Job changes are infrequent while an Agent works. Back off capped
-            // polling and stop after one hour; SSE/tab refresh remains available.
-            while unchangedPolls < WorktreeJobPollingPolicy.maximumUnchangedPolls,
-                  !Task.isCancelled,
-                  client.job?.id == jobId,
-                  client.job?.shouldPoll == true {
-                let delay = WorktreeJobPollingPolicy.delaySeconds(afterUnchangedPolls: unchangedPolls)
-                try? await Task.sleep(for: .seconds(delay))
-                guard !Task.isCancelled else { return }
-                unchangedPolls = await client.pollJob() ? 0 : unchangedPolls + 1
-            }
-        }
         .sheet(isPresented: $showingPlan, onDismiss: client.discardCandidateReview) {
             WorktreeIntegrationFlowSheet(client: client, isPresented: $showingPlan)
         }
@@ -1614,7 +1599,11 @@ struct WorktreeManagementView: View {
                         statusBadge(L10n("Synchronized"), color: .green)
                     } else {
                         Button { pendingOperation = worktree } label: {
-                            statusBadge(L10n("Not synchronized"), color: .orange)
+                            if worktree.mergedIntoMain == true, let behind = worktree.behindMain, behind > 0 {
+                                statusBadge(L10nFormat("Behind main by %d commits", behind), color: .secondary)
+                            } else {
+                                statusBadge(L10n("Not synchronized"), color: .orange)
+                            }
                         }
                         .buttonStyle(.plain)
                         .help(L10n("Open Worktree operations"))

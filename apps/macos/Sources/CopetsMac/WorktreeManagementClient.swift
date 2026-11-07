@@ -172,7 +172,9 @@ final class WorktreeManagementClient: ObservableObject {
             // Publish completion before asynchronously refreshing Git inventory.
             Task { [weak self] in
                 guard let self, self.selection.repositoryId == next.repositoryId else { return }
-                await self.recoverAfterEventGap()
+                // Terminal events must not be dropped while a user action is
+                // still unwinding. Read fresh inventory without blocking UI.
+                await self.loadRepository(next.repositoryId, force: true, presentsLoadingState: false)
             }
         }
         return true

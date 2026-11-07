@@ -7,6 +7,32 @@ import Testing
 @Suite(.serialized)
 struct WorktreeManagementLoadingTests {
     @MainActor
+    @Test func completionEventRefreshesInventoryWhileMutationIsStillFinishing() async throws {
+        let recorder = RequestRecorder(details: ["repository:one": Self.detail(repositoryId: "repository:one",
+            worktrees: [Self.worktree("wt:main", branch: "main", isMain: true), Self.worktree("wt:feature", branch: "feature").replacingOccurrences(of: "\"mergedIntoMain\":true", with: "\"mergedIntoMain\":false")])])
+        let client = makeClient(recorder: recorder)
+        await client.loadRepositories()
+        let tree = try #require(client.detail?.project.worktrees.last)
+        let before = recorder.count(path: "/worktree-management/repositories/repository:one")
+        recorder.setDetail(Self.detail(repositoryId: "repository:one", worktrees: [
+            Self.worktree("wt:main", branch: "main", isMain: true), Self.worktree("wt:feature", branch: "feature")]), for: "repository:one")
+        recorder.setResponseDelay(0.4)
+        let mutation = Task { await client.cleanupMergedWorktrees([tree]) }
+        await Task.yield()
+        #expect(client.isMutating)
+        let event = #"{"payload":{"job":{"id":"job:completed","repositoryId":"repository:one","status":"completed","phase":"completed","planFingerprint":"f","createdAt":"now","updatedAt":"now","plan":{"repositoryId":"repository:one","mainWorktreeId":"wt:main","mainPath":"/tmp/one","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":1,"total":1,"fraction":1},"audit":[]}}}"#
+        #expect(await client.receiveJobEvent(event))
+        await mutation.value
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while client.detail?.project.worktrees.last?.mergedIntoMain != true && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(recorder.count(path: "/worktree-management/repositories/repository:one") > before)
+        #expect(client.job?.status == "completed")
+        #expect(client.detail?.project.worktrees.last?.mergedIntoMain == true)
+    }
+
+    @MainActor
     @Test func firstLoadPublishesTheUnchangedOrderedListAndSelection() async {
         let recorder = RequestRecorder(details: ["repository:one": Self.detail(
             repositoryId: "repository:one",

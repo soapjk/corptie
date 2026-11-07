@@ -2415,3 +2415,5 @@
 "The Worktree directory no longer exists. Only its Git registration will be removed. Local branches will be retained." = "Worktree 目录已不存在，将仅清理 Git 登记，保留本地分支。";
 
 "Only the listed stale Git registrations will be removed. Local branches will be retained." = "仅清理列表中的失效 Git 登记，保留本地分支。";
+
+"Behind main by %d commits" = "落后 main %d 个提交";
