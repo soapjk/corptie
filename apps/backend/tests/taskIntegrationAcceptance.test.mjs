@@ -609,3 +609,31 @@ test("dirty merge source is captured without moving its branch or index, and dir
   assert.equal(await readFile(join(f.parentTree.path,"base.txt"),"utf8"),"local parent edit\n");
   assert.ok((await git(f.parentTree.path,["status","--porcelain=v1"])).includes("base.txt"));
 });
+
+test("one-click graph commits dirty children to their branches before any merge", async t => {
+  const f = await fixture(t);
+  const manager = new GitWorkspaceManager({ store: f.store });
+  const sources = f.children.map(child => f.trees.get(child.id));
+  const before = await Promise.all(sources.map(source => git(source.path, ["rev-parse", "HEAD"])));
+  for (const [index, source] of sources.entries()) await writeFile(join(source.path, `dirty-${index}.js`), `export const value = ${index};\n`);
+  const jobs = integrationJobs(f, { beforeMerge: async () => {
+    for (const source of sources) assert.equal(await git(source.path, ["status", "--porcelain=v1"]), "");
+  } });
+  jobs.inspectCommitProtection = async () => ({ privateFiles: [], localSymlinkPaths: [] });
+  jobs.commitChanges = input => manager.commitIntegrationChanges({ ...input, snapshotOnly: false });
+  const { job } = await startGraph(f, jobs, sources.map(source => source.worktreeId));
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (["completed", "paused"].includes(jobs.get(job.id).status) && !jobs.activeJobs.has(job.id)) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const result = jobs.get(job.id);
+  assert.ok(["completed", "paused"].includes(result.status), JSON.stringify({status:result.status,phase:result.phase,error:result.error}));
+
+  for (const [index, source] of sources.entries()) {
+    const head = await git(source.path, ["rev-parse", "HEAD"]);
+    assert.notEqual(head, before[index]);
+    assert.equal(await git(source.path, ["status", "--porcelain=v1"]), "");
+    assert.match(await git(source.path, ["show", "-s", "--format=%B", "HEAD"]), /Corptie-Integration-Job:/);
+  }
+});
