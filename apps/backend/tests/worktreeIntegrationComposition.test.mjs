@@ -275,3 +275,25 @@ test("failed conflict Session startup retains only explicit failure recovery evi
   assert.deepEqual(calls.map(([kind]) => kind), ["create", "creation-state"]);
   assert.deepEqual(calls[1], ["creation-state", "created", "failed", "START_FAILED"]);
 });
+
+test("integration wiring requests real source commits and preserves protection checks", async () => {
+  let received;
+  const protection = [];
+  const { worktreeIntegrationJobService: jobs } = fixture({
+    gitWorkspaces: { commitIntegrationChanges: async input => {
+      received = input;
+      await input.prepare();
+      return { committed: true, headOid: "branch-head" };
+    } },
+    gitCommitProtection: { resolve: async (...args) => protection.push(args) }
+  });
+  const result = await jobs.commitChanges({ path: "/child", expectedHead: "reviewed-head",
+    expectedStatusSummary: " M child.js", commitMessage: "Preserve child", jobId: "reviewed-job",
+    protectionDecision: "include", snapshotOnly: true });
+  assert.equal(received.snapshotOnly, false);
+  assert.equal(received.expectedHead, "reviewed-head");
+  assert.equal(received.expectedStatusSummary, " M child.js");
+  assert.equal(received.jobId, "reviewed-job");
+  assert.equal(result.headOid, "branch-head");
+  assert.deepEqual(protection, [["/child", { decision: "include", neverRemind: false }]]);
+});
