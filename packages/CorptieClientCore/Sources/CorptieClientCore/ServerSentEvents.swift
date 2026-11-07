@@ -89,29 +89,38 @@ public struct ServerSentEventParser: Sendable {
     }
 }
 
+/// Pull-driven parsing: one next() consumes only enough bytes for one event.
+/// No producer task or application-level event queue sits ahead of the consumer.
+public struct ServerSentEventSequence<Bytes: AsyncSequence & Sendable>: AsyncSequence where Bytes.Element == UInt8 {
+    public typealias Element = ServerSentEvent
+    let bytes: Bytes
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        private var source: Bytes.AsyncIterator
+        private var parser = ServerSentEventParser()
+        private var ended = false
+        fileprivate init(source: Bytes.AsyncIterator) { self.source = source }
+
+        // Explicitly leave a caller's actor while parsing; never dispatch per byte.
+        @concurrent public mutating func next() async throws -> ServerSentEvent? {
+            guard !ended else { try Task.checkCancellation(); return nil }
+            // next() must reach the upstream iterator even when cancelled, so
+            // AsyncThrowingStream relays can run their termination handlers.
+            while let byte = try await source.next() {
+                try Task.checkCancellation()
+                if let event = parser.append(byte).first { return event }
+            }
+            ended = true
+            try Task.checkCancellation()
+            return parser.finish().first
+        }
+    }
+    public func makeAsyncIterator() -> AsyncIterator { AsyncIterator(source: bytes.makeAsyncIterator()) }
+}
+
 public enum ServerSentEventStream {
     public static func events<Bytes: AsyncSequence & Sendable>(
         from bytes: Bytes
-    ) -> AsyncThrowingStream<ServerSentEvent, Error> where Bytes.Element == UInt8 {
-        AsyncThrowingStream { continuation in
-            let decodingTask = Task.detached(priority: .userInitiated) {
-                do {
-                    var parser = ServerSentEventParser()
-                    for try await byte in bytes {
-                        if Task.isCancelled { return }
-                        for event in parser.append(byte) {
-                            continuation.yield(event)
-                        }
-                    }
-                    for event in parser.finish() {
-                        continuation.yield(event)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in decodingTask.cancel() }
-        }
+    ) -> ServerSentEventSequence<Bytes> where Bytes.Element == UInt8 {
+        ServerSentEventSequence(bytes: bytes)
     }
 }

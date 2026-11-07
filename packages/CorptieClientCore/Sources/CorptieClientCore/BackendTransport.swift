@@ -21,20 +21,37 @@ public struct ClientServiceFailure: Error, Equatable, Sendable {
 
 public struct BackendByteStream: AsyncSequence, Sendable {
     public typealias Element = UInt8
+    fileprivate final class NativeOwner: Sendable {
+        let bytes: URLSession.AsyncBytes
+        init(_ bytes: URLSession.AsyncBytes) { self.bytes = bytes }
+        deinit { bytes.task.cancel() }
+    }
     public struct AsyncIterator: AsyncIteratorProtocol {
+        private let owner: NativeOwner?
+        private var native: URLSession.AsyncBytes.AsyncIterator?
         private var bytes: AsyncThrowingStream<UInt8, Error>.Iterator?
         private var chunks: AsyncThrowingStream<Data, Error>.Iterator?
         private var chunk = Data()
         private var offset = 0
 
-        fileprivate init(bytes: AsyncThrowingStream<UInt8, Error>.Iterator) { self.bytes = bytes }
-        fileprivate init(chunks: AsyncThrowingStream<Data, Error>.Iterator) { self.chunks = chunks }
+        fileprivate init(native: NativeOwner) { owner = native; self.native = native.bytes.makeAsyncIterator() }
+        fileprivate init(bytes: AsyncThrowingStream<UInt8, Error>.Iterator) { owner = nil; self.bytes = bytes }
+        fileprivate init(chunks: AsyncThrowingStream<Data, Error>.Iterator) { owner = nil; self.chunks = chunks }
 
         public mutating func next() async throws -> UInt8? {
+            if var native {
+                let value = try await native.next()
+                self.native = native
+                return value
+            }
             if var bytes {
                 let value = try await bytes.next()
                 self.bytes = bytes
                 return value
+            }
+            if Task.isCancelled, var chunks {
+                _ = try await chunks.next() // Deliver cancellation to the relay continuation.
+                throw CancellationError()
             }
             if offset < chunk.count {
                 defer { offset += 1 }
@@ -53,12 +70,15 @@ public struct BackendByteStream: AsyncSequence, Sendable {
         }
     }
 
+    private let native: NativeOwner?
     private let bytes: AsyncThrowingStream<UInt8, Error>?
     private let chunks: AsyncThrowingStream<Data, Error>?
 
-    public init(_ stream: AsyncThrowingStream<UInt8, Error>) { bytes = stream; chunks = nil }
-    public init(chunks stream: AsyncThrowingStream<Data, Error>) { bytes = nil; chunks = stream }
+    public init(_ stream: AsyncThrowingStream<UInt8, Error>) { native = nil; bytes = stream; chunks = nil }
+    public init(chunks stream: AsyncThrowingStream<Data, Error>) { native = nil; bytes = nil; chunks = stream }
+    fileprivate init(native: URLSession.AsyncBytes) { self.native = NativeOwner(native); bytes = nil; chunks = nil }
     public func makeAsyncIterator() -> AsyncIterator {
+        if let native { return AsyncIterator(native: native) }
         if let bytes { return AsyncIterator(bytes: bytes.makeAsyncIterator()) }
         return AsyncIterator(chunks: chunks!.makeAsyncIterator())
     }
@@ -201,19 +221,7 @@ public final class BackendTransport: Sendable {
         let (bytes, response) = try await session.bytes(for: prepared)
         guard let http = response as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
         try await Self.requireByteSuccess(bytes, response: http)
-        let stream = AsyncThrowingStream<UInt8, Error> { continuation in
-            let task = Task {
-                do {
-                    for try await byte in bytes { continuation.yield(byte) }
-                    continuation.finish()
-                } catch {
-                    ClientFailureDiagnostics.log(error, operation: "BackendTransport.stream")
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-        return (BackendByteStream(stream), http)
+        return (BackendByteStream(native: bytes), http)
     }
 
     /// Images retain relay chunks and native URLSession AsyncBytes directly.
