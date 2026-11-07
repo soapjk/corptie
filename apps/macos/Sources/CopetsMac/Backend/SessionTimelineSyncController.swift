@@ -1,3 +1,4 @@
+import CorptieClientCore
 import Foundation
 
 private struct SessionTimelineRevisionIndex: Decodable {
@@ -100,6 +101,7 @@ final class SessionTimelineSyncController {
                 )
             }
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "SessionTimelineSyncController.reconcileTimelineRevisionIndex")
             // The state stream remains independently authoritative for Session
             // lifecycle. A future timeline event or reconnect retries this
             // lightweight index without marking the whole backend offline.
@@ -157,6 +159,7 @@ final class SessionTimelineSyncController {
         case .success(let loaded):
             snapshot = loaded
         case .failure(let error):
+            ClientFailureDiagnostics.log(error, operation: "SessionTimelineSyncController.synchronize")
             if selectedSession?.id == session.id,
                SessionTimelineRepository.shared.detail(for: session.id) == nil {
                 reportSelectedLoadError(L10nFormat(

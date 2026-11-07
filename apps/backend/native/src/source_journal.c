@@ -17,6 +17,21 @@ static void set_error(CorptieSourceJournalResult *out, const char *code) {
 #include <stdlib.h>
 #include <sys/event.h>
 #include <unistd.h>
+#include <stdatomic.h>
+
+static void log_system_code(const char *operation, int code) {
+    const int saved_errno = errno;
+    static atomic_uint emitted = 0;
+    if (atomic_fetch_add_explicit(&emitted, 1, memory_order_relaxed) < 64)
+        fprintf(stderr, "[source-journal] operation=%s errno=%d\n", operation, code);
+    errno = saved_errno;
+}
+
+static void log_system_failure(const char *operation) {
+    const int saved_errno = errno;
+    log_system_code(operation, saved_errno);
+    errno = saved_errno;
+}
 
 #define CORPTIE_MAX_JOURNALS 128
 // Each vnode watch owns a file descriptor. Keep the native fast path well
@@ -37,15 +52,18 @@ static pthread_mutex_t journals_lock = PTHREAD_MUTEX_INITIALIZER;
 static int add_watch(CorptieSourceJournal *journal, const char *path) {
     if (journal->descriptor_count >= CORPTIE_MAX_WATCHES) return -2;
     int descriptor = open(path, O_EVTONLY | O_CLOEXEC);
-    if (descriptor < 0) return errno == ENOENT ? 1 : -1;
+    if (descriptor < 0) {
+        if (errno != ENOENT) log_system_failure("open-watch");
+        return errno == ENOENT ? 1 : -1;
+    }
     struct kevent change;
     EV_SET(&change, (uintptr_t)descriptor, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR,
         NOTE_WRITE | NOTE_DELETE | NOTE_EXTEND | NOTE_LINK | NOTE_RENAME | NOTE_REVOKE, 0, NULL);
-    if (kevent(journal->queue, &change, 1, NULL, 0, NULL) != 0) { close(descriptor); return -1; }
+    if (kevent(journal->queue, &change, 1, NULL, 0, NULL) != 0) { log_system_failure("register-watch"); close(descriptor); return -1; }
     if (journal->descriptor_count == journal->descriptor_capacity) {
         size_t capacity = journal->descriptor_capacity == 0 ? 256 : journal->descriptor_capacity * 2;
         int *next = realloc(journal->descriptors, capacity * sizeof(int));
-        if (next == NULL) { close(descriptor); return -1; }
+        if (next == NULL) { log_system_failure("grow-watch-list"); close(descriptor); return -1; }
         journal->descriptors = next; journal->descriptor_capacity = capacity;
     }
     journal->descriptors[journal->descriptor_count++] = descriptor; return 0;
@@ -73,9 +91,14 @@ static CorptieSourceJournal *lookup(uint64_t handle) {
 int corptie_source_journal_start(const char *root, uint64_t *handle, CorptieSourceJournalResult *out) {
     if (root == NULL || handle == NULL || out == NULL) return -1; memset(out, 0, sizeof(*out));
     CorptieSourceJournal *journal = calloc(1, sizeof(*journal));
-    if (journal == NULL) { set_error(out, "SOURCE_JOURNAL_UNAVAILABLE"); return -1; }
-    journal->queue = kqueue(); journal->trusted = 1; journal->root = strdup(root); pthread_mutex_init(&journal->lock, NULL);
+    if (journal == NULL) { log_system_failure("allocate-journal"); set_error(out, "SOURCE_JOURNAL_UNAVAILABLE"); return -1; }
+    journal->queue = kqueue();
+    if (journal->queue < 0) log_system_failure("kqueue");
+    journal->trusted = 1; journal->root = strdup(root);
+    if (journal->root == NULL) log_system_failure("copy-root");
+    pthread_mutex_init(&journal->lock, NULL);
     if (journal->queue < 0 || journal->root == NULL || add_watch(journal, root) != 0) {
+        log_system_failure("prepare-root-watch");
         if (journal->queue >= 0) close(journal->queue); free(journal->root); pthread_mutex_destroy(&journal->lock); free(journal);
         set_error(out, "SOURCE_JOURNAL_UNAVAILABLE"); return -1;
     }
@@ -114,8 +137,9 @@ int corptie_source_journal_barrier(uint64_t handle, CorptieSourceJournalResult *
     pthread_mutex_lock(&journal->lock); struct kevent events[CORPTIE_EVENT_BATCH]; const struct timespec no_wait = { 0, 0 }; int observed;
     do {
         observed = kevent(journal->queue, NULL, 0, events, CORPTIE_EVENT_BATCH, &no_wait);
-        if (observed < 0) { journal->trusted = 0; break; }
+        if (observed < 0) { log_system_failure("read-events"); journal->trusted = 0; break; }
         for (int index = 0; index < observed; index += 1) {
+            if ((events[index].flags & EV_ERROR) != 0) log_system_code("watch-event", (int)events[index].data);
             journal->epoch += 1; journal->event_id += 1;
             if ((events[index].flags & EV_ERROR) != 0 || (events[index].fflags & NOTE_REVOKE) != 0) journal->trusted = 0;
         }

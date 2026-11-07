@@ -136,7 +136,7 @@ final class PadWorktreeStore {
             job = nextJob
             if let job { UserDefaults.standard.set(job.id, forKey: recoveryKey) }
             startPollingIfNeeded(repositoryID, connection: connection)
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.load");
             guard token == generation, !Task.isCancelled else { return }
             if let afterOperation {
                 notice = afterOperation + "。但列表更新失败；不要重复执行，可使用刷新按钮重新读取。\n"
@@ -216,7 +216,7 @@ final class PadWorktreeStore {
                                               action: "restart")
             }
             return "Worktree 操作已完成"
-            } catch { throw PadWorktreeStepFailure(stage: stage, completed: completed, underlying: error) }
+            } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.execute"); throw PadWorktreeStepFailure(stage: stage, completed: completed, underlying: error) }
         }
     }
 
@@ -233,7 +233,7 @@ final class PadWorktreeStore {
                 ? try await api.commitMessage(repositoryId: repositoryID, worktreeId: worktree.worktreeId) : nil
             guard scope == operationScope else { return nil }
             return PadWorktreeOperationDraft(worktree: worktree, commitMessage: message ?? "", protection: protection)
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.prepareOperation");
             guard scope == operationScope else { return nil }
             errorMessage = PadWorktreeFailure.describe(error, stage: "准备提交与合并")
             return nil
@@ -257,7 +257,7 @@ final class PadWorktreeStore {
         errorMessage = nil
         let api: ClientWorktreeAPI
         do { api = ClientWorktreeAPI(transport: try await connection.transport()) }
-        catch {
+        catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.cleanup");
             errorMessage = PadWorktreeFailure.describe(error, stage: "连接 Worktree 服务")
             return
         }
@@ -275,7 +275,7 @@ final class PadWorktreeStore {
             do {
                 try await api.delete(repositoryId: repositoryID, worktreeId: worktree.worktreeId, registrationOnly: worktree.isStaleRegistration)
                 removed.append(worktree.branchName ?? worktree.worktreeId)
-            } catch {
+            } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.cleanup");
                 failed.append("\(worktree.branchName ?? worktree.worktreeId)：\(PadWorktreeFailure.describe(error, stage: "删除失败", mutation: true))")
             }
         }
@@ -313,11 +313,11 @@ final class PadWorktreeStore {
                 let status = try await api.developmentService(repositoryID)
                 guard scope == operationScope else { return }
                 service = status
-            } catch {
+            } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.serviceAction");
                 guard scope == operationScope else { return }
                 notice = "开发服务操作已提交，但状态读取失败。\n" + PadWorktreeFailure.describe(error, stage: "读取开发服务")
             }
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.serviceAction");
             PadOperationNotifications.shared.complete(.init(category: .developmentService, outcome: OperationNotificationOutcome.errorOutcome(error),
                 name: "Development service operation", repositoryID: repositoryID), expectedScope: notificationScope)
             guard scope == operationScope else { return }
@@ -350,7 +350,7 @@ final class PadWorktreeStore {
             UserDefaults.standard.set(next.id, forKey: key)
             replaceJob(next)
             startPollingIfNeeded(repositoryID, connection: connection)
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.preparePlan");
             guard token == operationScope else { return }
             errorMessage = PadWorktreeFailure.describe(error, stage: "生成集成计划", mutation: true)
         }
@@ -416,7 +416,7 @@ final class PadWorktreeStore {
             replaceJob(updated)
             startPollingIfNeeded(job.repositoryId, connection: connection)
             return true
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.prepareHierarchy");
             guard token == operationScope else { return false }
             errorMessage = PadWorktreeFailure.describe(error, stage: "集成任务 \(action)", mutation: true)
             return false
@@ -453,7 +453,7 @@ final class PadWorktreeStore {
             if let snapshot = updated.notification { PadOperationNotifications.shared.observe(snapshot) }
             startPollingIfNeeded(updated.repositoryId, connection: connection)
             return true
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.handleMarkdown");
             guard token == operationScope else { return false }
             errorMessage = PadWorktreeFailure.describe(error, stage: "处理 Markdown 文件", mutation: decisions != nil)
             return false
@@ -469,7 +469,7 @@ final class PadWorktreeStore {
             guard token == operationScope, job?.id == jobID else { throw rollbackFailure("任务已变化，请返回当前任务。") }
             replaceJob(result.job)
             return (result.rollback, !["completed", "canceled"].contains(result.job.status))
-        } catch { throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "读取回滚范围")) }
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.prepareRollback"); throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "读取回滚范围")) }
     }
 
     func confirmRollback(jobID: String, reviewID: String, discardChanges: Bool,
@@ -488,7 +488,7 @@ final class PadWorktreeStore {
             if result.status != "canceled" { throw rollbackFailure(result.diagnosticText ?? result.error ?? "回滚未完成，请刷新范围后继续。") }
             notice = "本次合并已取消并回滚，来源 Worktree 的提交已保留。"
             await load(result.repositoryId, connection: connection, force: true, afterOperation: notice)
-        } catch { throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "取消并回滚", mutation: true)) }
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.confirmRollback"); throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "取消并回滚", mutation: true)) }
     }
 
     private func rollbackFailure(_ text: String) -> NSError {
@@ -521,7 +521,7 @@ final class PadWorktreeStore {
             guard token == operationScope else { return }
             notice = completed
             await load(repositoryID, connection: connection, force: true, afterOperation: completed)
-        } catch {
+        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.action");
             if !Task.isCancelled {
                 let step = error as? PadWorktreeStepFailure
                 PadOperationNotifications.shared.complete(.init(category: category,
@@ -560,7 +560,7 @@ final class PadWorktreeStore {
                     guard self.activeRepositoryID == repositoryID, self.job?.id == current.id, !Task.isCancelled else { return }
                     self.replaceJob(updated)
                     if !updated.shouldPoll { await self.load(repositoryID, connection: connection, force: true); return }
-                } catch {
+                } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.startPollingIfNeeded");
                     guard self.activeRepositoryID == repositoryID, !Task.isCancelled else { return }
                     self.errorMessage = PadWorktreeFailure.describe(error, stage: "读取集成任务状态（任务未被重发）"); return
                 }

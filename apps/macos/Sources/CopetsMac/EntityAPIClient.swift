@@ -123,6 +123,7 @@ final class EntityAPIClient: ObservableObject {
             worksLoadError = nil
             errorMessage = nil
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.refreshWorks")
             guard worksRefreshGeneration.isCurrent(generation) else { return }
             worksLoadError = error.localizedDescription
             errorMessage = error.localizedDescription
@@ -159,6 +160,7 @@ final class EntityAPIClient: ObservableObject {
             }
             workspaces = try decoder.decode(WorkspaceListEnvelope.self, from: data).workspaces
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.refreshWorkspaces")
             errorMessage = error.localizedDescription
         }
     }
@@ -201,7 +203,7 @@ final class EntityAPIClient: ObservableObject {
                 for task in page.tasks where task.resourceVersion >= (revisions[task.id] ?? 0) { appState.acceptCorptieTask(task) }
                 cursor=page.nextCursor
             } while cursor != nil
-        } catch { if !Task.isCancelled { tasksLoadError=error.localizedDescription } }
+        } catch { ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.loadTaskParentChoices"); if !Task.isCancelled { tasksLoadError=error.localizedDescription } }
     }
     func loadTaskChildren(_ parent: CorptieTask, more: Bool = false) async {
         struct Page: Decodable { let tasks:[CorptieTask]; let ancestors:[CorptieTask]; let nextCursor:String? }
@@ -222,7 +224,7 @@ final class EntityAPIClient: ObservableObject {
                 taskChildrenCursors[parent.id]=page.nextCursor
         } catch is CancellationError {
             return
-        } catch { if !Task.isCancelled { tasksLoadError=error.localizedDescription } }
+        } catch { ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.loadTaskChildren"); if !Task.isCancelled { tasksLoadError=error.localizedDescription } }
     }
 
     private func loadCorptieTasks(from url: URL) async -> [CorptieTask]? {
@@ -240,6 +242,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return tasks
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.loadCorptieTasks")
             let message = Self.tasksLoadErrorMessage(error)
             tasksLoadError = message
             errorMessage = message
@@ -282,6 +285,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return browsedTasks
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.loadBrowsedTasks")
             let message = Self.tasksLoadErrorMessage(error)
             tasksLoadError = message
             errorMessage = message
@@ -323,6 +327,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return task
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.task")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -381,6 +386,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.restartCorptieTask")
             errorMessage = error.localizedDescription
             return false
         }
@@ -398,6 +404,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return plan
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.inspectCorptieTaskDeletion")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
@@ -472,6 +479,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.deleteCorptieTask")
             if notificationOutcome != .succeeded { notificationOutcome = .errorOutcome(error) }
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return false
@@ -512,6 +520,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return receipt
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.issueCorptieTaskCompletionIntent")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
@@ -548,6 +557,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return result.task
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.confirmCorptieTaskCompletion")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
@@ -573,6 +583,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return .success(restored)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.restoreCorptieTaskExecution")
             let message = error.localizedDescription
             errorMessage = message
             return .failure(message: message)
@@ -595,6 +606,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return status
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.worktreeStatus")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
@@ -621,6 +633,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return status
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.reclaimWorktree")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
@@ -669,6 +682,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return task
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.submitAcceptanceAssessment")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
@@ -740,6 +754,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return envelope.snapshots
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.taskSnapshots")
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return []
         }
@@ -799,6 +814,7 @@ final class EntityAPIClient: ObservableObject {
             _ = try await URLSession.shared.data(for: request)
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.deleteSession")
             errorMessage = error.localizedDescription
             return false
         }
@@ -822,6 +838,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.interruptSession")
             errorMessage = error.localizedDescription
             return false
         }
@@ -841,6 +858,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.resumeSession")
             errorMessage = error.localizedDescription
             return false
         }
@@ -883,6 +901,7 @@ final class EntityAPIClient: ObservableObject {
             try validateMemoryResponse(response, data: data)
             return try decoder.decode(MemoryExtractionJobsEnvelope.self, from: data).jobs
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.memoryExtractionJobs")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -945,6 +964,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return try decoder.decode(MemoryItem.self, from: data)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.createMemory")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -997,6 +1017,7 @@ final class EntityAPIClient: ObservableObject {
             try validateMemoryResponse(response, data: data)
             return try decoder.decode(MemoryHitListEnvelope.self, from: data).hits
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.memoryHits")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1014,6 +1035,7 @@ final class EntityAPIClient: ObservableObject {
             try validateMemoryResponse(response, data: data)
             return try decoder.decode(MemoryRecallListEnvelope.self, from: data).recalls
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.memoryRecalls")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1032,6 +1054,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return try decoder.decode(MemoryBackfillProgress.self, from: data)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.backfillSessionMemories")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1046,6 +1069,7 @@ final class EntityAPIClient: ObservableObject {
             try validateMemoryResponse(response, data: data)
             return try decoder.decode(MemoryAuditListEnvelope.self, from: data).audit
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.memoryAudit")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1077,6 +1101,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return browsedMemories
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.loadMemories")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1089,6 +1114,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return try decoder.decode(MemoryEnvelope.self, from: data).memory
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.mutateMemory")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1173,6 +1199,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return .success(session)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.createSession")
             preparationFailure = .errorOutcome(error)
             let message = error.localizedDescription
             errorMessage = message
@@ -1207,6 +1234,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return .success(created.session)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.startRoleSession")
             let message = error.localizedDescription
             errorMessage = message
             return .failure(message: message)
@@ -1240,6 +1268,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return .success(session)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.startWorkChat")
             errorMessage = error.localizedDescription
             return .failure(message: error.localizedDescription)
         }
@@ -1297,6 +1326,7 @@ final class EntityAPIClient: ObservableObject {
             await refreshWorks()
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.deleteWork")
             errorMessage = error.localizedDescription
             return false
         }
@@ -1322,6 +1352,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return result.text
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.assistDraft")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1361,6 +1392,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return result
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.assistFormDraft")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1378,6 +1410,7 @@ final class EntityAPIClient: ObservableObject {
             let (data, _) = try await URLSession.shared.data(for: request)
             return try decoder.decode(AssistantChatResponse.self, from: data).messages
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.assistantChat")
             errorMessage = error.localizedDescription
             return [AssistantMessage(role: "assistant", content: "抱歉，请求失败：\(error.localizedDescription)")]
         }
@@ -1454,6 +1487,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return .success(repository)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.registerRepository")
             errorMessage = error.localizedDescription
             return .failure(error.localizedDescription)
         }
@@ -1483,6 +1517,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return .success(registration)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.registerWorkspace")
             errorMessage = error.localizedDescription
             return .failure(error.localizedDescription)
         }
@@ -1518,6 +1553,7 @@ final class EntityAPIClient: ObservableObject {
             await refreshRoles()
             return agent
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.createRole")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1549,6 +1585,7 @@ final class EntityAPIClient: ObservableObject {
             await refreshRoles()
             return agent
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.updateRole")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1563,6 +1600,7 @@ final class EntityAPIClient: ObservableObject {
             await refreshRoles()
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.deleteRole")
             errorMessage = error.localizedDescription
             return false
         }
@@ -1591,6 +1629,7 @@ final class EntityAPIClient: ObservableObject {
             await refreshRoles()
             return agent
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.patchRoleAvatar")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1616,6 +1655,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return result
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.discoverSkills")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1687,6 +1727,7 @@ final class EntityAPIClient: ObservableObject {
             await refreshSkills()
             return skill
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.registerSkill")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1698,6 +1739,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return impact
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.skillDeletionImpact")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1714,6 +1756,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.deleteSkill")
             errorMessage = error.localizedDescription
             return false
         }
@@ -1746,6 +1789,7 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = nil
             return value
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "EntityAPIClient.performEntityMutation")
             errorMessage = error.localizedDescription
             return nil
         }

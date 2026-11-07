@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { SessionNotFoundError } from "../agent-provider/sessionApplicationService.mjs";
 import { toolDefinitionsContractHash } from "./hostToolCatalog.mjs";
@@ -346,6 +347,7 @@ export class SessionProviderSwitchCoordinator {
         routingVersion: committedLogical.routingVersion
       });
     } catch (error) {
+      logError("provider-switch.execute", error, { transitionId, stage: "switch" });
       const newThreadId = created?.providerThreadId
         ?? created?.external?.threadId
         ?? created?.external?.sessionId
@@ -456,6 +458,7 @@ export class SessionProviderSwitchCoordinator {
         toolHostStatus: "ready"
       };
     } catch (error) {
+      logError("provider-switch.finalize", error, { transitionId: transition.transitionId, stage: "tools-finalization" });
       const errorCode = error?.code ?? "PROVIDER_TOOL_FINALIZATION_FAILED";
       this.onTransitionEvent("ProviderSwitchToolsPending", {
         sessionId: current.legacySessionId ?? reference?.sessionId ?? null,

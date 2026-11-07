@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { randomUUID } from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -32,6 +33,7 @@ export function createCatalogBackedMcpServer(options = {}) {
       diagnostic("catalog-returned");
       return { tools: (result.tools ?? []).map(toMcpDefinition) };
     } catch (error) {
+      logError("catalog-mcp.list", error);
       diagnostic("rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
       throw error;
     }
@@ -48,6 +50,7 @@ export function createCatalogBackedMcpServer(options = {}) {
       }
       return normalizeToolResult(result);
     } catch (error) {
+      logError("catalog-mcp.call", error);
       return {
         isError: true,
         content: [{ type: "text", text: JSON.stringify({ code: error.code ?? "SESSION_TOOL_FAILED", error: error.message }) }]
@@ -66,7 +69,8 @@ export function createCatalogBackedMcpServer(options = {}) {
       } else if (observedRevision == null) {
         observedRevision = next;
       }
-    } catch {
+    } catch (error) {
+      logError("catalog-mcp.revision", error);
       // The authenticated backend can be briefly unavailable during a local
       // restart. The next poll retries without terminating the MCP transport.
     } finally {

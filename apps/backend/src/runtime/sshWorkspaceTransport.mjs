@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
@@ -66,7 +67,7 @@ export class SshWorkspaceTransport {
     try {
       let connection;
       try { connection = await this.resolveConnection(connectionRef); }
-      catch { throw new RemoteWorkspaceError("SSH_CONNECTION_UNAVAILABLE", "SSH connection reference could not be resolved."); }
+      catch (error) { logError("ssh.resolve-connection", error, { stage: "resolve-connection" }); throw new RemoteWorkspaceError("SSH_CONNECTION_UNAVAILABLE", "SSH connection reference could not be resolved."); }
       validateConnection(connection);
       if (connection.hostIdentity !== expectedHostIdentity) {
         throw new RemoteWorkspaceError("SSH_HOST_IDENTITY_CHANGED", "SSH connection identity changed; explicit rebinding is required.");
@@ -96,10 +97,11 @@ export class SshWorkspaceTransport {
     return new Promise((resolve) => {
       let child;
       try { child = this.spawnProcess("/usr/bin/ssh", args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: sshClientEnvironment() }); }
-      catch { resolve(notStarted("spawn_failed")); return; }
+      catch (error) { logError("ssh.spawn", error, { stage: "spawn" }); resolve(notStarted("spawn_failed")); return; }
       const stdout = [];
       let bytes = 0;
       let stopReason = null;
+      let reportedTransportFailure = false;
       let killTimer;
       let settled = false;
       const finish = (result) => {
@@ -128,17 +130,30 @@ export class SshWorkspaceTransport {
         // Backpressure is not delegated to arbitrary async UI callbacks.
         // Consumers must enqueue synchronously and bound their own queues.
         try { onOutput?.({ stream: "stdout", data: Buffer.from(chunk) }); }
-        catch { stop("output_consumer_failed"); }
+        catch (error) { logError("ssh.output-consumer", error, { stage: "output-consumer" }); stop("output_consumer_failed"); }
       });
       // SSH's stderr mixes remote output and transport diagnostics that can
       // expose usernames, key/config paths and proxy credentials. The remote
       // protocol must envelope application stderr on stdout instead.
       child.stderr.on("data", (chunk) => {
+        // Record only known categories, never SSH's private free-form output.
+        if (!reportedTransportFailure) {
+          const diagnostic = /permission denied/i.test(String(chunk)) ? "SSH_AUTHENTICATION_FAILED"
+            : /connection refused/i.test(String(chunk)) ? "SSH_CONNECTION_REFUSED"
+            : /timed out/i.test(String(chunk)) ? "SSH_CONNECTION_TIMEOUT"
+            : /could not resolve hostname/i.test(String(chunk)) ? "SSH_HOST_RESOLUTION_FAILED"
+            : /host key verification failed/i.test(String(chunk)) ? "SSH_HOST_VERIFICATION_FAILED" : null;
+          if (diagnostic) {
+            reportedTransportFailure = true;
+            logError("ssh.transport", { name: "SshTransportError", code: diagnostic,
+              message: "SSH transport reported a recognized failure." }, { stage: "transport" });
+          }
+        }
         bytes += chunk.length;
         if (bytes > this.maxOutputBytes) stop("output_limit");
       });
-      child.stdin.on("error", () => stop("input_closed"));
-      child.on("error", () => finish(notStarted("spawn_failed")));
+      child.stdin.on("error", (error) => { logError("ssh.stdin", error, { stage: "stdin" }); stop("input_closed"); });
+      child.on("error", (error) => { logError("ssh.spawn", error, { stage: "spawn" }); finish(notStarted("spawn_failed")); });
       child.on("close", (code, processSignal) => {
         const unknown = Boolean(stopReason || code === 255 || code === null || processSignal);
         finish({

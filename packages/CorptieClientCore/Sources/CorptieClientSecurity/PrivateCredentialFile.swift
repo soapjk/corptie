@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 #if os(macOS)
 import Darwin
 
@@ -26,30 +27,57 @@ struct PrivateCredentialFile: Sendable {
 
     private func validate(_ fd: Int32, directory: Bool) throws {
         var info = stat()
-        guard fstat(fd, &info) == 0, info.st_uid == getuid(),
+        guard fstat(fd, &info) == 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.fstat")
+            throw LocalCredentialError.unavailable
+        }
+        guard info.st_uid == getuid(),
               (info.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG),
               directory || info.st_nlink == 1 else { throw LocalCredentialError.unavailable }
-        guard fchmod(fd, directory ? 0o700 : 0o600) == 0 else { throw LocalCredentialError.unavailable }
+        guard fchmod(fd, directory ? 0o700 : 0o600) == 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.fchmod")
+            throw LocalCredentialError.unavailable
+        }
     }
 
     func access<T>(_ operation: (Int32) throws -> T) throws -> T {
         do { return try accessChecked(operation) }
-        catch let error as LocalCredentialError { throw error }
-        catch { throw LocalCredentialError.unavailable }
+        catch let error as LocalCredentialError {
+            ClientFailureDiagnostics.log(error, operation: "credential.access")
+            throw error
+        }
+        catch {
+            ClientFailureDiagnostics.log(error, operation: "credential.access")
+            throw LocalCredentialError.unavailable
+        }
     }
 
     private func accessChecked<T>(_ operation: (Int32) throws -> T) throws -> T {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         let root = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard root >= 0 else { throw LocalCredentialError.unavailable }
+        guard root >= 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.openRoot")
+            throw LocalCredentialError.unavailable
+        }
         defer { close(root) }
         try validate(root, directory: true)
         let lock = openat(root, "credentials.lock", O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard lock >= 0 else { throw LocalCredentialError.unavailable }
+        guard lock >= 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.openLock")
+            throw LocalCredentialError.unavailable
+        }
         defer { close(lock) }
         try validate(lock, directory: false)
-        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw LocalCredentialError.busy }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.flock")
+            throw LocalCredentialError.busy
+        }
         defer { _ = flock(lock, LOCK_UN) }
         return try operation(root)
     }
@@ -57,7 +85,9 @@ struct PrivateCredentialFile: Sendable {
     func read(at root: Int32) throws -> Data? {
         let fd = openat(root, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
-            if errno == ENOENT { return nil }
+            let code = errno
+            if code == ENOENT { return nil }
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.openRead")
             throw LocalCredentialError.unavailable
         }
         defer { close(fd) }
@@ -77,13 +107,28 @@ struct PrivateCredentialFile: Sendable {
         guard data.count <= maximumBytes else { throw LocalCredentialError.unavailable }
         let temporary = ".credentials-\(UUID().uuidString).tmp"
         let fd = openat(root, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw LocalCredentialError.unavailable }
-        defer { close(fd); _ = unlinkat(root, temporary, 0) }
-        try FileHandle(fileDescriptor: fd, closeOnDealloc: false).write(contentsOf: data)
-        guard fsync(fd) == 0, renameat(root, temporary, root, name) == 0 else {
+        guard fd >= 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.openWrite")
             throw LocalCredentialError.unavailable
         }
-        guard fsync(root) == 0 else { throw LocalCredentialError.commitUnknown }
+        defer { close(fd); _ = unlinkat(root, temporary, 0) }
+        try FileHandle(fileDescriptor: fd, closeOnDealloc: false).write(contentsOf: data)
+        guard fsync(fd) == 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.syncFile")
+            throw LocalCredentialError.unavailable
+        }
+        guard renameat(root, temporary, root, name) == 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.rename")
+            throw LocalCredentialError.unavailable
+        }
+        guard fsync(root) == 0 else {
+            let code = errno
+            ClientFailureDiagnostics.log(NSError(domain: NSPOSIXErrorDomain, code: Int(code)), operation: "credential.syncRoot")
+            throw LocalCredentialError.commitUnknown
+        }
     }
 }
 #endif

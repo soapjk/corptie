@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
 
@@ -128,6 +129,7 @@ export class OpenClackyManager {
     try {
       return await this.probeRuntime();
     } catch (error) {
+      logError("openclacky.runtime-status", error);
       this.probeError = error.message;
       return {
         detectedAt: new Date().toISOString(),
@@ -310,6 +312,7 @@ export class OpenClackyManager {
     try {
       session = await this.refreshOne(sessionId);
     } catch (error) {
+      logError("openclacky.pre-dispatch-recovery", error, { sessionId });
       throw openClackyPreDispatchRecoveryError(error, sessionId);
     }
     assertOpenClackySessionRunnable(session);
@@ -503,7 +506,8 @@ export class OpenClackyManager {
     let event;
     try {
       event = JSON.parse(typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8"));
-    } catch {
+    } catch (error) {
+      logError("openclacky.socket-event-json", error, { sessionId });
       return;
     }
     if (event.type === "corptie_tool_call") {
@@ -618,6 +622,7 @@ export class OpenClackyManager {
       });
       respond({ success: true, result });
     } catch (error) {
+      logError("openclacky.bridge-tool", error, { sessionId });
       respond({
         success: false,
         error: { code: error.code ?? "TOOL_HOST_FAILED", message: error.message }
@@ -650,6 +655,7 @@ export class OpenClackyManager {
     try {
       response = await this.fetch(new URL(path, this.baseURL), { method: options.method ?? "GET", headers, body });
     } catch (error) {
+      logError("openclacky.request", error);
       throw new Error(`Cannot connect to OpenClacky at ${this.baseURL}: ${error.message}`);
     }
     const text = await response.text();
@@ -674,6 +680,7 @@ export class OpenClackyManager {
 
   reportConnectionError(error) {
     if (this.connectionErrorMessage === error.message) return;
+    logError("openclacky.connection", error);
     this.connectionErrorMessage = error.message;
     this.onSessionChanged?.({ type: "connection-error", error });
   }

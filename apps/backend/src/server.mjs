@@ -1,3 +1,4 @@
+import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
 import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.mjs";
 import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
@@ -527,7 +528,7 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   resolveActor: id => collaborationCore.getAgentForSession(id)?.agentId,
   wake: (sessionId, taskId) => {
     if (taskId) scheduleAgentWorkDrain(sessionId, null, taskId);
-    else void tickAgentWorkQueue().catch(error => console.error(`[mailbox] ${error.code ?? error.message}`));
+    else void tickAgentWorkQueue().catch(error => { logError("mailbox.tick", error, { stage: "tick" }); console.error(`[mailbox] ${error.code ?? error.message}`); });
   },
   changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
   validateExternal: (row, authorization) => {
@@ -2186,6 +2187,7 @@ function scheduleAgentWorkDrain(sessionId, latencyTrace = null, taskId = null) {
   queueMicrotask(() => {
     logSessionMessageLatency(latencyTrace, "queue_drain_dispatched");
     drainAgentWork(sessionId).catch((error) => {
+      logError("agent-work.drain", error, { sessionId, stage: "drain" });
       console.error(`[agent-work] session=${sessionId} drain failed: ${error.message}`);
     });
   });

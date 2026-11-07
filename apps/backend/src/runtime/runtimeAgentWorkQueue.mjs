@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { dispatchReady, dispatchBlocked } from "../utils/dispatchDecision.mjs";
 import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
 import { agentWorkPreDeliveryRetryDecision, interruptedAgentWorkRecoveryPatch } from "../utils/agentWorkQueue.mjs";
@@ -208,6 +209,7 @@ export function createRuntimeAgentWorkQueue({
             return;
           }
         } catch (error) {
+          logError("agent-work.channel-route", error, { sessionId, taskId: next.taskId, stage: "channel-route" });
           sessionChannelService.updateDelivery(next.deliveryId, {
             status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
           });
@@ -238,6 +240,7 @@ export function createRuntimeAgentWorkQueue({
           return;
         }
       } catch (error) {
+        logError("agent-work.collaboration-route", error, { sessionId, taskId: next.taskId, stage: "collaboration-route" });
         console.error(`[collaboration-routing] event=dequeue_route_failed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
         const delivery = collaborationDispatcher.failRoute(next.deliveryId, error, {
           envelope,
@@ -376,6 +379,7 @@ export function createRuntimeAgentWorkQueue({
       }
       preDeliveryRetryCounts.delete(claimed.taskId);
     } catch (error) {
+      logError("agent-work.dispatch", error, { sessionId, taskId: claimed.taskId, stage: "dispatch" });
       if (error.code === "PROVIDER_DISABLED" && error.dispatchState === "not_dispatched") {
         const paused = store.updateAgentTask(claimed.taskId, { status: "queued", startedAt: null });
         registerRuntimeQueuedWork(paused.sessionId, paused.taskId);

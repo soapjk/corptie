@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { handleExecutionChecklistHttp } from "./executionChecklistHttpApi.mjs";
 import { handleSessionAbilityHttp } from "./sessionAbilityHttpApi.mjs";
 import { handleSessionMailboxHttp } from "./sessionMailboxHttpApi.mjs";
@@ -94,7 +95,10 @@ export function routeBackendHttpRequest(request, response, ports) {
     } })) return;
 
   if (request.method === "GET" && url.pathname === "/search") {
-    const failed = error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "SEARCH_FAILED", error: error.statusCode === 400 ? error.message : "Search unavailable." });
+    const failed = error => {
+      logError("search.http", error, { stage: "query" });
+      return sendJson(response, error.statusCode ?? 500, { code: error.code ?? "SEARCH_FAILED", error: error.statusCode === 400 ? error.message : "Search unavailable." });
+    };
     try { void getTimelineReadPool().readUnifiedSearch({ query: url.searchParams.toString() })
       .then(result => sendJson(response, 200, result)).catch(failed); }
     catch (error) { failed(error); }
@@ -138,7 +142,8 @@ export function routeBackendHttpRequest(request, response, ports) {
       request, response, url,
       repository: store.sshWorkspaces,
       ...getSshWorkspaceServices()
-    }).catch(() => {
+    }).catch((error) => {
+      logError("ssh.http", error, { stage: "configuration" });
       if (!response.headersSent) sendJson(response, 500, { error: "SSH configuration operation failed." });
     });
     return;

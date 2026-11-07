@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { logCloudError } from "./errorDiagnostics.js";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
@@ -120,7 +121,8 @@ export class RelayHub {
       this.webSockets.handleUpgrade(request, socket, head, (webSocket) => {
         this.acceptPeer(webSocket, principal.accountId, device);
       });
-    } catch {
+    } catch (error) {
+      logCloudError("cloud.relay-upgrade", error);
       rejectUpgrade(socket, 401, "Authentication required");
     }
   }
@@ -135,12 +137,13 @@ export class RelayHub {
         if (isBinary) this.forwardEncryptedFrame(peer, data);
         else this.handleControlMessage(peer, data.toString());
       } catch (error) {
+        logCloudError("cloud.relay-message", error);
         const message = error instanceof Error ? error.message : "invalid relay message";
         socket.close(4002, message.slice(0, 120));
       }
     });
     socket.on("close", () => this.removePeer(peer));
-    socket.on("error", () => this.removePeer(peer));
+    socket.on("error", (error) => { logCloudError("cloud.relay-socket", error); this.removePeer(peer); });
     this.sendControl(peer, { type: "ready", deviceId: device.id, protocolVersion: RELAY_PROTOCOL_VERSION });
   }
 

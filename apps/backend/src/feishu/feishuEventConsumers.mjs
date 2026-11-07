@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
@@ -42,6 +43,7 @@ export class FeishuEventConsumers {
     );
     messageChild.once("spawn", () => {
       this.confirmBotConnection(bot.id, messageChild).catch((error) => {
+        logError("feishu.connection-confirmation", error, { stage: "connection-confirmation" });
         console.log(`[feishu] bot=${bot.id} connection confirmation failed: ${error.message}`);
       });
     });
@@ -61,6 +63,7 @@ export class FeishuEventConsumers {
     processMap.set(bot.id, child);
     this.createInterface({ input: child.stdout }).on("line", (line) => {
       handleLine(line).catch((error) => {
+        logError("feishu.event", error, { stage: "event-callback" });
         console.error(`[feishu] bot=${bot.id} ${label} event failed: ${error.message}`);
       });
     });
@@ -74,6 +77,7 @@ export class FeishuEventConsumers {
       }
     });
     child.once("error", (error) => {
+      logError("feishu.spawn", error, { stage: "spawn" });
       if (processMap.get(bot.id) === child) processMap.delete(bot.id);
       this.store.updateFeishuBot(bot.id, { connectionStatus: "error", lastError: error.message });
     });

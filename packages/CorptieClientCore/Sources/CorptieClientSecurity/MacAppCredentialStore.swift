@@ -55,7 +55,10 @@ public actor MacAppCredentialStore {
         }
         let snapshot: Envelope
         do { snapshot = try decoder.decode(Envelope.self, from: data) }
-        catch { throw LocalCredentialError.corrupt }
+        catch {
+            ClientFailureDiagnostics.log(error, operation: "credential.decode")
+            throw LocalCredentialError.corrupt
+        }
         guard snapshot.schemaVersion == 1 else { throw LocalCredentialError.unsupportedVersion }
         guard snapshot.environmentId == environmentId, snapshot.revision >= 0,
               snapshot.revision < 9_007_199_254_740_991,

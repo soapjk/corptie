@@ -35,6 +35,9 @@ final class BackendEventStream {
                     let (bytes, response) = try await urlSession.bytes(for: request)
                     guard !Task.isCancelled else { return }
                     guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+                        if let http = response as? HTTPURLResponse {
+                            ClientFailureDiagnostics.log(NSError(domain: "HTTP", code: http.statusCode), operation: "BackendEventStream.response")
+                        }
                         throw URLError(.badServerResponse)
                     }
                     await connected()
@@ -52,6 +55,7 @@ final class BackendEventStream {
                     disconnected()
                 } catch {
                     guard !Task.isCancelled else { return }
+                    ClientFailureDiagnostics.log(error, operation: "BackendEventStream.start")
                     disconnected()
                     try? await Task.sleep(for: .seconds(2))
                 }

@@ -1,3 +1,4 @@
+import CorptieClientCore
 import Foundation
 
 extension BackendClient {
@@ -11,6 +12,7 @@ extension BackendClient {
             }
             return try JSONDecoder().decode(SessionWorkspaceHistoryResponse.self, from: data).history
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "BackendClientHistory.workspaceHistory")
             lastError = error.localizedDescription
             return []
         }
@@ -40,6 +42,7 @@ extension BackendClient {
             selectedHistoricalDetail = detail
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "BackendClientHistory.openHistoricalThread")
             lastError = error.localizedDescription
             return false
         }
@@ -56,6 +59,7 @@ extension BackendClient {
         case .success(let loaded):
             snapshot = loaded
         case .failure(let error):
+            ClientFailureDiagnostics.log(error, operation: "BackendClientHistory.fetchDetail")
             if reportsErrors { lastError = error.localizedDescription }
             return nil
         }
@@ -92,6 +96,7 @@ extension BackendClient {
             appState.acceptReadReceipt(receipt, requestedSessionID: sessionID)
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "BackendClientHistory.markSessionMessagesRead")
             return false
         }
     }

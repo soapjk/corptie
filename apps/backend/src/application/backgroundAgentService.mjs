@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "../agent-provider/contracts.mjs";
 import { performance } from "node:perf_hooks";
 import { BackgroundOperationQueue } from "./backgroundOperationQueue.mjs";
@@ -170,6 +171,7 @@ export class BackgroundAgentService {
       await this.deliverCompletion(input, result.text ?? "Background operation completed.", "completed");
       return { ...result, operationId, providerId, historyPolicy: "hidden", validatedOutput, performance: performanceMeasurement };
     } catch (error) {
+      logError("background-agent.invoke", error, { operationId, providerId, stage: "invoke" });
       const performanceMeasurement = {
         phases: {
           agentContextMs,
@@ -200,6 +202,7 @@ export class BackgroundAgentService {
         idempotencyKey: `${input.operationId}:${phase}`, body,
         authorization: { ownerLogicalSessionId: input.completionDelivery.recipientSessionId, sourceId: input.operationId } });
     } catch (error) {
+      logError("background-agent.completion", error, { operationId: input.operationId, stage: "completion-delivery" });
       this.onOperationEvent("BackgroundCompletionDeliveryFailed", { operationId: input.operationId, error: error.message });
     }
   }

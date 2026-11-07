@@ -216,7 +216,10 @@ public actor CloudRelayHTTPClient {
             do {
                 while !Task.isCancelled { try await self.consume(self.channel.receive()) }
             } catch is CancellationError { await self.failAll(CancellationError()) }
-            catch { await self.failAll(error) }
+            catch {
+                ClientFailureDiagnostics.log(error, operation: "relay.receive")
+                await self.failAll(error)
+            }
         }
     }
 
@@ -230,7 +233,10 @@ public actor CloudRelayHTTPClient {
                 await Task.yield()
             }
         }
-        catch { fail(id, error) }
+        catch {
+            ClientFailureDiagnostics.log(error, operation: "relay.send")
+            fail(id, error)
+        }
     }
 
     private func cancel(_ id: UUID) async {
@@ -456,8 +462,12 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
                 session.invalidateAndCancel()
             }
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "relay.connect")
             let status = (socket.response as? HTTPURLResponse)?.statusCode
-            Self.log.error("Connect failed: http=\(status ?? 0) closeCode=\(socket.closeCode.rawValue) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            if !Task.isCancelled, !(error is CancellationError),
+               !((error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled) {
+                Self.log.error("Connect failed: http=\(status ?? 0) closeCode=\(socket.closeCode.rawValue) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            }
             socket.cancel(with: .protocolError, reason: nil)
             session.invalidateAndCancel()
             if status == 401 || status == 403 { throw ClientConnectionError.httpStatus(status!) }
@@ -483,6 +493,7 @@ public actor CloudRelayMobileChannel: CloudRelaySecureChannel {
                 }
             }
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "relay.mobileReceive")
             Self.log.info("Mobile cloud receive ended: closeCode=\(self.socket.closeCode.rawValue) peerReason=\(ConnectionDiagnostic.closeReason(self.socket.closeReason), privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
             if socket.closeCode.rawValue == 4003 { throw ClientConnectionError.invalidCredential }
             throw error
@@ -624,7 +635,11 @@ public actor CloudRelayMacAgent {
                 }
             }
         } catch {
-            Self.log.error("Mac cloud socket ended: closeCode=\(self.socket.closeCode.rawValue) peerReason=\(ConnectionDiagnostic.closeReason(self.socket.closeReason), privacy: .public) connections=\(self.connections.count) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            ClientFailureDiagnostics.log(error, operation: "relay.macReceive")
+            if !Task.isCancelled, !(error is CancellationError),
+               !((error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled) {
+                Self.log.error("Mac cloud socket ended: closeCode=\(self.socket.closeCode.rawValue) peerReason=\(ConnectionDiagnostic.closeReason(self.socket.closeReason), privacy: .public) connections=\(self.connections.count) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            }
             if socket.closeCode.rawValue == 4003 { throw ClientConnectionError.invalidCredential }
             throw error
         }
@@ -794,15 +809,20 @@ public actor CloudRelayMacAgent {
             }
         } catch is CancellationError { }
         catch let failure as ClientServiceFailure {
+            ClientFailureDiagnostics.log(failure, operation: "relay.localRequest")
             Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(failure), privacy: .public)")
             await sendFailure(id: message.id, status: failure.statusCode, code: failure.code, connectionID: connectionID)
         } catch let failure as ClientConnectionError {
+            ClientFailureDiagnostics.log(failure, operation: "relay.localRequest")
             Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(failure), privacy: .public)")
             let status: Int
             if case .httpStatus(let value) = failure { status = value } else { status = 502 }
             await sendFailure(id: message.id, status: status, code: "LOCAL_BACKEND_UNAVAILABLE", connectionID: connectionID)
         } catch {
-            Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            ClientFailureDiagnostics.log(error, operation: "relay.localRequest")
+            if !Task.isCancelled, !((error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled) {
+                Self.log.error("Local request failed: request=\(message.id, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public)")
+            }
             await sendFailure(id: message.id, status: 502, code: "LOCAL_BACKEND_UNAVAILABLE", connectionID: connectionID)
         }
         connections[connectionID]?.requests.removeValue(forKey: message.id)
@@ -833,6 +853,7 @@ public actor CloudRelayMacAgent {
             ])
             _ = try await localTransport.data(for: request)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "relay.revokeCloudGrant")
             // The Mac controller performs a full device reconciliation on reconnect.
         }
     }
@@ -852,7 +873,10 @@ public actor CloudRelayMacAgent {
         }
         connection.registration = registration; connections[connectionID] = connection
         do { try await registration.value }
-        catch { connections[connectionID]?.registration = nil; throw error }
+        catch {
+            ClientFailureDiagnostics.log(error, operation: "relay.registerPeer")
+            connections[connectionID]?.registration = nil; throw error
+        }
         guard connections[connectionID] != nil else { throw CloudRelayTransportError.disconnected }
     }
 

@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { executableFingerprint } from "./providerExecutableDiscovery.mjs";
@@ -162,7 +163,7 @@ export class FirstRunSetupService {
         }
       }
       available = true;
-    } catch (error) { message = error.message; code = error.code ?? null; }
+    } catch (error) { logError("provider-setup.probe", error, { providerId: provider.id, stage: "probe" }); message = error.message; code = error.code ?? null; }
     return this.serialize(async () => {
       // A slow response from a replaced path must never enable the new path.
       if (this.checks.get(provider.id) !== check) return this.row(provider);
@@ -172,7 +173,7 @@ export class FirstRunSetupService {
         try {
           if (available && (!userDisabled || provider.programDiscovery)) await provider.configure(check.path, { fingerprint, model: check.model });
           if (available && environment) await provider.configureEnvironment(environment);
-        } catch (error) { available = false; message = error.message; code = error.code ?? "PROVIDER_BUSY"; }
+        } catch (error) { logError("provider-setup.configure", error, { providerId: provider.id, stage: "configure" }); available = false; message = error.message; code = error.code ?? "PROVIDER_BUSY"; }
         this.checks.delete(provider.id);
         // A failed candidate never replaces the working default environment.
         if ((environment || preserveWorking) && !available) return { ...(await this.row(provider)), path: check.path,
@@ -187,6 +188,7 @@ export class FirstRunSetupService {
       if (available && provider.withProgramTransition) {
         try { return await provider.withProgramTransition(check.path, { fingerprint }, commit); }
         catch (error) {
+          logError("provider-setup.transition", error, { providerId: provider.id, stage: "program-transition" });
           this.checks.delete(provider.id);
           return { ...(await this.row(provider)), path: check.path,
             checkState: "failed", message: error.message, errorCode: error.code ?? "PROVIDER_BUSY" };

@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { spawn } from "node:child_process";
 import { executeCodexSlashCommand } from "./codexSlashCommands.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -140,7 +141,8 @@ export class CodexAppServerClient {
         const result = await this.transport.request("account/login/start", auth);
         if (result?.type !== auth.type || generation !== this.transport.activeProcessGeneration) throw new Error("login not applied");
         this.authenticatedGeneration = generation;
-      } catch {
+      } catch (error) {
+        logError("codex-app-server.authenticate", error);
         throw Object.assign(new Error("无法为此 Codex 线程应用当前账号。请检查执行引擎中的登录状态。"), {
           code: "CODEX_EXECUTION_AUTH_UNAVAILABLE", dispatchState: "not_dispatched"
         });
@@ -396,6 +398,7 @@ export class CodexAppServerClient {
       excludeTurns: true
       }, options.requestTimeoutMs ?? this.threadResumeTimeoutMs);
     } catch (error) {
+      logError("codex-app-server.resume", error);
       if (error.code === "PROVIDER_RPC_TIMEOUT" && error.remoteDisposition === "unknown") {
         pending.requestId = error.requestId;
       } else if (this.unsettledResumes.get(threadId) === pending) this.unsettledResumes.delete(threadId);
@@ -554,6 +557,7 @@ export class CodexAppServerClient {
         this.restoreThreadToolPlanConfirmation(threadId, definitions, options.dynamicToolConfirmation);
         confirmed = this.confirmedToolSchemasByThread.get(threadId) ?? null;
       } catch (error) {
+        logError("codex-app-server.tool-plan", error);
         throw toolPlanConfirmationError(error, overrides.mismatchCode);
       }
     }
@@ -911,7 +915,8 @@ export class CodexAppServerClient {
             return this.transport.respondToServerRequest(message.id, credentials);
           }
         })
-        .catch(() => {
+        .catch((error) => {
+          logError("codex-app-server.refresh-auth", error);
           if (generation === this.transport.activeProcessGeneration) this.transport.rejectUnsupportedRequest(message.id);
         });
       return;
@@ -938,7 +943,7 @@ export class CodexAppServerClient {
         if (!this.serverRequestsByThread.has(threadId)) this.serverRequestsByThread.set(threadId, new Map());
         this.serverRequestsByThread.get(threadId).set(message.id, request);
         this.emitUserInputNotification(threadId, request, "corptie/codexUserInputRequested", "pending");
-      } catch (error) { this.rejectUnsupportedRequest(message, error.message); }
+      } catch (error) { logError("codex-app-server.interaction", error, { requestId: message.id }); this.rejectUnsupportedRequest(message, error.message); }
       return;
     }
     if (threadId && request.method === "item/tool/requestUserInput"
@@ -1054,6 +1059,7 @@ export class CodexAppServerClient {
         success: true
       });
     } catch (error) {
+      logError("codex-app-server.dynamic-tool", error, { requestId: message.id });
       await this.respondToServerRequest(message.id, {
         contentItems: [{
           type: "inputText",
@@ -1063,7 +1069,7 @@ export class CodexAppServerClient {
           })
         }],
         success: false
-      }).catch(() => {});
+      }).catch((responseError) => { logError("codex-app-server.dynamic-tool-response", responseError, { requestId: message.id }); });
     }
   }
 
@@ -1086,7 +1092,7 @@ export class CodexAppServerClient {
     }));
     this.rememberApprovedCommand(threadId, request);
     this.respondToServerRequest(request.requestId, { decision }).catch((error) => {
-      console.error("[codex-app-server] approval auto-response failed", error);
+      logError("codex-app-server.approval-response", error, { requestId: request.requestId });
     });
     return true;
   }

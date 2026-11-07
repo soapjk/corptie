@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
@@ -253,6 +254,7 @@ export class ScheduledSessionTaskService {
           else if (task.scheduleType === "process") await this.#tickProcess(task, now);
           else await this.#tickTime(task, now);
         } catch (error) {
+          logError("scheduled-task.trigger", error, { taskId: task.taskId, stage: "trigger" });
           await this.#handleTriggerFailure(task, null, error, now);
         }
       }
@@ -263,6 +265,7 @@ export class ScheduledSessionTaskService {
 
   #requestTick(source) {
     void this.tick().catch((error) => {
+      logError("scheduled-task.tick", error, { stage: "tick" });
       // SQLite maintenance and another short transaction may temporarily own
       // the writer lock. A scheduler poll is retryable by definition: keep the
       // Backend alive and let the next interval retry instead of turning a
@@ -627,6 +630,7 @@ export class ScheduledSessionTaskService {
       });
       return updatedRun;
     } catch (error) {
+      logError("scheduled-task.execute", error, { taskId: task.taskId, stage: "execute" });
       return this.#handleTriggerFailure(task, run, error, now, options);
     }
   }
@@ -912,6 +916,7 @@ export async function inspectProcess(spec) {
     );
     return processObservationFromPs(stdout, spec);
   } catch (error) {
+    logError("scheduled-task.process-inspection", error, { stage: "process-inspection" });
     return { state: "indeterminate", errorCode: "PROCESS_INSPECTION_FAILED", errorMessage: error.message };
   }
 }
