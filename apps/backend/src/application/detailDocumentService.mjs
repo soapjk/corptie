@@ -483,8 +483,8 @@ export class DetailDocumentService {
     this.markDirty(change);
     for (const events of [this.events, this.v2Events, this.nativeEvents]) {
       if (!change) { events.invalidate(); continue; }
-      // Keep resource hints in projection caches; stream invalidation accepts
-      // only route IDs. Resolve aliases from retained scope without another read.
+      // Keep business resource hints in projection caches; streams accept only
+      // route IDs. Match filters and aliases from retained scope without a read.
       const ids = [...events.clients].filter(client => {
         const scope = client.detailResourceScope;
         if (change.sessionId && ![client.sessionId, scope?.session?.id, scope?.logicalSessionId].includes(change.sessionId)) return false;
