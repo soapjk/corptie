@@ -46,6 +46,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let cardView = NativeContentCardSurface(frame: .zero)
     private var skin = ConversationSkin.classic
     private var renderedRow: AppKitChatTimelineRow?
+    private var measuredLayout: NativeTimelineLayoutCache.Layout?
     private var renderedWidth: CGFloat = 0
     private var measuredTypography = ConversationTypography.classic
     private var measuredSkin = ConversationSkin.classic
@@ -390,7 +391,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             needsLayout = true
             return
         }
-        let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin)
+        let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin, reusing: measuredLayout)
         // Retire the old topology before resizing a reused image canvas. Leaving
         // its fixed width/height attached while shrinking the bubble generates
         // intermediate Auto Layout conflicts before the new topology is installed.
@@ -654,7 +655,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             return true
         }
         measuredSkin = skin
-        let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin)
+        let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: availableWidth, skin: skin, reusing: measuredLayout)
         renderedWidth = availableWidth
         if measuredTypography != layout.typography {
             let selection = label.selectedRanges
@@ -671,6 +672,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     }
 
     private func apply(layout: NativeTimelineLayoutCache.Layout) {
+        measuredLayout = layout
         if let row = renderedRow {
             cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row, skin: skin)
         }

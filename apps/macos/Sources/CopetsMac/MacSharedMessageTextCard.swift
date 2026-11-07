@@ -163,6 +163,28 @@ private struct ReplyActions: NSViewRepresentable {
 
 /// Production adapter: cached attributed content and the existing TextKit
 /// selection/link view, with SDK-owned intrinsic card and row heights.
+private struct MessageTextSelectionIdentity: Equatable {
+    let sessionID: String?
+    let rowID: String
+    let revision: Int
+}
+private struct MessageTextSelectionKey: EnvironmentKey {
+    static let defaultValue: MessageTextSelectionIdentity? = nil
+}
+private struct MessageTextMenuKey: EnvironmentKey {
+    static var defaultValue: NSMenu? { nil }
+}
+private extension EnvironmentValues {
+    var messageTextContextMenu: NSMenu? {
+        get { self[MessageTextMenuKey.self] }
+        set { self[MessageTextMenuKey.self] = newValue }
+    }
+    var messageTextSelectionIdentity: MessageTextSelectionIdentity? {
+        get { self[MessageTextSelectionKey.self] }
+        set { self[MessageTextSelectionKey.self] = newValue }
+    }
+}
+
 struct MacSharedMessageTextCard: View {
     var skin: ConversationSkin = .classic
     let row: AppKitChatTimelineRow
@@ -272,6 +294,9 @@ struct MacSharedMessageTextCard: View {
             }
         }
         .environment(\.conversationSkin, skin)
+        .environment(\.messageTextSelectionIdentity, MessageTextSelectionIdentity(
+            sessionID: row.sessionID, rowID: row.id, revision: row.contentRevision))
+        .environment(\.messageTextContextMenu, contextMenu)
     }
 
 }
@@ -761,7 +786,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         precondition(MacSharedMessageTextCard.supports(row))
         // An identity-only update retains the same cached prose. Do not clear
         // its selection as if the cell had been rebound to another message.
-        let resetTextSelection = self.row?.id != row.id || self.row?.contentRevision != row.contentRevision
         self.row = row; self.baseDirectory = baseDirectory
         representedImageGeometries = row.imageGeometries
         elapsedSummary.text = nil
@@ -771,7 +795,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         measuredWidth = availableWidth
         contentConfigurationCount += 1
         configureContextMenu(for: row)
-        updateHost(resetTextSelection: resetTextSelection)
+        updateHost()
     }
 
     @discardableResult
@@ -789,7 +813,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         return true
     }
 
-    private func updateHost(needsLayout: Bool = true, resetTextSelection: Bool = false) {
+    private func updateHost(needsLayout: Bool = true) {
         guard let row, let measuredLayout else { return }
         let trace = SessionSwitchTrace.shared.start(.cardHost, sessionID: row.sessionID)
         defer { SessionSwitchTrace.shared.finish(trace) }
@@ -831,10 +855,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             invalidateIntrinsicContentSize()
         }
 
-        configureHostedTextViews(resetTextSelection: resetTextSelection)
-        DispatchQueue.main.async { [weak self] in
-            self?.configureHostedTextViews(resetTextSelection: resetTextSelection)
-        }
         if needsLayout { self.needsLayout = true }
     }
 
@@ -879,19 +899,28 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         firstTextView(in: host)?.beginTextSelection()
     }
 
-    private func configureHostedTextViews(resetTextSelection: Bool = false) {
-        guard let host else { return }
-        func textViews(in view: NSView) -> [NativeTimelineTextView] {
-            (view as? NativeTimelineTextView).map { [$0] }
-                ?? view.subviews.flatMap(textViews)
-        }
-        for textView in textViews(in: host) {
-            textView.cardContextMenu = menu
-            if resetTextSelection { textView.endTextSelection() }
-        }
+    private struct MenuIdentity: Equatable {
+        let isProcess: Bool
+        let deletion: String?
+        let queuedTask: String?
+        let fork: String?
+        let forkReason: String?
+        let timestamp: String
+        let hasCopy: Bool
+        let hasInput: Bool
+        let language: String
     }
+    private var menuIdentity: MenuIdentity?
 
     private func configureContextMenu(for row: AppKitChatTimelineRow) {
+        let hasCopy = row.copyText.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
+        let identity = MenuIdentity(isProcess: row.nativeStyle == .process,
+            deletion: row.deletableMessageID, queuedTask: row.queuedMessageTaskID,
+            fork: row.forkItemID, forkReason: row.forkUnavailableReason,
+            timestamp: row.contextTimestamp, hasCopy: hasCopy, hasInput: row.userInput != nil,
+            language: AppLanguageController.shared.languageCode)
+        guard menuIdentity != identity else { return }
+        menuIdentity = identity
         guard row.nativeStyle != .process else {
             menu = nil
             setAccessibilityCustomActions([])
@@ -911,7 +940,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             timestamp.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.timestamp")
             menu.addItem(timestamp)
         }
-        let hasCopy = !row.copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if !menu.items.isEmpty { menu.addItem(.separator()) }
         if hasCopy {
             let copy = NSMenuItem(title: L10n("Copy Message"), action: #selector(copyRepresentedMessage), keyEquivalent: "")
@@ -988,21 +1016,27 @@ private struct IntrinsicCappedContent<Content: View>: View {
 
 /// TextKit consumes the SDK width proposal and supplies the native text height.
 struct MeasuredMessageText: NSViewRepresentable {
+    @Environment(\.messageTextSelectionIdentity) private var selectionIdentity
+    @Environment(\.messageTextContextMenu) private var inheritedMenu
     let text: NSAttributedString
     var size: CGSize? = nil
     var baseDirectory: String? = nil
     var contextMenu: NSMenu? = nil
     var maximumLines = 0
     var identifier = NSUserInterfaceItemIdentifier("chat.timeline.body")
-    final class Coordinator { var text: NSAttributedString? }
+    final class Coordinator {
+        var text: NSAttributedString?
+        fileprivate var selectionIdentity: MessageTextSelectionIdentity?
+    }
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NativeTimelineTextView { NativeTimelineTextView() }
     func updateNSView(_ view: NativeTimelineTextView, context: Context) {
         view.identifier = identifier
         view.linkBaseDirectory = baseDirectory
-        view.cardContextMenu = contextMenu
-        view.textContainer?.maximumNumberOfLines = maximumLines
-        view.textContainer?.lineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
+        view.cardContextMenu = contextMenu ?? inheritedMenu
+        if view.textContainer?.maximumNumberOfLines != maximumLines { view.textContainer?.maximumNumberOfLines = maximumLines }
+        let mode: NSLineBreakMode = maximumLines > 0 ? .byTruncatingTail : .byWordWrapping
+        if view.textContainer?.lineBreakMode != mode { view.textContainer?.lineBreakMode = mode }
         if context.coordinator.text !== text {
             let selection = view.selectedRanges
             let sameText = view.string == text.string
@@ -1010,17 +1044,22 @@ struct MeasuredMessageText: NSViewRepresentable {
             if sameText { view.selectedRanges = selection }
             context.coordinator.text = text
         }
+        if context.coordinator.selectionIdentity != selectionIdentity {
+            view.endTextSelection()
+            context.coordinator.selectionIdentity = selectionIdentity
+        }
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeTimelineTextView, context: Context) -> CGSize? {
         if let size { return size }
         guard let container = nsView.textContainer, let manager = nsView.layoutManager else { return nil }
-        let width = proposal.width.flatMap { $0.isFinite ? max(1, $0) : nil }
+        let width = proposal.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         // The SDK also asks for a natural size with an unspecified proposal.
         // Returning nil would collapse NSTextView's non-intrinsic height.
         container.widthTracksTextView = false
         let previousWidth = container.containerSize.width
         let naturalWidth = previousWidth > 0 && previousWidth < .greatestFiniteMagnitude
-            ? previousWidth : CGFloat.greatestFiniteMagnitude
+            ? previousWidth : nsView.bounds.width
+        guard width != nil || naturalWidth > 0 else { return nil }
         let proposedSize = NSSize(width: width ?? naturalWidth, height: CGFloat.greatestFiniteMagnitude)
         if container.containerSize != proposedSize { container.containerSize = proposedSize }
         manager.ensureLayout(for: container)

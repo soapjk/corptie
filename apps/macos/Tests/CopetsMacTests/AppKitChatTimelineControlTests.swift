@@ -7,6 +7,62 @@ import CorptieConversation
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testPlainStreamingAppendRetainsContainerMenuAndCoalescesLayout() async throws {
+        let h = makeHarness(followsLatest: true, useSharedTextCards: true)
+        var text = "A streaming reply"
+        h.coordinator.apply(rows: [row(id: "plain-stream", text: text, showsHeader: false)])
+        await settlePositionPublication()
+        let cell = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+        let menu = try XCTUnwrap(cell.menu)
+        let resets = h.coordinator.sdkRowResetCount
+        let layouts = h.coordinator.documentHeightSyncCount
+        for revision in 1...20 {
+            text += " more words"
+            h.coordinator.apply(rows: [row(id: "plain-stream", revision: revision, text: text, showsHeader: false)])
+        }
+        XCTAssertEqual(h.coordinator.sdkRowResetCount, resets)
+        XCTAssertEqual(h.coordinator.documentHeightSyncCount, layouts,
+            "A streaming burst must not synchronously force layout for every update")
+        await settlePositionPublication()
+        let mounted = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+        XCTAssertTrue(mounted === cell)
+        XCTAssertTrue(mounted.menu === menu, "Body changes do not rebuild identical menu actions")
+        XCTAssertLessThanOrEqual(h.coordinator.documentHeightSyncCount - layouts, 3)
+        h.coordinator.apply(rows: [row(id: "plain-stream", revision: 21, text: "Short", showsHeader: false)])
+        await settlePositionPublication()
+        XCTAssertGreaterThan(h.coordinator.sdkRowResetCount, resets, "Replacement keeps the shrink repair")
+    }
+
+    func testAppendPolicyKeepsRichAndDisclosureChangesOnResetPath() {
+        let plain = row(id: "policy", text: "Plain", showsHeader: false)
+        XCTAssertTrue(SDKRowContainerResetPolicy.canRetainForAppend(previous: plain,
+            next: row(id: "policy", revision: 1, text: "Plain 中文 letters", showsHeader: false)))
+        for text in ["Short", "Plain **bold**", "Plain\nnext", "Plain `code`", "Plain | table"] {
+            XCTAssertFalse(SDKRowContainerResetPolicy.canRetainForAppend(previous: plain,
+                next: row(id: "policy", revision: 1, text: text, showsHeader: false)))
+        }
+        var expanded = row(id: "policy", revision: 1, text: "Plain more", showsHeader: false)
+        expanded.isExpanded = true
+        XCTAssertFalse(SDKRowContainerResetPolicy.canRetainForAppend(previous: plain, next: expanded))
+    }
+
+    func testSharedTextLayoutDoesNotOverwriteProposalWidth() {
+        let view = NativeTimelineTextView()
+        view.textStorage?.setAttributedString(NSAttributedString(string: String(repeating: "Long text ", count: 100)))
+        view.textContainer?.widthTracksTextView = false
+        view.textContainer?.containerSize = NSSize(width: 160, height: CGFloat.greatestFiniteMagnitude)
+        view.frame = NSRect(x: 0, y: 0, width: 320, height: 100)
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.textContainer?.containerSize.width, 160,
+            "SwiftUI measurement owns this text container, not the previous frame")
+        view.usesIntrinsicHeight = true
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.textContainer?.containerSize.width, 320,
+            "The separate native renderer retains bounds-based layout")
+    }
+
     func testNativeIdentityChangesPreserveBodyConfigurationSelectionAndStorage() async throws {
         for skin in ConversationSkin.allCases {
             let harness = makeHarness(followsLatest: false, useSharedTextCards: false)

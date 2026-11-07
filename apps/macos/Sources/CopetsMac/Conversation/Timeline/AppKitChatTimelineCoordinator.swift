@@ -72,7 +72,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var applyingCorrection = false
     private var isProvidingCell = false
     private var isSynchronizingDocumentExtent = false
-    private var documentExtentSyncScheduled = false
     private var isReloadingSDKRowData = false
     private var diagnosticEvents: [String] = []
 
@@ -101,6 +100,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var resizeLayoutTimer: Timer?
     #if DEBUG
     private(set) var resizeLayoutCommitCount = 0
+    private(set) var sdkRowResetCount = 0
+    private(set) var documentHeightSyncCount = 0
     #endif
     private var needsExactWidthReflow = false
     private var lastReflowMeasurementWidth: CGFloat?
@@ -716,6 +717,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             schedulePendingInitialViewportRestoreIfNeeded()
             return
         }
+        let previousRows = rows
         let oldIDs = rows.map(\.id)
         let newIDs = nextRows.map(\.id)
         let oldRevisions = revisionsByID
@@ -734,9 +736,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         // physical bottom must not strand a completed reply below the
         // visible document. Only an empty projection has no geometry to
         // consult, so it falls back to the semantic flag.
-        let shouldFollowAfterUpdate = pendingProcessCollapseRowID == nil && (rows.isEmpty
-            ? followedLatestBeforeUpdate
-            : isViewportNearBottom())
+        let shouldFollowAfterUpdate = pendingProcessCollapseRowID == nil
+            && (pendingRestorePosition?.followsLatest ?? (rows.isEmpty
+                ? followedLatestBeforeUpdate : isViewportNearBottom()))
         synchronizeTableWidth()
         let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
         let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom
@@ -773,11 +775,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 oldReplyIdentities: oldReplyIdentitiesByID,
                 in: tableView
             )
+            // Structural changes can remove headers or precede an explicit
+            // session restore; settle their document before compensation.
             synchronizeDocumentHeight(in: tableView)
             if let rowID = pendingProcessCollapseRowID {
                 pendingProcessCollapseRowID = nil
                 scrollToProcessRow(rowID)
-            } else if shouldFollowAfterUpdate, !pendingInitialScrollToBottom {
+            } else if shouldFollowAfterUpdate, !hasPendingInitialViewport {
                 scrollToBottom()
             } else if let returningFromEmptyProjection {
                 deferredEmptyProjectionViewport = nil
@@ -822,7 +826,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         })
         guard !changed.isEmpty else { return }
         let resetSDKRows = IndexSet(changed.filter { index in
-            oldRevisions[nextRows[index].id] != nextRows[index].contentRevision
+            (oldRevisions[nextRows[index].id] != nextRows[index].contentRevision
+                && !(usesSharedCard(previousRows[index]) && usesSharedCard(nextRows[index])
+                    && SDKRowContainerResetPolicy.canRetainForAppend(previous: previousRows[index], next: nextRows[index])))
                 || (oldReplyIdentities[index] == nil) != (nextRows[index].replyIdentity == nil)
         })
         for row in changed {
@@ -845,12 +851,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         }
         resetSDKRowContainers(resetSDKRows, in: tableView)
         tableView.noteHeightOfRows(withIndexesChanged: changed)
-        synchronizeDocumentHeight(in: tableView)
+        // The reset classification above already checked the suffix. Reuse
+        // that result instead of scanning an appended body a second time.
+        let onlyStableAppend = resetSDKRows.isEmpty && changed.allSatisfy {
+            oldRevisions[nextRows[$0].id] != nextRows[$0].contentRevision
+        }
+        if !onlyStableAppend || !shouldFollowAfterUpdate || hasPendingInitialViewport {
+            synchronizeDocumentHeight(in: tableView)
+        }
         if let rowID = pendingProcessCollapseRowID {
             pendingProcessCollapseRowID = nil
             scrollToProcessRow(rowID)
         } else if shouldFollowAfterUpdate,
-           !pendingInitialScrollToBottom {
+           !hasPendingInitialViewport {
             scrollToBottom()
         } else if let prependAnchor {
             restore(anchor: prependAnchor, in: tableView)
@@ -901,20 +914,32 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     private func scheduleDocumentExtentSync() {
-        guard presentationActive, !isSynchronizingDocumentExtent,
-              !documentExtentSyncScheduled else { return }
-        documentExtentSyncScheduled = true
+        guard presentationActive, !isSynchronizingDocumentExtent, !applyingCorrection else { return }
+        scheduleViewportCommit()
+    }
+
+    /// Layout completion and scroll intent share one pending main-queue effect.
+    private func scheduleViewportCommit() {
+        guard !correctionScheduled else { return }
+        correctionScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.documentExtentSyncScheduled = false
-            guard self.presentationActive, let tableView = self.tableView else { return }
-            // AppKit has completed its delegate/layout transaction. Updating
-            // the exterior document here cannot reenter automatic row sizing.
-            self.synchronizeDocumentExtent(in: tableView)
+            self.correctionScheduled = false
+            guard self.presentationActive, let table = self.tableView else { return }
+            if self.pendingCorrection != nil { self.commitCorrection() }
+            else {
+                self.synchronizeDocumentExtent(in: table)
+                // A late SDK height resolution can change the bottom after
+                // the earlier correction. Reconcile only if it actually moved.
+                self.reconcileLayout()
+            }
         }
     }
 
     private func synchronizeDocumentHeight(in tableView: NSTableView) {
+        #if DEBUG
+        documentHeightSyncCount += 1
+        #endif
         tableView.layoutSubtreeIfNeeded()
         synchronizeDocumentExtent(in: tableView)
     }
@@ -1082,13 +1107,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         } else {
             pendingCorrection = correction
         }
-        guard !correctionScheduled else { return }
-        correctionScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.correctionScheduled = false
-            self.commitCorrection()
-        }
+        scheduleViewportCommit()
     }
 
     private func commitCorrection(allowDuringUserScroll: Bool = false) {
@@ -1389,9 +1408,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             : CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
         let width = max(120, lane.width)
         // Recenter even when the clamped reading width stays constant on resize.
-        tableView.setFrameOrigin(NSPoint(x: lane.minX, y: tableView.frame.minY))
-        tableView.setFrameSize(NSSize(width: width, height: tableView.frame.height))
-        if let documentView = scrollView.documentView {
+        if abs(tableView.frame.minX - lane.minX) >= 0.5 {
+            tableView.setFrameOrigin(NSPoint(x: lane.minX, y: tableView.frame.minY))
+        }
+        if abs(tableView.frame.width - width) >= 0.5 {
+            tableView.setFrameSize(NSSize(width: width, height: tableView.frame.height))
+        }
+        if let documentView = scrollView.documentView, abs(documentView.frame.width - viewportWidth) >= 0.5 {
             documentView.setFrameSize(NSSize(width: viewportWidth, height: documentView.frame.height))
         }
         guard abs(column.width - width) >= 0.5 else { return }
@@ -1456,7 +1479,6 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 }
             } else if requiresReflow {
                 updateWidthReflowHeights(rowsToReflow, in: tableView)
-                synchronizeDocumentHeight(in: tableView)
             }
             if requiresReflow {
                 lastReflowMeasurementWidth = measurementWidth
@@ -1504,13 +1526,15 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let affected = visible.location == NSNotFound ? IndexSet()
             : IndexSet(integersIn: visible.location..<min(rows.count, NSMaxRange(visible)))
         updateWidthReflowHeights(affected, in: tableView)
-        synchronizeDocumentHeight(in: tableView)
         if followsLatest { enqueueCorrection(.bottom) }
         else if let anchor { _ = restore(anchor: anchor, in: tableView) }
     }
 
     private func resetSDKRowContainers(_ indexes: IndexSet, in tableView: NSTableView) {
         guard !indexes.isEmpty else { return }
+        #if DEBUG
+        sdkRowResetCount += indexes.count
+        #endif
         // Content changes invalidate only their native row containers.
         // Width-only changes bypass this path and retain mounted cells.
         tableView.beginUpdates()
@@ -1684,6 +1708,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
 
     func prepareInitialPosition(_ position: AppKitChatTimelinePosition) {
         lastRequestedRestorePosition = position
+        pendingCorrection = nil
         pendingRestorePosition = position
         pendingInitialScrollToBottom = false
         followsLatest = position.followsLatest

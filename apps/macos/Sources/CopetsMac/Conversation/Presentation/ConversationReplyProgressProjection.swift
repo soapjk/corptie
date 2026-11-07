@@ -12,7 +12,8 @@ enum ConversationReplyProgressProjection {
 
 extension DetailDisplayCache {
     func projectingReplyProgress() -> Self {
-        let projected = ConversationReplyProgressProjection.entries(displayEntries)
+        guard !isPresentationPrepared else { return self }
+        let projected = uniquedChatDisplayEntries(ConversationReplyProgressProjection.entries(displayEntries))
         let removedWeight = displayEntries.reduce(0) { $0 + $1.displayWeight }
             - projected.reduce(0) { $0 + $1.displayWeight }
         let anchor = restorationAnchorRowID.map { rowID in
@@ -21,6 +22,6 @@ extension DetailDisplayCache {
         return .init(sessionId: sessionId, displayItems: displayItems, displayEntries: projected,
             totalDisplayEntryCount: max(0, totalDisplayEntryCount - removedWeight),
             visibleMessageLimit: visibleMessageLimit, signature: signature, sourceSignature: sourceSignature,
-            restorationAnchorRowID: anchor)
+            restorationAnchorRowID: anchor, isPresentationPrepared: true)
     }
 }

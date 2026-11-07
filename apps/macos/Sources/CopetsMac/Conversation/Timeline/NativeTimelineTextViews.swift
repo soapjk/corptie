@@ -128,7 +128,9 @@ final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
 
     override func layout() {
         super.layout()
-        guard let textContainer, bounds.width > 0 else { return }
+        // Shared SwiftUI leaves own their proposal width in sizeThatFits.
+        // Only the native intrinsic-height renderer uses bounds as authority.
+        guard usesIntrinsicHeight, let textContainer, bounds.width > 0 else { return }
         let expectedSize = NSSize(
             width: max(1, bounds.width),
             height: CGFloat.greatestFiniteMagnitude

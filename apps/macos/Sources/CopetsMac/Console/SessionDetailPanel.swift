@@ -51,11 +51,15 @@ struct SessionDetailPanel: View {
     @State private var nativeManagementExpanded = false
 
     private func updateDisplayValues() {
-        let value = SessionDetailPanelValues(tasks: entityClient.tasks, works: entityClient.works,
-            roles: entityClient.roles, providers: modelCatalog.agentProviders,
-            models: modelCatalog.models(for: session.external?.provider),
-            defaultReasoning: modelCatalog.defaultReasoning(for: session.external?.provider),
-            isSwitchingModel: backendClient.isSwitchingModel, isSwitchingReasoning: backendClient.isSwitchingReasoning)
+        updateEntityDisplayValues()
+        updateModelDisplayValues()
+        updateCommandDisplayValues()
+    }
+    private func updateEntityDisplayValues() {
+        var value = displayValues
+        value.tasks = entityClient.tasks
+        value.works = entityClient.works
+        value.roles = entityClient.roles
         let relevantTasks = value.tasks.filter {
             $0.workId == session.workId && $0.archived != true && $0.deletionStatus == nil && $0.lifecycleState != "done"
         }
@@ -70,6 +74,22 @@ struct SessionDetailPanel: View {
                 ConversationFocusTask(id: $0.id, title: $0.title, sessionID: $0.currentSessionId, summary: $0.conversationDetailSummary)
             }
         }
+    }
+    private func updateModelDisplayValues() {
+        let provider = session.external?.provider
+        let providers = modelCatalog.agentProviders
+        let models = modelCatalog.models(for: provider)
+        let reasoning = modelCatalog.defaultReasoning(for: provider)
+        if displayValues.providers != providers { displayValues.providers = providers }
+        if displayValues.models != models { displayValues.models = models }
+        if displayValues.defaultReasoning != reasoning { displayValues.defaultReasoning = reasoning }
+    }
+    private func updateCommandDisplayValues() {
+        // Sending/command notifications must never read or filter entity arrays.
+        let model = backendClient.isSwitchingModel
+        let reasoning = backendClient.isSwitchingReasoning
+        if displayValues.isSwitchingModel != model { displayValues.isSwitchingModel = model }
+        if displayValues.isSwitchingReasoning != reasoning { displayValues.isSwitchingReasoning = reasoning }
     }
     private func restoreOwnedReferences() {
         let source = backendClient.supplementaryDataController
@@ -145,15 +165,15 @@ struct SessionDetailPanel: View {
         }
         .onReceive(modelCatalog.objectWillChange.receive(on: DispatchQueue.main).whilePresented(isPresentationActive)) { _ in
             guard isPresentationActive else { return }
-            updateDisplayValues()
+            updateModelDisplayValues()
         }
         .onReceive(entityClient.sessionGroupingDidChange.whilePresented(isPresentationActive)) { _ in
             guard isPresentationActive else { return }
-            updateDisplayValues()
+            updateEntityDisplayValues()
         }
         .onReceive(backendClient.sessionCommandController.objectWillChange.receive(on: DispatchQueue.main).whilePresented(isPresentationActive)) { _ in
             guard isPresentationActive else { return }
-            updateDisplayValues()
+            updateCommandDisplayValues()
         }
         .sheet(item: $contextReferenceAddMode) { mode in
             let generation = detailOpeningGeneration
@@ -202,7 +222,7 @@ struct SessionDetailPanel: View {
         .onChange(of: session.id) { _, _ in richDetailReady = nil; nativeManagementExpanded = false; retireDetailDestination() }
         .onChange(of: session.taskId) { _, _ in retireDetailDestination() }
         .onChange(of: session.workId) { _, _ in updateDisplayValues(); retireDetailDestination() }
-        .onChange(of: session.external?.provider) { _, _ in retireDetailDestination() }
+        .onChange(of: session.external?.provider) { _, _ in updateModelDisplayValues(); retireDetailDestination() }
         .onChange(of: isPresentationActive) { _, active in if !active { retireDetailDestination() } }
         .onDisappear { retireDetailDestination() }
         .alert(L10n("切换 Provider？"), isPresented: Binding(

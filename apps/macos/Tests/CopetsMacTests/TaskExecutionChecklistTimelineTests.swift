@@ -84,6 +84,42 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
         XCTAssertNil(ConversationChecklistDockProjection(rows: [normal]).checklist)
         XCTAssertTrue(ConversationChecklistDockProjection(rows: []).timelineRows.isEmpty)
     }
+    func testTextUpdatesReuseStructureButRefreshRowsAndChecklistChangesRebuild() throws {
+        let planRow = builder.nativeAppKitRow(ChatDisplayEntry(kind: .message(try item(count: 8))), expandedTurnIds: [])
+        let message = AppKitChatTimelineRow(id: "stream", contentRevision: 1, nativeText: "Before",
+            copyText: "Before", nativeStyle: .agent, title: "", metadata: "",
+            expandableTurnId: "stream-turn", isExpanded: false)
+        let previous = [planRow, message]
+        var dock = ConversationChecklistDockProjection(rows: previous)
+        var changed = message
+        changed.nativeText = "After streaming"
+        changed.contentRevision += 1
+        let current = [planRow, changed]
+        XCTAssertFalse(dock.update(rows: current, previousRows: previous))
+        XCTAssertEqual(dock.timelineRows.first?.nativeText, "After streaming")
+        XCTAssertEqual(dock.timelineIndexByRowID[message.id], 0)
+        XCTAssertEqual(dock.disclosureRowIndices["stream-turn"], 1)
+        let revised = builder.nativeAppKitRow(ChatDisplayEntry(kind: .message(try item(count: 8, revision: 2, closed: true))), expandedTurnIds: [])
+        XCTAssertTrue(dock.update(rows: [revised, changed], previousRows: current))
+        XCTAssertNil(dock.checklist)
+        XCTAssertEqual(dock.latestChecklist?.revision, 2)
+        XCTAssertEqual(dock.timelineRows.map(\.id), [revised.id, message.id])
+        XCTAssertTrue(dock.update(rows: [changed], previousRows: [revised, changed]))
+        XCTAssertEqual(dock.disclosureRowIndices["stream-turn"], 0)
+    }
+
+    func testCollapsedPinnedHeightDoesNotPrepareExpandedChecklist() throws {
+        let plan = try XCTUnwrap(item(count: 173, revision: 9876).executionPlan)
+        let cache = NativePlanChecklistHeightCache.shared
+        let before = cache.taskPreparationCount
+        for width: CGFloat in [240, 300, 520, 780] {
+            XCTAssertEqual(PinnedExecutionChecklistCard.height(plan: plan, width: width, expanded: false), 36)
+        }
+        XCTAssertEqual(cache.taskPreparationCount, before)
+        XCTAssertGreaterThan(PinnedExecutionChecklistCard.height(plan: plan, width: 300, expanded: true), 36)
+        XCTAssertEqual(cache.taskPreparationCount, before + 1)
+    }
+
     func testPinnedCardIsOneLineForShortAndLongListsAndSummaryUsesPreparedCurrentItem() throws {
         for count in [0, 2, 200] {
             let plan = try XCTUnwrap(item(count: count, revision: 100, activeIndex: count == 200 ? 150 : nil).executionPlan)

@@ -124,6 +124,37 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         XCTAssertFalse(MessageBubbleWidthPolicy.requiresFullWidthLayout("plain **bold** text"))
     }
 
+    func testResizeRetainsNaturalWidthPreparationAndInvalidatesContentFontAndHeader() throws {
+        for text in ["Plain **formatted** response", "```swift\nprint(1)\n```"] {
+            var row = AppKitChatTimelineRow(id: "width-preparation", contentRevision: 1,
+                nativeText: text, copyText: text, nativeStyle: .agent, title: "Assistant", metadata: "Now",
+                expandableTurnId: nil, isExpanded: false, showsHeader: false)
+            var layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: 900, skin: .classic)
+            let original = try XCTUnwrap(layout.naturalWidthMetrics)
+            for width: CGFloat in [800, 620, 320, 950] {
+                layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: width,
+                    skin: .classic, reusing: layout)
+                XCTAssertTrue(layout.naturalWidthMetrics === original)
+                let fresh = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: width, skin: .classic)
+                XCTAssertEqual(layout.cardWidth, fresh.cardWidth)
+            }
+            let reading = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: 950,
+                skin: .codexFlat, reusing: layout)
+            XCTAssertFalse(reading.naturalWidthMetrics === original)
+            let renamed = AppKitChatTimelineRow(id: row.id, contentRevision: row.contentRevision,
+                nativeText: text, copyText: text, nativeStyle: .agent, title: "A different heading", metadata: "Now",
+                expandableTurnId: nil, isExpanded: false, showsHeader: true)
+            let header = NativeTimelineLayoutCache.shared.intrinsicContent(for: renamed, columnWidth: 950,
+                skin: .classic, reusing: layout)
+            XCTAssertFalse(header.naturalWidthMetrics === original)
+            row.contentRevision += 1
+            row.nativeText += " changed"
+            let changed = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: 950,
+                skin: .classic, reusing: layout)
+            XCTAssertFalse(changed.naturalWidthMetrics === original)
+        }
+    }
+
     private func preferredWidth(
         text: String,
         processWidth: CGFloat = 0,

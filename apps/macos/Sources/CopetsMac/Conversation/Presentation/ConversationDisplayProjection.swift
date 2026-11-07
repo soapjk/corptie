@@ -15,6 +15,7 @@ struct DetailDisplayCache: Sendable {
     let visibleMessageLimit: Int
     let signature: String
     let sourceSignature: String
+    let isPresentationPrepared: Bool
     /// Non-nil only when the requested semantic viewport anchor was present
     /// in this bounded projection window.
     let restorationAnchorRowID: String?
@@ -27,7 +28,8 @@ struct DetailDisplayCache: Sendable {
         visibleMessageLimit: Int,
         signature: String,
         sourceSignature: String,
-        restorationAnchorRowID: String? = nil
+        restorationAnchorRowID: String? = nil,
+        isPresentationPrepared: Bool = false
     ) {
         self.sessionId = sessionId
         self.displayItems = displayItems
@@ -36,6 +38,7 @@ struct DetailDisplayCache: Sendable {
         self.visibleMessageLimit = visibleMessageLimit
         self.signature = signature
         self.sourceSignature = sourceSignature
+        self.isPresentationPrepared = isPresentationPrepared
         self.restorationAnchorRowID = restorationAnchorRowID
     }
 }
