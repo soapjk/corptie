@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { ClientResourceAPI } from "./clientResourceAPI.mjs";
 
 export function handleArtifactHttpRequest({ request, response, url, service, requestTimeoutMs = 5_000, writesAllowed = true }) {
@@ -8,6 +9,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
   if (!isArtifactApi) return false;
 
   const timeout = setTimeout(() => {
+    logError("artifact.http-deadline", Object.assign(new Error("Artifact request deadline exceeded."), { code: "ARTIFACT_REQUEST_TIMEOUT" }), { method: request.method, stage: "deadline" });
     sendJson(response, 503, {
       code: "ARTIFACT_REQUEST_TIMEOUT",
       error: "Artifact request did not complete within the server deadline."
@@ -191,7 +193,10 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
     }
 
     throw httpError("ARTIFACT_ROUTE_NOT_FOUND", "Artifact route not found.", 404);
-  }).catch((error) => sendJson(response, error.statusCode ?? error.status ?? 500, { code: error.code ?? "INTERNAL", error: error.message }))
+  }).catch((error) => {
+    logError("artifact.http", error, { method: request.method, stage: "request" });
+    return sendJson(response, error.statusCode ?? error.status ?? 500, { code: error.code ?? "INTERNAL", error: error.message });
+  })
     .finally(() => clearTimeout(timeout));
   return true;
 }

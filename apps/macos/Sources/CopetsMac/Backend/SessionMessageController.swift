@@ -1,3 +1,4 @@
+import CorptieClientCore
 import Foundation
 
 /// Submission feedback is immediate and memory-only; server echoes remain authoritative.
@@ -195,6 +196,7 @@ final class SessionMessageController {
                     sendStatusMessage = L10n("Sent to Codex")
                 }
             } catch {
+                ClientFailureDiagnostics.log(error, operation: "SessionMessageController.sendText", sessionID: session.id)
                 if presentsAcknowledgedUserMessage,
                    let detail = timelineLocalOverlay.removeSubmission(messageID: messageID,
                        sessionID: session.id, from: cachedDetail(session.id)) {

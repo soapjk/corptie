@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { coordinationProgressFor } from './coordinationProgressService.mjs';
 import https from "node:https";
 import { clientSafeJSONStringify } from "../utils/unicodeText.mjs";
@@ -698,6 +699,7 @@ export class ClientDeviceGateway {
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) {
+      logError("device-gateway.request", error, { stage: "request" });
       const status = error.status ?? error.statusCode ?? 500;
       let worktreeMessage;
       if (worktreeDiagnosticAllowed) {
@@ -772,7 +774,7 @@ export class ClientDeviceGateway {
         return reply(response, 200, { deleted: true });
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
-    } catch (error) { reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" }); }
+    } catch (error) { logError("device-gateway.admin", error, { stage: "admin" }); reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" }); }
   }
 }
 

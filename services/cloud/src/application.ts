@@ -1,4 +1,5 @@
 import { createWebsiteHandler } from "./websitePages.js";
+import { logCloudError } from "./errorDiagnostics.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { AddressInfo } from "node:net";
@@ -85,6 +86,7 @@ export function createCloudApplication(dependencies: ApplicationDependencies) {
       const response = await dispatch(request, dependencies, devices, invitations, oauthClients, relay, website);
       await sendWebResponse(outgoing, response);
     } catch (error) {
+      logCloudError("cloud.http", error);
       await sendWebResponse(outgoing, errorResponse(error));
     }
   });

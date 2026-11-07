@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 export function handleFoundationModelUpdateHttpRequest({
   request, response, url, backendStoreReady, store, foundationModelSettings,
   agentProviderRegistry, backgroundAgentService, taskSummaryService, readJson, sendJson
@@ -14,7 +15,10 @@ export function handleFoundationModelUpdateHttpRequest({
       for (const taskID of taskSummaryService.running.keys()) taskSummaryService.request(taskID);
       taskSummaryService.onProviderChanged();
       sendJson(response, 200, value);
-    }).catch(() => sendJson(response, 400, { error: "模型设置无效，请检查 Provider、模型和 API 地址。" }));
+    }).catch((error) => {
+      logError("model-settings.update", error, { stage: "update" });
+      return sendJson(response, 400, { error: "模型设置无效，请检查 Provider、模型和 API 地址。" });
+    });
     return true;
   }
   return false;
@@ -68,6 +72,7 @@ export function handleChoiceParserTestHttpRequest({
         sendJson(response, result.ok ? 200 : 422, result);
       })
       .catch((error) => {
+        logError("model-settings.choice-test", error, { stage: "choice-parser-test" });
         sendJson(response, 400, { ok: false, error: error.message });
       });
     return true;

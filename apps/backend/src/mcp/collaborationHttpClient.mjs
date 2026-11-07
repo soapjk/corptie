@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 export class CollaborationHttpClient {
   constructor(options = {}) {
     this.baseUrl = String(options.baseUrl ?? defaultBackendUrl()).replace(/\/$/, "");
@@ -61,11 +62,14 @@ export class CollaborationHttpClient {
           }
         } catch (error) {
           if (stopped || error?.name === "AbortError") break;
+          logError("collaboration-http.events", error);
         }
         if (!stopped) await delay(500);
       }
     };
-    run().catch(() => {});
+    run().catch((error) => {
+      if (!stopped && error?.name !== "AbortError") logError("collaboration-http.events-terminal", error);
+    });
     return () => {
       stopped = true;
       controller.abort();
@@ -87,6 +91,7 @@ export class CollaborationHttpClient {
         }
       });
     } catch (error) {
+      logError("collaboration-http.request", error, { ...this.sessionScope, bindingId: this.sessionScope.providerBindingId, method: init.method, stage: "fetch" });
       const wrapped = new Error(`Corptie backend is unavailable at ${this.baseUrl}: ${error.message}`);
       wrapped.code = "BACKEND_UNAVAILABLE";
       throw wrapped;

@@ -1,3 +1,4 @@
+import { logError } from "../../utils/errorDiagnostics.mjs";
 import { ensureCorptieCodexRuntime as prepareCodexRuntime } from "../../runtime/corptieCodexRuntime.mjs";
 import { ensureCorptieClaudeRuntime as prepareClaudeRuntime } from "../../runtime/corptieClaudeRuntime.mjs";
 import { ensureCorptieOpenClackyRuntime as prepareOpenClackyRuntime } from "../../runtime/corptieOpenClackyRuntime.mjs";
@@ -134,6 +135,7 @@ export function createProviderStartupMaintenance({
     try {
       return await operation();
     } catch (error) {
+      logError("startup-maintenance.operation", error, { operation: name, providerId, stage: "initialize" });
       if (providerId) {
         setProviderRuntimeReadiness(providerId, {
           state: "not_ready",

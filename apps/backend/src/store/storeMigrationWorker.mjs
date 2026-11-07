@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { parentPort, workerData } from "node:worker_threads";
 import { CorptieStore } from "./corptieStore.mjs";
 
@@ -23,6 +24,7 @@ try {
   }
   parentPort?.postMessage({ ok: true });
 } catch (error) {
+  logError("store-worker.migrate", error, { stage: "migration" });
   try {
     await store.close({ checkpoint: false });
   } catch {

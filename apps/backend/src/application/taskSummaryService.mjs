@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,7 +43,10 @@ export class TaskSummaryService {
       if (this.repository.basis(task.id)) this.request(task.id);
     }
     this.onProviderChanged();
-    void this.refreshOutdatedSummaries().catch(() => this.logger.warn("[task-summary] refresh scan failed"));
+    void this.refreshOutdatedSummaries().catch((error) => {
+      logError("task-summary.refresh", error, { stage: "refresh-scan" });
+      this.logger.warn("[task-summary] refresh scan failed");
+    });
     this.schedule();
   }
 
@@ -160,6 +164,7 @@ export class TaskSummaryService {
       if (!claim) continue;
       this.running.set(job.task_id, operationID);
       void this.generate(claim).catch((error) => {
+        logError("task-summary.generate", error, { taskId: job.task_id, operationId: operationID, stage: "generate" });
         // Do not log prompts, private output, credentials, or raw provider errors.
         this.logger.warn(`[task-summary] generation failed code=${error.code ?? "TASK_SUMMARY_FAILED"}`);
       }).finally(() => {

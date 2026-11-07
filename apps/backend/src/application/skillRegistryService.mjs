@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 // Skill 维护中心（provider-neutral）：全局共享的 Skill 映射表 + 物化安装。
 //
 // 职责边界：
@@ -1563,6 +1564,7 @@ export class SkillRegistryService {
         validateProviderToolSchemas(serverName, listed.tools);
         toolCount += listed.tools.length;
       } catch (error) {
+        logError("skill.mcp-verify", error, { stage: "tools-list" });
         if (new Set(["MCP_TOOLS_EMPTY", "MCP_TOOL_SCHEMA_INVALID", "MCP_TOOL_SCHEMA_UNSUPPORTED"]).has(error?.code)) {
           throw error;
         }
@@ -1626,6 +1628,7 @@ async function readJsonDescriptor(descriptorPath) {
   try {
     parsed = JSON.parse(await readFile(descriptorPath, "utf8"));
   } catch (error) {
+    logError("skill.descriptor", error, { stage: "descriptor-decode" });
     throw skillError(
       "MCP_CONFIG_INVALID",
       `无法解析 MCP 描述 ${basename(descriptorPath)}：${error?.message ?? String(error)}`
@@ -1648,6 +1651,7 @@ async function readPluginManifest(manifestPath) {
   try {
     parsed = JSON.parse(await readFile(manifestPath, "utf8"));
   } catch (error) {
+    logError("skill.manifest", error, { stage: "manifest-decode" });
     throw skillError(
       "PACKAGE_MANIFEST_INVALID",
       `无法解析插件清单 ${manifestPath}：${error?.message ?? String(error)}`

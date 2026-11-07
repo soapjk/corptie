@@ -1,3 +1,4 @@
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 
 // Post-turn orchestration keeps workspace and Provider transitions distinct.
@@ -20,6 +21,7 @@ export function createPostTurnWorkspaceOperations({
         ...options
       })
     )).catch((error) => {
+      logError("workspace-transition.complete", error, { transitionId: transition.transitionId, stage: "complete" });
       console.error(`[workspace-transition] failed transition=${transition.transitionId} error=${error.message}`);
       emitEvent("SessionWorkspaceSwitchFailed", {
         logicalSessionId: logical.logicalSessionId,
@@ -43,6 +45,7 @@ export function createPostTurnWorkspaceOperations({
       reference,
       logical
     ).catch((error) => {
+      logError("provider-switch.continue", error, { transitionId: transition.transitionId, stage: "continue" });
       console.error(`[provider-switch] failed transition=${transition.transitionId} error=${error.message}`);
       emitEvent("ProviderSwitchFailed", {
         logicalSessionId: logical.logicalSessionId,
@@ -57,6 +60,7 @@ export function createPostTurnWorkspaceOperations({
     try {
       return workspaceContinuationCoordinator.enqueueForTransition(transitionId);
     } catch (error) {
+      logError("workspace-continuation.enqueue", error, { transitionId, stage: "enqueue" });
       console.error(`[workspace-continuation] deferred transition=${transitionId} error=${error.message}`);
       emitEvent("WorkspaceContinuationDeferred", {
         transitionId,
@@ -90,6 +94,7 @@ export function createPostTurnWorkspaceOperations({
         }, { sessionId: logical.legacySessionId });
       })
       .catch((error) => {
+        logError("workspace-inventory.refresh", error, { logicalSessionId: logical.logicalSessionId, stage: "refresh" });
         console.warn(`[workspace-inventory] refresh failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
       });
   }
@@ -128,6 +133,7 @@ export function createPostTurnWorkspaceOperations({
             runtime.options
           );
         } catch (error) {
+          logError("workspace-route.rebind", error, { logicalSessionId: logical.logicalSessionId, stage: "rebind" });
           console.warn(`[workspace-route] path rebind failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
           emitEvent("SessionWorkspacePathRebindFailed", {
             sessionId: logical.legacySessionId,

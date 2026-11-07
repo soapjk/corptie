@@ -44,6 +44,7 @@ extension PadWorkspace {
             saveResidentState(for: selected)
         } catch is CancellationError { }
         catch {
+            ClientFailureDiagnostics.log(error, operation: "PadRealtime.capabilities")
             guard !Task.isCancelled, capabilityRequestToken == token,
                   selectedCapabilityKey(connection) == key else { return }
             capabilityRefreshError = "停止能力确认失败，请重新连接后重试"
@@ -243,6 +244,7 @@ extension PadWorkspace {
                 guard !Task.isCancelled, realtimeGeneration == generation,
                       connection.recoveryRevision == connectionRevision else { return }
                 Self.realtimeLog.error("Realtime failed: generation=\(generation, privacy: .public) reason=\(ConnectionDiagnostic.failure(error), privacy: .public) pulseAgeSeconds=\(self.lastRealtimePulseAt.map { Date().timeIntervalSince($0) } ?? -1) networkAvailable=\(connection.networkAvailable)")
+                ClientFailureDiagnostics.log(error, operation: "PadRealtime.stream")
                 suspectedStalledChannel = Self.realtimeFailureSuggestsStalledChannel(error)
                 realtimeConnected = false
                 realtimePausedAt = Date()
@@ -307,6 +309,7 @@ extension PadWorkspace {
                     realtimeReconnectFailed = true
                     return
                 }
+                ClientFailureDiagnostics.log(error, operation: "PadRealtime.legacyStream")
                 suspectedStalledChannel = Self.realtimeFailureSuggestsStalledChannel(error)
             }
             failures = min(failures + 1, 5)
@@ -392,6 +395,7 @@ extension PadWorkspace {
                     }
                 } catch {
                     if Task.isCancelled { return }
+                    ClientFailureDiagnostics.log(error, operation: "PadRealtime.refresh")
                     liveStatus = "同步暂未完成，正在自动重试"
                     do { try await Task.sleep(for: .seconds(3)) } catch { return }
                 }

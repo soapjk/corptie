@@ -1,6 +1,7 @@
 import { createWriteStream, mkdirSync, openSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { format } from "node:util";
+import { redactInlineSecrets } from "./providerRawMetadata.mjs";
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_BACKUP_COUNT = 5;
@@ -88,7 +89,16 @@ function openOutput(path) {
     autoClose: true,
     encoding: "utf8"
   });
-  stream.on("error", (error) => originalConsole.error(`[backend-logging] ${error.message}`));
+  stream.on("error", (error) => {
+    // Bypass the failed stream; never route its own error back through console.
+    const safe = (value) => typeof value === "string"
+      ? redactInlineSecrets(value).replace(/\/(?:Users|home)\/[^/\s:]+/g, "~") : value;
+    originalConsole.error("[backend-logging]", JSON.stringify({
+      timestamp: new Date().toISOString(), name: error.name, code: error.code,
+      errno: error.errno, syscall: error.syscall,
+      message: safe(error.message), stack: safe(error.stack)
+    }));
+  });
   return { path, size, stream };
 }
 

@@ -1,3 +1,4 @@
+import CorptieClientCore
 import Foundation
 
 enum TimelineAnchorWindowLoadResult: Equatable {
@@ -148,6 +149,7 @@ final class SessionTimelineHistoryController: ObservableObject {
         } catch is CancellationError {
             return .stale
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "SessionTimelineHistoryController.loadTimelineWindow")
             return .unavailable
         }
     }
@@ -267,6 +269,7 @@ final class SessionTimelineHistoryController: ObservableObject {
             setEarlierHistoryLoadState(.idle, for: session.id)
             return .idle
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "SessionTimelineHistoryController.loadEarlierMessages")
             let state = EarlierHistoryLoadState.failed(error.localizedDescription)
             setEarlierHistoryLoadState(state, for: session.id)
             return state

@@ -115,6 +115,7 @@ final class WorktreeManagementClient: ObservableObject {
             }
             lastAutomaticRefreshAt = now()
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.loadRepositories")
             guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
             if detail == nil { listLoadState = .failed(error.localizedDescription) }
@@ -247,6 +248,7 @@ final class WorktreeManagementClient: ObservableObject {
             }
             return false
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.navigate")
             guard !Self.isCancellation(error) else { return false }
             errorMessage = error.localizedDescription
             if detail == nil { listLoadState = .failed(error.localizedDescription) }
@@ -297,6 +299,7 @@ final class WorktreeManagementClient: ObservableObject {
             }
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.handleGitOperation")
             errorMessage = error.localizedDescription
             detailCache.removeValue(forKey: repositoryId)
             await loadRepository(repositoryId, force: true)
@@ -331,6 +334,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             await loadRepository(repositoryId, force: true)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.pushWorktreeToGitHub")
             OperationNotificationManager.shared.complete(.init(category: .gitPush, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Git push", summary: worktree.branchName ?? "", repositoryID: repositoryId, worktreeID: worktree.worktreeId))
             errorMessage = error.localizedDescription
         }
@@ -358,6 +362,7 @@ final class WorktreeManagementClient: ObservableObject {
             await loadRepository(repositoryId, force: true)
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.deleteWorktree")
             OperationNotificationManager.shared.complete(.init(category: .worktree, outcome: OperationNotificationOutcome.errorOutcome(error), name: "Worktree cleanup", repositoryID: repositoryId))
             errorMessage = error.localizedDescription
             return false
@@ -407,6 +412,7 @@ final class WorktreeManagementClient: ObservableObject {
                 )
                 removed.append(envelope.result)
             } catch {
+                ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.cleanupMergedWorktrees")
                 let clientError = error as? WorktreeManagementClientError
                 let code = clientError?.code ?? "WORKTREE_DELETE_FAILED"
                 let result = WorktreeDeletionResult(
@@ -461,6 +467,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return preparation.result.value
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.prepareIndividualOperation")
             individualPreparationError = error.localizedDescription
             errorMessage = nil
             return nil
@@ -477,6 +484,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return message.result.commitMessage
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.generateIndividualCommitMessage")
             errorMessage = error.localizedDescription
             return nil
         }
@@ -525,6 +533,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.executeIndividualOperation")
             let operationError = error.localizedDescription
             if !Self.isCancellation(error) {
                 OperationNotificationManager.shared.complete(.init(category: .worktree,
@@ -577,6 +586,7 @@ final class WorktreeManagementClient: ObservableObject {
             await loadRepository(repositoryId, force: true)
             return .completed
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.commitMainWorktreeChanges")
             errorMessage = nil
             let clientError = error as? WorktreeManagementClientError
             let requiresReview = ["COMMIT_REVIEW_CHANGED", "COMMIT_REVIEW_EXPIRED", "COMMIT_REQUEST_CHANGED", "COMMIT_REVIEW_SCOPE_MISMATCH", "COMMIT_OUTCOME_UNKNOWN", "COMMIT_POLICY_STAGED_CONTENT_CHANGED"].contains(clientError?.code ?? "")
@@ -732,6 +742,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return false
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.confirmPlan")
             errorMessage = error.localizedDescription
             return false
         }
@@ -767,6 +778,7 @@ final class WorktreeManagementClient: ObservableObject {
                 wasRefreshed: false
             ))
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.prepareCandidate")
             guard planPreparationId == preparationId else { return }
             let message = error.localizedDescription
             setCandidateReview(WorktreeIntegrationCandidateReviewState(
@@ -811,6 +823,7 @@ final class WorktreeManagementClient: ObservableObject {
             applyJob(result.job)
             errorMessage = nil
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.resumeRollbackReview")
             errorMessage = error.localizedDescription
             throw error
         }
@@ -885,6 +898,7 @@ final class WorktreeManagementClient: ObservableObject {
                 operationNotice = L10n(envelope.job.status == "completed" ? "合并已完成，无需取消。" : "合并已取消。")
             }
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.cancelIntegration")
             guard selection.repositoryId == repositoryID, job?.id == current.id else { return }
             errorMessage = error.localizedDescription
         }
@@ -920,6 +934,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return envelope.job.status == "canceled"
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.finishJobForFreshPreflight")
             errorMessage = error.localizedDescription
             await refreshSelected()
             return false
@@ -941,6 +956,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return envelope.job.isWaitingForCommitPolicyDecision
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.prepareCommitPolicyResolution")
             errorMessage = error.localizedDescription
             await refreshSelected()
             return false
@@ -974,6 +990,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.resolveBlockedMarkdownAndContinue")
             errorMessage = error.localizedDescription
             await refreshSelected()
             return false
@@ -1005,6 +1022,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.resolveCommitPolicyResidue")
             errorMessage = error.localizedDescription
             await refreshSelected()
             return false
@@ -1025,6 +1043,7 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             await AppStateSyncController.shared.refreshSnapshot()
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.resolveConflictWithAgent")
             errorMessage = error.localizedDescription
             await refreshSelected()
         }
@@ -1043,6 +1062,7 @@ final class WorktreeManagementClient: ObservableObject {
             if current.shouldPoll && !envelope.job.shouldPoll { await refreshSelected() }
             return changed
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.pollJob")
             errorMessage = error.localizedDescription
             return false
         }
@@ -1130,6 +1150,7 @@ final class WorktreeManagementClient: ObservableObject {
             lastLoadMetrics = metrics
             log(metrics)
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.loadRepository")
             guard !Self.isCancellation(error) else { return }
             guard generation == detailGeneration else { return }
             if detail?.repository.id != id {
@@ -1207,10 +1228,8 @@ final class WorktreeManagementClient: ObservableObject {
                 )
             }
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.loadGitHubPushStatus")
             guard !Self.isCancellation(error) else { return }
-            logger.error(
-                "GitHub push inspection failed repository=\(repositoryId, privacy: .public) worktree=\(worktreeId, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
         }
     }
 
@@ -1232,6 +1251,7 @@ final class WorktreeManagementClient: ObservableObject {
             if let category { OperationNotificationManager.shared.complete(.init(category: category, outcome: .succeeded, name: name, repositoryID: repositoryID)) }
             errorMessage = nil
         } catch {
+            ClientFailureDiagnostics.log(error, operation: "WorktreeManagementClient.mutate")
             if let category, !Self.isCancellation(error) { OperationNotificationManager.shared.complete(.init(category: category, outcome: OperationNotificationOutcome.errorOutcome(error), name: name, repositoryID: repositoryID)) }
             errorMessage = error.localizedDescription
         }
