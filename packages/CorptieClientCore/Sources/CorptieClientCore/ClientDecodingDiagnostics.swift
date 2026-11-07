@@ -8,18 +8,6 @@ public enum ClientDecodingDiagnostics {
         do { return try JSONDecoder().decode(type, from: data) }
         catch {
             ClientFailureDiagnostics.log(error, operation: "ClientDecodingDiagnostics.decode")
-            let category: String
-            let path: [any CodingKey]
-            switch error {
-            case DecodingError.dataCorrupted(let detail): category = "dataCorrupted"; path = detail.codingPath
-            case DecodingError.typeMismatch(_, let detail): category = "typeMismatch"; path = detail.codingPath
-            case DecodingError.valueNotFound(_, let detail): category = "valueNotFound"; path = detail.codingPath
-            case DecodingError.keyNotFound(let key, let detail): category = "keyNotFound"; path = detail.codingPath + [key]
-            default: category = "other"; path = []
-            }
-            let field = path.map(\.stringValue).joined(separator: ".")
-            Logger(subsystem: "com.corptie.client", category: "decoding").error(
-                "context=\(context, privacy: .public) kind=\(category, privacy: .public) field=\(field, privacy: .public) bytes=\(data.count)")
             throw error
         }
     }
@@ -49,6 +37,7 @@ public enum ClientFailureDiagnostics {
         var seen = Set<ObjectIdentifier>()
         var chain: [String] = []
         while let item = current, chain.count < 8, seen.insert(ObjectIdentifier(item)).inserted {
+            // Only fixed system domains are safe for persisted public diagnostics.
             let domains = [NSPOSIXErrorDomain, NSURLErrorDomain, NSCocoaErrorDomain, NSOSStatusErrorDomain, "HTTP"]
             let domain = domains.contains(item.domain) ? item.domain : "custom-domain"
             chain.append("\(domain):\(item.code)")
