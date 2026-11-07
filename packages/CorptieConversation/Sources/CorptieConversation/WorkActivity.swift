@@ -48,9 +48,30 @@ private struct ConsoleFlowingGradientWorkTitle: View {
     let title: String
     let animates: Bool
     @State private var progress: CGFloat = 0
+    #if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isVisible = false
+    #endif
 
     @ViewBuilder
     var body: some View {
+        #if os(iOS)
+        // Color the glyphs directly: an overlay/mask must never be the only
+        // visible copy of a title in a recycled lazy-list row.
+        Text(title)
+            .keyframeAnimator(initialValue: CGFloat.zero,
+                              repeating: animates && isVisible && scenePhase == .active) { content, phase in
+                content.foregroundStyle(LinearGradient(
+                    colors: [.cyan, .blue, .purple, .pink, .orange, .cyan,
+                             .blue, .purple, .pink, .orange, .cyan],
+                    startPoint: UnitPoint(x: phase - 1, y: 0.5),
+                    endPoint: UnitPoint(x: phase + 1, y: 0.5)))
+            } keyframes: { _ in
+                LinearKeyframe(CGFloat(1), duration: WorkActivityAnimation.duration)
+            }
+            .onAppear { isVisible = true }
+            .onDisappear { isVisible = false }
+        #else
         if animates {
             flowingTitle(progress: progress)
                 .onAppear { progress = 1 }
@@ -59,6 +80,7 @@ private struct ConsoleFlowingGradientWorkTitle: View {
             Text(title)
                 .foregroundStyle(staticGradient)
         }
+        #endif
     }
 
     private func flowingTitle(progress: CGFloat) -> some View {
