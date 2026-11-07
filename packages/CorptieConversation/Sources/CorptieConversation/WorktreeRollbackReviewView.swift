@@ -95,7 +95,11 @@ public struct WorktreeRollbackReviewView: View {
                         do {
                             try await confirm(preview.id, discardChanges, includeAdditionalCommits)
                             dismiss()
-                        } catch { self.error = error.localizedDescription }
+                        } catch {
+                            self.error = error.localizedDescription
+                            self.preview = nil
+                            discardChanges = false; includeAdditionalCommits = false
+                        }
                         executing = false
                     }
                 }

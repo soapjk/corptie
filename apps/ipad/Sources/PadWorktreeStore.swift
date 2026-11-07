@@ -68,6 +68,7 @@ final class PadWorktreeStore {
     private var jobRecoveryKey: String?
     private var activeRepositoryID: String?
     private var operationScope = UUID()
+    private var rollbackReview: ClientWorktreeRollbackPreview?
 
     var selectedWorktree: ClientManagedWorktree? {
         detail?.project.worktrees.first { $0.worktreeId == selectedWorktreeID }
@@ -80,10 +81,12 @@ final class PadWorktreeStore {
         detail = nil; service = nil; job = nil; pushStatuses = [:]; selectedWorktreeID = nil
         loading = false; busyWorktreeIDs = []; serviceBusy = false; planning = false; jobBusy = false
         activeRepositoryID = nil; jobRecoveryKey = nil
+        rollbackReview = nil
         errorMessage = nil; notice = nil
     }
 
     func load(_ repositoryID: String, connection: PadConnection, force: Bool = false, afterOperation: String? = nil) async {
+        rollbackReview = nil
         PadOperationNotifications.shared.setScope("\(connection.serverID)|\(connection.address)")
         let nextKey = "corptie.worktree.job:\(connection.serverID):\(connection.address):\(repositoryID)"
         if jobRecoveryKey != nextKey {
@@ -395,6 +398,7 @@ final class PadWorktreeStore {
         defer { if token == operationScope { jobBusy = false } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
+            guard token == operationScope, self.job == job else { return false }
             let updated: ClientWorktreeJob
             if ["confirm", "retry", "resolve-conflict"].contains(action) { PadOperationNotifications.shared.track(job.id, resourceName: detail?.repository.name) }
             switch action {
@@ -423,8 +427,17 @@ final class PadWorktreeStore {
         }
     }
 
+    static func markdownReviewMatches(_ reviewed: ClientWorktreeJob?, current: ClientWorktreeJob?) -> Bool {
+        guard let reviewed, let current else { return false }
+        return reviewed.id == current.id && reviewed.repositoryId == current.repositoryId
+            && reviewed.planFingerprint == current.planFingerprint
+            && reviewed.commitPolicyBlocker == current.commitPolicyBlocker
+            && reviewed.commitPolicyResidue == current.commitPolicyResidue
+    }
+
     @discardableResult
     func handleMarkdown(jobID: String, decisions: [ClientWorktreeMarkdownDecision]? = nil,
+                        reviewedJob: ClientWorktreeJob? = nil,
                         connection: PadConnection) async -> Bool {
         guard let current = job, current.id == jobID, !jobBusy, !planning else { return false }
         guard current.supports("resolve_commit_policy") || current.supports("resolve_commit_policy_residue") else {
@@ -435,12 +448,35 @@ final class PadWorktreeStore {
             errorMessage = "文件处理要求已变化，请重新读取任务。"
             return false
         }
+        if let decisions {
+            guard Self.markdownReviewMatches(reviewedJob, current: current) else {
+                errorMessage = "文件处理要求已变化，请重新读取任务。"
+                return false
+            }
+            let paths = current.commitPolicyBlocker?.files.map(\.path) ?? current.commitPolicyResidue?.paths ?? []
+            let files = Dictionary((current.commitPolicyBlocker?.files ?? []).map { ($0.path, $0) }, uniquingKeysWith: { _, latest in latest })
+            let chosenPaths = decisions.map(\.path)
+            guard !paths.isEmpty, Set(chosenPaths).count == chosenPaths.count,
+                  Set(paths) == Set(chosenPaths), decisions.allSatisfy({ decision in
+                if let file = files[decision.path] {
+                    return file.appliedAction.map { $0 == decision.action } ?? file.supportedActions.contains(decision.action)
+                }
+                return current.commitPolicyResidue?.supportedActions.contains(decision.action) == true
+            }) else {
+                errorMessage = "文件处理要求已变化，请逐个选择当前允许的处理方式。"
+                return false
+            }
+        }
         let token = operationScope
         jobBusy = true; errorMessage = nil
         defer { if token == operationScope { jobBusy = false } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
             let updated: ClientWorktreeJob
+            guard token == operationScope, self.job == current else {
+                if token == operationScope { errorMessage = "文件处理要求已变化，请重新读取任务。" }
+                return false
+            }
             if let decisions, let blocker = current.commitPolicyBlocker {
                 updated = try await api.resolveCommitPolicy(jobId: jobID, blocker: blocker, decisions: decisions)
             } else if let decisions, current.commitPolicyResidue != nil {
@@ -462,12 +498,25 @@ final class PadWorktreeStore {
 
     func prepareRollback(jobID: String, connection: PadConnection) async throws -> (ClientWorktreeRollbackPreview?, Bool) {
         let token = operationScope
-        guard job?.id == jobID else { throw rollbackFailure("任务已变化，请返回当前任务。") }
+        guard let current = job, current.id == jobID, !jobBusy, !planning,
+              current.status != "awaiting_confirmation",
+              current.supports("rollback") || current.supports("cancel") else {
+            throw rollbackFailure("任务已变化，请刷新后使用当前可用操作。")
+        }
+        jobBusy = true
+        rollbackReview = nil
+        defer { if token == operationScope { jobBusy = false } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
+            guard token == operationScope, job == current else { throw rollbackFailure("任务已变化，请返回当前任务。") }
             let result = try await api.prepareRollback(jobId: jobID)
             guard token == operationScope, job?.id == jobID else { throw rollbackFailure("任务已变化，请返回当前任务。") }
+            guard result.job.id == jobID, result.job.repositoryId == current.repositoryId,
+                  result.rollback == nil || result.rollback?.jobId == jobID else {
+                throw rollbackFailure("回滚范围与当前任务不匹配，请重新读取任务。")
+            }
             replaceJob(result.job)
+            rollbackReview = result.rollback
             return (result.rollback, !["completed", "canceled"].contains(result.job.status))
         } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.prepareRollback"); throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "读取回滚范围")) }
     }
@@ -475,11 +524,23 @@ final class PadWorktreeStore {
     func confirmRollback(jobID: String, reviewID: String, discardChanges: Bool,
                          includeAdditionalCommits: Bool, connection: PadConnection) async throws {
         let token = operationScope
-        guard job?.id == jobID, !jobBusy, !planning else { throw rollbackFailure("任务已变化，请刷新回滚范围。") }
+        guard let current = job, current.id == jobID, !jobBusy, !planning,
+              current.supports("rollback"), current.phase == "rollback_review",
+              let review = rollbackReview, review.id == reviewID, review.jobId == jobID else {
+            throw rollbackFailure("任务已变化，请刷新回滚范围。")
+        }
+        guard !review.targets.contains(where: { ["resolve_git_operation", "review_diverged_history"].contains($0.mode) }),
+              discardChanges || !review.targets.contains(where: \.requiresPreservation),
+              includeAdditionalCommits || !review.targets.contains(where: { !$0.additionalCommits.isEmpty || $0.published }) else {
+            throw rollbackFailure("请先处理 Git 状态，并明确确认当前回滚范围中的修改和额外提交。")
+        }
         jobBusy = true
         defer { if token == operationScope { jobBusy = false } }
         do {
             let api = ClientWorktreeAPI(transport: try await connection.transport())
+            guard token == operationScope, job == current, rollbackReview?.id == reviewID else {
+                throw rollbackFailure("任务已变化，请刷新回滚范围。")
+            }
             let result = try await api.rollback(jobId: jobID, reviewId: reviewID,
                 discardChanges: discardChanges, includeAdditionalCommits: includeAdditionalCommits)
             guard token == operationScope, job?.id == jobID else { throw rollbackFailure("任务已变化，请核对当前状态。") }
@@ -488,7 +549,11 @@ final class PadWorktreeStore {
             if result.status != "canceled" { throw rollbackFailure(result.diagnosticText ?? result.error ?? "回滚未完成，请刷新范围后继续。") }
             notice = "本次合并已取消并回滚，来源 Worktree 的提交已保留。"
             await load(result.repositoryId, connection: connection, force: true, afterOperation: notice)
-        } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.confirmRollback"); throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "取消并回滚", mutation: true)) }
+        } catch {
+            ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.confirmRollback")
+            if token == operationScope { rollbackReview = nil }
+            throw rollbackFailure(PadWorktreeFailure.describe(error, stage: "取消并回滚", mutation: true))
+        }
     }
 
     private func rollbackFailure(_ text: String) -> NSError {
@@ -538,6 +603,7 @@ final class PadWorktreeStore {
     }
 
     private func replaceJob(_ job: ClientWorktreeJob) {
+        if self.job != job { rollbackReview = nil }
         if let snapshot = job.notification { PadOperationNotifications.shared.observe(snapshot) }
         // A command response supersedes any inventory read started before it.
         generation += 1
@@ -553,15 +619,19 @@ final class PadWorktreeStore {
             var unchanged = 0
             while !Task.isCancelled, let self, let current = self.job, current.shouldPoll {
                 do { try await Task.sleep(for: .seconds(min(5, 1 + Double(unchanged) * 0.25))) } catch { return }
+                guard !self.jobBusy, !self.planning, self.job == current else { continue }
                 do {
                     let api = ClientWorktreeAPI(transport: try await connection.transport())
                     let updated = try await api.job(current.id)
                     unchanged = updated == current ? unchanged + 1 : 0
                     guard self.activeRepositoryID == repositoryID, self.job?.id == current.id, !Task.isCancelled else { return }
+                    // A read begun before a user action must never restore its older snapshot.
+                    guard !self.jobBusy, !self.planning, self.job == current else { continue }
                     self.replaceJob(updated)
                     if !updated.shouldPoll { await self.load(repositoryID, connection: connection, force: true); return }
                 } catch { ClientFailureDiagnostics.log(error, operation: "PadWorktreeStore.startPollingIfNeeded");
                     guard self.activeRepositoryID == repositoryID, !Task.isCancelled else { return }
+                    guard !self.jobBusy, !self.planning, self.job == current else { continue }
                     self.errorMessage = PadWorktreeFailure.describe(error, stage: "读取集成任务状态（任务未被重发）"); return
                 }
             }
