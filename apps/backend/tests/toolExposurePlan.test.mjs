@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CLAUDE_TOOL_SCHEMA_CAPABILITIES } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import {
   assertUniqueToolSurfaces,
@@ -11,6 +12,23 @@ const catalog = new HostToolCatalog([{
   tools: [{ name: "corptie_artifact_create", inputSchema: { type: "object" } }],
   execute: () => null
 }]);
+
+test("Claude transports only three fixed gateway tools even for 600 business schemas", () => {
+  const large = new HostToolCatalog([{ id: "large", tools: Array.from({ length: 600 }, (_, i) => ({
+    name: `business_${i}`, inputSchema: { type: "object" }
+  })), execute: () => null }]);
+  for (const phase of ["create", "refresh"]) {
+    const plan = buildToolExposurePlan({ catalog: large, desiredDomains: ["large"], phase,
+      capabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES });
+    assert.equal(plan.surface, "restricted_gateway");
+    assert.equal(plan.refreshMode, "generated_mcp_refresh");
+    assert.deepEqual(plan.providerDefinitions.map(t => t.name), [
+      "corptie_tool_catalog_search", "corptie_tool_domain_load", "corptie_tool_call"
+    ]);
+    assert.equal(plan.ownership.business_599.surface, "restricted_gateway");
+    assert.equal(plan.ownership.corptie_tool_call.surface, "generated_authenticated_mcp");
+  }
+});
 
 test("ExposurePlan selects one surface from real capability facts", () => {
   const native = buildToolExposurePlan({
