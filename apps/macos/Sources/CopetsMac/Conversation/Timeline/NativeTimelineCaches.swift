@@ -165,6 +165,7 @@ final class NativePlanChecklistHeightCache {
         let revision: Int
         let collapsed: CGFloat
         let expanded: CGFloat
+        let summary: String
         var access: UInt64
     }
     private struct Key: Hashable {
@@ -185,6 +186,20 @@ final class NativePlanChecklistHeightCache {
     private(set) var measurementCount = 0
     private(set) var taskPreparationCount = 0
 
+    static func summaryText(for plan: ConversationExecutionPlan) -> String {
+        if let current = plan.steps.first(where: { $0.status == "inProgress" }) { return current.text }
+        if let next = plan.steps.first(where: { $0.status != "completed" }) {
+            return (next.status == "blocked" ? "待补充：" : "待执行：") + next.text
+        }
+        return plan.steps.isEmpty ? "暂无事项" : "清单已完成"
+    }
+
+    func summary(of plan: ConversationExecutionPlan, width: CGFloat) -> String {
+        _ = height(of: plan, width: width)
+        let key = plan.planId + ":" + String(TaskExecutionChecklist.columns(for: width))
+        return taskEntries[key]?.summary ?? "执行清单"
+    }
+
     func height(of plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool = false) -> CGFloat {
         if plan.taskId != nil {
             // Both heights are prepared together on data/width changes. A
@@ -199,7 +214,7 @@ final class NativePlanChecklistHeightCache {
             }
             let heights = TaskExecutionChecklist.heights(plan: plan, width: width)
             let entry = TaskEntry(revision: plan.revision, collapsed: heights.collapsed,
-                                  expanded: heights.expanded, access: sequence)
+                                  expanded: heights.expanded, summary: Self.summaryText(for: plan), access: sequence)
             taskEntries[key] = entry
             taskPreparationCount += 1
             if taskEntries.count > 64, let oldest = taskEntries.min(by: { $0.value.access < $1.value.access })?.key {

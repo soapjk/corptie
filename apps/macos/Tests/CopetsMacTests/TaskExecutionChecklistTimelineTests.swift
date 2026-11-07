@@ -8,9 +8,9 @@ import CorptieConversation
 
 @MainActor
 final class TaskExecutionChecklistTimelineTests: XCTestCase {
-    private func item(count: Int, revision: Int = 1, closed: Bool = false) throws -> CodexThreadItem {
+    private func item(count: Int, revision: Int = 1, closed: Bool = false, activeIndex: Int? = nil) throws -> CodexThreadItem {
         let steps: [[String: Any]] = (0..<count).map { index in
-            ["stepId": "item:\(index)", "ordinal": index, "text": "事项 \(index)", "status": "pending"]
+            ["stepId": "item:\(index)", "ordinal": index, "text": "事项 \(index)", "status": index == activeIndex ? "inProgress" : "pending"]
         }
         let fields: [String: Any] = ["id": "checklist:timeline-test:\(count)", "turnId": "turn:one",
             "turnStatus": "completed", "type": "executionChecklist", "title": "执行清单", "text": "执行清单", "status": "completed",
@@ -83,6 +83,21 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
         XCTAssertEqual(dock.timelineRows.map(\.id), [normal.id])
         XCTAssertNil(ConversationChecklistDockProjection(rows: [normal]).checklist)
         XCTAssertTrue(ConversationChecklistDockProjection(rows: []).timelineRows.isEmpty)
+    }
+    func testPinnedCardIsOneLineForShortAndLongListsAndSummaryUsesPreparedCurrentItem() throws {
+        for count in [0, 2, 200] {
+            let plan = try XCTUnwrap(item(count: count, revision: 100, activeIndex: count == 200 ? 150 : nil).executionPlan)
+            let cache = NativePlanChecklistHeightCache()
+            for width: CGFloat in [240, 520, 780] {
+                XCTAssertEqual(PinnedExecutionChecklistCard.height(plan: plan, width: width, expanded: false), 36)
+                let summary = cache.summary(of: plan, width: width - 20)
+                if count == 200 { XCTAssertEqual(summary, "事项 150") }
+                if count == 0 { XCTAssertEqual(summary, "暂无事项") }
+                let prepared = cache.taskPreparationCount
+                for _ in 0..<10 { _ = cache.summary(of: plan, width: width - 20) }
+                XCTAssertEqual(cache.taskPreparationCount, prepared)
+            }
+        }
     }
     func testPinnedCardGrowsInlineAndBoundsLongListsToLeaveTheComposerVisible() throws {
         let short = try XCTUnwrap(item(count: 8).executionPlan)
