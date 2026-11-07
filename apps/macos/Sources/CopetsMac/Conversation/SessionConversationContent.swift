@@ -642,7 +642,7 @@ struct SessionConversationSurface: View {
                     sessionReadinessNotice
                     sessionComposer
                 }
-                .padding(.bottom, compactComposer ? 4 : 16)
+                .padding(.bottom, 4)
             }
             .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
             .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)

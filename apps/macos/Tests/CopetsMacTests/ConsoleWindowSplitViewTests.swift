@@ -108,4 +108,51 @@ struct ConsoleWindowSplitViewTests {
         #expect(source.contains("mode == .taskCards ? 540 : 284"))
         #expect(source.contains("console.nativeSidebar.listWidth.v2"))
     }
+
+    @Test
+    func windowResizeKeepsDefaultAndUserSidebarWidths() throws {
+        _ = NSApplication.shared
+        let suite = "ConsoleWindowSplitViewTests.fixedWidth.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = ConsoleSplitController(mode: .workOutline, sidebar: Text("Work"),
+            detail: Text("Messages"), defaults: defaults)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.contentViewController = nil; window.close() }
+        controller.view.layoutSubtreeIfNeeded()
+        let sidebar = try #require(controller.splitView.arrangedSubviews.first)
+        let messages = try #require(controller.splitView.arrangedSubviews.last)
+        #expect(abs(sidebar.frame.width - 284) < 1)
+        let updates = controller.contentUpdateCount
+        func resize(_ widths: [CGFloat], expected: CGFloat) {
+            for width in widths {
+                let previousCanvas = controller.splitView.bounds.width
+                let previousMessages = messages.frame.width
+                window.setContentSize(.init(width: width, height: 800))
+                controller.view.layoutSubtreeIfNeeded()
+                #expect(abs(sidebar.frame.width - expected) < 1)
+                #expect(abs((messages.frame.width - previousMessages)
+                    - (controller.splitView.bounds.width - previousCanvas)) < 1)
+            }
+        }
+        resize([1600, 1080, 1800, 1200], expected: 284)
+        NotificationCenter.default.post(name: ConsoleNativeSplitView.willBeginDividerTracking, object: controller.splitView)
+        controller.splitView.setPosition(400, ofDividerAt: 0)
+        controller.view.layoutSubtreeIfNeeded()
+        let adjusted = sidebar.frame.width
+        #expect(abs(adjusted - 400) < 1)
+        NotificationCenter.default.post(name: ConsoleNativeSplitView.didEndDividerTracking, object: window)
+        resize([1800, 1080, 1400, 1200], expected: adjusted)
+        #expect(controller.contentUpdateCount == updates, "Window resizing must not replace the hosted roots")
+        #expect(abs(defaults.double(forKey: "console.nativeSidebar.listWidth.v2") - adjusted) < 1)
+
+        let restored = ConsoleSplitController(mode: .workOutline, sidebar: Text("Work"),
+            detail: Text("Messages"), defaults: defaults)
+        window.contentViewController = restored
+        restored.view.layoutSubtreeIfNeeded()
+        #expect(abs(try #require(restored.splitView.arrangedSubviews.first).frame.width - adjusted) < 1)
+    }
 }
