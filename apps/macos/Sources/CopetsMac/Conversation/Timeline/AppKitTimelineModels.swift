@@ -434,21 +434,6 @@ enum LiveResizeRowReflowPolicy {
     }
 }
 
-enum LiveResizeWidthPolicy {
-    static let bucketSize: CGFloat = 8
-
-    static func measurementWidth(_ width: CGFloat, isLiveResize: Bool) -> CGFloat {
-        let normalized = max(120, width)
-        guard isLiveResize else { return normalized }
-        return max(bucketSize, (normalized / bucketSize).rounded() * bucketSize)
-    }
-
-    static func requiresReflow(previous: CGFloat?, next: CGFloat) -> Bool {
-        guard let previous else { return true }
-        return abs(previous - next) >= 0.5
-    }
-}
-
 /// Preserve native containers for provably plain suffix additions. Rich changes,
 /// replacement/shrink, attachments and disclosure transitions keep SDK reset.
 enum SDKRowContainerResetPolicy {

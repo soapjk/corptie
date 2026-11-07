@@ -62,10 +62,12 @@ extension EnvironmentValues {
     }
 }
 
-/// The transcript always owns the full viewport. Detail is a fixed-width
-/// sibling overlay; opening it never changes the transcript proposal.
+/// Native stacks reserve the fixed rail only when a full reading lane fits.
+/// Narrow windows keep the transcript intact and show Detail transiently.
 struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
+    @State private var canDock = false
+    @State private var temporaryVisible = false
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let detail: () -> Detail
     @ViewBuilder let header: () -> Header
@@ -78,26 +80,105 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
         self.header = header
     }
 
+    static var minimumDockedWidth: CGFloat {
+        WorkbenchStyle.readingWidth + 2 * WorkbenchStyle.readingInset
+            + ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing
+    }
+
+    private var docked: Bool { canDock && isVisible }
+    private var presented: Bool { canDock ? isVisible : temporaryVisible }
+    private var visibility: Binding<Bool> {
+        Binding(get: { presented }, set: { value in
+            if canDock { isVisible = value }
+            else { temporaryVisible = value }
+        })
+    }
+
     var body: some View {
         ConversationRegionStack(accessoryAtTop: true, accessoryHeight: Header.self == EmptyView.self ? 0 : 72) {
             ZStack(alignment: .trailing) {
-                transcript()
-                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                    .background(WorkbenchStyle.canvas)
-                if isVisible {
+                HStack(spacing: 0) {
+                    transcript()
+                        .environment(\.detailColumnVisibility, visibility)
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                        .background(WorkbenchStyle.canvas)
+                    // Stable transcript identity; only native stack space changes.
+                    Color.clear
+                        .frame(width: docked ? ConversationDetailWidgetMetrics.railWidth
+                            + MainWindowPageLayoutMetrics.columnSpacing : 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                if presented {
                     detail()
                         .frame(width: ConversationDetailWidgetMetrics.railWidth)
                         .frame(maxHeight: .infinity)
                         .background(WorkbenchStyle.canvas)
+                        .background(DetailOutsideClickDismissal(enabled: !canDock) {
+                            temporaryVisible = false
+                        })
                         .zIndex(1)
                 }
             }
             .clipped()
-            .transaction(value: isVisible) { $0.disablesAnimations = true }
+            .transaction(value: presented) { $0.disablesAnimations = true }
+            .transaction(value: docked) { $0.disablesAnimations = true }
         } accessory: {
-            header().environment(\.detailColumnVisibility, $isVisible)
+            header().environment(\.detailColumnVisibility, visibility)
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.width >= Self.minimumDockedWidth } action: { fits in
+            canDock = fits
+            temporaryVisible = false
+        }
+        .onChange(of: isVisible) { _, visible in
+            if !visible { temporaryVisible = false }
+        }
+        .onDisappear { temporaryVisible = false }
+    }
+}
+
+/// A local AppKit monitor sees clicks in native message/editor views and sibling
+/// Work/Tab panes too. It returns the original event and exists only while open.
+struct DetailOutsideClickDismissal: NSViewRepresentable {
+    let enabled: Bool
+    let dismiss: () -> Void
+
+    func makeNSView(context: Context) -> DetailOutsideClickView { DetailOutsideClickView() }
+    func updateNSView(_ view: DetailOutsideClickView, context: Context) {
+        view.update(enabled: enabled, dismiss: dismiss)
+    }
+    static func dismantleNSView(_ view: DetailOutsideClickView, coordinator: ()) {
+        view.update(enabled: false, dismiss: {})
+    }
+}
+
+final class DetailOutsideClickView: NSView {
+    private var monitor: Any?
+    private var dismiss: (() -> Void)?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func update(enabled: Bool, dismiss: @escaping () -> Void) {
+        self.dismiss = enabled ? dismiss : nil
+        if enabled, monitor == nil {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+                MainActor.assumeIsolated { self?.observe(event) }
+                return event
+            }
+        } else if !enabled, let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
         }
     }
+
+    func observe(_ event: NSEvent) {
+        guard let window, event.window === window, !isHiddenOrHasHiddenAncestor,
+              !bounds.contains(convert(event.locationInWindow, from: nil)),
+              let dismiss else { return }
+        // Let the original control handle its click first, including the toggle.
+        DispatchQueue.main.async { dismiss() }
+    }
+
+    isolated deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
 }
 
 extension AdaptiveConversationColumns where Header == EmptyView {
