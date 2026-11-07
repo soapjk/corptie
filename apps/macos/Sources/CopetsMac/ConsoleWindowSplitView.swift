@@ -62,8 +62,8 @@ extension EnvironmentValues {
     }
 }
 
-/// The system inspector owns column presentation, sizing and transitions.
-/// The transcript stays at one structural position while visibility changes.
+/// The transcript always owns the full viewport. Detail is a fixed-width
+/// sibling overlay; opening it never changes the transcript proposal.
 struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
     @ViewBuilder let transcript: () -> Transcript
@@ -80,19 +80,20 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
 
     var body: some View {
         ConversationRegionStack(accessoryAtTop: true, accessoryHeight: Header.self == EmptyView.self ? 0 : 72) {
-            transcript()
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .background(WorkbenchStyle.canvas)
-                .inspector(isPresented: $isVisible) {
+            ZStack(alignment: .trailing) {
+                transcript()
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .background(WorkbenchStyle.canvas)
+                if isVisible {
                     detail()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(WorkbenchStyle.canvas.ignoresSafeArea())
-                        .inspectorColumnWidth(ConversationDetailWidgetMetrics.railWidth)
+                        .frame(width: ConversationDetailWidgetMetrics.railWidth)
+                        .frame(maxHeight: .infinity)
+                        .background(WorkbenchStyle.canvas)
+                        .zIndex(1)
                 }
-                // A closing system animation can write its old collapsed state
-                // after a rapid reopen. An immediate native transition avoids
-                // both that race and repeated transcript width reflow.
-                .transaction(value: isVisible) { $0.disablesAnimations = true }
+            }
+            .clipped()
+            .transaction(value: isVisible) { $0.disablesAnimations = true }
         } accessory: {
             header().environment(\.detailColumnVisibility, $isVisible)
         }

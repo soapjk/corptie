@@ -49,10 +49,10 @@ extension BackendClient {
 
     @discardableResult
     func loadEarlierMessages(
-        for session: TaskSession, expectedSelectionGeneration: UInt64? = nil
+        for session: TaskSession, expectedSelectionGeneration: UInt64? = nil, protectsHistoryWindow: Bool = true
     ) async -> EarlierHistoryLoadState {
         await timelineHistoryController.loadEarlierMessages(
-            for: session, expectedSelectionGeneration: expectedSelectionGeneration
+            for: session, expectedSelectionGeneration: expectedSelectionGeneration, protectsHistoryWindow: protectsHistoryWindow
         )
     }
 }

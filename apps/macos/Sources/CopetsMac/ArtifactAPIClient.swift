@@ -19,7 +19,40 @@ final class ArtifactAPIClient: ObservableObject {
     @Published private(set) var taskLoadStates: [String: ArtifactCollectionLoadState] = [:]
     @Published var errorMessage: String?
 
-    private let baseURL = CorptieAppEnvironment.backendBaseURL
+    private let baseURL: URL
+    private let urlSession: URLSession
+    private let collectionCacheLimit: Int
+    private var collectionRecency: [String] = []
+
+    init(baseURL: URL = CorptieAppEnvironment.backendBaseURL, urlSession: URLSession = .shared,
+         collectionCacheLimit: Int = 32) {
+        self.baseURL = baseURL
+        self.urlSession = urlSession
+        self.collectionCacheLimit = max(1, collectionCacheLimit)
+    }
+
+    /// Work and Task collections share one LRU budget. Eviction also invalidates
+    /// in-flight responses, so a late request cannot resurrect an evicted list.
+    private func touchCollection(_ key: String) {
+        collectionRecency.removeAll { $0 == key }
+        collectionRecency.append(key)
+        while collectionRecency.count > collectionCacheLimit {
+            let oldest = collectionRecency.removeFirst()
+            requestTokens.removeValue(forKey: oldest)
+            if oldest.hasPrefix("work:") {
+                let id = String(oldest.dropFirst(5))
+                artifactsByWork.removeValue(forKey: id)
+                workLoadStates.removeValue(forKey: id)
+                workNextOffsets.removeValue(forKey: id)
+            } else {
+                let id = String(oldest.dropFirst(5))
+                artifactsByCorptieTask.removeValue(forKey: id)
+                taskLoadStates.removeValue(forKey: id)
+                taskNextOffsets.removeValue(forKey: id)
+            }
+        }
+    }
+
     private var requestTokens: [String: UUID] = [:]
     private var publishIdempotencyKeys: [String: String] = [:]
     private var workNextOffsets: [String: Int] = [:]
@@ -28,6 +61,8 @@ final class ArtifactAPIClient: ObservableObject {
     private static let requestTimeout: TimeInterval = 5
 
     func artifact(artifactId: String, workId: String, taskId: String?) -> WorkArtifact? {
+        let key = taskId.map { "task:\($0)" } ?? "work:\(workId)"
+        if collectionRecency.contains(key) { touchCollection(key) }
         let artifacts = taskId.flatMap { artifactsByCorptieTask[$0] }
             ?? artifactsByWork[workId]
             ?? []
@@ -61,6 +96,7 @@ final class ArtifactAPIClient: ObservableObject {
 
     func refresh(workId: String) async {
         let key = "work:\(workId)"
+        touchCollection(key)
         let token = UUID()
         requestTokens[key] = token
         let previous = workLoadStates[workId]?.value ?? artifactsByWork[workId]
@@ -88,6 +124,7 @@ final class ArtifactAPIClient: ObservableObject {
 
     func refresh(taskId: String) async {
         let key = "task:\(taskId)"
+        touchCollection(key)
         let token = UUID()
         requestTokens[key] = token
         let previous = taskLoadStates[taskId]?.value ?? artifactsByCorptieTask[taskId]
@@ -125,6 +162,8 @@ final class ArtifactAPIClient: ObservableObject {
     func loadMore(workId: String, taskId: String?) async {
         guard !Task.isCancelled else { return }
         let key = taskId.map { "task:\($0)" } ?? "work:\(workId)"
+        guard collectionRecency.contains(key) else { return }
+        touchCollection(key)
         let token = requestTokens[key]
         let offset: Int?
         if let taskId { offset = taskNextOffsets[taskId] }
@@ -196,7 +235,7 @@ final class ArtifactAPIClient: ObservableObject {
             components.queryItems?.append(URLQueryItem(name: "referenceId", value: reference.referenceId))
         }
         do {
-            let (data, response) = try await URLSession.shared.data(from: components.url!)
+            let (data, response) = try await urlSession.data(from: components.url!)
             try Self.validate(response: response, data: data)
             return try await decode(ArtifactDetailEnvelope.self, data: data)
         } catch { errorMessage = error.localizedDescription; return nil }
@@ -291,7 +330,7 @@ final class ArtifactAPIClient: ObservableObject {
                 "contentHash": pin.contentHash, "referenceId": pin.referenceId, "confirmed": true,
                 "confirmedRepositoryWrite": confirmRepositoryWrite, "confirmedOverwrite": confirmOverwrite
             ])
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await urlSession.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 if payload?["code"] as? String == "ARTIFACT_REPOSITORY_WRITE_CONFIRMATION_REQUIRED" {
@@ -319,7 +358,7 @@ final class ArtifactAPIClient: ObservableObject {
             URLQueryItem(name: "contentHash", value: pin.contentHash),
             URLQueryItem(name: "referenceId", value: pin.referenceId)
         ]
-        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        let (data, response) = try await urlSession.data(from: components.url!)
         try Self.validate(response: response, data: data)
         return try await decode(ArtifactLocalFileReceipt.self, data: data)
     }
@@ -362,7 +401,7 @@ final class ArtifactAPIClient: ObservableObject {
     private func get<T: Decodable & Sendable>(_ url: URL) async throws -> T {
         var request = URLRequest(url: url)
         request.timeoutInterval = Self.requestTimeout
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await urlSession.data(for: request)
         try Self.validate(response: response, data: data)
         return try await decode(T.self, data: data)
     }
@@ -374,7 +413,7 @@ final class ArtifactAPIClient: ObservableObject {
             request.timeoutInterval = Self.requestTimeout
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await urlSession.data(for: request)
             try Self.validate(response: response, data: data)
             let result = try await decode(T.self, data: data)
             errorMessage = nil

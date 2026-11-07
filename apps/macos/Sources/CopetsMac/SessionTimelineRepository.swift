@@ -9,6 +9,8 @@ import Foundation
 final class SessionTimelineState: ObservableObject {
     let sessionID: String
     @Published private(set) var detail: CodexThreadDetail?
+    private(set) var presentationDetail: CodexThreadDetail?
+    private var retainedTurnContext: [CodexThreadItem] = []
     private(set) var timelineRevision: Int
     private(set) var presentationRevision: UInt64 = 0
     private(set) var protectsHistoryWindow = false
@@ -17,8 +19,13 @@ final class SessionTimelineState: ObservableObject {
     init(sessionID: String, detail: CodexThreadDetail? = nil, timelineRevision: Int = 0) {
         self.sessionID = sessionID
         self.detail = detail
+        self.presentationDetail = detail
         self.timelineRevision = max(0, timelineRevision)
         self.tailContentRevision = detail.map { timelineTailContentRevision(for: $0.items) } ?? "none"
+    }
+
+    func discardRetainedContext(for itemIDs: [String]) {
+        retainedTurnContext.removeAll { itemIDs.contains($0.id) }
     }
 
     func setProtectsHistoryWindow(_ protects: Bool) {
@@ -37,12 +44,29 @@ final class SessionTimelineState: ObservableObject {
             // projection. The stored snapshot is authoritative for message
             // delivery state even when no newer item revision is required.
         }
+        let previousContext = retainedTurnContext
+        // Auxiliary events can arrive after the active turn. They must not
+        // evict the retained prompt before a newer user input replaces it.
+        let contextTurn = detail.items.last { $0.type == "userMessage" }?.turnId
+            ?? retainedTurnContext.first { $0.type == "userMessage" }?.turnId
+            ?? detail.items.last?.turnId
+        if !detail.items.isEmpty, let contextTurn {
+            let context = [detail.items.last { $0.turnId == contextTurn && $0.type == "userMessage" },
+                detail.items.last { $0.turnId == contextTurn && $0.type == "executionPlan" }].compactMap { $0 }
+            retainedTurnContext = (context + retainedTurnContext.filter { old in
+                old.turnId == contextTurn && !context.contains { $0.type == old.type }
+            }).sorted { $0.type == "userMessage" && $1.type != "userMessage" }
+        } else { retainedTurnContext = [] }
         let detail = ResidentTimelineWindow.compact(detail, protectingHistory: protectsHistoryWindow)
         let nextRevision = max(self.timelineRevision, timelineRevision ?? self.timelineRevision)
-        guard self.detail != detail || self.timelineRevision != nextRevision else { return }
+        guard self.detail != detail || self.timelineRevision != nextRevision || retainedTurnContext != previousContext else { return }
         self.timelineRevision = nextRevision
         presentationRevision &+= 1
         tailContentRevision = timelineTailContentRevision(for: detail.items)
+        let ids = Set(detail.items.map(\.id))
+        let context = retainedTurnContext.filter { !ids.contains($0.id) }
+        presentationDetail = context.isEmpty ? detail
+            : ResidentTimelineWindow.replacingItems(in: detail, with: context + detail.items)
         self.detail = detail
     }
 }
@@ -162,21 +186,18 @@ enum SessionTimelineBindingReconciler {
     }
 }
 
-/// Bound resident history without splitting an execution turn or losing unsent input.
-/// The full current turn is a semantic exception to the ordinary item budget;
-/// its expanded steps are independently virtualized by NSTableView.
+/// Keep a contiguous, recoverable tail even inside a long execution turn.
+/// Unsent input and unresolved approvals remain protected; display-only turn
+/// context is retained separately and never changes the history cursor.
 enum ResidentTimelineWindow {
     static let itemBudget = 400
 
     static func compact(_ detail: CodexThreadDetail, protectingHistory: Bool, budget: Int = itemBudget) -> CodexThreadDetail {
         guard !protectingHistory, budget > 0, detail.items.count > budget else { return detail }
         var start = detail.items.count - budget
-        let boundaryTurn = detail.items[start].turnId
-        if !boundaryTurn.isEmpty {
-            let turn = boundaryTurn
-            while start > 0 && detail.items[start - 1].turnId == turn { start -= 1 }
-        }
-        let pendingStates: Set<String> = ["queued", "pending", "processing", "sending", "failed"]
+        // Processing input already belongs to the executing turn. Its prompt
+        // is retained as display context, not as a reason to pin every step.
+        let pendingStates: Set<String> = ["queued", "pending", "sending", "failed"]
         if let pending = detail.items[..<start].firstIndex(where: { item in
             item.userMessageStatus.map(pendingStates.contains) == true
                 || (item.type == "approval" && !["completed", "approved", "declined", "cancelled"].contains(item.status ?? ""))
@@ -188,16 +209,20 @@ enum ResidentTimelineWindow {
             }
         }
         guard start > 0 else { return detail }
+        return replacingItems(in: detail, with: Array(detail.items[start...]), clipped: true)
+    }
+
+    static func replacingItems(in detail: CodexThreadDetail, with items: [CodexThreadItem], clipped: Bool = false) -> CodexThreadDetail {
         return CodexThreadDetail(id: detail.id, title: detail.title, status: detail.status,
             source: detail.source, connectionStatus: detail.connectionStatus,
             currentModel: detail.currentModel, currentReasoningLevel: detail.currentReasoningLevel,
             activityStatus: detail.activityStatus, cwd: detail.cwd, createdAt: detail.createdAt,
             updatedAt: detail.updatedAt, canSend: detail.canSend, sendUnavailableReason: detail.sendUnavailableReason,
             transitionState: detail.transitionState, readiness: detail.readiness, notReadyReason: detail.notReadyReason,
-            capabilities: detail.capabilities, turnCount: detail.turnCount, items: Array(detail.items[start...]),
-            lastAgentMessageSequence: detail.lastAgentMessageSequence, hasMoreHistory: true,
+            capabilities: detail.capabilities, turnCount: detail.turnCount, items: items,
+            lastAgentMessageSequence: detail.lastAgentMessageSequence, hasMoreHistory: clipped ? true : detail.hasMoreHistory,
             // A dropped item can receive a later historical upsert. Without an
             // authoritative total, adding local drops would invent a count.
-            historyItemsCount: nil, actions: detail.actions)
+            historyItemsCount: clipped ? nil : detail.historyItemsCount, actions: detail.actions)
     }
 }

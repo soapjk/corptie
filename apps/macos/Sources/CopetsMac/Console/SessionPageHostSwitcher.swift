@@ -67,19 +67,12 @@ struct ResidentSessionPageRoot: View {
             get: { showsDetailColumn && inputs.activity.isActive },
             set: { if inputs.activity.isActive { showsDetailColumn = $0 } }
         )) {
-            VStack(spacing: 6) {
-                SearchMessageNavigationSurface(sessionID: inputs.scope.sessionID,
-                    target: inputs.searchTarget, matches: inputs.searchMatches) { delta in
-                    guard inputs.actionSession(generation: inputs.activity.generation) != nil else { return }
-                    UnifiedSearchNavigation.shared.step(delta)
-                }
-                SessionConversationSurface(sessionId: inputs.scope.sessionID, presentationCache: cache,
-                    composerDraftRepository: drafts, backendClient: backend,
-                    initialTimelinePosition: viewport.position(for: inputs.scope.sessionID),
-                    onTimelinePositionChange: { viewport.store($0, for: inputs.scope.sessionID) },
-                    showsHeader: false, renderInputs: inputs)
-                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
-            }
+            SessionConversationSurface(sessionId: inputs.scope.sessionID, presentationCache: cache,
+                composerDraftRepository: drafts, backendClient: backend,
+                initialTimelinePosition: viewport.position(for: inputs.scope.sessionID),
+                onTimelinePositionChange: { viewport.store($0, for: inputs.scope.sessionID) },
+                showsHeader: false, renderInputs: inputs)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             .modifier(ConversationColumnSurface(.transcript))
         } detail: {
             SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
@@ -243,7 +236,7 @@ private struct ResidentSessionPageHeader: View {
         loadViewIfNeeded()
         guard isActive else { cancelPendingPresentation(); entries.forEach { $0.inputs.freeze() }; return }
         guard pendingSessionID == nil else { return }
-        if let current, current.inputs.scope.sessionID == selectedSessionID, !current.inputs.retired {
+        if let current, current.inputs.scope.sessionID == selectedSessionID, !current.inputs.retired, current.inputs.hasValidBinding() {
             current.inputs.resume(); return
         }
         if let selectedSessionID {
@@ -258,12 +251,12 @@ private struct ResidentSessionPageHeader: View {
     @discardableResult
     private func materialize(_ sessionID: String, request: UInt64, cached: Entry?) -> Bool {
         guard epoch == request else { return false }
-        for invalid in entries.filter({ $0.inputs.retired }) { dispose(invalid, reason: "retired") }
+        for invalid in entries.filter({ $0.inputs.retired || !$0.inputs.hasValidBinding() }) { dispose(invalid, reason: "retired") }
         let entry: Entry
         // Initial attachment and offscreen selection also reach this path.
         // Reuse by identity here so those paths cannot consume multiple slots
         // with copies of the same Session.
-        if let cached = cached ?? entries.first(where: { $0.inputs.scope.sessionID == sessionID && !$0.inputs.retired }) {
+        if let cached = cached.flatMap({ $0.inputs.hasValidBinding() ? $0 : nil }) ?? entries.first(where: { $0.inputs.scope.sessionID == sessionID && !$0.inputs.retired }) {
             entry = cached
             SessionSwitchTrace.shared.mark(.pageHostReused, sessionID: sessionID)
         } else {

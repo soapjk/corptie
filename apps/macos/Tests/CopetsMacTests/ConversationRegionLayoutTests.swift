@@ -38,6 +38,23 @@ import XCTest
         XCTAssertEqual(view.content.frame.maxY, view.bounds.maxY, accuracy: 0.5)
         XCTAssertEqual(old - view.content.frame.height, 50, accuracy: 0.5)
     }
+    func testQuickMessagesOverlapViewportWhileRemainingInInputHost() {
+        // 34pt quick actions + 66pt editor share the same accessory host.
+        let view = ConversationRegionContainer(content: Color.clear,
+            accessory: Color.clear.frame(height: 100), atTop: false, height: nil, overlap: 34)
+        for size in [CGSize(width: 700, height: 500), CGSize(width: 540, height: 380)] {
+            view.frame.size = size
+            view.layoutSubtreeIfNeeded()
+            XCTAssertEqual(view.accessory.frame.height, 100, accuracy: 0.5)
+            XCTAssertEqual(view.content.frame.minY, view.accessory.frame.maxY - 34, accuracy: 0.5)
+            XCTAssertEqual(view.content.frame.intersection(view.accessory.frame).height, 34, accuracy: 0.5)
+            XCTAssertTrue(view.subviews.last === view.accessory, "Quick actions receive clicks above messages")
+        }
+        // A pinned checklist uses normal stacking, with the same two hosts.
+        view.setAccessoryOverlap(0)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.content.frame.minY, view.accessory.frame.maxY, accuracy: 0.5)
+    }
     private final class Marker: ObservableObject { }
     private struct EnvironmentProbe: View {
         @EnvironmentObject var marker: Marker

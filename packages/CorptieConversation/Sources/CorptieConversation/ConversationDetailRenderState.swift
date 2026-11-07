@@ -10,6 +10,8 @@ public final class ConversationDetailRenderState {
     public let worktree = ClientDetailWorktreeState()
     public private(set) var legacy = false
     public private(set) var retired = false
+    private(set) var widgetSizes: [String: DetailWidgetSize] = [:]
+    @ObservationIgnored private(set) var sizePreparationCount = 0
     @ObservationIgnored private weak var source: ClientDetailBusinessHandle?
     @ObservationIgnored private var active = false
     @ObservationIgnored private var trackingArmed = false
@@ -53,6 +55,7 @@ public final class ConversationDetailRenderState {
     public func retire() {
         freeze(); source = nil; previous = nil
         retired = true
+        widgetSizes = [:]
         store.fail("访问或绑定已失效", disposition: .accessRevoked)
         turn.retire(); worktree.retire()
     }
@@ -78,6 +81,10 @@ public final class ConversationDetailRenderState {
         }
         if value.retired { retire(); return }
         if previous != value {
+            let prepared = DetailWidgetSizing.prepare(previous: previous?.business.cards.map(\.value) ?? [],
+                current: value.business.cards.map(\.value), cached: widgetSizes)
+            sizePreparationCount += prepared.count
+            if widgetSizes != prepared.sizes { widgetSizes = prepared.sizes }
             store.applyPresentationSnapshot(value.business)
             turn.applyPresentationSnapshot(value.turn)
             worktree.applyPresentationSnapshot(value.worktree)

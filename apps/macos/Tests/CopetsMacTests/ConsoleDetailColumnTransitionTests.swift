@@ -46,7 +46,6 @@ final class ConsoleDetailColumnTransitionTests: XCTestCase {
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: Surface(state: state, chat: chat, rail: rail))
-        window.orderBack(nil)
         window.layoutIfNeeded()
         addTeardownBlock { @MainActor in window.close(); window.contentView = nil }
         try await Task.sleep(for: .milliseconds(350))
@@ -55,14 +54,14 @@ final class ConsoleDetailColumnTransitionTests: XCTestCase {
         return (window, state, chat, rail)
     }
 
-    func testSystemInspectorToggleKeepsTranscriptIdentity() async throws {
+    func testDetailOverlayToggleKeepsTranscriptIdentityAndWidth() async throws {
         let (window, state, chat, _) = try await harness()
         for visible in [false, true, false, true] {
             state.visible = visible
             try await Task.sleep(for: .milliseconds(300))
             window.layoutIfNeeded()
             XCTAssertTrue(chat.window === window)
-            XCTAssertGreaterThan(chat.frame.width, 0)
+            XCTAssertEqual(chat.frame.width, 900, accuracy: 1)
             XCTAssertEqual(chat.creations, 1)
         }
     }

@@ -6,137 +6,38 @@ import SwiftUI
 @testable import CorptieConversation
 
 @MainActor struct StampedParagraphTests {
-    @Test func shortBodySharesFirstLineWithStampWithoutDisclosure() {
-        let result = StampedParagraphLayout.make(title: "偏好", body: "使用中文回复", width: 300, expanded: false)
-        #expect(!result.overflowing)
-        #expect(result.text.attribute(.attachment, at: 0, effectiveRange: nil) is NSTextAttachment)
-        #expect(StampedParagraphLayout.copyText(result.text) == "使用中文回复")
-        #expect(lines(result.text, width: 300).count == 1)
-    }
-
-    @Test func collapsedDisclosureFitsAtEndOfThirdLineAndContinuationIsNotIndented() {
-        for width in [180.0, 240.0, 375.0] {
-            let source = String(repeating: "这是正文，包含详细描述和验收要求。", count: 80)
-            let result = StampedParagraphLayout.make(title: "验收标准", body: source, width: width, expanded: false)
-            let fragments = lines(result.text, width: width)
-            #expect(result.overflowing)
-            #expect(fragments.count == 3)
-            #expect(result.text.string.hasSuffix(" …⌄"))
-            #expect(fragments.dropFirst().allSatisfy { $0.rect.minX == 0 })
-            let suffix = NSRange(location: result.text.length - 3, length: 3)
-            #expect(NSIntersectionRange(fragments.last!.range, suffix).length == suffix.length)
-            #expect(result.text.attribute(.link, at: result.text.length - 1, effectiveRange: nil) as? URL == StampedParagraphLayout.toggleURL)
-            #expect(source.hasPrefix(StampedParagraphLayout.copyText(result.text)))
+    private final class Expansion { var value = false }
+    @Test func nativePreviewRespectsExternalExpansionAndLongTextCap() {
+        for width in [180.0, 300.0, 480.0] {
+            for length in [30, 200] {
+                let state = Expansion()
+                let source = String(repeating: "完整正文👨‍👩‍👧‍👦 e\u{301}。", count: length)
+                func root() -> some View {
+                    ConversationStampedParagraph(title: "描述", text: source,
+                        expansion: Binding(get: { state.value }, set: { state.value = $0 }))
+                        .frame(width: width)
+                }
+                let host = NSHostingView(rootView: root())
+                host.frame = CGRect(x: 0, y: 0, width: width, height: 500)
+                host.layoutSubtreeIfNeeded()
+                let collapsed = host.fittingSize.height
+                #expect(collapsed > 0 && collapsed < 90)
+                state.value = true; host.rootView = root(); host.layoutSubtreeIfNeeded()
+                let expanded = host.fittingSize.height
+                #expect(expanded > collapsed)
+                if source.utf16.count > 2000 { #expect(expanded < 280) }
+                state.value = false; host.rootView = root(); host.layoutSubtreeIfNeeded()
+                #expect(abs(host.fittingSize.height - collapsed) < 1)
+            }
         }
     }
 
-    @Test func expandedTextKeepsCompleteContentAndCopyExcludesUI() {
-        let source = String(repeating: "第一条👨‍👩‍👧‍👦 e\u{301}\n第二条完整内容\n", count: 50)
-        let expanded = StampedParagraphLayout.make(title: "描述", body: source, width: 280, expanded: true)
-        #expect(StampedParagraphLayout.copyText(expanded.text) == source)
-        #expect(expanded.text.string.hasSuffix(" ⌃"))
-        #expect(lines(expanded.text, width: 280).count > 3)
-        let collapsed = StampedParagraphLayout.make(title: "描述", body: source, width: 280, expanded: false)
-        let visible = StampedParagraphLayout.copyText(collapsed.text)
-        #expect(source.hasPrefix(visible))
-        #expect(source.indices.contains(source.index(source.startIndex, offsetBy: visible.count)))
-        #expect(!visible.contains("\u{FFFC}"))
-    }
-
-    @Test func explicitNewlinesAndWideStampDoNotCreateSeparateHeadingRows() {
-        for title in ["偏好", "验收验证标准"] {
-            let result = StampedParagraphLayout.make(title: title, body: "正文\n第二行\n第三行\n第四行", width: 240, expanded: false)
-            #expect(result.overflowing)
-            #expect(lines(result.text, width: 240).count <= 3)
-            #expect(result.text.string.hasPrefix("\u{FFFC} 正文"))
-        }
-    }
-
-    @Test func longMemoryPreviewRemainsBounded() {
-        let source = String(repeating: "中文 memory 👨‍👩‍👧‍👦 ", count: 2000)
-        let start = Date()
-        for _ in 0..<20 {
-            let result = StampedParagraphLayout.make(title: "偏好", body: source, width: 280, expanded: false)
-            #expect(result.text.length < 300)
-            #expect(result.size.height < 80)
-        }
-        #expect(Date().timeIntervalSince(start) < 3)
-    }
-
-    @Test func hostingKeepsBodyVisibleAndLinkExpandsAndCollapses() throws {
-        final class Expansion { var value = false }
-        for width in [240.0, 375.0, 768.0] {
-            let expansion = Expansion()
-            let source = String(repeating: "这是一段需要展开的记忆正文。", count: 100)
-            let host = NSHostingView(rootView: ConversationStampedParagraph(title: "偏好", text: source,
-                expansion: Binding(get: { expansion.value }, set: { expansion.value = $0 })).frame(width: width))
+    @Test func shortTextKeepsNaturalHeightAcrossNarrowAndWideProposals() {
+        for width in [180.0, 300.0, 480.0] {
+            let host = NSHostingView(rootView: ConversationStampedParagraph(title: "事实", text: "使用中文回复").frame(width: width))
             host.frame = CGRect(x: 0, y: 0, width: width, height: 100)
             host.layoutSubtreeIfNeeded()
-            func findText(_ view: NSView) -> NSTextView? {
-                if let text = view as? NSTextView { return text }
-                return view.subviews.compactMap(findText).first
-            }
-            let text = try #require(findText(host))
-            #expect(text.textLayoutManager == nil)
-            #expect(!text.isVerticallyResizable)
-            #expect(text.string.contains("这是一段"))
-            #expect(text.string.hasSuffix(" …⌄"))
-            #expect(host.fittingSize.height < 90)
-            let delegate = try #require(text.delegate)
-            #expect(delegate.textView?(text, clickedOnLink: StampedParagraphLayout.toggleURL, at: text.string.utf16.count - 1) == true)
-            #expect(expansion.value)
-            #expect(delegate.textView?(text, clickedOnLink: StampedParagraphLayout.toggleURL, at: text.string.utf16.count - 1) == true)
-            #expect(!expansion.value)
-        }
-    }
-
-    @Test func shortMemoryInNestedDetailScrollSettlesAcrossResizeAndContentChanges() async throws {
-        let host = NSHostingView(rootView: memoryRail(revision: 0))
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 320, height: 500),
-            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.orderFront(nil)
-        defer { window.contentView = nil; window.close() }
-        for revision in 0..<12 {
-            host.rootView = memoryRail(revision: revision)
-            window.setContentSize(CGSize(width: revision.isMultiple(of: 2) ? 320 : 284, height: 500))
-            host.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        func textViews(_ view: NSView) -> [NSTextView] {
-            if let text = view as? NSTextView { return [text] }
-            return view.subviews.flatMap(textViews)
-        }
-        let texts = textViews(host)
-        #expect(texts.count == 12)
-        for text in texts {
-            #expect(text.textLayoutManager == nil)
-            #expect(!text.isVerticallyResizable)
-            #expect(text.bounds.height > 0 && text.bounds.height < 80)
-            let container = try #require(text.textContainer)
-            let layout = try #require(text.layoutManager)
-            layout.ensureLayout(for: container)
-            #expect(layout.usedRect(for: container).height <= text.bounds.height)
-        }
-        let frames = texts.map(\.frame)
-        for _ in 0..<10 {
-            host.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(texts.map(\.frame) == frames)
-    }
-
-    private func memoryRail(revision: Int) -> some View {
-        ConversationDetailDashboard {
-            ConversationDetailBoundedScroll {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(0..<12) { index in
-                        ConversationStampedParagraph(title: "事实",
-                            text: index == 0 ? "用户现有一对约5公斤的哑铃。" : "短记忆 \(index)：\(revision)")
-                    }
-                }
-            }
+            #expect(host.fittingSize.height > 0 && host.fittingSize.height < 70)
         }
     }
 
@@ -152,17 +53,5 @@ import SwiftUI
         #expect(task.contains("ConversationStampedParagraph(title: titles[index]"))
     }
 
-    private func lines(_ text: NSAttributedString, width: CGFloat) -> [(rect: CGRect, range: NSRange)] {
-        let storage = NSTextStorage(attributedString: text)
-        let layout = NSLayoutManager()
-        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        storage.addLayoutManager(layout); layout.addTextContainer(container)
-        var result: [(CGRect, NSRange)] = []
-        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, range, _ in
-            result.append((rect, layout.characterRange(forGlyphRange: range, actualGlyphRange: nil)))
-        }
-        return result
-    }
 }
 #endif

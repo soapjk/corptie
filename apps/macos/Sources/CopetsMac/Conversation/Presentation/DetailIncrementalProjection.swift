@@ -15,10 +15,12 @@ struct DetailIncrementalProjection {
         for detail: CodexThreadDetail,
         sessionId: String,
         visibleMessageLimit: Int,
-        requestedRestorationAnchorRowID: String? = nil
+        requestedRestorationAnchorRowID: String? = nil,
+        preparedSourceSignature: String? = nil
     ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
         guard let source = projectSource(for: detail, sessionId: sessionId,
-            visibleMessageLimit: visibleMessageLimit, requestedRestorationAnchorRowID: requestedRestorationAnchorRowID) else { return nil }
+            visibleMessageLimit: visibleMessageLimit, requestedRestorationAnchorRowID: requestedRestorationAnchorRowID,
+            preparedSourceSignature: preparedSourceSignature) else { return nil }
         let entries = ConversationReplyProgressProjection.entries(source.visibleEntries)
         let removedWeight = source.visibleEntries.reduce(0) { $0 + $1.displayWeight }
             - entries.reduce(0) { $0 + $1.displayWeight }
@@ -29,8 +31,15 @@ struct DetailIncrementalProjection {
         for detail: CodexThreadDetail,
         sessionId: String,
         visibleMessageLimit: Int,
-        requestedRestorationAnchorRowID: String?
+        requestedRestorationAnchorRowID: String?, preparedSourceSignature: String?
     ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
+        guard requestedRestorationAnchorRowID == nil,
+              cachedSessionId == sessionId,
+              DetailTimelineIncrementalEligibility.canReuseCachedWindow(
+                cachedVisibleMessageLimit: cachedVisibleMessageLimit,
+                requestedVisibleMessageLimit: visibleMessageLimit
+              ),
+              cachedSourceItemCount > 0 else { return nil }
         let tailTurnID = detail.items.last(where: { !isLowSignalDetailProcessItem($0) })?.turnId
         var nextDisplayItems: [CodexThreadItem] = []
         nextDisplayItems.reserveCapacity(detail.items.count)
@@ -45,14 +54,7 @@ struct DetailIncrementalProjection {
             }
             nextDisplayItems.append(item)
         }
-        guard requestedRestorationAnchorRowID == nil,
-              cachedSessionId == sessionId,
-              DetailTimelineIncrementalEligibility.canReuseCachedWindow(
-                cachedVisibleMessageLimit: cachedVisibleMessageLimit,
-                requestedVisibleMessageLimit: visibleMessageLimit
-              ),
-              cachedSourceItemCount > 0,
-              nextDisplayItems.count >= cachedSourceItemCount,
+        guard nextDisplayItems.count >= cachedSourceItemCount,
               let cachedLast = cachedSourceTailItem,
               nextDisplayItems[cachedSourceItemCount - 1].id == cachedLast.id,
               nextDisplayItems[cachedSourceItemCount - 1].turnId == cachedLast.turnId,
@@ -99,11 +101,11 @@ struct DetailIncrementalProjection {
                 visibleEntries: visibleDetailEntries(from: combined, limit: visibleMessageLimit),
                 totalCount: cachedTotalDisplayEntryCount
                     + appendedEntries.reduce(0) { $0 + $1.displayWeight },
-                signature: incrementalDisplaySignature(
+                signature: preparedSourceSignature ?? incrementalDisplaySignature(
                     previousSignature: reboundSignature,
                     tailEntries: appendedEntries
                 ),
-                sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
+                sourceSignature: preparedSourceSignature ?? makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
             )
         }
 
@@ -153,11 +155,11 @@ struct DetailIncrementalProjection {
             displayItems: nextDisplayItems,
             visibleEntries: visibleEntries,
             totalCount: totalCount,
-            signature: incrementalDisplaySignature(
+            signature: preparedSourceSignature ?? incrementalDisplaySignature(
                 previousSignature: reboundSignature,
                 tailEntries: nextTailEntries
             ),
-            sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
+            sourceSignature: preparedSourceSignature ?? makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
         )
     }
 

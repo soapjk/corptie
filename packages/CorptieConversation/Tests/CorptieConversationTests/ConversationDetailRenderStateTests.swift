@@ -29,6 +29,28 @@ import AppKit
         for _ in 0..<10 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(30))
     }
+    @Test func cardHeightsPrepareOnlyForChangedPublishedContent() async throws {
+        let repository = ClientDetailBusinessRepository(), render = ConversationDetailRenderState()
+        let handle = entry(repository)
+        try handle.store.receive(document(1)); render.resume(from: handle)
+        #expect(render.sizePreparationCount == 2)
+        let sizes = render.widgetSizes
+        for _ in 0..<100 { render.freeze(); render.resume(from: handle) }
+        #expect(render.sizePreparationCount == 2)
+        handle.turn.error = "Unrelated turn update"; await settle()
+        #expect(render.sizePreparationCount == 2)
+        try handle.store.receive(document(2, title: String(repeating: "Long summary\n", count: 20)))
+        await settle()
+        #expect(render.sizePreparationCount == 3, "Only the changed summary is prepared")
+        #expect(render.widgetSizes["session"] == sizes["session"])
+        #expect(render.widgetSizes["summary"] != sizes["summary"])
+        render.freeze()
+        try handle.store.receive(document(3, title: "Short")); await settle()
+        #expect(render.sizePreparationCount == 3)
+        render.resume(from: handle)
+        #expect(render.sizePreparationCount == 4)
+    }
+
     @Test func frozenCopiesAreIndependentAndCatchUpOnceWithoutReplacingCards() async throws {
         let repository = ClientDetailBusinessRepository(), render = ConversationDetailRenderState()
         let handle = entry(repository)

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 import Darwin
@@ -106,13 +107,14 @@ import CorptieConversation
         for _ in 0..<10 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(40))
     }
-    func testHiddenPageOnlyAccumulatesChangesAndResumesLatestValues() async {
+    func testHiddenPageDisconnectsSourcesAndResumesLatestValues() async {
         let (inputs, source, client, timeline) = makeInputs()
         defer { inputs.retire() }
         timeline.apply(detail(1), timelineRevision: 1)
         inputs.resume(); await settle()
         let first = inputs.detail
         inputs.freeze(); let count = inputs.refreshCount
+        XCTAssertEqual(inputs.subscriptionCount, 0)
         for revision in 2...6 { timeline.apply(detail(revision), timelineRevision: revision) }
         source.acceptCreatedSession(session("page-other", task: "other-task"))
         client.sessionCommandController.setSendFailure("Original Session only", sessionID: inputs.scope.sessionID)
@@ -123,10 +125,29 @@ import CorptieConversation
         inputs.resume(); await settle()
         XCTAssertEqual(inputs.detail, timeline.detail)
         XCTAssertEqual(inputs.sendFailure, "Original Session only")
-        let resumed = inputs.refreshCount
-        for _ in 0..<200 { inputs.freeze(); inputs.resume() }
+        let countAfterResume = inputs.subscriptionCount
+        XCTAssertGreaterThan(countAfterResume, 0)
+        for _ in 0..<10 {
+            inputs.freeze()
+            XCTAssertEqual(inputs.subscriptionCount, 0)
+            inputs.resume()
+            XCTAssertEqual(inputs.subscriptionCount, countAfterResume)
+        }
         await settle()
-        XCTAssertEqual(inputs.refreshCount, resumed, "An unchanged hot resume must not recapture sources or subscribe again")
+    }
+
+    func testInactiveViewPublisherDoesNotSubscribeUpstream() {
+        let subject = PassthroughSubject<Int, Never>()
+        var connections = 0
+        let publisher = subject.handleEvents(receiveSubscription: { _ in connections += 1 },
+            receiveCancel: { connections -= 1 })
+        let hidden = publisher.whilePresented(false).sink { _ in XCTFail("Hidden delivery") }
+        XCTAssertEqual(connections, 0)
+        let visible = publisher.whilePresented(true).sink { _ in }
+        XCTAssertEqual(connections, 1)
+        visible.cancel()
+        XCTAssertEqual(connections, 0)
+        hidden.cancel()
     }
     func testActionFenceRejectsPreviousGenerationAndDifferentSelectedSession() async {
         let (inputs, _, client, _) = makeInputs()
@@ -143,15 +164,18 @@ import CorptieConversation
         client.sessionSelectionController.select("page-other")
         XCTAssertNil(inputs.actionSession(generation: current))
     }
-    func testBindingChangeRetiresEvenFrozenInputsAndRejectsActionsImmediately() async {
+    func testFrozenBindingChangeRejectsActionsAndRetiresBeforeResume() async {
         let (inputs, source, _, timeline) = makeInputs()
         timeline.apply(detail(1)); inputs.resume(); await settle(); inputs.freeze()
         source.acceptCreatedSession(session(task: "rebound-task"))
         XCTAssertNil(inputs.actionSession(generation: inputs.activity.generation))
         await settle()
+        XCTAssertFalse(inputs.retired, "Hidden pages do not subscribe to binding changes")
+        XCTAssertEqual(inputs.subscriptionCount, 0)
+        inputs.resume()
         XCTAssertTrue(inputs.retired)
         XCTAssertNil(inputs.detail)
-        inputs.resume(); XCTAssertFalse(inputs.activity.isActive)
+        XCTAssertFalse(inputs.activity.isActive)
     }
     func testNativeHostSkipsHiddenSourceChangesThenPresentsLatestOnResume() async {
         _ = NSApplication.shared

@@ -7,6 +7,23 @@ import CorptieClientCore
 @testable import CorptieConversation
 
 @MainActor struct DetailCardReorderingTests {
+    @Test func ordinaryLayoutDoesNotPrepareDragGeometry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        try await fixture.settle()
+        let controller = try fixture.controller()
+        let initial = controller.frameCalculationCount
+        for _ in 0..<20 {
+            fixture.window.contentView?.needsLayout = true
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+        }
+        try await fixture.settle()
+        #expect(controller.frameCalculationCount == initial)
+        controller.begin("summary", at: CGPoint(x: 50, y: 20))
+        #expect(controller.frameCalculationCount > initial)
+        controller.cancel()
+    }
+
     @Test func draftReconcilesLiveInsertionsAndDeletesWithoutMutatingSource() throws {
         let source = ["summary", "references", "provider"]
         var draft = try #require(DetailCardReorderDraft(source: "summary", order: source))

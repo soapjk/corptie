@@ -51,12 +51,19 @@ func makeDetailDisplayCache(
     for detail: CodexThreadDetail,
     sessionId: String,
     visibleMessageLimit: Int,
-    restorationAnchorRowID: String? = nil
+    restorationAnchorRowID: String? = nil,
+    preparedSourceSignature: String? = nil
 ) -> DetailDisplayCache {
+    if Task.isCancelled {
+        return DetailDisplayCache(sessionId: sessionId, displayItems: [], displayEntries: [],
+            totalDisplayEntryCount: 0, visibleMessageLimit: visibleMessageLimit,
+            signature: preparedSourceSignature ?? "cancelled", sourceSignature: preparedSourceSignature ?? "cancelled")
+    }
     let preparedDisplay = makeVisibleDetailDisplay(
         for: detail,
         visibleMessageLimit: visibleMessageLimit,
-        restorationAnchorRowID: restorationAnchorRowID
+        restorationAnchorRowID: restorationAnchorRowID,
+        preparedSourceSignature: preparedSourceSignature
     )
     return DetailDisplayCache(
         sessionId: sessionId,
@@ -73,12 +80,12 @@ func makeDetailDisplayCache(
 private func makeVisibleDetailDisplay(
     for detail: CodexThreadDetail,
     visibleMessageLimit: Int,
-    restorationAnchorRowID: String?
+    restorationAnchorRowID: String?, preparedSourceSignature: String?
 ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String, resolvedRestorationAnchorRowID: String?) {
-    let displayItems = detail.items
-        .filter { !isLowSignalDetailProcessItem($0) }
+    let displayItems = Array(detail.items.lazy.prefix { _ in !Task.isCancelled }
+        .filter { !isLowSignalDetailProcessItem($0) })
     let displayEntries = PerfStopwatch.measure("timeline.makeChatDisplayEntries") {
-        makeChatDisplayEntries(from: displayItems)
+        Task.isCancelled ? [] : makeChatDisplayEntries(from: displayItems)
     }
     let uniqueDisplayEntries = uniquedChatDisplayEntries(displayEntries)
     let anchoredWindow = restorationAnchorRowID.flatMap { anchorRowID in
@@ -94,8 +101,8 @@ private func makeVisibleDetailDisplay(
         displayItems: displayItems,
         visibleEntries: visibleEntries,
         totalCount: uniqueDisplayEntries.reduce(0) { $0 + $1.displayWeight },
-        signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
-        sourceSignature: makeDetailSourceSignature(
+        signature: preparedSourceSignature ?? detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
+        sourceSignature: preparedSourceSignature ?? makeDetailSourceSignature(
             for: detail,
             visibleMessageLimit: visibleMessageLimit,
             restorationAnchorRowID: restorationAnchorRowID

@@ -229,7 +229,7 @@ struct SessionMessageComposerSurface: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
+        .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested).whilePresented(acceptsPresentationUpdates)) { notification in
             if acceptsPresentationUpdates, notification.object as? String == sessionId { editorController.focusIfRequested() }
         }
         .onChange(of: attachedImages) { _, images in

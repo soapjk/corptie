@@ -48,16 +48,18 @@ public struct ConversationContentSurface: ViewModifier {
     private let tintOpacity: Double
     private let isMessage: Bool
     private let isPanel: Bool
+    private let allowsMaterial: Bool
     private let role: ConversationSurfaceRole?
 
     public init(cornerRadius: CGFloat, tint: Color? = nil, fallback: Color? = nil,
-                tintOpacity: Double = ConversationContentSurfacePolicy.tintOpacity, isMessage: Bool = false, isPanel: Bool = false, role: ConversationSurfaceRole? = nil) {
+                tintOpacity: Double = ConversationContentSurfacePolicy.tintOpacity, isMessage: Bool = false, isPanel: Bool = false, role: ConversationSurfaceRole? = nil, allowsMaterial: Bool = true) {
         self.cornerRadius = cornerRadius
         self.tint = tint
         self.fallback = fallback
         self.tintOpacity = tintOpacity
         self.isMessage = isMessage
         self.isPanel = isPanel
+        self.allowsMaterial = allowsMaterial
         self.role = role
     }
 
@@ -73,7 +75,7 @@ public struct ConversationContentSurface: ViewModifier {
         #else
         let withMaterial = false
         #endif
-        let withPanelMaterial = ConversationContentSurfacePolicy.usesPanelMaterial(isPanel: isPanel && !isMessage,
+        let withPanelMaterial = ConversationContentSurfacePolicy.usesPanelMaterial(isPanel: isPanel && !isMessage && allowsMaterial,
             reduceTransparency: reduceTransparency, increasedContrast: increasedContrast)
         let opacity = ConversationContentSurfacePolicy.backgroundOpacity(dark: colorScheme == .dark,
             reduceTransparency: reduceTransparency, increasedContrast: increasedContrast, isMessage: isMessage, withMaterial: withMaterial, isPanel: isPanel)

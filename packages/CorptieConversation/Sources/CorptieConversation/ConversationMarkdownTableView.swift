@@ -277,6 +277,7 @@ final class ClickActivatedTableScrollView: NSScrollView {
 }
 
 private struct ClickActivatedTableScroll<Content: View>: NSViewRepresentable {
+    @Environment(\.detailScrollRouter) private var detailRouter
     let content: Content
     let contentSize: CGSize
     func makeNSView(context: Context) -> ClickActivatedTableScrollView {
@@ -293,6 +294,7 @@ private struct ClickActivatedTableScroll<Content: View>: NSViewRepresentable {
         return scroll
     }
     func updateNSView(_ scroll: ClickActivatedTableScrollView, context: Context) {
+        detailRouter?.register(scroll)
         guard let host = scroll.documentView as? NSHostingView<Content> else { return }
         host.rootView = content
         if host.frame.size != contentSize { host.setFrameSize(contentSize) }

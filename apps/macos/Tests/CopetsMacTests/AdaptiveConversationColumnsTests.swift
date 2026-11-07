@@ -27,7 +27,7 @@ struct AdaptiveConversationColumnsTests {
     }
 
     @MainActor @Test
-    func inspectorToggleKeepsHeaderFullWidthAndRailBelowControls() async throws {
+    func detailOverlayKeepsHeaderAndTranscriptFullWidth() async throws {
         let visibility = Visibility()
         let header = NSView(), transcript = NSView(), inspector = NSView()
         let host = NSHostingView(rootView: HeaderLayoutHarness(visibility: visibility,
@@ -50,13 +50,15 @@ struct AdaptiveConversationColumnsTests {
                 #expect(abs(headerFrame.height - 64) < 2)
                 if let previousHeader { #expect(headerFrame == previousHeader) }
                 previousHeader = headerFrame
-                #expect(transcriptFrame.width > 0)
-                #expect(transcriptFrame.width <= width)
+                #expect(abs(transcriptFrame.width - width) < 2)
                 #expect(!headerFrame.intersects(transcriptFrame.insetBy(dx: 1, dy: 1)))
                 if visible && inspector.window === window {
                     let railFrame = inspector.convert(inspector.bounds, to: host)
                     #expect(!headerFrame.intersects(railFrame.insetBy(dx: 1, dy: 1)))
                     #expect(abs(railFrame.height - transcriptFrame.height) < 2)
+                    #expect(abs(railFrame.width - ConversationDetailWidgetMetrics.railWidth) < 2)
+                    #expect(railFrame.intersects(transcriptFrame))
+                    #expect(abs(railFrame.maxX - transcriptFrame.maxX) < 2)
                 }
                 #expect(transcript.window === window)
             }
@@ -70,7 +72,7 @@ struct AdaptiveConversationColumnsTests {
     }
 
     @MainActor @Test
-    func systemInspectorKeepsTranscriptMountedAcrossWindowResizes() async throws {
+    func detailOverlayKeepsTranscriptMountedAcrossWindowResizes() async throws {
         let transcript = NSView()
         let inspector = NSView()
         let host = NSHostingView(rootView: AdaptiveConversationColumns(isVisible: .constant(true)) {
@@ -82,15 +84,13 @@ struct AdaptiveConversationColumnsTests {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
                               styleMask: .borderless, backing: .buffered, defer: false)
         window.contentView = host
-        window.orderFront(nil)
-        defer { window.orderOut(nil); window.contentView = nil }
+        defer { window.contentView = nil }
         for width: CGFloat in [900, 1400, 900] {
             window.setContentSize(NSSize(width: width, height: 600))
             host.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(40))
             host.layoutSubtreeIfNeeded()
-            #expect(transcript.frame.width > 0)
-            #expect(transcript.frame.width <= width)
+            #expect(abs(transcript.frame.width - width) < 2)
             #expect(transcript.window === window, "Resizing must keep the editor's native view mounted")
             if inspector.window === window { #expect(abs(inspector.frame.width - ConversationDetailWidgetMetrics.railWidth) < 2) }
         }

@@ -19,6 +19,41 @@ import AppKit
     }
 
     #if os(macOS)
+    private struct FixedSlot: NSViewRepresentable {
+        let index: Int
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView(); view.identifier = .init("fixed-slot-\(index)"); return view
+        }
+        func updateNSView(_ view: NSView, context: Context) {}
+    }
+    @Test func fixedDesktopGeometrySurvivesWidthAndHeightProposals() async throws {
+        let host = NSHostingView(rootView: ScrollView {
+            DetailWidgetLayout(sizes: [.small, .small, .medium], fixedWidth: 300) {
+                ForEach(0..<3) { FixedSlot(index: $0) }
+            }.frame(width: 300).frame(maxWidth: .infinity, alignment: .leading)
+        })
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 324, height: 500),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { window.contentView = nil; window.close() }
+        func slots(_ view: NSView) -> [NSView] {
+            if view.identifier?.rawValue.hasPrefix("fixed-slot-") == true { return [view] }
+            return view.subviews.flatMap(slots)
+        }
+        var initial: [CGRect]?
+        for size in [CGSize(width: 324, height: 500), .init(width: 600, height: 300),
+                     .init(width: 260, height: 700), .init(width: 324, height: 400)] {
+            window.setContentSize(size); window.layoutIfNeeded(); host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+            let cells = slots(host).sorted { $0.identifier!.rawValue < $1.identifier!.rawValue }
+            #expect(cells.count == 3)
+            let frames = cells.map { $0.convert($0.bounds, to: host) }
+            #expect(frames.map(\.size) == [CGSize(width: 144, height: 144), .init(width: 144, height: 144), .init(width: 300, height: 144)])
+            if let initial { #expect(frames == initial, "Viewport changes must not move or resize fixed cards") }
+            else { initial = frames }
+        }
+    }
+
     @Test func viewportIdealSizeProbesDoNotMeasureScrollingContent() {
         let counts = MeasureCounts()
         let host = NSHostingView(rootView: DetailWidgetViewport(size: .small) {

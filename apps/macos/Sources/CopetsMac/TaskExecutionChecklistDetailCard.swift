@@ -100,13 +100,13 @@ struct TaskExecutionChecklistDetailCard: View {
             requestGeneration = UUID(); plan = nil
             await load()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged)) { event in
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistChanged).whilePresented(active)) { event in
             guard active, event.object as? String == taskID else { return }
             if let next = event.userInfo?["checklist"] as? ConversationExecutionPlan,
                next.revision >= (plan?.revision ?? 0) { plan = next }
             else { refresh() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged)) { event in
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged).whilePresented(active)) { event in
             guard active, event.object as? String == taskID,
                   plan?.steps.contains(where: { $0.assignment != nil }) == true else { return }
             refresh()
@@ -168,7 +168,7 @@ struct DesktopExecutionChecklistContent: View {
         .task(id: plan.revision) {
             if observesAssignments && plan.steps.contains(where: { $0.assignment != nil }) { await loadAssignments() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged)) { event in
+        .onReceive(NotificationCenter.default.publisher(for: .executionChecklistAssignmentChanged).whilePresented(observesAssignments)) { event in
             guard observesAssignments, event.object as? String == taskID,
                   currentPlan.steps.contains(where: { $0.assignment != nil }) else { return }
             assignmentRefresh?.cancel()
