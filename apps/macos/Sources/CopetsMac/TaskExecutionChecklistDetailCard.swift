@@ -18,10 +18,34 @@ struct ConversationChecklistDockProjection {
     var checklist: ConversationExecutionPlan?
     var latestChecklist: ConversationExecutionPlan?
     var timelineIndexByRowID: [String: Int] = [:]
+    var disclosureRowIndices: [String: Int] = [:]
+    private var timelineSourceIndices: [Int] = []
+
+    /// Only structural inputs and committed checklist revisions invalidate indices.
+    /// Refresh row values even when structure is reusable: text may have streamed.
+    @discardableResult
+    mutating func update(rows: [AppKitChatTimelineRow], previousRows: [AppKitChatTimelineRow]) -> Bool {
+        let sameStructure = rows.count == previousRows.count && zip(previousRows, rows).allSatisfy { old, next in
+            old.id == next.id && old.expandableTurnId == next.expandableTurnId
+                && old.executionPlan?.planId == next.executionPlan?.planId
+                && old.executionPlan?.revision == next.executionPlan?.revision
+                && old.executionPlan?.taskId == next.executionPlan?.taskId
+                && old.executionPlan?.closed == next.executionPlan?.closed
+        }
+        guard sameStructure else {
+            self = Self(rows: rows)
+            return true
+        }
+        timelineRows = timelineSourceIndices.map { rows[$0] }
+        return false
+    }
 
     init(rows: [AppKitChatTimelineRow]) {
         timelineRows.reserveCapacity(rows.count)
-        for row in rows {
+        for (index, row) in rows.enumerated() {
+            if let turnID = row.expandableTurnId, disclosureRowIndices[turnID] == nil {
+                disclosureRowIndices[turnID] = index
+            }
             if let plan = row.executionPlan, plan.taskId != nil,
                plan.revision > (latestChecklist?.revision ?? -1) { latestChecklist = plan }
             if let plan = row.executionPlan, plan.taskId != nil, plan.closed != true {
@@ -29,6 +53,7 @@ struct ConversationChecklistDockProjection {
             } else {
                 timelineIndexByRowID[row.id] = timelineRows.count
                 timelineRows.append(row)
+                timelineSourceIndices.append(index)
             }
         }
     }
@@ -41,10 +66,9 @@ struct PinnedExecutionChecklistCard: View {
     @State private var expanded = false
 
     static func height(plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool) -> CGFloat {
-        // Preparing while collapsed keeps the disclosure click a cache lookup.
+        guard expanded else { return 36 }
         let contentWidth = width - 20
         let full = NativePlanChecklistHeightCache.shared.height(of: plan, width: contentWidth, expanded: true)
-        if !expanded { return 36 }
         let oldDisclosure: CGFloat = plan.closed != true && plan.steps.count > TaskExecutionChecklist.columns(for: contentWidth) * 2 ? 24 : 0
         return min(280, full - oldDisclosure + 16)
     }

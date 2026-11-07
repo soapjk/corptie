@@ -21,7 +21,7 @@ struct DetailIncrementalProjection {
         guard let source = projectSource(for: detail, sessionId: sessionId,
             visibleMessageLimit: visibleMessageLimit, requestedRestorationAnchorRowID: requestedRestorationAnchorRowID,
             preparedSourceSignature: preparedSourceSignature) else { return nil }
-        let entries = ConversationReplyProgressProjection.entries(source.visibleEntries)
+        let entries = uniquedChatDisplayEntries(ConversationReplyProgressProjection.entries(source.visibleEntries))
         let removedWeight = source.visibleEntries.reduce(0) { $0 + $1.displayWeight }
             - entries.reduce(0) { $0 + $1.displayWeight }
         return (source.displayItems, entries, max(0, source.totalCount - removedWeight), source.signature, source.sourceSignature)

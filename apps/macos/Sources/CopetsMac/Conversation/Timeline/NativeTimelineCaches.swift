@@ -295,6 +295,7 @@ final class NativeTimelineLayoutCache {
         var triggerText: NSAttributedString? = nil
         var triggerTextHeight: CGFloat = 0
         var triggerCanExpand = false
+        var naturalWidthMetrics: ChatBubbleWidthPolicy.NaturalWidthMetrics? = nil
         var sourceIdentity: AppKitChatRowReuseIdentity? = nil
         var sourceSessionID: String? = nil
         var rawStatusText: NSAttributedString? = nil
@@ -305,6 +306,12 @@ final class NativeTimelineLayoutCache {
     func intrinsicContent(for row: AppKitChatTimelineRow, columnWidth: CGFloat,
                           skin: ConversationSkin, reusing previous: Layout? = nil) -> Layout {
         let typography = row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
+        let identity = AppKitChatRowReuseIdentity(id: row.id, contentRevision: row.contentRevision)
+        let reusable = previous.flatMap {
+            $0.typography == typography && $0.sourceIdentity == identity && $0.sourceSessionID == row.sessionID ? $0 : nil
+        }
+        let naturalWidthMetrics = ChatBubbleWidthPolicy.prepareWidth(for: row, typography: typography,
+            reusing: reusable?.naturalWidthMetrics)
         let width = columnWidth - ReplyLeadingLayout.additionalCardInset(for: row, skin: skin)
         let cardWidth: CGFloat
         if let plan = row.executionPlan, plan.taskId != nil {
@@ -312,13 +319,9 @@ final class NativeTimelineLayoutCache {
         } else if row.userInput != nil || row.executionPlan != nil {
             cardWidth = min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, width - 8))
         } else {
-            cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: max(120, width), typography: typography)
+            cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: max(120, width), typography: typography, prepared: naturalWidthMetrics)
         }
         let textWidth = max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
-        let identity = AppKitChatRowReuseIdentity(id: row.id, contentRevision: row.contentRevision)
-        let reusable = previous.flatMap {
-            $0.typography == typography && $0.sourceIdentity == identity && $0.sourceSessionID == row.sessionID ? $0 : nil
-        }
         let processBlocks: [Layout.ProcessBlock] = reusable?.processBlocks ?? (row.nativeStyle == .process && row.isExpanded
             ? row.processSteps.map { step in
                 let structured = step.tool != nil || step.changeSet != nil
@@ -365,6 +368,7 @@ final class NativeTimelineLayoutCache {
             imageLayout: MessageImageGalleryLayout.layout(geometries: row.imageGeometries, width: textWidth),
             attributedText: text, richBlocks: rich, processBlocks: processBlocks,
             cardWidth: cardWidth, textHeight: 0, rawStatusHeight: 0, rowHeight: 0)
+        content.naturalWidthMetrics = naturalWidthMetrics
         content.sourceIdentity = identity
         content.sourceSessionID = row.sessionID
         content.rawStatusText = reusable?.rawStatusText ?? (row.rawStatusText.isEmpty ? nil

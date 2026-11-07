@@ -3,6 +3,19 @@ import SwiftUI
 @testable import CorptieMac
 
 final class DetailIncrementalProjectionTests: XCTestCase {
+    func testPreparedDisplayCacheRemainsNormalizedAcrossCommitBoundary() {
+        let source = [item("user", "turn", "userMessage"),
+                      item("commentary", "turn", "agentMessage"),
+                      item("tool", "turn", "commandExecution")]
+        let prepared = makeDetailDisplayCache(for: detail(source), sessionId: "session", visibleMessageLimit: 100)
+        XCTAssertTrue(prepared.isPresentationPrepared)
+        let committed = prepared.projectingReplyProgress()
+        XCTAssertTrue(committed.isPresentationPrepared)
+        XCTAssertEqual(committed.displayItems, prepared.displayItems)
+        XCTAssertEqual(committed.displayEntries.map(\.id), prepared.displayEntries.map(\.id))
+        XCTAssertEqual(committed.totalDisplayEntryCount, prepared.totalDisplayEntryCount)
+        XCTAssertEqual(committed.sourceSignature, prepared.sourceSignature)
+    }
     func testHistoricalConfirmationChangesWithoutRebuildingProviderTail() throws {
         var confirmation = item("confirmation", "product", "collaborationConfirmation")
         confirmation.collaborationConfirmationStatus = "pending"

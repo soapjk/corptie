@@ -76,17 +76,14 @@ struct SessionConversationSurface: View {
     @State private var cachedDisplayEntries: [ChatDisplayEntry] = []
     @State private var cachedRowsRevision: UInt64 = 0
     @State private var updatingDisclosureRow = false
-    @State private var cachedDisclosureRowIndices: [String: Int] = [:]
+    private var cachedDisclosureRowIndices: [String: Int] { cachedChecklistDock.disclosureRowIndices }
     @State private var checklistEventPlan: ConversationExecutionPlan?
     @State private var cachedChecklistDock = ConversationChecklistDockProjection(rows: [])
     @State private var cachedAppKitRows: [AppKitChatTimelineRow] = [] {
         didSet {
             cachedRowsRevision &+= 1
             if !updatingDisclosureRow {
-                cachedChecklistDock = ConversationChecklistDockProjection(rows: cachedAppKitRows)
-                cachedDisclosureRowIndices = Dictionary(cachedAppKitRows.enumerated().compactMap { index, row in
-                    row.expandableTurnId.map { ($0, index) }
-                }, uniquingKeysWith: { first, _ in first })
+                cachedChecklistDock.update(rows: cachedAppKitRows, previousRows: oldValue)
             }
         }
     }
@@ -1266,7 +1263,8 @@ struct SessionConversationSurface: View {
                 totalDisplayEntryCount: incremental.totalCount,
                 visibleMessageLimit: visibleMessageLimit,
                 signature: incremental.signature,
-                sourceSignature: incremental.sourceSignature
+                sourceSignature: incremental.sourceSignature,
+                isPresentationPrepared: true
             ))
             return
         }
@@ -1329,25 +1327,9 @@ struct SessionConversationSurface: View {
     private func commitDisplayCache(_ sourceDisplay: DetailDisplayCache) {
         guard acceptsPresentationUpdates else { return }
         ChatPerformanceRecorder.shared.increment(.displayRebuilds)
-        let projectedDisplay = sourceDisplay.projectingReplyProgress()
-        let uniqueEntries = uniquedChatDisplayEntries(projectedDisplay.displayEntries)
-        let removedDisplayWeight = projectedDisplay.displayEntries.reduce(0) { $0 + $1.displayWeight }
-            - uniqueEntries.reduce(0) { $0 + $1.displayWeight }
-        let preparedDisplay = uniqueEntries.count == projectedDisplay.displayEntries.count
-            ? projectedDisplay
-            : DetailDisplayCache(
-                sessionId: projectedDisplay.sessionId,
-                displayItems: projectedDisplay.displayItems,
-                displayEntries: uniqueEntries,
-                totalDisplayEntryCount: max(
-                    uniqueEntries.reduce(0) { $0 + $1.displayWeight },
-                    projectedDisplay.totalDisplayEntryCount - removedDisplayWeight
-                ),
-                visibleMessageLimit: projectedDisplay.visibleMessageLimit,
-                signature: projectedDisplay.signature,
-                sourceSignature: projectedDisplay.sourceSignature,
-                restorationAnchorRowID: projectedDisplay.restorationAnchorRowID
-            )
+        // Both production projection paths prepare once before submission.
+        // Compatibility callers can still normalize an unprepared value here.
+        let preparedDisplay = sourceDisplay.projectingReplyProgress()
         var transaction = Transaction()
         transaction.disablesAnimations = true
         let nextAppKitRows = PerfStopwatch.measure("会话切换.makeCachedAppKitRows") {

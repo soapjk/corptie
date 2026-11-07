@@ -290,6 +290,47 @@ enum ChatBubbleWidthPolicy {
     static let horizontalPadding = MessageBubbleWidthPolicy.horizontalPadding
     static let collapsedProcessWidth = MessageBubbleWidthPolicy.collapsedProcessWidth
 
+    /// Content-only measurement retained by the cell's existing Layout.
+    @MainActor
+    final class NaturalWidthMetrics {
+        let fullWidth: Bool
+        let bodyWidth: CGFloat
+        let headerWidth: CGFloat
+        let title: String
+        let metadata: String
+
+        init(text: String, style: AppKitChatTimelineRow.NativeStyle, title: String,
+             metadata: String, typography: ConversationTypography) {
+            self.title = title
+            self.metadata = metadata
+            fullWidth = MessageBubbleWidthPolicy.requiresFullWidthLayout(text)
+            if fullWidth {
+                bodyWidth = 0
+            } else {
+                let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style, typography: typography)
+                bodyWidth = ceil(attributed.boundingRect(
+                    with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading]).width)
+            }
+            let titleWidth = ceil((title as NSString).size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .bold)]).width)
+            let metadataWidth = ceil((metadata as NSString).size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold)]).width)
+            headerWidth = titleWidth + metadataWidth + 12
+        }
+    }
+
+    static func prepareWidth(for row: AppKitChatTimelineRow, typography: ConversationTypography,
+                             reusing previous: NaturalWidthMetrics?) -> NaturalWidthMetrics? {
+        guard !row.isWorkspaceCard, row.scheduledTrigger == nil, row.nativeStyle != .process,
+              row.collaborationRoute == nil, row.userInput == nil, row.executionPlan == nil else { return nil }
+        let title = row.showsHeader ? row.title : ""
+        let metadata = row.showsHeader ? row.metadata : ""
+        if let previous, previous.title == title, previous.metadata == metadata { return previous }
+        return NaturalWidthMetrics(text: row.nativeText, style: row.nativeStyle,
+            title: title, metadata: metadata, typography: typography)
+    }
+
     static func preferredWidth(
         text: String,
         style: AppKitChatTimelineRow.NativeStyle,
@@ -297,31 +338,19 @@ enum ChatBubbleWidthPolicy {
         metadata: String,
         processWidth: CGFloat = 0,
         availableWidth: CGFloat = maximumWidth,
-        typography: ConversationTypography = .classic
+        typography: ConversationTypography = .classic,
+        prepared: NaturalWidthMetrics? = nil
     ) -> CGFloat {
+        let metrics = prepared ?? NaturalWidthMetrics(text: text, style: style,
+            title: title, metadata: metadata, typography: typography)
         let widthCeiling = style == .agent ? availableWidth : maximumWidth
-        let bodyWidth: CGFloat
-        if MessageBubbleWidthPolicy.requiresFullWidthLayout(text) {
-            bodyWidth = widthCeiling - horizontalPadding
-        } else {
-            let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style, typography: typography)
-            bodyWidth = ceil(attributed.boundingRect(
-                with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading]
-            ).width)
-        }
-        let titleWidth = ceil((title as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .bold)
-        ]).width)
-        let metadataWidth = ceil((metadata as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 10, weight: .semibold)
-        ]).width)
-        let headerWidth = titleWidth + metadataWidth + 12
-        return MessageBubbleWidthPolicy.preferredWidth(bodyWidth: bodyWidth, headerWidth: headerWidth,
-            processWidth: processWidth, availableWidth: availableWidth, widthCeiling: widthCeiling)
+        return MessageBubbleWidthPolicy.preferredWidth(
+            bodyWidth: metrics.fullWidth ? widthCeiling - horizontalPadding : metrics.bodyWidth,
+            headerWidth: metrics.headerWidth, processWidth: processWidth,
+            availableWidth: availableWidth, widthCeiling: widthCeiling)
     }
 
-    static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat, typography: ConversationTypography = .classic) -> CGFloat {
+    static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat, typography: ConversationTypography = .classic, prepared: NaturalWidthMetrics? = nil) -> CGFloat {
         if row.isWorkspaceCard {
             return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
         }
@@ -332,6 +361,10 @@ enum ChatBubbleWidthPolicy {
         let fullAvailableWidth = isFunctionalCard ? min(laneWidth, functionalCardMaximumWidth) : laneWidth
         if row.scheduledTrigger != nil { return fullAvailableWidth }
         if row.nativeStyle == .process {
+            if row.isExpanded {
+                return MessageBubbleWidthPolicy.processCardWidth(summaryWidth: 0, expanded: true,
+                    laneWidth: availableWidth - ReplyLeadingLayout.processLeadingAdjustment)
+            }
             let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
             ]).width)
@@ -345,21 +378,10 @@ enum ChatBubbleWidthPolicy {
                     .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
                 ]).width)
             } ?? 0
-            if !row.isExpanded {
-                // Match ProcessCard's monospaced digits and allow its complete
-                // single-line heading to determine the collapsed card width.
-                // Do not apply the expanded body/viewport ceiling to this label.
-                return max(MessageBubbleWidthPolicy.minimumWidth,
-                    summaryWidth + (progressWidth > 0 ? progressWidth + 8 : 0) + 66,
-                    secondaryWidth > 0 ? secondaryWidth + 40 : 0)
-            }
-            return MessageBubbleWidthPolicy.processCardWidth(
-                summaryWidth: summaryWidth,
-                secondaryWidth: secondaryWidth,
-                progressLabelWidth: progressWidth,
-                expanded: row.isExpanded,
-                laneWidth: availableWidth - ReplyLeadingLayout.processLeadingAdjustment
-            )
+            // Preserve the complete collapsed single-line heading.
+            return max(MessageBubbleWidthPolicy.minimumWidth,
+                summaryWidth + (progressWidth > 0 ? progressWidth + 8 : 0) + 66,
+                secondaryWidth > 0 ? secondaryWidth + 40 : 0)
         }
         if row.collaborationRoute != nil {
             return fullAvailableWidth
@@ -371,7 +393,8 @@ enum ChatBubbleWidthPolicy {
             metadata: row.showsHeader ? row.metadata : "",
             processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
             availableWidth: fullAvailableWidth,
-            typography: typography
+            typography: typography,
+            prepared: prepared
         )
         return row.images.isEmpty ? preferred : max(preferred, MessageImageGalleryLayout.cardWidth(
             bodyWidth: max(0, preferred - horizontalPadding), geometries: row.imageGeometries, laneWidth: contentLaneWidth))
@@ -423,5 +446,44 @@ enum LiveResizeWidthPolicy {
     static func requiresReflow(previous: CGFloat?, next: CGFloat) -> Bool {
         guard let previous else { return true }
         return abs(previous - next) >= 0.5
+    }
+}
+
+/// Preserve native containers for provably plain suffix additions. Rich changes,
+/// replacement/shrink, attachments and disclosure transitions keep SDK reset.
+enum SDKRowContainerResetPolicy {
+    static func canRetainForAppend(previous: AppKitChatTimelineRow, next: AppKitChatTimelineRow) -> Bool {
+        guard previous.id == next.id, previous.nativeStyle == next.nativeStyle,
+              next.nativeStyle == .agent,
+              previous.isPendingInteraction == next.isPendingInteraction,
+              previous.isWorkspaceCard == next.isWorkspaceCard,
+              previous.isCommentary == next.isCommentary,
+              previous.showsMessageStatusBar == next.showsMessageStatusBar,
+              previous.timeSeparatorHeight == next.timeSeparatorHeight,
+              previous.scheduledMessageSource == nil, next.scheduledMessageSource == nil,
+              previous.title == next.title, previous.metadata == next.metadata,
+              previous.showsHeader == next.showsHeader, previous.isExpanded == next.isExpanded,
+              previous.showsReplyActions == next.showsReplyActions,
+              (previous.replyIdentity == nil) == (next.replyIdentity == nil),
+              previous.images.isEmpty, next.images.isEmpty,
+              previous.actions.isEmpty, next.actions.isEmpty,
+              previous.executionPlan == nil, next.executionPlan == nil,
+              previous.userInput == nil, next.userInput == nil,
+              previous.coordinationProgress == nil, next.coordinationProgress == nil,
+              previous.scheduledTrigger == nil, next.scheduledTrigger == nil,
+              previous.collaborationRoute == nil, next.collaborationRoute == nil,
+              !previous.isCollaboration, !next.isCollaboration,
+              previous.rawStatusText.isEmpty, next.rawStatusText.isEmpty,
+              !previous.nativeText.isEmpty,
+              next.nativeText.utf8.count > previous.nativeText.utf8.count,
+              next.nativeText.utf8.starts(with: previous.nativeText.utf8) else { return false }
+        // Check only newly appended bytes, not the complete Markdown document.
+        // Formatting delimiters can shrink/restructure an earlier fragment.
+        return !next.nativeText.utf8.dropFirst(previous.nativeText.utf8.count).contains { byte in
+            switch byte {
+            case 9, 10, 13, 35, 36, 40, 41, 42, 45, 46, 58, 60, 62, 91, 92, 93, 95, 96, 124, 126: true
+            default: false
+            }
+        }
     }
 }
