@@ -529,9 +529,18 @@ struct PadWorktreeManagementView: View {
                 Text("本轮合并已取消并回滚，来源 Worktree 提交已保留。")
                     .font(.footnote).foregroundStyle(.green)
             }
-            if job.status == "completed", let evidence = job.completionEvidence {
-                Text("\(evidence.branchName ?? "main") @ \(evidence.mainHead)\n\(evidence.verifiedAt)")
-                    .font(.caption.monospaced()).textSelection(.enabled)
+            if job.status == "completed" {
+                if let evidence = job.completionEvidence {
+                    Text("\(evidence.branchName ?? "main") @ \(evidence.mainHead)\n\(evidence.verifiedAt)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                } else {
+                    Text("后端报告完成，未提供核验证据。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            if job.availableActions == nil, !["completed", "canceled", "cancelled"].contains(job.status) {
+                Text("后端未声明当前可用操作，请刷新状态；若仍未提供，请更新 Mac 服务端。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             if job.phase != "awaiting_integration_acceptance" {
                 Text("阶段：\(job.phase)").font(.footnote).foregroundStyle(.secondary)
@@ -708,7 +717,7 @@ struct PadWorktreeManagementView: View {
     private func jobStatus(_ value: String) -> String {
         ["awaiting_confirmation": "等待确认", "queued": "已排队", "running": "执行中",
          "paused": "已暂停", "completed": "已完成", "failed": "失败",
-         "cancellation_requested": "正在取消", "cancelled": "已取消", "replanning": "正在重建计划"][value] ?? value
+         "cancellation_requested": "正在取消", "canceled": "已取消", "cancelled": "已取消", "replanning": "正在重建计划"][value] ?? value
     }
 
     private func card<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {

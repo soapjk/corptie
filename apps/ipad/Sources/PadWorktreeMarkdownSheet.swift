@@ -7,13 +7,24 @@ struct PadWorktreeMarkdownSheet: View {
     let connection: PadConnection
     @Environment(\.dismiss) private var dismiss
     @State private var decisions: [String: String] = [:]
+    @State private var reviewedJob: ClientWorktreeJob?
 
     private var job: ClientWorktreeJob? { manager.job?.id == jobID ? manager.job : nil }
-    private var paths: [String] { job?.commitPolicyBlocker?.files.map(\.path) ?? job?.commitPolicyResidue?.paths ?? [] }
-    private var blockerID: String? { job?.commitPolicyBlocker?.id ?? job?.commitPolicyResidue?.id }
 
     var body: some View {
-        NavigationStack {
+        let currentJob = job
+        let paths = currentJob?.commitPolicyBlocker?.files.map(\.path) ?? currentJob?.commitPolicyResidue?.paths ?? []
+        let files = Dictionary((currentJob?.commitPolicyBlocker?.files ?? []).map { ($0.path, $0) }, uniquingKeysWith: { _, latest in latest })
+        let currentReview = PadWorktreeStore.markdownReviewMatches(reviewedJob, current: currentJob)
+        let canSubmit = !manager.jobBusy && !manager.planning && !paths.isEmpty && currentReview
+            && (currentJob?.supports("resolve_commit_policy") == true || currentJob?.supports("resolve_commit_policy_residue") == true)
+            && paths.allSatisfy { path in
+                if let file = files[path] {
+                    return file.appliedAction != nil || decisions[path].map { file.supportedActions.contains($0) } == true
+                }
+                return decisions[path].map { currentJob?.commitPolicyResidue?.supportedActions.contains($0) == true } == true
+            }
+        return NavigationStack {
             Form {
                 Section {
                     Text("逐个处理计划外 Markdown，确认后继续提交和合并。")
@@ -22,11 +33,15 @@ struct PadWorktreeMarkdownSheet: View {
                 }
                 Section("文件处理") {
                     ForEach(paths, id: \.self) { path in
-                        let file = job?.commitPolicyBlocker?.files.first { $0.path == path }
-                        let actions = file?.supportedActions ?? job?.commitPolicyResidue?.supportedActions ?? []
+                        let file = files[path]
+                        let actions = file?.supportedActions ?? currentJob?.commitPolicyResidue?.supportedActions ?? []
                         Picker(path, selection: Binding(
-                            get: { file?.appliedAction ?? decisions[path] ?? "" },
-                            set: { decisions[path] = $0 }
+                            get: { file?.appliedAction ?? (currentReview ? decisions[path] : nil) ?? "" },
+                            set: {
+                                if !PadWorktreeStore.markdownReviewMatches(reviewedJob, current: job) { decisions.removeAll(keepingCapacity: true) }
+                                reviewedJob = job
+                                decisions[path] = $0
+                            }
                         )) {
                             Text("请选择处理方式").tag("")
                             ForEach(actions, id: \.self) { action in Text(title(action)).tag(action) }
@@ -38,18 +53,17 @@ struct PadWorktreeMarkdownSheet: View {
                 if let error = manager.errorMessage { Section { Text(error).textSelection(.enabled).foregroundStyle(.red) } }
                 Section {
                     Button("确认文件处理并继续") {
+                        guard let reviewedJob, PadWorktreeStore.markdownReviewMatches(reviewedJob, current: job) else { return }
                         let selected = paths.compactMap { path -> ClientWorktreeMarkdownDecision? in
-                            let applied = job?.commitPolicyBlocker?.files.first { $0.path == path }?.appliedAction
+                            let applied = files[path]?.appliedAction
                             guard let action = applied ?? decisions[path] else { return nil }
                             return .init(path: path, action: action)
                         }
                         Task {
-                            if await manager.handleMarkdown(jobID: jobID, decisions: selected, connection: connection) { dismiss() }
+                            if await manager.handleMarkdown(jobID: jobID, decisions: selected, reviewedJob: reviewedJob, connection: connection) { dismiss() }
                         }
                     }
-                    .disabled(manager.jobBusy || paths.isEmpty || !paths.allSatisfy { path in
-                        job?.commitPolicyBlocker?.files.first { $0.path == path }?.appliedAction != nil || decisions[path] != nil
-                    })
+                    .disabled(!canSubmit)
                     .accessibilityIdentifier("worktree.commit-policy.confirm-and-continue")
                     Button("重新读取处理要求") {
                         Task { _ = await manager.handleMarkdown(jobID: jobID, connection: connection) }
@@ -62,9 +76,17 @@ struct PadWorktreeMarkdownSheet: View {
                 if job?.commitPolicyBlocker == nil, job?.commitPolicyResidue == nil {
                     _ = await manager.handleMarkdown(jobID: jobID, connection: connection)
                 }
+                reviewedJob = job
             }
-            .onChange(of: blockerID) { _, _ in decisions.removeAll(keepingCapacity: true) }
+            .onChange(of: job?.commitPolicyBlocker) { _, _ in clearReview() }
+            .onChange(of: job?.commitPolicyResidue) { _, _ in clearReview() }
+            .onChange(of: job?.planFingerprint) { _, _ in clearReview() }
         }
+    }
+
+    private func clearReview() {
+        decisions.removeAll(keepingCapacity: true)
+        reviewedJob = job
     }
 
     private func title(_ action: String) -> String {

@@ -3,6 +3,30 @@ import Testing
 @testable import CorptieClientCore
 
 @Suite(.serialized) struct ClientWorktreeAPITests {
+    @Test func missingCapabilitiesAreReadOnlyAndLegacyCompletionDoesNotInventEvidence() throws {
+        var value = try JSONSerialization.jsonObject(with: Data(#"{"id":"job:legacy","repositoryId":"repo","status":"paused","phase":"unknown_future_phase","planFingerprint":"fp","createdAt":"now","updatedAt":"now","plan":{"repositoryId":"repo","mainWorktreeId":"main","mainPath":"/repo","inventoryVersion":"1","mergeOrder":[],"blockingRisks":[],"items":[]},"progress":{"completed":0,"total":1,"fraction":0}}"#.utf8)) as! [String: Any]
+        let legacy = try JSONDecoder().decode(ClientWorktreeJob.self, from: JSONSerialization.data(withJSONObject: value))
+        #expect(legacy.availableActions == nil)
+        #expect(!legacy.canCancel && !legacy.supports("rollback") && !legacy.supports("confirm"))
+        for status in ["completed", "canceled"] {
+            value["status"] = status
+            value["conflictResolution"] = ["status": "running", "agentId": NSNull(), "sessionId": NSNull(), "error": NSNull()]
+            let terminal = try JSONDecoder().decode(ClientWorktreeJob.self, from: JSONSerialization.data(withJSONObject: value))
+            #expect(!terminal.shouldPoll)
+            #expect(terminal.completionEvidence == nil)
+        }
+    }
+
+    @Test func malformedFailureCodeIsRejectedRatherThanSilentlyHidden() throws {
+        for raw in ["true", "{}", "[]"] {
+            let json = "{\"status\":\"blocked\",\"scopeWorktreeIds\":[],\"completedWorktreeIds\":[],\"conflictFiles\":[],\"failureCode\":\(raw)}"
+            #expect(throws: DecodingError.self) { try JSONDecoder().decode(ClientWorktreeConflictAutomation.self, from: Data(json.utf8)) }
+        }
+        let missing = try JSONDecoder().decode(ClientWorktreeConflictAutomation.self,
+            from: Data(#"{"status":"blocked","scopeWorktreeIds":[],"completedWorktreeIds":[],"conflictFiles":[]}"#.utf8))
+        #expect(missing.failureCode == nil)
+    }
+
     @Test func staleRegistrationDeletionCarriesExplicitOperation() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [WorktreeProtocol.self]
