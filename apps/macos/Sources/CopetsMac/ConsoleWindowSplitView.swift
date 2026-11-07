@@ -14,10 +14,12 @@ final class ConsoleNativeSplitView: NSSplitView {
         NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
     }
     static let didEndDividerTracking = Notification.Name("ConsoleNativeSplitView.didEndDividerTracking")
+    static let willBeginDividerTracking = Notification.Name("ConsoleNativeSplitView.willBeginDividerTracking")
     private(set) var isTrackingDivider = false
 
     override func mouseDown(with event: NSEvent) {
         isTrackingDivider = true
+        NotificationCenter.default.post(name: Self.willBeginDividerTracking, object: self)
         defer {
             isTrackingDivider = false
             NotificationCenter.default.post(name: Self.didEndDividerTracking, object: window)
@@ -204,9 +206,11 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private(set) var contentUpdateCount = 0
     private var restoredWidth = false
     private var isRestoring = false
+    private let widthDefaults: UserDefaults
 
-    init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail) {
+    init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail, defaults: UserDefaults? = nil) {
         self.mode = mode
+        widthDefaults = defaults ?? CorptieAppEnvironment.userDefaults
         sidebarController = ConsolePaneController(root: sidebar, isSidebar: true)
         detailController = ConsolePaneController(root: detail, isSidebar: false)
         super.init(nibName: nil, bundle: nil)
@@ -231,13 +235,19 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         sidebar.canCollapse = true
         sidebar.minimumThickness = 284
         sidebar.maximumThickness = 900
+        // Window resizing belongs to the transcript. AppKit still lets the
+        // user change this held width by dragging the native divider.
+        sidebar.holdingPriority = .defaultHigh
         addSplitViewItem(sidebar)
         let detail = NSSplitViewItem(viewController: detailController)
+        detail.holdingPriority = .defaultLow
         // Reserve the transcript column beside the two-cell widget rail.
         detail.minimumThickness = ConversationDetailWidgetMetrics.railWidth + 264
         addSplitViewItem(detail)
         NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingDidEnd(_:)),
             name: ConsoleNativeSplitView.didEndDividerTracking, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingWillBegin(_:)),
+            name: ConsoleNativeSplitView.willBeginDividerTracking, object: splitView)
         super.viewDidLoad()
     }
 
@@ -290,17 +300,19 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private func restoreWidth() {
         guard isViewLoaded, splitView.bounds.width > 0 else { return }
         isRestoring = true
-        let stored = CorptieAppEnvironment.userDefaults.double(forKey: widthKey)
+        let stored = widthDefaults.double(forKey: widthKey)
         let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : 284)
         let maximum = max(284, splitView.bounds.width - 581)
+        splitViewItems[0].holdingPriority = .defaultLow
         splitView.setPosition(min(max(284, preferred), maximum), ofDividerAt: 0)
+        splitViewItems[0].holdingPriority = .defaultHigh
         isRestoring = false
     }
 
     private func saveWidth() {
         guard isViewLoaded, !splitViewItems[0].isCollapsed else { return }
         let width = sidebarController.view.frame.width
-        if width >= 284 { CorptieAppEnvironment.userDefaults.set(width, forKey: widthKey) }
+        if width >= 284 { widthDefaults.set(width, forKey: widthKey) }
     }
 
     @objc private func dividerTrackingDidEnd(_ notification: Notification) {
@@ -308,5 +320,10 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
               !splitView.isHiddenOrHasHiddenAncestor,
               let window = notification.object as? NSWindow, window === view.window else { return }
         saveWidth()
+        splitViewItems[0].holdingPriority = .defaultHigh
+    }
+
+    @objc private func dividerTrackingWillBegin(_ notification: Notification) {
+        splitViewItems[0].holdingPriority = .defaultLow
     }
 }
