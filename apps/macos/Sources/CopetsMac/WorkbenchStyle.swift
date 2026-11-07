@@ -12,7 +12,7 @@ enum WorkbenchStyle {
 
     static func lane(viewportWidth: CGFloat) -> CGRect {
         let viewport = max(0, viewportWidth.isFinite ? viewportWidth : 0)
-        let inset: CGFloat = viewport < 500 ? 12 : readingInset
+        let inset = readingInset
         let width = min(readingWidth, max(0, viewport - inset * 2))
         return CGRect(x: (viewport - width) / 2, y: 0, width: width, height: 0)
     }
@@ -21,5 +21,16 @@ enum WorkbenchStyle {
         Color(nsColor: NSColor(name: nil) { appearance in
             NSColor(white: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light, alpha: 1)
         })
+    }
+}
+
+
+/// One horizontal layout for the transcript, checklist and input dock.
+struct WorkbenchReadingLane: ViewModifier {
+    let compact: Bool
+    func body(content: Content) -> some View {
+        content.frame(maxWidth: compact ? .infinity : WorkbenchStyle.readingWidth)
+            .padding(.horizontal, compact ? 0 : WorkbenchStyle.readingInset)
+            .frame(maxWidth: .infinity)
     }
 }

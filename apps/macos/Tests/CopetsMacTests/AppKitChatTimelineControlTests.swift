@@ -92,17 +92,11 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
-    func testResizeBurstCoalescesAndImmediateGeometryCancelsPendingWork() {
+    func testResizeGeometryCommitsImmediatelyWithoutDelayedReplay() {
         let h = makeHarness(followsLatest: false)
-        h.coordinator.apply(rows: [row(id: "resize-burst", text: "Visible reply")])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         let baseline = h.coordinator.resizeLayoutCommitCount
-        for _ in 0..<50 { h.coordinator.containerGeometryDidChange(isResizing: true) }
-        XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline + 1)
         h.coordinator.containerGeometryDidChange(isResizing: true)
-        h.coordinator.containerGeometryDidChange(isResizing: false)
+        XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline + 1)
         let immediate = h.coordinator.resizeLayoutCommitCount
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, immediate)
@@ -735,22 +729,21 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
     }
 
-    func testLiveResizeMeasurementWidthUsesStableBucketsAndExactWidthAfterResize() {
-        XCTAssertEqual(
-            LiveResizeWidthPolicy.measurementWidth(403, isLiveResize: true),
-            400
-        )
-        XCTAssertEqual(
-            LiveResizeWidthPolicy.measurementWidth(404, isLiveResize: true),
-            408
-        )
-        XCTAssertEqual(
-            LiveResizeWidthPolicy.measurementWidth(403.25, isLiveResize: false),
-            403.25
-        )
-        XCTAssertFalse(LiveResizeWidthPolicy.requiresReflow(previous: 400, next: 400))
-        XCTAssertTrue(LiveResizeWidthPolicy.requiresReflow(previous: 400, next: 408))
-        XCTAssertTrue(LiveResizeWidthPolicy.requiresReflow(previous: nil, next: 400))
+    func testNativeReadingLaneTracksWindowWithoutWidthBucketsOrNarrowInsetSwitch() {
+        let h = makeHarness(followsLatest: false)
+        for compact in [false, true] {
+            h.coordinator.setReservesVerticalScrollerGutter(!compact)
+            for width: CGFloat in [1100, 650, 499, 403, 404, 403.25] {
+                h.window.setContentSize(NSSize(width: width, height: 320))
+                h.window.layoutIfNeeded()
+                h.scrollView.layoutSubtreeIfNeeded()
+                let viewport = h.scrollView.contentView.bounds.width
+                let expected = viewport
+                XCTAssertEqual(h.tableView.frame.width, expected, accuracy: 0.5)
+                XCTAssertEqual(h.tableView.frame.minX, (viewport - expected) / 2, accuracy: 0.5)
+                XCTAssertEqual(h.tableView.tableColumns[0].width, expected, accuracy: 0.5)
+            }
+        }
     }
 
     func testContinuousLongReplyResizePreservesContentConfigurationAndSelection() {
@@ -769,7 +762,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         var previousWidth: CGFloat = 560
         var distinctWidthChanges = 0
         for index in 0..<120 {
-            let width = LiveResizeWidthPolicy.measurementWidth(CGFloat(480 + index * 2), isLiveResize: true)
+            let width = CGFloat(480 + index * 2)
             let started = ProcessInfo.processInfo.systemUptime
             if previousWidth != width { distinctWidthChanges += 1; previousWidth = width }
             XCTAssertTrue(cell.updateLayoutIfContentUnchanged(item, availableWidth: width))
@@ -1548,8 +1541,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 // The main-window skin has a reading-lane gutter; the card
                 // itself keeps the same 10pt padding plus 2pt trailing inset.
                 let viewportWidth = harness.scrollView.contentView.bounds.width
-                let lane = skin == .codexFlat ? WorkbenchStyle.lane(viewportWidth: viewportWidth)
-                    : CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
+                let lane = CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
                 XCTAssertEqual(harness.scrollView.contentView.bounds.maxX - bodyFrame.maxX,
                     viewportWidth - lane.maxX + 12, accuracy: 1)
                 XCTAssertEqual(harness.tableView.tableColumns[0].width, lane.width, accuracy: 1)
@@ -2469,9 +2461,12 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.coordinator.apply(rows: rows)
         await settleMainQueue()
 
+        harness.coordinator.userScrollEventWillBegin()
         harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 240))
         harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.userScrollEventDidEnd()
         await settleMainQueue()
+        XCTAssertFalse(isNearBottom(harness), "The reader must actually reach history before simulating stale follow input")
         let before = visibleAnchor(in: harness.tableView, rows: rows)
 
         harness.coordinator.followsLatest = true
@@ -3230,7 +3225,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.scrollView.setFrameSize(NSSize(width: 700, height: 400))
         NotificationCenter.default.post(name: NSView.frameDidChangeNotification, object: harness.scrollView.contentView)
         await settleMainQueue()
-        XCTAssertEqual(harness.tableView.tableColumns.first?.width, oldWidth)
+        // Native geometry can follow the window while hidden; custom content work stays paused.
         harness.coordinator.setPresentationActive(true)
         await settleMainQueue()
         XCTAssertGreaterThan(try XCTUnwrap(harness.tableView.tableColumns.first?.width), oldWidth)

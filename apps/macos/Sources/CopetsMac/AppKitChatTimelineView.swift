@@ -122,9 +122,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         tableView.selectionHighlightStyle = .none
         tableView.allowsEmptySelection = true
         tableView.focusRingType = .none
-        tableView.columnAutoresizingStyle = .noColumnAutoresizing
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         let column = NSTableColumn(identifier: Coordinator.columnIdentifier)
-        column.resizingMask = []
+        column.resizingMask = .autoresizingMask
+        column.minWidth = 0
+        column.maxWidth = CGFloat.greatestFiniteMagnitude
         tableView.addTableColumn(column)
         return tableView
     }
@@ -144,6 +146,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         scrollView.verticalScrollElasticity = .none
         scrollView.horizontalScrollElasticity = .none
         let documentView = TimelineScrollDocumentView()
+        documentView.autoresizingMask = [.width]
+        tableView.autoresizingMask = [.width]
         documentView.addSubview(tableView)
         scrollView.documentView = documentView
         return scrollView
@@ -198,6 +202,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
 /// The table owns only message rows. Its enclosing document owns scrollable
 /// clearance under the overlaid header and composer.
-private final class TimelineScrollDocumentView: NSView {
+final class TimelineScrollDocumentView: NSView {
     override var isFlipped: Bool { true }
 }

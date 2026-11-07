@@ -601,9 +601,7 @@ struct SessionConversationSurface: View {
             if hasPinnedChecklist, let plan = currentChecklist {
                 PinnedExecutionChecklistCard(plan: plan)
                     .id(sessionId + ":" + plan.planId)
-                    .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
-                    .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
-                    .frame(maxWidth: .infinity)
+                    .modifier(WorkbenchReadingLane(compact: compactComposer))
                     .padding(.bottom, 6)
             }
             VStack(spacing: 24) {
@@ -625,9 +623,8 @@ struct SessionConversationSurface: View {
                     }
                 }
             }
-            .frame(maxWidth: compactComposer ? .infinity : WorkbenchStyle.readingWidth)
-            .padding(.horizontal, compactComposer ? 0 : WorkbenchStyle.readingInset)
-            .frame(maxWidth: .infinity, maxHeight: showsWelcome ? .infinity : nil)        }
+            .modifier(WorkbenchReadingLane(compact: compactComposer))
+            .frame(maxHeight: showsWelcome ? .infinity : nil)        }
     }
 
     private var conversationTopChrome: some View {
@@ -696,10 +693,6 @@ struct SessionConversationSurface: View {
         let rows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
             ? cachedChecklistDock.timelineRows
             : ConversationChecklistDockProjection(rows: preparedAppKitRows(displayEntries, cache: cachedDisplayProjection)).timelineRows
-        // Standard pages have 1pt surface padding and a 6pt page/Detail gap.
-        // Borrow that space without changing the message column's width.
-        let scrollerExtension: CGFloat = presentation == .standard && !compactComposer
-            ? 1 + min(MainWindowPageLayoutMetrics.outerPadding, MainWindowPageLayoutMetrics.columnSpacing) : 0
         return VStack(alignment: .leading, spacing: 6) {
             AppKitChatTimelineView(
                 sessionID: sessionId,
@@ -736,9 +729,9 @@ struct SessionConversationSurface: View {
                 topClearance: topChromeClearance,
                 bottomClearance: 0,
                 reservesVerticalScrollerGutter: !compactComposer,
-                trailingScrollerExtension: scrollerExtension
+                trailingScrollerExtension: 0
             )
-            .padding(.trailing, -scrollerExtension)
+            .modifier(WorkbenchReadingLane(compact: compactComposer))
             .sheet(item: $pendingFork) { selection in
                 SessionForkSheet(selection: selection, backendClient: backendClient)
             }
