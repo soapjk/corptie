@@ -18,8 +18,15 @@ release_version_lock() {
   rmdir "${VERSION_LOCK}"
 }
 trap release_version_lock EXIT
-VERSION_VALUES="$(node "${ROOT}/scripts/release-version.mjs" next "${ROOT}")"
-read -r APP_VERSION APP_BUILD_NUMBER <<< "${VERSION_VALUES}"
+if [[ -n "${CORPTIE_RELEASE_VERSION:-}" ]]; then
+  # Release orchestrator flow: GitHub tags are the version source of truth and are
+  # passed in via CORPTIE_RELEASE_VERSION; only the build number stays local.
+  APP_VERSION="${CORPTIE_RELEASE_VERSION}"
+  APP_BUILD_NUMBER="$(node "${ROOT}/scripts/release-version.mjs" next-build "${ROOT}")"
+else
+  VERSION_VALUES="$(node "${ROOT}/scripts/release-version.mjs" next "${ROOT}")"
+  read -r APP_VERSION APP_BUILD_NUMBER <<< "${VERSION_VALUES}"
+fi
 if [[ ! "${APP_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "${APP_BUILD_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
   echo "Error: release-version.mjs returned an invalid version/build number: ${VERSION_VALUES}" >&2
   exit 1
@@ -401,7 +408,11 @@ hdiutil create "${DMG_NAME}" \
   -srcfolder "${Dmg_STAGING}" \
   -ov -format UDZO
 
-node "${ROOT}/scripts/release-version.mjs" commit "${ROOT}" "${APP_VERSION}" "${APP_BUILD_NUMBER}"
+if [[ -n "${CORPTIE_RELEASE_VERSION:-}" ]]; then
+  node "${ROOT}/scripts/release-version.mjs" adopt "${ROOT}" "${APP_VERSION}" "${APP_BUILD_NUMBER}"
+else
+  node "${ROOT}/scripts/release-version.mjs" commit "${ROOT}" "${APP_VERSION}" "${APP_BUILD_NUMBER}"
+fi
 echo "Saved release version ${APP_VERSION}, build ${APP_BUILD_NUMBER}."
 echo "Built production installer package: ${PKG_FILE}"
 echo "Built production dmg: ${DMG_NAME}"
