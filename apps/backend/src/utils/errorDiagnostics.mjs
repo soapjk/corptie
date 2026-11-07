@@ -104,9 +104,10 @@ export function logError(scope, error, context = {}) {
       if (Array.isArray(errors)) {
         result.errors = [];
         const total = read(errors, "length");
-        const length = Math.min(Number.isSafeInteger(total) ? total : 0, 8);
+        const length = typeof total === "number" && Number.isSafeInteger(total) && total >= 0 ? Math.min(total, 8) : 0;
         for (let index = 0; index < length; index++) result.errors.push(chain(read(errors, String(index)), depth + 1));
-        if (total > 8) result.errors.push("[truncated: aggregate errors]");
+        if (typeof total !== "number") result.errors.push("[unavailable: aggregate length]");
+        if (typeof total === "number" && total > 8) result.errors.push("[truncated: aggregate errors]");
       }
       return result;
     };

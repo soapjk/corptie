@@ -116,3 +116,17 @@ test("aggregate array proxy never invokes get traps, including length", () => {
   assert.equal(gets, 0);
   assert.match(output, /inner/);
 });
+
+test("unavailable aggregate length preserves outer diagnostics without coercion", () => {
+  const errors = new Proxy([], {
+    getOwnPropertyDescriptor(target, key) {
+      if (key === "length") throw new Error("length unavailable");
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    }
+  });
+  const error = new AggregateError([], "outer diagnostics");
+  Object.defineProperty(error, "errors", { value: errors });
+  const output = capture(() => logError("test", error));
+  assert.match(output, /outer diagnostics/);
+  assert.match(output, /unavailable: aggregate length/);
+});
