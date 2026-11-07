@@ -12,10 +12,10 @@ export const CLAUDE_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
   appendInPlace: false,
   replaceAtTurnBoundary: false,
   generatedMcpRefresh: true,
-  restrictedGateway: false,
+  restrictedGateway: true,
   bindingReplacement: false,
   definitionMetadataRefresh: "runtime",
-  capabilityRevision: "claude-sdk:catalog-mcp:3"
+  capabilityRevision: "claude-sdk:fixed-gateway-mcp:4"
 });
 const CORPTIE_OWNED_CLAUDE_WORKSPACE_TOOLS = Object.freeze([
   "EnterWorktree",

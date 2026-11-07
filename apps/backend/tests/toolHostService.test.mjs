@@ -16,6 +16,23 @@ import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 import { taskAcceptanceDynamicTools } from "../src/application/taskAcceptanceDynamicTools.mjs";
+import { buildToolExposurePlan } from "../src/application/toolExposurePlan.mjs";
+import { CLAUDE_TOOL_SCHEMA_CAPABILITIES } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
+
+test("Claude tools/list never eagerly connects or exposes assigned MCP schemas", async () => {
+  const catalog = new HostToolCatalog([{ id: "business", tools: [{ name: "business_read", inputSchema: { type: "object" } }], execute: () => "ok" }]);
+  const plan = buildToolExposurePlan({ catalog, desiredDomains: ["business"], capabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES });
+  const record = { status: "applied", appliedVersion: "v1", desiredVersion: "v1", exposurePlan: plan, catalogVersion: catalog.snapshot().catalogVersion };
+  let connections = 0;
+  const service = new ToolHostService({ registry: {}, catalog, coordinator: {
+    store: { getSessionToolCatalogMaterialization: () => record },
+    observeGeneratedMcpToolsList: async () => record
+  }, skillMcpGateway: { revision: () => "none", definitions: async () => { connections++; throw Error("must stay lazy"); } } });
+  const result = await service.observeGeneratedMcpToolsList({ actorId: "agent:one",
+    metadata: { logicalSessionId: "logical:one", providerBindingId: "binding:one" }, observationId: "one" });
+  assert.deepEqual(result.tools.map(t => t.name).sort(), ["corptie_tool_call", "corptie_tool_catalog_search", "corptie_tool_domain_load"]);
+  assert.equal(connections, 0);
+});
 
 test("discovery recovery is bounded, authorized and never turns catalog failure into no-match", async () => {
   let fail = false;

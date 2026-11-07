@@ -40,6 +40,7 @@ test("Claude exposes only catalog-backed authenticated MCP refresh", async () =>
   assert.deepEqual(capabilities, CLAUDE_TOOL_SCHEMA_CAPABILITIES);
   assert.equal(capabilities.appendInPlace, false);
   assert.equal(capabilities.generatedMcpRefresh, true);
+  assert.equal(capabilities.restrictedGateway, true);
   assert.equal(capabilities.bindingReplacement, false);
 });
 

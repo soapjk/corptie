@@ -52,7 +52,7 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
     claim(ownership, TOOL_RESTRICTED_GATEWAY, {
       sourceId: "tool-host",
       domainId: "tool-catalog",
-      surface: "restricted_gateway",
+      surface: bootstrapSurface === "generated_authenticated_mcp" ? bootstrapSurface : "restricted_gateway",
       schemaHash: schemaHash(RESTRICTED_GATEWAY_DEFINITION),
       contractHash: toolDefinitionsContractHash([RESTRICTED_GATEWAY_DEFINITION])
     });
@@ -124,6 +124,9 @@ export function normalizeToolSchemaCapabilities(input = {}) {
 }
 
 function selectDeliverySurface(capabilities, phase) {
+  // A generated MCP is a transport, not a reason to eagerly expose business
+  // schemas. Providers supporting both receive the same fixed gateway ABI.
+  if (capabilities.generatedMcpRefresh && capabilities.restrictedGateway) return "restricted_gateway";
   if (capabilities.appendInPlace) return "native_dynamic";
   if (capabilities.generatedMcpRefresh) return "generated_authenticated_mcp";
   if (capabilities.restrictedGateway) return "restricted_gateway";
@@ -139,7 +142,7 @@ function selectDeliverySurface(capabilities, phase) {
 function refreshMode(capabilities, phase, surface) {
   // Generated MCP is proved by authenticated tools/list even at creation.
   // `create` is not an observation protocol and must not mask that boundary.
-  if (surface === "generated_authenticated_mcp") return "generated_mcp_refresh";
+  if (capabilities.generatedMcpRefresh) return "generated_mcp_refresh";
   if (phase === "create") return "create";
   if (surface === "restricted_gateway") return "restricted_gateway";
   if (capabilities.appendInPlace) return "append_in_place";
