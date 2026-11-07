@@ -34,7 +34,15 @@ extension UnifiedConsoleView {
     }
 
     var workOutlineList: some View {
-        ConsoleNativeOutline(groups: { nativeOutlineGroups }) { entry in
+        ConsoleNativeOutline(groups: { nativeOutlineGroups }, presentation: ConsoleOutlinePresentationStamp(
+            entityRevision: entityGroupingRevision, sessionRevision: sessionIndexStore.contentRevision,
+            archiveRevision: archivedSessionIndexStore.contentRevision,
+            projectionCount: outlineProjectionStore.computationCount, projectionKey: outlineProjectionStore.preparedKey,
+            selectedSessionID: selectionController.presentationSessionID, selectedTaskID: selectedTaskId,
+            selectedWorkID: selectedWorkId, online: backendClient.isOnline,
+            language: AppLanguageController.shared.languageCode, search: searchText,
+            fullyExpandedWorkIDs: outlineFullyExpandedWorkIDs, expandedTaskIDs: expandedParentTaskIDs,
+            showingArchive: isShowingWorkerArchive, sidebarActive: sidebarState.isSelected)) { entry in
             switch entry {
             case .session(let row):
                 sessionRow(row, showsHoverFeedback: false)

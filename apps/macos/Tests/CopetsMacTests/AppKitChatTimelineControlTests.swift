@@ -36,19 +36,19 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
-    func testResizeBurstCoalescesAndImmediateGeometryCancelsPendingWork() async throws {
+    func testResizeBurstCoalescesAndImmediateGeometryCancelsPendingWork() {
         let h = makeHarness(followsLatest: false)
         h.coordinator.apply(rows: [row(id: "resize-burst", text: "Visible reply")])
-        await settleMainQueue()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         let baseline = h.coordinator.resizeLayoutCommitCount
         for _ in 0..<50 { h.coordinator.containerGeometryDidChange(isResizing: true) }
         XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline)
-        try await Task.sleep(for: .milliseconds(80))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, baseline + 1)
         h.coordinator.containerGeometryDidChange(isResizing: true)
         h.coordinator.containerGeometryDidChange(isResizing: false)
         let immediate = h.coordinator.resizeLayoutCommitCount
-        try await Task.sleep(for: .milliseconds(80))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, immediate)
     }
 
@@ -2587,6 +2587,20 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         await settleMainQueue()
 
         XCTAssertEqual(historyRequests, 0)
+    }
+
+    func testGrowingViewportDoesNotReadHistoryFromResize() async {
+        var historyRequests = 0
+        let harness = makeHarness(followsLatest: true, height: 180, hasMoreHistory: true,
+            onUnderfilledHistory: { historyRequests += 1 })
+        harness.coordinator.apply(rows: (0..<10).map { row(id: "resize-history-\($0)", text: "Row \($0)") })
+        await settleMainQueue()
+        XCTAssertEqual(historyRequests, 0)
+        harness.window.setContentSize(NSSize(width: 420, height: 2000))
+        harness.window.layoutIfNeeded()
+        harness.tableView.layoutSubtreeIfNeeded()
+        await settleMainQueue()
+        XCTAssertEqual(historyRequests, 0, "Window geometry must not start history loading")
     }
 
     func testDirectScrollbarDragToTopRequestsHistory() async {

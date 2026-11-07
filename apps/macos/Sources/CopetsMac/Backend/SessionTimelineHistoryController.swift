@@ -86,6 +86,7 @@ final class SessionTimelineHistoryController: ObservableObject {
               timelineWindowLoadSessionIDs.insert(session.id).inserted else {
             return .stale
         }
+        SessionTimelineRepository.shared.state(for: session.id).setProtectsHistoryWindow(true)
         let threadID = current.id
         defer { timelineWindowLoadSessionIDs.remove(session.id) }
 
@@ -190,6 +191,7 @@ final class SessionTimelineHistoryController: ObservableObject {
         guard earlierHistoryLoadSessionIDs.insert(session.id).inserted else {
             return earlierHistoryLoadState(for: session.id)
         }
+        SessionTimelineRepository.shared.state(for: session.id).setProtectsHistoryWindow(true)
         setEarlierHistoryLoadState(.loading, for: session.id)
         defer { earlierHistoryLoadSessionIDs.remove(session.id) }
 
