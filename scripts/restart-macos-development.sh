@@ -135,8 +135,13 @@ echo "Building Corptie macOS development app with macOS SDK ${MACOS_SDK_VERSION}
 # the deployment target as their LC_BUILD_VERSION SDK. The native backend uses
 # the selected sysroot's actual SDK version, which opts AppKit into the current
 # system appearance while keeping macOS 14 as the deployment floor.
+# SwiftPM's manifest sandbox (sandbox-exec) fails with
+# "sandbox_apply: Operation not permitted" under Xcode 27 / macOS 27 SDKs.
+# Development builds are local and trusted, so disable that inner sandbox;
+# the outer process sandbox (if any) remains in effect.
 swift build \
   --package-path "${MACOS_PACKAGE_DIR}" \
+  --disable-sandbox \
   --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}"

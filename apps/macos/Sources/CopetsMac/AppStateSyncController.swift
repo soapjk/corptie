@@ -61,6 +61,15 @@ final class AppStateSyncController {
     private var snapshotMinimumRevision: Int64 = 0
     private var processingGeneration: UInt64?
 
+    /// State change-sets arriving inside this window are applied as a single
+    /// `@Published state` publication. The backend already coalesces at 20ms,
+    /// but several server paths bypass that timer; applying each frame on its
+    /// own invalidated every `$state` subscriber during Agent streaming.
+    private static let changeSetBatchWindow = Duration.milliseconds(40)
+    private var pendingChangeSets: [StateChangeSetEnvelope] = []
+    private var pendingChangeSetGeneration: UInt64?
+    private var changeSetFlushTask: Task<Void, Never>?
+
     init(store: AppStateStore = .shared, baseURL: URL = CorptieAppEnvironment.backendBaseURL,
          transport: BackendTransport = CorptieAppEnvironment.backendTransport,
          artifactsChanged: @escaping () -> Void = { ArtifactAPIClient.shared.refreshLoadedCollectionsAfterExternalChange() }) {
@@ -104,6 +113,7 @@ final class AppStateSyncController {
         streamWatchdogTask = nil
         streamGeneration &+= 1
         cancelSnapshotRefresh()
+        discardPendingChangeSets()
         processingGeneration = nil
         if let backgroundActivity {
             ProcessInfo.processInfo.endActivity(backgroundActivity)
@@ -170,6 +180,7 @@ final class AppStateSyncController {
         streamTask?.cancel()
         streamWatchdogTask?.cancel()
         cancelSnapshotRefresh()
+        discardPendingChangeSets()
         processingGeneration = nil
         streamGeneration &+= 1
         let generation = streamGeneration
@@ -229,10 +240,55 @@ final class AppStateSyncController {
                 if event.isComment { continue }
                 guard await processFrame(event, generation: generation) else { return }
             }
+            // A clean stream close still has to commit the final batch.
+            _ = await flushPendingChangeSets(generation: generation)
         } catch {
+            discardPendingChangeSets()
             guard !Task.isCancelled, generation == streamGeneration else { return }
             store.reportSyncError(Self.syncErrorMessage(error))
         }
+    }
+
+    private func discardPendingChangeSets() {
+        changeSetFlushTask?.cancel()
+        changeSetFlushTask = nil
+        pendingChangeSets.removeAll(keepingCapacity: true)
+        pendingChangeSetGeneration = nil
+    }
+
+    private func enqueueChangeSet(_ changes: StateChangeSetEnvelope, generation: UInt64) {
+        if pendingChangeSetGeneration != generation {
+            changeSetFlushTask?.cancel()
+            changeSetFlushTask = nil
+            pendingChangeSets.removeAll(keepingCapacity: true)
+            pendingChangeSetGeneration = generation
+        }
+        pendingChangeSets.append(changes)
+        guard changeSetFlushTask == nil else { return }
+        changeSetFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.changeSetBatchWindow)
+            guard let self, !Task.isCancelled else { return }
+            _ = await self.flushPendingChangeSets(generation: generation)
+        }
+    }
+
+    @discardableResult
+    private func flushPendingChangeSets(generation: UInt64) async -> Bool {
+        changeSetFlushTask?.cancel()
+        changeSetFlushTask = nil
+        guard generation == streamGeneration else {
+            pendingChangeSets.removeAll(keepingCapacity: true)
+            pendingChangeSetGeneration = nil
+            return false
+        }
+        guard pendingChangeSetGeneration == generation, !pendingChangeSets.isEmpty else { return true }
+        let batch = pendingChangeSets
+        pendingChangeSets.removeAll(keepingCapacity: true)
+        let result = store.apply(changeSets: batch)
+        if result.hasArtifactInvalidations { artifactsChanged() }
+        guard let gapRevision = result.gapRevision else { return true }
+        await refreshSnapshot(minimumRevision: gapRevision)
+        return !Task.isCancelled && generation == streamGeneration && store.revision >= gapRevision
     }
 
     private func processFrame(_ event: ServerSentEvent, generation: UInt64) async -> Bool {
@@ -250,18 +306,17 @@ final class AppStateSyncController {
             guard !Task.isCancelled, generation == streamGeneration else { return false }
             switch frame {
             case .snapshot(let snapshot):
+                // Snapshots supersede the stream revision, so drain any pending
+                // change-sets first instead of silently dropping them.
+                guard await flushPendingChangeSets(generation: generation) else { return false }
                 if case .applied = store.apply(snapshot: snapshot) { artifactsChanged() }
             case .changes(let changes):
-                let result = store.apply(changeSet: changes)
-                if !changes.artifactInvalidations.orEmpty.isEmpty, result == .applied { artifactsChanged() }
-                if case .revisionGap = result {
-                    await refreshSnapshot(minimumRevision: changes.revision)
-                    return !Task.isCancelled && generation == streamGeneration && store.revision >= changes.revision
-                }
+                enqueueChangeSet(changes, generation: generation)
             case .ignored: break
             }
             return true
         } catch {
+            discardPendingChangeSets()
             guard !Task.isCancelled, generation == streamGeneration else { return false }
             store.reportSyncError(Self.syncErrorMessage(error))
             await refreshSnapshot()
@@ -297,8 +352,4 @@ final class AppStateSyncController {
             throw URLError(.badServerResponse)
         }
     }
-}
-
-private extension Optional where Wrapped == [String] {
-    var orEmpty: [String] { self ?? [] }
 }

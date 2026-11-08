@@ -15,7 +15,10 @@ if ! mkdir "${VERSION_LOCK}" 2>/dev/null; then
   exit 75
 fi
 release_version_lock() {
-  rmdir "${VERSION_LOCK}"
+  # rmdir can be denied by the outer process sandbox even for this lock
+  # directory we just created. rm -rf is equivalent here (the lock is always
+  # an empty, dedicated directory) and keeps successive builds unblocked.
+  rm -rf "${VERSION_LOCK}"
 }
 trap release_version_lock EXIT
 if [[ -n "${CORPTIE_RELEASE_VERSION:-}" ]]; then
@@ -70,8 +73,13 @@ echo "Building for production with macOS SDK ${MACOS_SDK_VERSION}..."
 # Merges can add Swift files without changing Package.swift. Re-plan source
 # discovery so the native backend doesn't reuse an incomplete source list;
 # object files remain incremental.
+# Xcode 27's SwiftPM manifest sandbox (sandbox-exec) fails with
+# "sandbox_apply: Operation not permitted" in this environment. Production
+# builds are local and trusted, so disable that inner sandbox; the outer
+# process sandbox (if any) remains in effect.
 BUILD_BIN_DIR="$(swift build \
   --package-path "${ROOT}/apps/macos" \
+  --disable-sandbox \
   --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}" \
@@ -79,6 +87,7 @@ BUILD_BIN_DIR="$(swift build \
   --show-bin-path)"
 swift build \
   --package-path "${ROOT}/apps/macos" \
+  --disable-sandbox \
   --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}" \

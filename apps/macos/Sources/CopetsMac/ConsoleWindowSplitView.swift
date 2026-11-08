@@ -1,5 +1,6 @@
 import AppKit
 import CorptieConversation
+import QuartzCore
 import SwiftUI
 
 @MainActor
@@ -62,15 +63,28 @@ extension EnvironmentValues {
     }
 }
 
-/// Native stacks reserve the fixed rail only when a full reading lane fits.
-/// Narrow windows keep the transcript intact and show Detail transiently.
+/// Detail stays docked only while the text lane keeps its full reading width.
+/// The gutters on either side of the lane may narrow freely as the window
+/// shrinks; the moment the text itself would start getting narrower, Detail
+/// gives up its docked position and hides automatically. An AppKit-driven
+/// horizontal slide carries the handover: the rail slides out to the right
+/// (and back in from the right) instead of vanishing in a single frame.
 struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
     @State private var canDock = false
     @State private var temporaryVisible = false
+    @State private var railPhase: RailPhase = .hidden
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let detail: () -> Detail
     @ViewBuilder let header: () -> Header
+
+    private enum RailPhase { case hidden, visible, slidingOut }
+
+    /// A live resize can deliver a stream of widths that sit within a point or
+    /// two of the docking boundary. Classifying width into bands keeps the
+    /// decision stable through that stream instead of flipping it every frame.
+    enum WidthBand: Equatable { case narrow, hysteresis, wide }
 
     init(isVisible: Binding<Bool>, @ViewBuilder transcript: @escaping () -> Transcript,
          @ViewBuilder detail: @escaping () -> Detail, @ViewBuilder header: @escaping () -> Header) {
@@ -80,10 +94,41 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
         self.header = header
     }
 
-    static var minimumDockedWidth: CGFloat {
-        WorkbenchStyle.readingWidth + 2 * WorkbenchStyle.readingInset
-            + ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing
+    /// The rail may reach into the trailing gutter, but must always stop this
+    /// far from the first glyph. Deriving the overlap keeps that clearance
+    /// intact when the reading inset is tuned.
+    static var railGlyphClearance: CGFloat { 14 }
+    static var railGutterOverlap: CGFloat {
+        WorkbenchStyle.readingInset + MainWindowPageLayoutMetrics.columnSpacing
+            - railGlyphClearance
     }
+
+    /// Space the HStack keeps for the rail when docked. The rail itself is
+    /// drawn in the trailing ZStack layer, so this is shorter than the rail.
+    static var dockedReservedWidth: CGFloat {
+        ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing
+            - railGutterOverlap
+    }
+
+    /// Hide as soon as the text lane can no longer keep its full width. The
+    /// two gutters are allowed to shrink; the text is not.
+    static var minimumDockedWidth: CGFloat {
+        WorkbenchStyle.readingWidth + 2 * WorkbenchStyle.readingInset + dockedReservedWidth
+    }
+
+    /// Hiding is decisive, but coming back needs a little more room so the
+    /// rail does not flicker on and off while the pointer sits on the edge.
+    /// The band only delays re-docking; it never delays hiding.
+    static var dockHysteresis: CGFloat { 24 }
+    static var redockWidth: CGFloat { minimumDockedWidth + dockHysteresis }
+
+    static func widthBand(for width: CGFloat) -> WidthBand {
+        if width < minimumDockedWidth { return .narrow }
+        if width < redockWidth { return .hysteresis }
+        return .wide
+    }
+
+    static var railSlideDuration: Double { 0.20 }
 
     private var docked: Bool { canDock && isVisible }
     private var presented: Bool { canDock ? isVisible : temporaryVisible }
@@ -103,37 +148,81 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                         .background(WorkbenchStyle.canvas)
                     // Stable transcript identity; only native stack space changes.
+                    // The reserved slice is shorter than the rail on purpose:
+                    // the rail overlaps the trailing reading gutter, not text.
                     Color.clear
-                        .frame(width: docked ? ConversationDetailWidgetMetrics.railWidth
-                            + MainWindowPageLayoutMetrics.columnSpacing : 0)
+                        .frame(width: docked ? Self.dockedReservedWidth : 0)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
-                if presented {
-                    detail()
-                        .frame(width: ConversationDetailWidgetMetrics.railWidth)
-                        .frame(maxHeight: .infinity)
-                        .background(WorkbenchStyle.canvas)
-                        .background(DetailOutsideClickDismissal(enabled: !canDock) {
-                            temporaryVisible = false
-                        })
-                        .zIndex(1)
+                // Width proposals stay synchronous: never interpolate the
+                // transcript column while the window is being resized, so the
+                // native text keeps reflowing on every live-resize frame.
+                .animation(nil, value: docked)
+                DetailRailSlide(visible: railPhase == .visible,
+                                duration: reduceMotion ? 0 : Self.railSlideDuration,
+                                onSlideOutFinished: {
+                    if railPhase == .slidingOut { railPhase = .hidden }
+                }) {
+                    Group {
+                        if railPhase != .hidden {
+                            detail()
+                                .frame(width: ConversationDetailWidgetMetrics.railWidth)
+                                .frame(maxHeight: .infinity)
+                                // The rail paints no canvas of its own. Module
+                                // cards own their material, so they float over
+                                // the window background instead of sitting on
+                                // an opaque white column.
+                                .background(DetailOutsideClickDismissal(enabled: !canDock) {
+                                    temporaryVisible = false
+                                })
+                        }
+                    }
                 }
+                .frame(width: ConversationDetailWidgetMetrics.railWidth)
+                .frame(maxHeight: .infinity)
+                .allowsHitTesting(railPhase == .visible)
+                .accessibilityHidden(railPhase != .visible)
+                .zIndex(1)
             }
             .clipped()
-            .transaction(value: presented) { $0.disablesAnimations = true }
-            .transaction(value: docked) { $0.disablesAnimations = true }
         } accessory: {
             header().environment(\.detailColumnVisibility, visibility)
         }
-        .onGeometryChange(for: Bool.self) { $0.size.width >= Self.minimumDockedWidth } action: { fits in
-            canDock = fits
-            temporaryVisible = false
+        // `onGeometryChange` only calls the action when the band changes, so
+        // dragging inside one band performs no state writes at all.
+        .onGeometryChange(for: WidthBand.self) { Self.widthBand(for: $0.size.width) } action: { band in
+            switch band {
+            case .narrow:
+                guard canDock else { return }
+                canDock = false
+                temporaryVisible = false
+            case .hysteresis:
+                // Hold the last decision. No flip, no slide restart, no
+                // transcript width change while the window sits on the edge.
+                break
+            case .wide:
+                guard !canDock else { return }
+                canDock = true
+                temporaryVisible = false
+            }
         }
+        // One place drives all presentation sources: width crossing the
+        // threshold, the toggle and outside-click dismissal.
+        .onChange(of: presented) { _, value in
+            if value { railPhase = .visible }
+            else if railPhase == .visible { railPhase = .slidingOut }
+        }
+        .onAppear { if presented { railPhase = .visible } }
         .onChange(of: isVisible) { _, visible in
             if !visible { temporaryVisible = false }
         }
-        .onDisappear { temporaryVisible = false }
+        .onDisappear {
+            temporaryVisible = false
+            // No slide completion will arrive once the host is gone; do not
+            // leave the rail's content mounted in the sliding-out phase.
+            railPhase = .hidden
+        }
     }
 }
 
@@ -181,6 +270,144 @@ final class DetailOutsideClickView: NSView {
     isolated deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
 }
 
+/// Test-visible handle for the rail's slide state. The concrete view is generic
+/// over its SwiftUI content, so the assertion side uses this protocol.
+@MainActor
+protocol DetailRailSlidePositioning: AnyObject {
+    /// Translation read from the presentation layer, never from a model value.
+    var slideOffset: CGFloat { get }
+    /// The hosting view's model frame must stay pinned to the container.
+    var modelFrameIsStable: Bool { get }
+    var hasSlideAnimation: Bool { get }
+    var railAlphaValue: CGFloat { get }
+}
+
+/// AppKit-owned horizontal slide for the Detail rail. SwiftUI transitions are
+/// dropped by ConversationRegionStack's rootView replacement, so a standard
+/// CABasicAnimation translates the hosting view's layer. No frame and no
+/// constraint constant changes for the whole animation: Auto Layout runs once
+/// and SwiftUI never receives a per-frame size proposal. Opacity is never
+/// touched. Content is unmounted only after the slide ends.
+private struct DetailRailSlide<Content: View>: NSViewRepresentable {
+    let visible: Bool
+    let duration: Double
+    let onSlideOutFinished: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    func makeNSView(context: Context) -> DetailRailSlideView<Content> {
+        let view = DetailRailSlideView(rootView: content())
+        view.applyInitial(visible: visible)
+        return view
+    }
+
+    func updateNSView(_ view: DetailRailSlideView<Content>, context: Context) {
+        view.host.rootView = content()
+        view.setVisible(visible, duration: duration, onSlideOutFinished: onSlideOutFinished)
+    }
+}
+
+private final class DetailRailSlideView<Content: View>: NSView, DetailRailSlidePositioning {
+    /// One full rail width is enough to move the card completely out of sight.
+    static var slideDistance: CGFloat { ConversationDetailWidgetMetrics.railWidth }
+    private static var animationKey: String { "detail-rail-slide" }
+
+    let host: NSHostingView<Content>
+    private var visible = true
+    private var onSlideOutFinished: (() -> Void)?
+
+    var slideOffset: CGFloat { host.layer?.presentation()?.transform.m41 ?? 0 }
+    var modelFrameIsStable: Bool {
+        abs(host.frame.origin.x - bounds.origin.x) < 0.5
+            && abs(host.frame.origin.y - bounds.origin.y) < 0.5
+            && abs(host.frame.width - bounds.width) < 0.5
+            && abs(host.frame.height - bounds.height) < 0.5
+    }
+    var hasSlideAnimation: Bool { host.layer?.animation(forKey: Self.animationKey) != nil }
+    var railAlphaValue: CGFloat { alphaValue }
+
+    init(rootView: Content) {
+        host = NSHostingView(rootView: rootView)
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        host.wantsLayer = true
+        host.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host)
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: trailingAnchor),
+            host.topAnchor.constraint(equalTo: topAnchor),
+            host.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func applyInitial(visible: Bool) {
+        self.visible = visible
+        isHidden = !visible
+        host.layer?.removeAllAnimations()
+        host.layer?.transform = visible
+            ? CATransform3DIdentity
+            : CATransform3DMakeTranslation(Self.slideDistance, 0, 0)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { visible ? super.hitTest(point) : nil }
+
+    func setVisible(_ value: Bool, duration: Double, onSlideOutFinished: @escaping () -> Void) {
+        guard value != visible else { return }
+        visible = value
+        self.onSlideOutFinished = onSlideOutFinished
+        guard let layer = host.layer else {
+            finishSlideOutIfNeeded()
+            return
+        }
+        // Resume from whatever is on screen right now. If a resize crosses
+        // back over the boundary mid-slide, snapping to a hard start value
+        // would show one frame of the card at the opposite edge: a flicker.
+        let from = layer.presentation()?.transform.m41 ?? layer.transform.m41
+        let to: CGFloat = value ? 0 : Self.slideDistance
+        layer.removeAnimation(forKey: Self.animationKey)
+        // The model always holds the final position; only the presentation
+        // layer interpolates. Removing the previous animation can therefore
+        // never expose an intermediate frame.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = CATransform3DMakeTranslation(to, 0, 0)
+        CATransaction.commit()
+        if value { isHidden = false }
+
+        guard duration > 0 else {
+            finishSlideOutIfNeeded()
+            return
+        }
+
+        let animation = CABasicAnimation(keyPath: "transform.translation.x")
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        // Hold the presentation value at the target until the content is
+        // unmounted. The model transform is never written to follow it.
+        animation.fillMode = .forwards
+        animation.isRemovedOnCompletion = false
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            MainActor.assumeIsolated { self?.finishSlideOutIfNeeded() }
+        }
+        layer.add(animation, forKey: Self.animationKey)
+        CATransaction.commit()
+    }
+
+    private func finishSlideOutIfNeeded() {
+        guard !visible else { return }
+        isHidden = true
+        let finish = onSlideOutFinished
+        onSlideOutFinished = nil
+        finish?()
+    }
+}
+
 extension AdaptiveConversationColumns where Header == EmptyView {
     init(isVisible: Binding<Bool>, @ViewBuilder transcript: @escaping () -> Transcript,
          @ViewBuilder detail: @escaping () -> Detail) {
@@ -190,13 +417,14 @@ extension AdaptiveConversationColumns where Header == EmptyView {
 
 struct ConsoleDetailColumnBackground: ViewModifier {
     @Environment(\.conversationSkin) private var skin
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var isVisible = true
     func body(content: Content) -> some View {
         content.background {
             if skin == .codexFlat {
                 // This layer is outside the page padding. The trailing gutter
                 // belongs to Detail; all other gutters belong to the transcript.
+                // The Detail column itself stays unpainted: cards float on the
+                // window canvas instead of on a tinted column of their own.
                 Color.primary.opacity(0.12)
                     .padding(.trailing, isVisible
                         ? ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding : 0)
@@ -204,11 +432,6 @@ struct ConsoleDetailColumnBackground: ViewModifier {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
-        }.background(alignment: .trailing) {
-            ConversationColumnBackground(.inspector)
-                .frame(width: ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.outerPadding)
-                .opacity(isVisible ? 1 : 0)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isVisible)
         }
     }
 }
@@ -246,6 +469,14 @@ struct ConsoleWindowSplitView<Sidebar: View, Detail: View>: NSViewControllerRepr
 final class ConsolePaneController<Content: View>: NSViewController {
     let host: NSHostingController<Content>
     private let isSidebar: Bool
+    /// The top, leading and trailing edges stay active even during a live
+    /// resize: they keep the sidebar pinned to the top of the pane.
+    private var edgeConstraints: [NSLayoutConstraint] = []
+    /// The bottom edge is what makes the sidebar follow the window's height.
+    /// It is swapped for a fixed height while the window edge is dragged.
+    private var bottomConstraint: NSLayoutConstraint?
+    private var heldHeightConstraint: NSLayoutConstraint?
+    private(set) var isFrozenForLiveResize = false
 
     init(root: Content, isSidebar: Bool) {
         host = NSHostingController(rootView: root)
@@ -265,12 +496,52 @@ final class ConsolePaneController<Content: View>: NSViewController {
         host.view.identifier = NSUserInterfaceItemIdentifier(isSidebar ? "console.sidebar.content" : "console.detail.content")
         host.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(host.view)
-        NSLayoutConstraint.activate([
+        let bottom = host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        edgeConstraints = [
             host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: view.topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+            host.view.topAnchor.constraint(equalTo: view.topAnchor)
+        ]
+        bottomConstraint = bottom
+        NSLayoutConstraint.activate(edgeConstraints + [bottom])
+    }
+
+    /// Holds the sidebar's size for the duration of a live-resize gesture so
+    /// its SwiftUI tree does no layout, body evaluation or redraw. Only the
+    /// bottom edge is released; the top, leading and trailing edges keep
+    /// following the pane, so the sidebar stays anchored at the **top** and
+    /// the window's height change is absorbed at the **bottom** — content is
+    /// cropped or revealed from the bottom up, never pulled off the top.
+    ///
+    /// `NSHostingView` receives no new size proposal (width is held by
+    /// `holdingPriority`, height is now a constant), so AppKit just repositions
+    /// the existing layer as the window changes. No bitmap, overlay, hidden
+    /// host or redraw-policy tricks: the view stays visible and interactive.
+    /// Only the width-stable sidebar may do this. The transcript detail is
+    /// never touched and keeps receiving every geometry frame, so message
+    /// text and the composer re-wrap continuously during the drag.
+    func freezeForLiveResize() {
+        guard isSidebar, !isFrozenForLiveResize, isViewLoaded,
+              let bottomConstraint else { return }
+        let height = host.view.frame.height
+        guard height > 1 else { return }
+        NSLayoutConstraint.deactivate([bottomConstraint])
+        let held = host.view.heightAnchor.constraint(equalToConstant: height)
+        held.isActive = true
+        heldHeightConstraint = held
+        isFrozenForLiveResize = true
+    }
+
+    /// Restores the real bottom edge and lays the sidebar out exactly once at
+    /// the final window size. Idempotent.
+    func unfreezeAfterLiveResize() {
+        guard isFrozenForLiveResize else { return }
+        heldHeightConstraint?.isActive = false
+        heldHeightConstraint = nil
+        if let bottomConstraint { NSLayoutConstraint.activate([bottomConstraint]) }
+        view.layoutSubtreeIfNeeded()
+        host.view.needsDisplay = true
+        isFrozenForLiveResize = false
     }
 }
 
@@ -288,6 +559,12 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private(set) var contentUpdateCount = 0
     private var restoredWidth = false
     private var isRestoring = false
+    /// The newest sidebar value offered while the window is being resized.
+    /// The sidebar column holds its width during a window resize, so rebuilding
+    /// its SwiftUI tree on every geometry frame would only repeat an O(total
+    /// sessions) outline projection. It is committed once, when the gesture
+    /// ends; the transcript detail keeps receiving every native layout frame.
+    private var pendingSidebar: Sidebar?
     private let widthDefaults: UserDefaults
 
     init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail, defaults: UserDefaults? = nil) {
@@ -330,6 +607,10 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
             name: ConsoleNativeSplitView.didEndDividerTracking, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingWillBegin(_:)),
             name: ConsoleNativeSplitView.willBeginDividerTracking, object: splitView)
+        NotificationCenter.default.addObserver(self, selector: #selector(liveResizeWillStart(_:)),
+            name: NSWindow.willStartLiveResizeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(liveResizeDidEnd(_:)),
+            name: NSWindow.didEndLiveResizeNotification, object: nil)
         super.viewDidLoad()
     }
 
@@ -347,20 +628,49 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         // Commit the transition to inactive once, then leave retained hidden
         // hosts alone. Reactivation always receives the latest root values.
         if isActive || self.isActive {
-            let sidebarTrace = SessionSwitchTrace.shared.start(.sidebarRoot)
-            sidebarController.host.rootView = sidebar
-            SessionSwitchTrace.shared.finish(sidebarTrace)
+            // A window resize changes only the transcript column's width: the
+            // sidebar keeps its held width. Re-assigning its root on each
+            // geometry frame rebuilds the whole outline projection, which is
+            // O(total works/tasks/sessions). Hold the last committed sidebar
+            // tree for the gesture and apply the newest value once at the end.
+            // The detail root is always refreshed so message text reflows live.
+            let liveResize = isViewLoaded && view.window?.inLiveResize == true
+            if liveResize {
+                pendingSidebar = sidebar
+            } else {
+                pendingSidebar = nil
+                let sidebarTrace = SessionSwitchTrace.shared.start(.sidebarRoot)
+                sidebarController.host.rootView = sidebar
+                SessionSwitchTrace.shared.finish(sidebarTrace)
+            }
             let detailTrace = SessionSwitchTrace.shared.start(.detailRoot)
             detailController.host.rootView = detail
             SessionSwitchTrace.shared.finish(detailTrace)
             contentUpdateCount += 1
         }
+        if !isActive { sidebarController.unfreezeAfterLiveResize() }
         self.isActive = isActive
         if self.mode != mode {
             saveWidth()
             self.mode = mode
             restoreWidth()
         }
+    }
+
+    @objc private func liveResizeWillStart(_ note: Notification) {
+        guard (note.object as? NSWindow) === view.window else { return }
+        // Only the sidebar/worker/cards column is held at its current geometry.
+        // Its SwiftUI tree does no layout or redraw work for the gesture; the
+        // transcript detail keeps its live layout and native TextKit reflow.
+        sidebarController.freezeForLiveResize()
+    }
+
+    @objc private func liveResizeDidEnd(_ note: Notification) {
+        guard (note.object as? NSWindow) === view.window else { return }
+        sidebarController.unfreezeAfterLiveResize()
+        guard let pending = pendingSidebar else { return }
+        pendingSidebar = nil
+        sidebarController.host.rootView = pending
     }
 
     override func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {

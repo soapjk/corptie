@@ -513,12 +513,19 @@ final class BackendClient: ObservableObject {
     private var appStateCancellable: AnyCancellable?
     private var reachabilityCancellable: AnyCancellable?
     private var lastProjectedSessions: [TaskSession]?
+    private var lastProjectedSessionsCommit: UInt64 = 0
     private var residentActiveSessionIDs: Set<String>?
     private var residentSelectedSessionID: String?
     private(set) var residentCachePruneCount = 0
 
     init() {
-        appStateCancellable = appState.$state
+        // Only Session commits can change this projection. Subscribing to
+        // `$state` used to re-walk and deep-compare the entire active Session
+        // array on every entity update — including unrelated Task/Agent frames
+        // — which competed with window dragging for the main thread.
+        appStateCancellable = appState.$commitToken
+            .map(\.sessions)
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.projectSessionsFromAppState() }
         // `isOnline` is authoritative connection state derived from the sync
@@ -702,11 +709,13 @@ final class BackendClient: ObservableObject {
 
 
     private func projectSessionsFromAppState() {
+        // O(1) guard: the subscription already filters to Session commits, so
+        // the old full-array Equatable comparison here was pure O(n) overhead
+        // on every State frame, even when no Session had changed.
+        let commit = appState.commitToken.sessions
+        guard commit != lastProjectedSessionsCommit else { return }
+        lastProjectedSessionsCommit = commit
         let nextSessions = sessions
-        // `appState.$state` 对任何实体（tasks/works/agents…）变化都会发射，
-        // 但这里只关心活动会话集合是否真的变了。相等时短路，避免无关实体的
-        // 高频更新反复触发 sessionsDidChange → 下游预加载/列表重算。
-        guard nextSessions != lastProjectedSessions else { return }
         let previousSessions = lastProjectedSessions
         let selectedID = sessionSelectionController.selectedSessionID
         let previousSelected = selectedID.flatMap { id in

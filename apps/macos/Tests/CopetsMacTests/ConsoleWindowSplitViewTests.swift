@@ -155,4 +155,139 @@ struct ConsoleWindowSplitViewTests {
         restored.view.layoutSubtreeIfNeeded()
         #expect(abs(try #require(restored.splitView.arrangedSubviews.first).frame.width - adjusted) < 1)
     }
+
+    @Test
+    func sidebarPaneAnchorsAtTheTopAndCollapsesFromTheBottom() {
+        let pane = ConsolePaneController(root: Text("Work"), isSidebar: true)
+        pane.view.frame = NSRect(x: 0, y: 0, width: 284, height: 700)
+        pane.view.layoutSubtreeIfNeeded()
+        let heldSize = pane.host.view.frame.size
+        #expect(heldSize.width > 1)
+        #expect(heldSize.height > 1)
+
+        pane.freezeForLiveResize()
+        #expect(pane.isFrozenForLiveResize)
+        // The sidebar stays visible and interactive. No snapshot, no overlay,
+        // no hidden host: AppKit composites the existing layer itself.
+        #expect(!pane.host.view.isHidden)
+        #expect(pane.view.subviews.count == 1)
+        #expect(pane.view.subviews.first === pane.host.view)
+
+        // The top edge stays pinned, so the size proposal never changes and
+        // SwiftUI does no work. In AppKit's bottom-left origin it is minY
+        // (the bottom) that absorbs the window's height change — never maxY.
+        for paneHeight in [CGFloat(820), 760, 640] {
+            pane.view.frame = NSRect(x: 0, y: 0, width: 284, height: paneHeight)
+            pane.view.layoutSubtreeIfNeeded()
+            #expect(abs(pane.host.view.frame.width - heldSize.width) < 1)
+            #expect(abs(pane.host.view.frame.height - heldSize.height) < 1)
+            #expect(abs(pane.host.view.frame.maxY - pane.view.bounds.maxY) < 1,
+                    "The sidebar must stay pinned to the top")
+            if paneHeight > heldSize.height {
+                #expect(pane.host.view.frame.minY > 0, "Taller window opens the gap at the bottom")
+            } else {
+                #expect(pane.host.view.frame.minY < 0, "Shorter window crops from the bottom up")
+            }
+            #expect(!pane.host.view.isHidden)
+        }
+        // A repeated start notification must not stack held constraints.
+        pane.freezeForLiveResize()
+        #expect(pane.view.subviews.count == 1)
+
+        pane.unfreezeAfterLiveResize()
+        #expect(!pane.isFrozenForLiveResize)
+        #expect(!pane.host.view.isHidden)
+        #expect(pane.host.view.frame == pane.view.bounds)
+        pane.unfreezeAfterLiveResize()
+        #expect(pane.host.view.frame == pane.view.bounds)
+    }
+
+    @Test
+    func transcriptDetailPaneNeverHoldsGeometry() {
+        let pane = ConsolePaneController(root: Text("Messages"), isSidebar: false)
+        pane.view.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
+        pane.view.layoutSubtreeIfNeeded()
+        pane.freezeForLiveResize()
+        #expect(!pane.isFrozenForLiveResize)
+        #expect(!pane.host.view.isHidden)
+        pane.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 700)
+        pane.view.layoutSubtreeIfNeeded()
+        #expect(pane.host.view.frame.width == 1200)
+    }
+
+    @Test
+    func zeroSizedSidebarPaneSkipsFreezeWithoutHidingContent() {
+        let pane = ConsolePaneController(root: Text("Work"), isSidebar: true)
+        pane.view.frame = .zero
+        pane.view.layoutSubtreeIfNeeded()
+        pane.freezeForLiveResize()
+        #expect(!pane.isFrozenForLiveResize)
+        #expect(!pane.host.view.isHidden)
+        #expect(pane.view.subviews.count == 1)
+        // Constraints remain live, so a later real layout still reaches it.
+        pane.view.frame = NSRect(x: 0, y: 0, width: 284, height: 700)
+        pane.view.layoutSubtreeIfNeeded()
+        #expect(pane.host.view.frame == pane.view.bounds)
+    }
+
+    @Test
+    func liveResizeHoldsOnlySidebarGeometryWhileTranscriptKeepsEveryWidth() throws {
+        _ = NSApplication.shared
+        let controller = ConsoleSplitController(mode: .workOutline, sidebar: Text("Work"), detail: Text("Messages"))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.contentViewController = nil; window.close() }
+        window.makeKeyAndOrderFront(nil)
+        controller.view.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let sidebarPane = try #require(controller.splitViewItems[0].viewController as? ConsolePaneController<Text>)
+        let detailPane = try #require(controller.splitViewItems[1].viewController as? ConsolePaneController<Text>)
+        let sidebar = try #require(controller.splitView.arrangedSubviews.first)
+        let messages = try #require(controller.splitView.arrangedSubviews.last)
+
+        #expect(sidebarPane.view.window === window)
+        #expect(sidebarPane.view.bounds.width > 1)
+        // An offscreen unit-test window never gives the split pane a real
+        // height, and NSSplitView resets any frame injected into its arranged
+        // subview on layout. Set the hosting view's frame directly so the hold
+        // path is exercised instead of taking its "no usable geometry" fallback.
+        let heldSidebarFrame = NSRect(x: 0, y: 0, width: sidebarPane.view.bounds.width, height: 700)
+        sidebarPane.host.view.frame = heldSidebarFrame
+
+        NotificationCenter.default.post(name: NSWindow.willStartLiveResizeNotification, object: window)
+        #expect(sidebarPane.isFrozenForLiveResize)
+        #expect(!sidebarPane.host.view.isHidden)
+        #expect(sidebarPane.view.subviews.count == 1)
+        #expect(!detailPane.isFrozenForLiveResize)
+        #expect(!detailPane.host.view.isHidden)
+
+        for width in [CGFloat(1500), 1080, 1800] {
+            let beforeSplit = controller.splitView.bounds.width
+            let beforeMessages = messages.frame.width
+            let beforeDetailHost = detailPane.host.view.frame.width
+            window.setContentSize(NSSize(width: width, height: 800))
+            controller.view.layoutSubtreeIfNeeded()
+            let canvasDelta = controller.splitView.bounds.width - beforeSplit
+            #expect(abs((messages.frame.width - beforeMessages) - canvasDelta) < 1)
+            #expect(abs((detailPane.host.view.frame.width - beforeDetailHost) - canvasDelta) < 1)
+            #expect(abs(sidebar.frame.width - 284) < 1)
+            #expect(!detailPane.host.view.isHidden, "The transcript must stay live on every resize frame")
+            #expect(abs(sidebarPane.host.view.frame.width - heldSidebarFrame.width) < 1)
+            #expect(abs(sidebarPane.host.view.frame.height - heldSidebarFrame.height) < 1,
+                    "The sidebar receives no new size proposal")
+            #expect(abs(sidebarPane.host.view.frame.maxY - sidebarPane.view.bounds.maxY) < 1,
+                    "The sidebar stays pinned to the top; the bottom absorbs the height change")
+            #expect(!sidebarPane.host.view.isHidden)
+        }
+
+        NotificationCenter.default.post(name: NSWindow.didEndLiveResizeNotification, object: window)
+        #expect(!sidebarPane.isFrozenForLiveResize)
+        #expect(!sidebarPane.host.view.isHidden)
+        #expect(sidebarPane.view.subviews.count == 1)
+        #expect(sidebarPane.host.view.frame == sidebarPane.view.bounds)
+    }
 }

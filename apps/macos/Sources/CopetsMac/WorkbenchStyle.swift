@@ -4,7 +4,9 @@ import SwiftUI
 /// Desktop workbench geometry shared by the native transcript and SwiftUI composer.
 enum WorkbenchStyle {
     static let readingWidth: CGFloat = 760
-    static let readingInset: CGFloat = 32
+    /// Narrowest gutter left on each side of the text lane. Wide viewports
+    /// centre the lane and grow this gutter; narrow ones clamp it here.
+    static let readingInset: CGFloat = 20
     static let canvas = Color(nsColor: .textBackgroundColor)
     static let sidebarColor = adaptive(light: 0.985, dark: 0.115)
     static let workColumnColor = adaptive(light: 0.995, dark: 0.18)

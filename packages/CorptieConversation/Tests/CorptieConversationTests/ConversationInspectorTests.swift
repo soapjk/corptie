@@ -193,13 +193,16 @@ struct ConversationInspectorTests {
             .appendingPathComponent("Sources/CorptieConversation/ConversationInspectorSection.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(source.contains("public struct ConversationDetailContentSurface: ViewModifier"))
-        #expect(source.contains("ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true)"))
+        #expect(source.contains("ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true, allowsMaterial: false)"))
         #expect(!source.contains("GlassEffectContainer"))
         let contentSource = try String(contentsOf: sourceURL.deletingLastPathComponent()
             .appendingPathComponent("ConversationContentSurface.swift"), encoding: .utf8)
         #expect(contentSource.contains("if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {"))
         #expect(contentSource.contains(".regularMaterial.opacity(ConversationContentSurfacePolicy.messageMaterialOpacity)"))
-        #expect(source.contains("ConversationContentSurface(cornerRadius: cornerRadius, isPanel: true)"))
+        // The rail paints no canvas of its own, so each card must be solid.
+        #expect(ConversationContentSurfacePolicy.isSolidPanel(isPanel: true, isMessage: false, allowsMaterial: false))
+        #expect(contentSource.contains("if solidPanel { shape.fill(base) }"),
+            "Detail cards need an opaque backing rather than a translucent fill")
         #expect(!contentSource.contains("glassEffect"))
         #expect(source.contains(".modifier(ConversationDetailContentSurface(cornerRadius: 18))"))
         #expect(source.contains(".clipShape(shape)"))

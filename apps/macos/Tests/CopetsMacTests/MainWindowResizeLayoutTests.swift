@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import Testing
 import XCTest
@@ -5,6 +6,99 @@ import XCTest
 
 @Suite(.serialized)
 struct MainWindowResizeLayoutTests {
+    @Test
+    func liveResizeKeepsMessageReflowNativeAndOnlyHoldsTheSidebarPane() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let runtime = try String(contentsOf: root.appendingPathComponent("Application/MainWindowRuntime.swift"), encoding: .utf8)
+        let split = try String(contentsOf: root.appendingPathComponent("ConsoleWindowSplitView.swift"), encoding: .utf8)
+
+        // WINDOW level: the whole hosting view must keep following every native
+        // size. Freezing it would stop the transcript from receiving new widths,
+        // so message text and the composer could no longer re-wrap on a drag.
+        #expect(!runtime.contains("bitmapImageRepForCachingDisplay"))
+        #expect(!runtime.contains("scaleAxesIndependently"))
+        #expect(runtime.contains("hostingView.autoresizingMask = [.width, .height]"))
+        // PANE level: only the width-stable sidebar/worker/cards column is
+        // held. Its UI does not change during a window resize, so the correct
+        // fix is to keep AppKit from handing SwiftUI a new size proposal —
+        // never to rasterise it. A bitmap can go blank for layer-backed hosts
+        // and hiding the host drops hit testing for the whole gesture.
+        #expect(!split.contains("cacheDisplay"))
+        #expect(!split.contains("bitmapImageRepForCachingDisplay"))
+        #expect(!split.contains("NSImageView"))
+        #expect(!split.contains("host.view.isHidden = true"))
+        #expect(!split.contains("layerContentsRedrawPolicy"))
+        // Never detach all four edges: a frame pinned at (0,0,w,h) is anchored
+        // at the BOTTOM in AppKit's bottom-left origin, so a shorter window
+        // crops the sidebar's top. The top must stay pinned and only the
+        // bottom edge may be released, so height changes collapse upward from
+        // the bottom instead of pulling content off the top.
+        #expect(!split.contains("host.view.frame = frame"))
+        #expect(!split.contains("host.view.autoresizingMask = []"))
+        #expect(split.contains("host.view.topAnchor.constraint(equalTo: view.topAnchor)"))
+        #expect(split.contains("host.view.heightAnchor.constraint(equalToConstant: height)"))
+        #expect(split.contains("NSLayoutConstraint.deactivate([bottomConstraint])"))
+        #expect(split.contains("NSLayoutConstraint.activate([bottomConstraint])"))
+        #expect(split.contains("sidebarController.freezeForLiveResize()"))
+        #expect(!split.contains("detailController.freezeForLiveResize()"))
+        #expect(!split.contains("detailController.unfreezeAfterLiveResize()"))
+        #expect(split.contains("private var pendingSidebar"))
+        #expect(split.contains("NSWindow.willStartLiveResizeNotification"))
+        #expect(split.contains("NSWindow.didEndLiveResizeNotification"))
+        #expect(split.contains("detailController.host.rootView = detail"))
+    }
+
+    /// AppKit's implicit animations on layout inputs rewrite the model frame or
+    /// constraint constant on every frame. Each write re-solves Auto Layout and
+    /// hands the hosted SwiftUI tree a new size proposal, so a 0.2s animation
+    /// triggers >100 full layout passes. Animate layer opacity or transform
+    /// instead: those are compositor-only and never touch layout.
+    @Test
+    func noClientSourceAnimatesLayoutInputsFrameByFrame() throws {
+        let here = URL(fileURLWithPath: #filePath)
+        let macos = here.deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let repo = macos.deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let directories = [
+            macos.appendingPathComponent("Sources/CopetsMac"),
+            repo.appendingPathComponent("apps/ipad/Sources"),
+            repo.appendingPathComponent("packages/CorptieConversation/Sources"),
+            repo.appendingPathComponent("packages/CorptieClientCore/Sources")
+        ]
+        // NSOutlineView's own row animation (`outline.animator()`), alphaValue
+        // and zero-duration groups with allowsImplicitAnimation = false are
+        // allowed: none of them rewrites a frame or constraint per frame.
+        let forbidden = [
+            ".animator().constant",
+            ".animator().setFrame(",
+            ".animator().frame",
+            ".animator().setFrameOrigin(",
+            ".animator().setFrameSize(",
+            "animate: true"
+        ]
+        var scanned = 0
+        for directory in directories {
+            guard let enumerator = FileManager.default.enumerator(
+                at: directory, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]) else { continue }
+            for case let file as URL in enumerator where file.pathExtension == "swift" {
+                let source = try String(contentsOf: file, encoding: .utf8)
+                scanned += 1
+                for pattern in forbidden {
+                    #expect(!source.contains(pattern),
+                        "\(file.lastPathComponent) animates a layout input via \(pattern); use a layer opacity/transform animation")
+                }
+            }
+        }
+        #expect(scanned > 200, "the guardrail must actually scan the client sources")
+    }
+
     @MainActor
     @Test
     func liveResizeFollowsEveryNativeSizeWithoutWaitingForAFrameScheduler() {

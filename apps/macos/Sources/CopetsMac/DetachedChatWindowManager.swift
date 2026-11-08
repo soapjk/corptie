@@ -179,7 +179,9 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
             normalSize: Self.initialSize,
             minimumSize: panel.minSize
         )
-        panel.setFrame(frame, display: true, animate: true)
+        // A window frame is a layout input. Implicit frame animation rewrites
+        // it on every frame and re-lays out the hosted SwiftUI tree each time.
+        panel.setFrame(frame, display: true, animate: false)
         panel.saveFrame(usingName: DetachedChatWindowFrameStore.name(for: sessionID))
     }
 

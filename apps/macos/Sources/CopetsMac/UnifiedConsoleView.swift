@@ -490,7 +490,10 @@ struct UnifiedConsoleView: View {
                     .padding(.horizontal, 10).padding(.top, 10)
             }
             ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
-                sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId,
+                // The clipped, hit-test-disabled card column must not rebuild
+                // the full session projection on every window geometry frame.
+                sessions: navigationMode == .taskCards ? sessionIndexStore.rows.map(\.session) : [],
+                selectedTaskID: selectedTaskId,
                 selectedSessionID: selectionController.presentationSessionID, query: searchText,
                 sortMode: outlineSort, showsArchive: isShowingWorkerArchive,
                 attentionCount: $cardAttentionCount,

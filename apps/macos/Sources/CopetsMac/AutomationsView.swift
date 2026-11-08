@@ -170,7 +170,7 @@ struct AutomationsView: View {
         .task { await scheduling.loadAutomations() }
         .onChange(of: scheduling.automations, initial: true) { _, values in rebuildCategories(values) }
         .onReceive(router.$pendingAutomationId.removeDuplicates().receive(on: DispatchQueue.main)) { _ in focusPendingAutomation() }
-        .onReceive(backendClient.appState.$state.map(\.sessions).removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateTargets() }
+        .onReceive(backendClient.appState.$commitToken.map(\.sessions).removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateTargets() }
         .onChange(of: category) { _, _ in updateVisibleAutomations() }
         .onChange(of: searchText) { _, _ in updateVisibleAutomations() }
         .sheet(item: $editingAutomation) { automation in
