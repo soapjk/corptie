@@ -323,10 +323,17 @@ struct AdaptiveConversationColumnsTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/ConsoleWindowSplitView.swift"),
             encoding: .utf8)
-        // Only the transcript may own an opaque canvas. The Detail rail stays
-        // transparent so its module cards read as floating, not inset in a
-        // white column.
-        #expect(source.components(separatedBy: "WorkbenchStyle.canvas").count - 1 == 1)
+        // Canvas belongs to the message viewport, not the full transcript
+        // column (which also contains the transparent shared input dock).
+        #expect(!source.contains("WorkbenchStyle.canvas"))
+        let conversation = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/Conversation/SessionConversationContent.swift"), encoding: .utf8)
+        let viewportStart = try #require(conversation.range(of: "private var messageViewport:"))
+        let dockStart = try #require(conversation.range(of: "private var inputDock:"))
+        #expect(conversation[viewportStart.lowerBound..<dockStart.lowerBound].contains("WorkbenchStyle.canvas"))
+        let dockEnd = try #require(conversation.range(of: "private var conversationTopChrome:"))
+        #expect(!conversation[dockStart.lowerBound..<dockEnd.lowerBound].contains("WorkbenchStyle.canvas"))
         #expect(!source.contains("ConversationColumnBackground(.inspector)"))
     }
 

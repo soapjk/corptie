@@ -573,6 +573,11 @@ struct SessionConversationSurface: View {
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .frame(height: showsWelcome ? 0 : nil)
             .clipped()
+            .background {
+                // The reading canvas stops at the viewport. The shared
+                // quick-message/editor dock exposes the window backdrop.
+                if !compactComposer { WorkbenchStyle.canvas }
+            }
             .overlay(alignment: .leading) {
                 if !compactComposer, !showsWelcome, displayedDetail != nil {
                     UserMessageNavigationRail(baseURL: backendClient.baseURL, sessionID: sessionId,
