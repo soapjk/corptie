@@ -63,6 +63,36 @@ extension EnvironmentValues {
     }
 }
 
+/// One weak native hit region per page; no layout observation or global registry.
+@MainActor
+final class DetailToggleExclusion {
+    weak var view: NSView?
+    func contains(_ event: NSEvent) -> Bool {
+        guard let view, view.window === event.window, !view.isHiddenOrHasHiddenAncestor else { return false }
+        return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+    }
+}
+
+private struct DetailToggleExclusionKey: EnvironmentKey {
+    static let defaultValue: DetailToggleExclusion? = nil
+}
+
+extension EnvironmentValues {
+    var detailToggleExclusion: DetailToggleExclusion? {
+        get { self[DetailToggleExclusionKey.self] }
+        set { self[DetailToggleExclusionKey.self] = newValue }
+    }
+}
+
+struct DetailToggleClickTarget: NSViewRepresentable {
+    @Environment(\.detailToggleExclusion) private var exclusion
+    func makeNSView(context: Context) -> NSView { ClickThroughView() }
+    func updateNSView(_ view: NSView, context: Context) { exclusion?.view = view }
+    private final class ClickThroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+}
+
 /// Detail stays docked only while the text lane keeps its full reading width.
 /// The gutters on either side of the lane may narrow freely as the window
 /// shrinks; the moment the text itself would start getting narrower, Detail
@@ -73,6 +103,7 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
     @Binding var isVisible: Bool
     @State private var canDock = false
     @State private var temporaryVisible = false
+    @State private var toggleExclusion = DetailToggleExclusion()
     @State private var railPhase: RailPhase = .hidden
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder let transcript: () -> Transcript
@@ -189,6 +220,7 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
         } accessory: {
             header().environment(\.detailColumnVisibility, visibility)
         }
+        .environment(\.detailToggleExclusion, toggleExclusion)
         // `onGeometryChange` only calls the action when the band changes, so
         // dragging inside one band performs no state writes at all.
         .onGeometryChange(for: WidthBand.self) { Self.widthBand(for: $0.size.width) } action: { band in
@@ -229,11 +261,13 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
 /// A local AppKit monitor sees clicks in native message/editor views and sibling
 /// Work/Tab panes too. It returns the original event and exists only while open.
 struct DetailOutsideClickDismissal: NSViewRepresentable {
+    @Environment(\.detailToggleExclusion) private var toggleExclusion
     let enabled: Bool
     let dismiss: () -> Void
 
     func makeNSView(context: Context) -> DetailOutsideClickView { DetailOutsideClickView() }
     func updateNSView(_ view: DetailOutsideClickView, context: Context) {
+        view.toggleExclusion = toggleExclusion
         view.update(enabled: enabled, dismiss: dismiss)
     }
     static func dismantleNSView(_ view: DetailOutsideClickView, coordinator: ()) {
@@ -242,6 +276,7 @@ struct DetailOutsideClickDismissal: NSViewRepresentable {
 }
 
 final class DetailOutsideClickView: NSView {
+    var toggleExclusion: DetailToggleExclusion?
     private var monitor: Any?
     private var dismiss: (() -> Void)?
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -261,9 +296,10 @@ final class DetailOutsideClickView: NSView {
 
     func observe(_ event: NSEvent) {
         guard let window, event.window === window, !isHiddenOrHasHiddenAncestor,
+              toggleExclusion?.contains(event) != true,
               !bounds.contains(convert(event.locationInWindow, from: nil)),
               let dismiss else { return }
-        // Let the original control handle its click first, including the toggle.
+        // The toggle is excluded above; ordinary outside controls keep their event.
         DispatchQueue.main.async { dismiss() }
     }
 

@@ -195,6 +195,7 @@ struct SessionConversationHeaderSurface: View {
                         .help(L10n(visibility.wrappedValue ? "Hide Detail" : "Show Detail"))
                         .accessibilityLabel(L10n(visibility.wrappedValue ? "Hide Detail" : "Show Detail"))
                         .accessibilityIdentifier("session.detail.toggle-column")
+                        .background(DetailToggleClickTarget())
                     }
                     Button {
                         guard canAct, let session else { return }

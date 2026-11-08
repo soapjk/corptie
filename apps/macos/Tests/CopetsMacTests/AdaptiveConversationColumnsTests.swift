@@ -170,6 +170,37 @@ struct AdaptiveConversationColumnsTests {
     }
 
     @MainActor @Test
+    func toggleMouseDownCannotDismissBeforeItsMouseUpAction() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
+        let region = DetailOutsideClickView(frame: NSRect(x: 500, y: 0, width: 324, height: 500))
+        let toggle = NSView(frame: NSRect(x: 50, y: 550, width: 28, height: 28))
+        root.addSubview(region); root.addSubview(toggle)
+        window.contentView = root
+        defer { region.update(enabled: false, dismiss: {}); window.contentView = nil }
+        let exclusion = DetailToggleExclusion()
+        exclusion.view = toggle
+        region.toggleExclusion = exclusion
+        var visible = true
+        for _ in 0..<3 {
+            visible = true
+            region.update(enabled: true) { visible = false }
+            let down = try #require(NSEvent.mouseEvent(with: .leftMouseDown,
+                location: NSPoint(x: 60, y: 560), modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            region.observe(down)
+            // Reproduce holding the button long enough for queued work to run.
+            try await Task.sleep(for: .milliseconds(25))
+            #expect(visible, "The outside monitor must not close Detail during the toggle press")
+            visible.toggle() // The button's release action.
+            try await Task.sleep(for: .milliseconds(25))
+            #expect(!visible, "Releasing the toggle must close Detail rather than reopen it")
+            region.update(enabled: false, dismiss: {})
+        }
+    }
+
+    @MainActor @Test
     func outsideClickDismissalIgnoresCardClicksAndDisconnectsWhenDisabled() async throws {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: .borderless, backing: .buffered, defer: false)
