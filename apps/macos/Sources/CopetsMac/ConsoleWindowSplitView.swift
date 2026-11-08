@@ -177,7 +177,6 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                     transcript()
                         .environment(\.detailColumnVisibility, visibility)
                         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                        .background(WorkbenchStyle.canvas)
                     // Stable transcript identity; only native stack space changes.
                     // The reserved slice is shorter than the rail on purpose:
                     // the rail overlaps the trailing reading gutter, not text.
