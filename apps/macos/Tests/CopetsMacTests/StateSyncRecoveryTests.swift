@@ -3,6 +3,11 @@ import XCTest
 import CorptieClientCore
 @testable import CorptieMac
 
+private actor StreamProbe {
+    private(set) var byteRequests = 0
+    func noteByteRequest() { byteRequests += 1 }
+}
+
 private actor SnapshotTestServer {
     var requests = 0
     private var gate: CheckedContinuation<Void, Never>?
@@ -70,5 +75,72 @@ private actor SnapshotTestServer {
             _ = try await decoder.decodeFrame(name: "state-snapshot", data: "not-json")
             XCTFail("Malformed state must fail")
         } catch { }
+    }
+
+    /// A burst of change-set frames must still advance every revision, but
+    /// publish the normalized state only once (plus the initial snapshot).
+    func testBurstOfChangeSetFramesAdvancesEveryRevisionWithOneBatch() async throws {
+        let url = URL(string: "http://127.0.0.1:54321")!
+        let snapshot = Data(#"{"revision":1,"state":{"sessions":[],"tasks":[],"works":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]}}"#.utf8)
+        func payload(_ revision: Int) -> String {
+            #"{"snapshotRequired":false,"baseRevision":\#(revision - 1),"revision":\#(revision),"upserts":{"sessions":[],"tasks":[],"works":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"deletes":{"sessions":[],"tasks":[],"works":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]}}"#
+        }
+        let frames = (2...6).map { "event: state-change-set\ndata: \(payload($0))\n\n" }.joined()
+
+        // The wire framing and the typed decoder must both accept the fixture.
+        let decoder = StateStreamDecoder()
+        let firstFrame = try await decoder.decodeFrame(name: "state-change-set", data: payload(2))
+        guard case .changes = firstFrame else {
+            XCTFail("first frame did not decode into a change-set")
+            return
+        }
+        let parseStream = AsyncThrowingStream<Data, Error> { continuation in
+            continuation.yield(Data(frames.utf8))
+            continuation.finish()
+        }
+        var parsedEvents = 0
+        for try await _ in ServerSentEventStream.events(from: BackendByteStream(chunks: parseStream)) {
+            parsedEvents += 1
+        }
+        XCTAssertEqual(parsedEvents, 5)
+
+        let probe = StreamProbe()
+        let transport = BackendTransport(endpoint: try BackendEndpoint(url), data: { request in
+            (snapshot, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }, bytes: { request in
+            await probe.noteByteRequest()
+            let stream = AsyncThrowingStream<Data, Error> { continuation in
+                continuation.yield(Data(frames.utf8))
+                continuation.finish()
+            }
+            return (
+                BackendByteStream(chunks: stream),
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            )
+        })
+        let store = AppStateStore()
+        let controller = AppStateSyncController(
+            store: store, baseURL: url, transport: transport, artifactsChanged: {}
+        )
+        var publications = 0
+        let cancellable = store.$state.sink { _ in publications += 1 }
+        defer { cancellable.cancel() }
+        let baseline = publications
+
+        controller.start()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while store.revision < 6, ContinuousClock.now < deadline {
+            await Task.yield()
+        }
+        controller.stop()
+
+        let byteRequests = await probe.byteRequests
+        XCTAssertEqual(
+            store.revision, 6,
+            "syncError=\(store.syncError ?? "nil"), byteRequests=\(byteRequests), publications=\(publications - baseline)"
+        )
+        XCTAssertTrue(store.isReachable)
+        // One publication for the snapshot, one for the whole batched burst.
+        XCTAssertEqual(publications - baseline, 2)
     }
 }

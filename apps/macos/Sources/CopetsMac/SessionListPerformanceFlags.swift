@@ -8,10 +8,12 @@ struct SessionListPerformanceFlags: Equatable, Sendable {
     let forcesCardDisplayMode: Bool
     let layoutLoggingEnabled: Bool
 
-    @MainActor
-    static var current: SessionListPerformanceFlags {
-        resolve(environment: ProcessInfo.processInfo.environment)
-    }
+    /// Resolved once per process. Reading this in a SwiftUI `body` used to
+    /// re-read and re-parse the whole environment dictionary on every
+    /// evaluation, including during high-frequency state updates.
+    static let current: SessionListPerformanceFlags = resolve(
+        environment: ProcessInfo.processInfo.environment
+    )
 
     static func resolve(environment: [String: String]) -> SessionListPerformanceFlags {
         let isDevelopment = ["dev", "development"].contains(

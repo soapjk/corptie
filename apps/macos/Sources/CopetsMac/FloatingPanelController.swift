@@ -623,6 +623,12 @@ final class FloatingPanelController: NSObject {
         setPanelSize(size, duration: 0.16, timing: .easeOut)
     }
 
+    /// Window frames are layout inputs. Animating them with `animator()` makes
+    /// AppKit rewrite the model frame on every frame, which re-solves Auto
+    /// Layout and re-lays out the entire SwiftUI tree each time. The final
+    /// frame is therefore applied in a single synchronous write. `duration`
+    /// and `timing` remain in the signature to keep the existing call sites,
+    /// but no frame interpolation is performed.
     private func setPanelSize(_ size: NSSize, duration: TimeInterval, timing: CAMediaTimingFunctionName, completion: (@MainActor @Sendable () -> Void)? = nil) {
         guard presentationState.isActive else { return }
         let generation = presentationGeneration
@@ -631,60 +637,35 @@ final class FloatingPanelController: NSObject {
         frame.size = size
         frame.origin.y = oldMaxY - size.height
 
-        logWindowGeometry("set-size target=\(format(size.width))x\(format(size.height)) duration=\(String(format: "%.2f", duration))")
+        logWindowGeometry("set-size target=\(format(size.width))x\(format(size.height))")
 
-        if duration == 0 {
-            isProgrammaticResize = true
-            panel.setFrame(frame, display: true)
-            isProgrammaticResize = false
-            completion?()
-            return
-        }
         isProgrammaticResize = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: timing)
-            panel.animator().setFrame(frame, display: true)
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.presentationState.isActive,
-                      self.presentationGeneration == generation else { return }
-                self.isProgrammaticResize = false
-                self.logWindowGeometry("set-size-complete")
-                completion?()
-            }
+        panel.setFrame(frame, display: true)
+        isProgrammaticResize = false
+        logWindowGeometry("set-size-complete")
+        guard let completion else { return }
+        // Keep the original asynchronous handover: callers use it to release
+        // the resize lock, which must not happen inside this call stack.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.presentationState.isActive,
+                  self.presentationGeneration == generation else { return }
+            completion()
         }
     }
 
     private func setPanelHeight(_ height: CGFloat, duration: TimeInterval, timing: CAMediaTimingFunctionName) {
         guard presentationState.isActive else { return }
-        let generation = presentationGeneration
         var frame = panel.frame
         let oldMaxY = frame.maxY
         frame.size.height = height
         frame.origin.y = oldMaxY - height
 
-        logWindowGeometry("set-height target=\(format(height)) duration=\(String(format: "%.2f", duration))")
+        logWindowGeometry("set-height target=\(format(height))")
 
-        if duration == 0 {
-            isProgrammaticResize = true
-            panel.setFrame(frame, display: true)
-            isProgrammaticResize = false
-            return
-        }
         isProgrammaticResize = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: timing)
-            panel.animator().setFrame(frame, display: true)
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.presentationState.isActive,
-                      self.presentationGeneration == generation else { return }
-                self.isProgrammaticResize = false
-                self.logWindowGeometry("set-height-complete")
-            }
-        }
+        panel.setFrame(frame, display: true)
+        isProgrammaticResize = false
+        logWindowGeometry("set-height-complete")
     }
 
     private func logWindowGeometry(_ trigger: String) {
@@ -707,43 +688,25 @@ final class FloatingPanelController: NSObject {
 
     private func bounceHeightBackIfNeeded() {
         guard presentationState.isActive else { return }
-        let generation = presentationGeneration
         guard client.selectedSession == nil, !panel.inLiveResize,
               !panel.isPerformingCustomLiveResize, !isBouncingResize else {
             return
         }
 
         let targetHeight = usefulMaximumListHeight(for: client.sessions.count)
-        let currentHeight = panel.frame.height
-        guard currentHeight > targetHeight + 8 else {
+        guard panel.frame.height > targetHeight + 8 else {
             return
         }
 
+        // The old three-stage bounce rewrote the window frame on every frame
+        // for ~0.4s. A frame is a layout input, so each write re-laid out the
+        // whole SwiftUI tree. Reach the useful height in one write instead;
+        // isBouncingResize still guards the synchronous resize notification.
         isBouncingResize = true
         pendingResizeBounce?.cancel()
         pendingResizeBounce = nil
-        let undershoot = max(listMinimumSize.height, targetHeight - 10)
-        let rebound = min(panel.maxSize.height, targetHeight + 5)
-
-        setPanelHeight(undershoot, duration: 0.16, timing: .easeOut)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
-            guard let self, self.presentationState.isActive,
-                  self.presentationGeneration == generation else { return }
-            self.setPanelHeight(rebound, duration: 0.11, timing: .easeInEaseOut)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.27) { [weak self] in
-            guard let self, self.presentationState.isActive,
-                  self.presentationGeneration == generation else { return }
-            self.setPanelHeight(targetHeight, duration: 0.13, timing: .easeOut)
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) { [weak self] in
-            guard let self, self.presentationState.isActive,
-                  self.presentationGeneration == generation else { return }
-            self.isBouncingResize = false
-        }
+        setPanelHeight(targetHeight, duration: 0, timing: .linear)
+        isBouncingResize = false
     }
 
     private func shrinkToUsefulListHeightIfNeeded(animated: Bool) {

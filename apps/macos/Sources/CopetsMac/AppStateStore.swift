@@ -65,6 +65,33 @@ enum AppStateApplyResult: Equatable {
     case revisionGap(expected: Int64, received: Int64)
 }
 
+/// Aggregated outcome of applying a burst of revisioned change-sets as one
+/// state publication. `gapRevision` carries the revision the caller must reach
+/// with a snapshot before the stream can be considered healthy again.
+struct AppStateBatchApplyResult: Equatable {
+    var lastResult: AppStateApplyResult = .duplicate
+    var appliedCount = 0
+    var hasArtifactInvalidations = false
+    var gapRevision: Int64?
+}
+
+/// Entity families whose derived projections are cached by `AppStateStore`.
+/// A mutation declares the families it touches, so invalidation stays O(1)
+/// instead of deep-comparing whole dictionaries on every State SSE frame.
+struct StateCacheScope: OptionSet {
+    let rawValue: UInt8
+    static let sessions = StateCacheScope(rawValue: 1 << 0)
+    static let tasks = StateCacheScope(rawValue: 1 << 1)
+    static let works = StateCacheScope(rawValue: 1 << 2)
+    static let roles = StateCacheScope(rawValue: 1 << 3)
+    static let skills = StateCacheScope(rawValue: 1 << 4)
+    static let repositories = StateCacheScope(rawValue: 1 << 5)
+    static let integrationRuns = StateCacheScope(rawValue: 1 << 6)
+    static let all: StateCacheScope = [
+        .sessions, .tasks, .works, .roles, .skills, .repositories, .integrationRuns
+    ]
+}
+
 struct NormalizedAppState: Equatable {
     var sessions: [String: TaskSession] = [:]
     var tasks: [String: CorptieTask] = [:]
@@ -75,32 +102,44 @@ struct NormalizedAppState: Equatable {
     var integrationRuns: [String: ProjectIntegrationRun] = [:]
 }
 
+/// Constant-size commit counters. `$state` holds whole entity dictionaries, so
+/// comparing it — or one of its maps — is O(n) in the number of Sessions/Tasks
+/// and used to run on every State frame, stealing main-thread time from window
+/// dragging and live resize. Subscribers that only care about one entity family
+/// observe the matching counter instead, which is O(1) to compare.
+struct AppStateCommitToken: Equatable {
+    var sessions: UInt64 = 0
+    var tasks: UInt64 = 0
+    var works: UInt64 = 0
+    var roles: UInt64 = 0
+    var skills: UInt64 = 0
+    var repositories: UInt64 = 0
+    var integrationRuns: UInt64 = 0
+    var sequence: UInt64 = 0
+}
+
 @MainActor
 final class AppStateStore: ObservableObject {
     static let shared = AppStateStore()
 
     @Published private(set) var revision: Int64 = 0
-    @Published private(set) var state = NormalizedAppState() {
-        didSet {
-            // `sessions` is accessed on every tab switch and list render; keep
-            // the sorted result cached so the O(n log n) sort is not repeated
-            // for each read against an unchanged state. Only invalidate when the
-            // sessions dictionary actually changes — unrelated entity updates
-            // (tasks/works/agents…) must not drop the sort cache.
-            if oldValue.sessions != state.sessions {
-                cachedSessions = nil
-                cachedActiveSessions = nil
-                cachedSessionAliases = nil
-            }
-            if oldValue.tasks != state.tasks { cachedTasks = nil }
-            if oldValue.works != state.works { cachedWorks = nil }
-        }
-    }
+    /// The single normalized control-plane value. Cache invalidation is driven
+    /// explicitly by `commit(_:touching:)`; a `didSet` deep-equality scan here
+    /// used to compare every dictionary on each State SSE frame and was a
+    /// main-thread hotspot during streaming.
+    @Published private(set) var state = NormalizedAppState()
+    /// Monotonic counters published after `state` is committed, so a synchronous
+    /// subscriber always observes the new state value.
+    @Published private(set) var commitToken = AppStateCommitToken()
     @Published private(set) var syncError: String?
     private var cachedSessions: [TaskSession]?
     private var cachedActiveSessions: [TaskSession]?
     private var cachedTasks: [CorptieTask]?
     private var cachedWorks: [Work]?
+    private var cachedRoles: [Role]?
+    private var cachedSkills: [Skill]?
+    private var cachedRepositories: [GitRepository]?
+    private var cachedIntegrationRuns: [ProjectIntegrationRun]?
     private var cachedSessionAliases: [String: String]?
     private var hasAppliedAuthoritativeState = false
     private(set) var pendingCreatedSessionIDs = Set<String>()
@@ -134,11 +173,89 @@ final class AppStateStore: ObservableObject {
         cachedWorks = result
         return result
     }
-    var roles: [Role] { state.roles.values.sorted { $0.createdAt < $1.createdAt } }
-    var skills: [Skill] { state.skills.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
-    var repositories: [GitRepository] { state.repositories.values.sorted { $0.name < $1.name } }
+    var roles: [Role] {
+        if let cachedRoles { return cachedRoles }
+        let result = state.roles.values.sorted { $0.createdAt < $1.createdAt }
+        cachedRoles = result
+        return result
+    }
+    var skills: [Skill] {
+        if let cachedSkills { return cachedSkills }
+        let result = state.skills.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        cachedSkills = result
+        return result
+    }
+    var repositories: [GitRepository] {
+        if let cachedRepositories { return cachedRepositories }
+        let result = state.repositories.values.sorted { $0.name < $1.name }
+        cachedRepositories = result
+        return result
+    }
     var integrationRuns: [ProjectIntegrationRun] {
-        state.integrationRuns.values.sorted { $0.createdAt > $1.createdAt }
+        if let cachedIntegrationRuns { return cachedIntegrationRuns }
+        let result = state.integrationRuns.values.sorted { $0.createdAt > $1.createdAt }
+        cachedIntegrationRuns = result
+        return result
+    }
+
+    /// The one write path for normalized state. Every caller declares which
+    /// entity families it mutated, keeping derived-cache invalidation constant
+    /// time regardless of how many Sessions or Tasks the store holds.
+    private func commit(_ next: NormalizedAppState, touching scope: StateCacheScope) {
+        if scope.contains(.sessions) {
+            cachedSessions = nil
+            cachedActiveSessions = nil
+            cachedSessionAliases = nil
+        }
+        if scope.contains(.tasks) { cachedTasks = nil }
+        if scope.contains(.works) { cachedWorks = nil }
+        if scope.contains(.roles) { cachedRoles = nil }
+        if scope.contains(.skills) { cachedSkills = nil }
+        if scope.contains(.repositories) { cachedRepositories = nil }
+        if scope.contains(.integrationRuns) { cachedIntegrationRuns = nil }
+        self.state = next
+        var token = commitToken
+        token.sequence &+= 1
+        if scope.contains(.sessions) { token.sessions &+= 1 }
+        if scope.contains(.tasks) { token.tasks &+= 1 }
+        if scope.contains(.works) { token.works &+= 1 }
+        if scope.contains(.roles) { token.roles &+= 1 }
+        if scope.contains(.skills) { token.skills &+= 1 }
+        if scope.contains(.repositories) { token.repositories &+= 1 }
+        if scope.contains(.integrationRuns) { token.integrationRuns &+= 1 }
+        commitToken = token
+    }
+
+    private static func touchedScope(_ changes: StateChangeSetEnvelope) -> StateCacheScope {
+        var scope: StateCacheScope = []
+        let upserts = changes.upserts, deletes = changes.deletes
+        if !upserts.sessions.isEmpty || !deletes.sessions.isEmpty { scope.insert(.sessions) }
+        if !upserts.tasks.isEmpty || !deletes.tasks.isEmpty { scope.insert(.tasks) }
+        if !upserts.works.isEmpty || !deletes.works.isEmpty { scope.insert(.works) }
+        if !upserts.roles.isEmpty || !deletes.roles.isEmpty { scope.insert(.roles) }
+        if !upserts.skills.isEmpty || !deletes.skills.isEmpty { scope.insert(.skills) }
+        if !upserts.repositories.isEmpty || !deletes.repositories.isEmpty { scope.insert(.repositories) }
+        if !upserts.integrationRuns.isEmpty || !deletes.integrationRuns.isEmpty { scope.insert(.integrationRuns) }
+        return scope
+    }
+
+    private static func merge(_ changes: StateChangeSetEnvelope, into next: inout NormalizedAppState) {
+        upsert(changes.upserts.sessions, into: &next.sessions, id: \TaskSession.id)
+        upsert(changes.upserts.tasks, into: &next.tasks, id: \CorptieTask.id)
+        upsert(changes.upserts.works, into: &next.works, id: \Work.id)
+        upsert(changes.upserts.roles, into: &next.roles, id: \Role.roleId)
+        upsert(changes.upserts.skills, into: &next.skills, id: \Skill.skillId)
+        upsert(changes.upserts.repositories, into: &next.repositories, id: \GitRepository.id)
+        upsert(changes.upserts.integrationRuns, into: &next.integrationRuns, id: \ProjectIntegrationRun.id)
+        for id in changes.deletes.sessions { next.sessions[id] = nil }
+        for id in changes.deletes.tasks { next.tasks[id] = nil }
+        for id in changes.deletes.works { next.works[id] = nil }
+        for id in changes.deletes.roles { next.roles[id] = nil }
+        for id in changes.deletes.skills { next.skills[id] = nil }
+        for id in changes.deletes.repositories { next.repositories[id] = nil }
+        for id in changes.deletes.integrationRuns { next.integrationRuns[id] = nil }
     }
 
     func session(_ id: String) -> TaskSession? {
@@ -171,7 +288,20 @@ final class AppStateStore: ObservableObject {
             isReachable = true
             return .duplicate
         }
-        state = Self.normalized(snapshot.state)
+        let normalized = Self.normalized(snapshot.state)
+        // A snapshot is a low-frequency full replacement. Comparing the
+        // families once keeps the O(1) commit counters honest: a family whose
+        // contents did not change must not wake its subscribers. Change-sets
+        // (the hot path) already carry an exact scope and never pay for this.
+        var scope: StateCacheScope = []
+        if normalized.sessions != state.sessions { scope.insert(.sessions) }
+        if normalized.tasks != state.tasks { scope.insert(.tasks) }
+        if normalized.works != state.works { scope.insert(.works) }
+        if normalized.roles != state.roles { scope.insert(.roles) }
+        if normalized.skills != state.skills { scope.insert(.skills) }
+        if normalized.repositories != state.repositories { scope.insert(.repositories) }
+        if normalized.integrationRuns != state.integrationRuns { scope.insert(.integrationRuns) }
+        commit(normalized, touching: scope)
         pendingCreatedSessionIDs.removeAll()
         revision = snapshot.revision
         hasAppliedAuthoritativeState = true
@@ -189,21 +319,8 @@ final class AppStateStore: ObservableObject {
             return result
         }
         var next = state
-        Self.upsert(changeSet.upserts.sessions, into: &next.sessions, id: \TaskSession.id)
-        Self.upsert(changeSet.upserts.tasks, into: &next.tasks, id: \CorptieTask.id)
-        Self.upsert(changeSet.upserts.works, into: &next.works, id: \Work.id)
-        Self.upsert(changeSet.upserts.roles, into: &next.roles, id: \Role.roleId)
-        Self.upsert(changeSet.upserts.skills, into: &next.skills, id: \Skill.skillId)
-        Self.upsert(changeSet.upserts.repositories, into: &next.repositories, id: \GitRepository.id)
-        Self.upsert(changeSet.upserts.integrationRuns, into: &next.integrationRuns, id: \ProjectIntegrationRun.id)
-        changeSet.deletes.sessions.forEach { next.sessions[$0] = nil }
-        changeSet.deletes.tasks.forEach { next.tasks[$0] = nil }
-        changeSet.deletes.works.forEach { next.works[$0] = nil }
-        changeSet.deletes.roles.forEach { next.roles[$0] = nil }
-        changeSet.deletes.skills.forEach { next.skills[$0] = nil }
-        changeSet.deletes.repositories.forEach { next.repositories[$0] = nil }
-        changeSet.deletes.integrationRuns.forEach { next.integrationRuns[$0] = nil }
-        state = next
+        Self.merge(changeSet, into: &next)
+        commit(next, touching: Self.touchedScope(changeSet))
         pendingCreatedSessionIDs.subtract(changeSet.upserts.sessions.map(\.id))
         pendingCreatedSessionIDs.subtract(changeSet.deletes.sessions)
         revision = changeSet.revision
@@ -211,6 +328,56 @@ final class AppStateStore: ObservableObject {
         syncError = nil
         isReachable = true
         return .applied
+    }
+
+    /// Apply a burst of consecutive change-sets with a single `state`
+    /// publication. Frames still validate against a chained working revision,
+    /// so batching can neither reorder nor silently skip a revision. A gap
+    /// commits the frames already applied, then reports the revision a
+    /// snapshot must reach before the stream is healthy again.
+    @discardableResult
+    func apply(changeSets: [StateChangeSetEnvelope]) -> AppStateBatchApplyResult {
+        guard !changeSets.isEmpty else { return AppStateBatchApplyResult() }
+        var next = state
+        var scope: StateCacheScope = []
+        var workingRevision = revision
+        var result = AppStateBatchApplyResult()
+        var gap: (expected: Int64, received: Int64, targetRevision: Int64)?
+
+        for changes in changeSets {
+            if changes.revision <= workingRevision {
+                result.lastResult = .duplicate
+                continue
+            }
+            guard changes.baseRevision == workingRevision else {
+                gap = (workingRevision, changes.baseRevision, changes.revision)
+                break
+            }
+            Self.merge(changes, into: &next)
+            scope.formUnion(Self.touchedScope(changes))
+            if !(changes.artifactInvalidations ?? []).isEmpty {
+                result.hasArtifactInvalidations = true
+            }
+            pendingCreatedSessionIDs.subtract(changes.upserts.sessions.map(\.id))
+            pendingCreatedSessionIDs.subtract(changes.deletes.sessions)
+            workingRevision = changes.revision
+            result.appliedCount += 1
+            result.lastResult = .applied
+        }
+
+        if result.appliedCount > 0 {
+            commit(next, touching: scope)
+            revision = workingRevision
+            hasAppliedAuthoritativeState = true
+            isReachable = true
+            if gap == nil { syncError = nil }
+        }
+        if let gap {
+            result.lastResult = .revisionGap(expected: gap.expected, received: gap.received)
+            result.gapRevision = gap.targetRevision
+            syncError = "State revision gap: expected \(gap.expected), received \(gap.received)."
+        }
+        return result
     }
 
     func reportSyncError(_ message: String) {
@@ -237,7 +404,7 @@ final class AppStateStore: ObservableObject {
         }
         var next = state
         next.sessions[session.id] = session
-        state = next
+        commit(next, touching: .sessions)
         return next.sessions[session.id] ?? session
     }
 
@@ -264,7 +431,7 @@ final class AppStateStore: ObservableObject {
         current.updatedAt = session.updatedAt
         var next = state
         next.sessions[requestedSessionID] = current
-        state = next
+        commit(next, touching: .sessions)
         return true
     }
 
@@ -294,7 +461,7 @@ final class AppStateStore: ObservableObject {
         )
         var next = state
         next.sessions[session.id] = current
-        state = next
+        commit(next, touching: .sessions)
         return current
     }
 
@@ -307,7 +474,7 @@ final class AppStateStore: ObservableObject {
         next.sessions[session.id] = session
         pendingCreatedSessionIDs.remove(previousSessionID)
         pendingCreatedSessionIDs.insert(session.id)
-        state = next
+        commit(next, touching: .sessions)
     }
 
     /// A read-receipt response is a committed Corptie projection. Merge only
@@ -331,14 +498,14 @@ final class AppStateStore: ObservableObject {
             )
             next.sessions[id] = session
         }
-        state = next
+        commit(next, touching: .sessions)
     }
 
     @discardableResult
     func acceptCorptieTask(_ task: CorptieTask) -> CorptieTask {
         var next = state
         next.tasks[task.id] = task
-        state = next
+        commit(next, touching: .tasks)
         return task
     }
 
@@ -346,7 +513,7 @@ final class AppStateStore: ObservableObject {
         var next = state
         next.sessions = next.sessions.filter { $0.value.archived == true }
         next.sessions[session.id] = session
-        state = next
+        commit(next, touching: .sessions)
         // A local fixture is ready immediately; it deliberately has no State SSE.
         syncError = nil
         isReachable = true
@@ -355,19 +522,19 @@ final class AppStateStore: ObservableObject {
     func hydrate(works: [Work]) {
         var next = state
         Self.upsert(works, into: &next.works, id: \Work.id)
-        state = next
+        commit(next, touching: .works)
     }
 
     func hydrate(roles: [Role]) {
         var next = state
         Self.upsert(roles, into: &next.roles, id: \Role.roleId)
-        state = next
+        commit(next, touching: .roles)
     }
 
     func hydrate(repositories: [GitRepository]) {
         var next = state
         Self.upsert(repositories, into: &next.repositories, id: \GitRepository.id)
-        state = next
+        commit(next, touching: .repositories)
     }
 
     private static func normalized(_ payload: ControlPlaneStatePayload) -> NormalizedAppState {

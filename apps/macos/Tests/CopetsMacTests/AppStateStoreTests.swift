@@ -292,11 +292,157 @@ struct AppStateStoreTests {
 
         #expect(changes.artifactInvalidations == ["artifact:one"])
     }
+
+    @Test func batchedChangeSetsApplyInRevisionOrderAndPublishStateOnce() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 1, state: .fixture()))
+        var publications = 0
+        let cancellable = store.$state.sink { _ in publications += 1 }
+        defer { cancellable.cancel() }
+        let baseline = publications
+
+        let batch = (2...6).map { revision in
+            StateChangeSetEnvelope(
+                snapshotRequired: false,
+                baseRevision: Int64(revision - 1),
+                revision: Int64(revision),
+                upserts: .fixture(sessions: [
+                    TaskSession.fixture(id: "session:\(revision)", title: "Step \(revision)")
+                ]),
+                deletes: .fixture()
+            )
+        }
+
+        let result = store.apply(changeSets: batch)
+
+        #expect(result.appliedCount == 5)
+        #expect(result.lastResult == .applied)
+        #expect(result.gapRevision == nil)
+        #expect(store.revision == 6)
+        #expect(store.sessions.count == 5)
+        #expect(publications == baseline + 1)
+    }
+
+    @Test func batchedChangeSetsCommitAppliedFramesBeforeReportingGap() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 4, state: .fixture()))
+        let valid = StateChangeSetEnvelope(
+            snapshotRequired: false, baseRevision: 4, revision: 5,
+            upserts: .fixture(sessions: [TaskSession.fixture(id: "session:5", title: "Five")]),
+            deletes: .fixture()
+        )
+        let gap = StateChangeSetEnvelope(
+            snapshotRequired: false, baseRevision: 9, revision: 10,
+            upserts: .fixture(), deletes: .fixture()
+        )
+
+        let result = store.apply(changeSets: [valid, gap])
+
+        #expect(result.appliedCount == 1)
+        #expect(store.revision == 5)
+        #expect(store.sessions.map(\.id) == ["session:5"])
+        #expect(result.gapRevision == 10)
+        #expect(result.lastResult == .revisionGap(expected: 5, received: 9))
+    }
+
+    @Test func scopedCacheInvalidationKeepsEveryDerivedProjectionFresh() {
+        func role(_ id: String, _ day: String) -> Role {
+            Role(roleId: id, name: id, description: "", status: "available",
+                 systemPrompt: "", capabilities: [], createdAt: day, updatedAt: day)
+        }
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(
+            revision: 1,
+            state: .fixture(
+                sessions: [TaskSession.fixture(id: "session:1", title: "One")],
+                roles: [role("role:one", "2026-01-01")]
+            )
+        ))
+        #expect(store.roles.map(\.roleId) == ["role:one"])
+        #expect(store.sessions.map(\.id) == ["session:1"])
+
+        // A roles-only change must refresh the roles projection without
+        // disturbing the cached sessions projection.
+        _ = store.apply(changeSet: StateChangeSetEnvelope(
+            snapshotRequired: false, baseRevision: 1, revision: 2,
+            upserts: .fixture(roles: [role("role:two", "2026-01-02")]),
+            deletes: .fixture()
+        ))
+        #expect(store.roles.map(\.roleId) == ["role:one", "role:two"])
+        #expect(store.sessions.map(\.id) == ["session:1"])
+
+        // hydrate(roles:) goes through the same explicit invalidation path.
+        store.hydrate(roles: [role("role:three", "2026-01-03")])
+        #expect(store.roles.map(\.roleId) == ["role:one", "role:two", "role:three"])
+        #expect(store.sessions.map(\.id) == ["session:1"])
+    }
+
+    @Test func commitCountersAdvanceOnlyForTouchedEntityFamilies() {
+        let store = AppStateStore()
+        #expect(store.commitToken == AppStateCommitToken())
+        _ = store.apply(snapshot: .init(revision: 1, state: .fixture(
+            sessions: [TaskSession.fixture(id: "session:0", title: "Zero")]
+        )))
+        let afterSnapshot = store.commitToken
+        #expect(afterSnapshot.sequence == 1)
+        #expect(afterSnapshot.sessions == 1)
+        // A snapshot only bumps families whose contents actually changed.
+        #expect(afterSnapshot.tasks == 0)
+        #expect(afterSnapshot.roles == 0)
+
+        _ = store.apply(changeSet: StateChangeSetEnvelope(
+            snapshotRequired: false, baseRevision: 1, revision: 2,
+            upserts: .fixture(sessions: [TaskSession.fixture(id: "session:1", title: "One")]),
+            deletes: .fixture()
+        ))
+        #expect(store.commitToken.sequence == afterSnapshot.sequence + 1)
+        #expect(store.commitToken.sessions == afterSnapshot.sessions + 1)
+        #expect(store.commitToken.tasks == afterSnapshot.tasks)
+        #expect(store.commitToken.roles == afterSnapshot.roles)
+    }
+
+    @Test func unrelatedEntityFramesDoNotAdvanceTheSessionCommitCounter() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 1, state: .fixture()))
+        let before = store.commitToken
+        let role = Role(roleId: "role:one", name: "one", description: "",
+                        status: "available", systemPrompt: "", capabilities: [],
+                        createdAt: "2026-01-01", updatedAt: "2026-01-01")
+        _ = store.apply(changeSet: StateChangeSetEnvelope(
+            snapshotRequired: false, baseRevision: 1, revision: 2,
+            upserts: .fixture(roles: [role]),
+            deletes: .fixture()
+        ))
+        #expect(store.commitToken.sessions == before.sessions)
+        #expect(store.commitToken.roles == before.roles + 1)
+        #expect(store.commitToken.sequence == before.sequence + 1)
+    }
+
+    @Test func batchedChangeSetsAdvanceTheCommitTokenOnlyOnce() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 1, state: .fixture()))
+        let before = store.commitToken
+        let batch = (2...6).map { revision in
+            StateChangeSetEnvelope(
+                snapshotRequired: false,
+                baseRevision: Int64(revision - 1),
+                revision: Int64(revision),
+                upserts: .fixture(sessions: [
+                    TaskSession.fixture(id: "session:\(revision)", title: "Step \(revision)")
+                ]),
+                deletes: .fixture()
+            )
+        }
+        _ = store.apply(changeSets: batch)
+        #expect(store.commitToken.sequence == before.sequence + 1)
+        #expect(store.commitToken.sessions == before.sessions + 1)
+        #expect(store.commitToken.tasks == before.tasks)
+    }
 }
 
 private extension ControlPlaneStatePayload {
-    static func fixture(sessions: [TaskSession] = []) -> Self {
-        .init(sessions: sessions, tasks: [], works: [], roles: [], skills: [], repositories: [], integrationRuns: [])
+    static func fixture(sessions: [TaskSession] = [], roles: [Role] = []) -> Self {
+        .init(sessions: sessions, tasks: [], works: [], roles: roles, skills: [], repositories: [], integrationRuns: [])
     }
 }
 

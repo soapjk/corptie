@@ -15,6 +15,16 @@ public enum ConversationContentSurfacePolicy {
     public static let tintOpacity = 0.18
     public static let messageMaterialOpacity = 0.80
     public static let panelMaterialOpacity = 0.60
+    /// Detail module cards float on a rail that paints no canvas of its own.
+    /// Their tint is composited over an opaque backing instead of being drawn
+    /// with a translucent alpha, so the card itself never becomes see-through.
+    public static let solidPanelTintOpacity = 0.04
+
+    /// A Detail module card is the only panel that explicitly opts out of
+    /// material. Without a material it must own a solid fill of its own.
+    public static func isSolidPanel(isPanel: Bool, isMessage: Bool, allowsMaterial: Bool) -> Bool {
+        isPanel && !isMessage && !allowsMaterial
+    }
 
     public static func usesPanelMaterial(isPanel: Bool, reduceTransparency: Bool, increasedContrast: Bool) -> Bool {
         isPanel && !reduceTransparency && !increasedContrast
@@ -69,6 +79,8 @@ public struct ConversationContentSurface: ViewModifier {
         let style = skin.surface(for: resolvedRole)
         let increasedContrast = contrast == .increased
         let opaqueUser = isMessage && role == .user
+        let solidPanel = ConversationContentSurfacePolicy.isSolidPanel(
+            isPanel: isPanel, isMessage: isMessage, allowsMaterial: allowsMaterial)
         #if os(iOS)
         let withMaterial = ConversationContentSurfacePolicy.usesMessageMaterial(isMessage: isMessage && !opaqueUser,
             reduceTransparency: reduceTransparency, increasedContrast: increasedContrast)
@@ -82,6 +94,9 @@ public struct ConversationContentSurface: ViewModifier {
         let usesSemanticBackground = tintOpacity == ConversationContentSurfacePolicy.tintOpacity
         let base = fallback ?? (usesSemanticBackground ? tint : nil) ?? WorkbenchCanvasSurface.defaultColor
         content.environment(\.conversationSkin, resolvedRole.usesSharedReplyCard ? .classic : skin).background {
+            // An opaque backing makes the card itself solid. Every tint above
+            // it is composited, never a see-through layer onto the window canvas.
+            if solidPanel { shape.fill(base) }
             if style == .legacy {
                 #if os(iOS)
                 if withMaterial && !ConversationContentSurfacePolicy.suppressMessageMaterialForProfiling {
@@ -91,7 +106,11 @@ public struct ConversationContentSurface: ViewModifier {
                 if withPanelMaterial {
                     shape.fill(.thinMaterial.opacity(ConversationContentSurfacePolicy.panelMaterialOpacity))
                 }
-                shape.fill(base.opacity(opaqueUser ? 1 : opacity))
+                if solidPanel {
+                    shape.fill(Color.primary.opacity(ConversationContentSurfacePolicy.solidPanelTintOpacity))
+                } else {
+                    shape.fill(base.opacity(opaqueUser ? 1 : opacity))
+                }
                 if !usesSemanticBackground, let tint {
                     shape.fill(tint.opacity(tintOpacity))
                 }

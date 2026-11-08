@@ -28,10 +28,13 @@ struct EntityRefreshGeneration: Equatable {
     }
 }
 
-private struct SessionGroupingEntityState: Equatable {
-    let tasks: [String: CorptieTask]
-    let works: [String: Work]
-    let roles: [String: Role]
+/// Constant-size change signal for the Session grouping projection. Holding
+/// entity dictionaries here made `removeDuplicates()` deep-compare every Task,
+/// Work and Role on each State frame.
+private struct SessionGroupingCommitCounters: Equatable {
+    let tasks: UInt64
+    let works: UInt64
+    let roles: UInt64
 }
 
 // 实体层轻量 API 客户端（15 Phase 5 净新增）。
@@ -81,7 +84,10 @@ final class EntityAPIClient: ObservableObject {
     init(appState: AppStateStore = .shared) {
         self.appState = appState
 
-        appState.$state
+        // Comparing whole entity dictionaries with removeDuplicates() is O(n)
+        // per State frame. The commit counters carry the same "did this family
+        // change" signal in constant time.
+        appState.$commitToken
             .map(\.tasks)
             .removeDuplicates()
             .dropFirst()
@@ -91,14 +97,8 @@ final class EntityAPIClient: ObservableObject {
             }
             .store(in: &appStateCancellables)
 
-        appState.$state
-            .map { state in
-                SessionGroupingEntityState(
-                    tasks: state.tasks,
-                    works: state.works,
-                    roles: state.roles
-                )
-            }
+        appState.$commitToken
+            .map { SessionGroupingCommitCounters(tasks: $0.tasks, works: $0.works, roles: $0.roles) }
             .removeDuplicates()
             .dropFirst()
             .receive(on: DispatchQueue.main)
