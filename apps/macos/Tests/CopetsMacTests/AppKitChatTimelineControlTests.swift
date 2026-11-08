@@ -947,7 +947,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
     }
 
-    func testLongProcessCanCollapseFromItsVisibleMiddleWithoutReturningToHeader() throws {
+    func testPinnedProcessCollapseHandleStaysAtProcessEndAcrossScrolling() throws {
         var toggledTurnID: String?
         let harness = makeHarness(followsLatest: false, height: 240,
                                   onToggle: { toggledTurnID = $0 })
@@ -962,13 +962,24 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.scrollView.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(harness.tableView.rect(ofRow: 0).height, 600)
 
-        let clip = harness.scrollView.contentView
-        clip.scroll(to: NSPoint(x: 0, y: 200))
-        harness.scrollView.reflectScrolledClipView(clip)
         let collapse = try XCTUnwrap(button(in: harness.scrollView,
             identifier: "chat.timeline.process-follow-collapse"))
         XCTAssertFalse(collapse.isHidden)
-        XCTAssertTrue(harness.scrollView.bounds.intersects(collapse.frame))
+        // The handle is pinned to the card's bottom edge, in document coordinates.
+        let handleInTable = harness.tableView.convert(collapse.frame, from: collapse.superview)
+        let cardBottom = harness.tableView.rect(ofRow: 0).maxY
+        XCTAssertLessThan(handleInTable.maxY, cardBottom)
+        XCTAssertEqual(handleInTable.maxY, cardBottom - 10, accuracy: 1)
+
+        // Scrolling and live-resize geometry must never move the pinned handle.
+        let pinnedFrame = collapse.frame
+        let clip = harness.scrollView.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 200))
+        harness.scrollView.reflectScrolledClipView(clip)
+        XCTAssertEqual(collapse.frame, pinnedFrame)
+        harness.coordinator.containerGeometryDidChange(isResizing: true)
+        XCTAssertEqual(collapse.frame, pinnedFrame)
+
         collapse.performClick(nil)
         XCTAssertEqual(toggledTurnID, "long-turn")
 
@@ -979,6 +990,15 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.coordinator.apply(rows: [compact])
         XCTAssertTrue(collapse.isHidden)
         XCTAssertLessThanOrEqual(clip.bounds.minY, 10)
+    }
+
+    func testProcessCollapseHandleIsHostedByTheMessageDocument() throws {
+        let harness = makeHarness(followsLatest: false, height: 240)
+        let collapse = try XCTUnwrap(button(in: harness.scrollView,
+            identifier: "chat.timeline.process-follow-collapse"))
+        XCTAssertTrue(collapse.superview === harness.scrollView.documentView,
+            "the handle must scroll with the document, not float over the viewport")
+        XCTAssertFalse(collapse.superview === harness.scrollView)
     }
 
     func testFloatingCollapseClampsToNewBottomAndResumesFollowingLatest() throws {
@@ -1168,9 +1188,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let rowHeight = harness.tableView.rect(ofRow: 0).height
         let scrollY = harness.scrollView.contentView.bounds.minY
         cell.refreshProcessElapsed(now: startedAt.addingTimeInterval(5))
-        XCTAssertTrue(button.attributedTitle.string.contains("Working for 5.00s"))
+        XCTAssertTrue(button.attributedTitle.string.contains("Working for 5s"))
         cell.refreshProcessElapsed(now: startedAt.addingTimeInterval(6))
-        XCTAssertTrue(button.attributedTitle.string.contains("Working for 6.00s"))
+        XCTAssertTrue(button.attributedTitle.string.contains("Working for 6s"))
         XCTAssertEqual(cell.contentConfigurationCount, configurations)
         XCTAssertEqual(harness.tableView.rect(ofRow: 0).height, rowHeight)
         XCTAssertEqual(harness.scrollView.contentView.bounds.minY, scrollY)
@@ -1205,10 +1225,38 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let originalTitle = button.attributedTitle.string
         let originalConfigurations = cell.contentConfigurationCount
         harness.coordinator.setProcessClockEnabled(true)
-        try await Task.sleep(for: .milliseconds(180))
+        // The live clock ticks once per second; wait past one full cadence
+        // rather than the old 100 ms sub-second interval.
+        try await Task.sleep(for: .milliseconds(1_300))
         XCTAssertNotEqual(button.attributedTitle.string, originalTitle)
         XCTAssertEqual(cell.contentConfigurationCount, originalConfigurations)
         harness.coordinator.setProcessClockEnabled(false)
+    }
+
+    func testStoppedProcessClockLeavesNoQueuedTick() async throws {
+        let harness = makeHarness(followsLatest: false)
+        let start = Date().addingTimeInterval(-4)
+        let process = AppKitChatTimelineRow(
+            id: "stopped-clock", contentRevision: 1, nativeText: "", copyText: "",
+            nativeStyle: .process, title: "", metadata: "", expandableTurnId: "turn",
+            isExpanded: false, processCount: 1, processDuration: "4.0s",
+            processStartedAt: start, processState: .running
+        )
+        harness.coordinator.apply(rows: [process])
+        harness.window.layoutIfNeeded()
+        let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0,
+            makeIfNecessary: true) as? AppKitChatNativeTextCell)
+        let button = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
+        harness.coordinator.setProcessClockEnabled(true)
+        try await Task.sleep(for: .milliseconds(1_300))
+        XCTAssertTrue(harness.coordinator.isProcessClockScheduled)
+        harness.coordinator.setProcessClockEnabled(false)
+        XCTAssertFalse(harness.coordinator.isProcessClockScheduled)
+        let stoppedTitle = button.attributedTitle.string
+        // A tick queued before the stop must neither write to the cell nor
+        // reschedule itself: ending a turn leaves nothing running behind.
+        try await Task.sleep(for: .milliseconds(1_300))
+        XCTAssertEqual(button.attributedTitle.string, stoppedTitle)
     }
 
     func testTerminalExecutionSummariesKeepElapsedDurationAcrossOutcomes() {

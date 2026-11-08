@@ -149,8 +149,8 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let running = builder().nativeAppKitRow(projected[0], expandedTurnIds: [])
         XCTAssertEqual(running.processState, .running)
         let start = try XCTUnwrap(running.processStartedAt)
-        XCTAssertTrue(running.processSummaryText(now: start.addingTimeInterval(5), advancing: true, languageCode: "en").contains("5.00s"))
-        XCTAssertTrue(running.processSummaryText(now: start.addingTimeInterval(6), advancing: true, languageCode: "en").contains("6.00s"))
+        XCTAssertTrue(running.processSummaryText(now: start.addingTimeInterval(5), advancing: true, languageCode: "en").contains("Working for 5s"))
+        XCTAssertTrue(running.processSummaryText(now: start.addingTimeInterval(6), advancing: true, languageCode: "en").contains("Working for 6s"))
         guard case .process(_, let source) = projected[0].kind else { return XCTFail("Missing aggregate") }
         XCTAssertEqual(source[0].processEndedAt, first.processEndedAt)
         let again = ConversationReplyProgressProjection.entries(projected)

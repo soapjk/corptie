@@ -175,7 +175,7 @@ struct AppKitChatTimelineRow: Identifiable {
                             languageCode: String? = nil) -> String {
         let duration = advancing && processState == .running
             ? processStartedAt.flatMap { ConversationProcessPresentation.durationText(
-                startedAt: $0, endingAt: now, showSeconds: true) }
+                startedAt: $0, endingAt: now, showSeconds: true, fractionDigits: 0) }
                 ?? processDuration
             : processDuration
         return ConversationProcessPresentation(state: processState, count: processCount ?? 0,

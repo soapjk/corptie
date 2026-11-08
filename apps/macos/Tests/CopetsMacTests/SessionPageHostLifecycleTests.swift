@@ -561,4 +561,48 @@ import CorptieConversation
             Text(inputs.session.title + " / " + (inputs.sendFailure ?? ""))
         }
     }
+
+    func testInactiveResidentPagesLeaveTheWindowLayoutHierarchy() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let url = packageRoot.appendingPathComponent(
+            "Sources/CopetsMac/Console/SessionPageHostSwitcher.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        func slice(from start: String, to end: String) throws -> String {
+            guard let a = source.range(of: start),
+                  let b = source.range(of: end, range: a.upperBound..<source.endIndex) else {
+                throw NSError(domain: "guard", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "missing \(start) / \(end)"])
+            }
+            return String(source[a.lowerBound..<b.lowerBound])
+        }
+
+        // Hidden NSViews still enter the window layout pass every frame, so
+        // hiding alone couples resize cost to the number of visited Sessions.
+        let reveal = try slice(from: "private func reveal", to: "func cancelPendingPresentation")
+        XCTAssertTrue(reveal.contains("other.surface.removeFromSuperview()"))
+        XCTAssertTrue(reveal.contains("view.addSubview(entry.surface)"))
+        XCTAssertFalse(reveal.contains("inputs.freeze()"),
+            "freeze belongs to the switch path, not to visibility changes")
+
+        // reveal() is the only attachment point; materialize() must not pin
+        // every newly created page into the hierarchy.
+        let materialize = try slice(from: "private func materialize", to: "private func scheduleCleanup")
+        XCTAssertFalse(materialize.contains("addSubview"),
+            "materialize must not attach pages; reveal owns attachment")
+        XCTAssertTrue(materialize.contains("reveal(entry)"))
+
+        let fallback = try slice(from: "private func showFallback", to: "private func trim")
+        XCTAssertTrue(fallback.contains("$0.surface.removeFromSuperview()"))
+
+        // Resident pages depend on which Sessions were opened and on capacity /
+        // memory pressure, never on whether a task is running. Reclaiming on a
+        // running -> idle edge would make page lifetime depend on execution state.
+        XCTAssertFalse(source.contains("hasRunningSession()"))
+        XCTAssertFalse(source.contains("releaseCompletedSessionPages()"))
+        XCTAssertFalse(source.contains("reason: \"session-completed\""))
+    }
 }

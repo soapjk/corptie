@@ -557,14 +557,21 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private var mode: ConsoleNavigationMode
     private var isActive = true
     private(set) var contentUpdateCount = 0
+    /// Counts real `detailController.host.rootView` assignments, independent of
+    /// how often SwiftUI asks for an update during a live-resize gesture.
+    private(set) var detailRootCommitCount = 0
     private var restoredWidth = false
     private var isRestoring = false
-    /// The newest sidebar value offered while the window is being resized.
-    /// The sidebar column holds its width during a window resize, so rebuilding
-    /// its SwiftUI tree on every geometry frame would only repeat an O(total
-    /// sessions) outline projection. It is committed once, when the gesture
-    /// ends; the transcript detail keeps receiving every native layout frame.
+    /// The newest sidebar/detail values offered while the window is being
+    /// resized. A geometry frame must not rebuild either SwiftUI tree: the
+    /// outline projection is O(total sessions) and the detail tree includes
+    /// the whole transcript. Edges are held by Auto Layout, so the hosted
+    /// views still receive every width change and text keeps reflowing live.
+    /// Both roots are committed once, when the gesture ends.
     private var pendingSidebar: Sidebar?
+    private var pendingDetail: Detail?
+    /// Test seam: `NSWindow.inLiveResize` is not settable outside AppKit.
+    var liveResizeOverride: Bool?
     private let widthDefaults: UserDefaults
 
     init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail, defaults: UserDefaults? = nil) {
@@ -634,18 +641,21 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
             // O(total works/tasks/sessions). Hold the last committed sidebar
             // tree for the gesture and apply the newest value once at the end.
             // The detail root is always refreshed so message text reflows live.
-            let liveResize = isViewLoaded && view.window?.inLiveResize == true
+            let liveResize = liveResizeOverride ?? (isViewLoaded && view.window?.inLiveResize == true)
             if liveResize {
                 pendingSidebar = sidebar
+                pendingDetail = detail
             } else {
                 pendingSidebar = nil
+                pendingDetail = nil
                 let sidebarTrace = SessionSwitchTrace.shared.start(.sidebarRoot)
                 sidebarController.host.rootView = sidebar
                 SessionSwitchTrace.shared.finish(sidebarTrace)
+                let detailTrace = SessionSwitchTrace.shared.start(.detailRoot)
+                detailController.host.rootView = detail
+                detailRootCommitCount += 1
+                SessionSwitchTrace.shared.finish(detailTrace)
             }
-            let detailTrace = SessionSwitchTrace.shared.start(.detailRoot)
-            detailController.host.rootView = detail
-            SessionSwitchTrace.shared.finish(detailTrace)
             contentUpdateCount += 1
         }
         if !isActive { sidebarController.unfreezeAfterLiveResize() }
@@ -668,9 +678,17 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     @objc private func liveResizeDidEnd(_ note: Notification) {
         guard (note.object as? NSWindow) === view.window else { return }
         sidebarController.unfreezeAfterLiveResize()
-        guard let pending = pendingSidebar else { return }
-        pendingSidebar = nil
-        sidebarController.host.rootView = pending
+        if let pending = pendingSidebar {
+            pendingSidebar = nil
+            sidebarController.host.rootView = pending
+        }
+        if let pending = pendingDetail {
+            pendingDetail = nil
+            let detailTrace = SessionSwitchTrace.shared.start(.detailRoot)
+            detailController.host.rootView = pending
+            detailRootCommitCount += 1
+            SessionSwitchTrace.shared.finish(detailTrace)
+        }
     }
 
     override func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {

@@ -290,4 +290,54 @@ struct ConsoleWindowSplitViewTests {
         #expect(sidebarPane.view.subviews.count == 1)
         #expect(sidebarPane.host.view.frame == sidebarPane.view.bounds)
     }
+
+    @Test
+    func liveResizeHoldsDetailRootAndCommitsLatestOnce() throws {
+        _ = NSApplication.shared
+        let controller = ConsoleSplitController(mode: .workOutline, sidebar: Text("Work"), detail: Text("v0"))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.contentViewController = nil; window.close() }
+        controller.view.layoutSubtreeIfNeeded()
+        controller.update(mode: .workOutline, isActive: true, sidebar: Text("Work"), detail: Text("v0"))
+        #expect(controller.detailRootCommitCount == 1)
+
+        controller.liveResizeOverride = true
+        for frame in 1...12 {
+            controller.update(mode: .workOutline, isActive: true,
+                sidebar: Text("Work \(frame)"), detail: Text("v\(frame)"))
+        }
+        #expect(controller.detailRootCommitCount == 1,
+            "The transcript tree must not be rebuilt on live-resize frames")
+        #expect(controller.contentUpdateCount == 13)
+
+        // The hosted view still receives every width proposal, so message text
+        // and the composer keep re-wrapping during the drag.
+        let detailPane = try #require(controller.splitViewItems[1].viewController as? ConsolePaneController<Text>)
+        let before = detailPane.host.view.frame.width
+        window.setContentSize(NSSize(width: 1500, height: 800))
+        controller.view.layoutSubtreeIfNeeded()
+        #expect(detailPane.host.view.frame.width > before)
+
+        NotificationCenter.default.post(name: NSWindow.didEndLiveResizeNotification, object: window)
+        #expect(controller.detailRootCommitCount == 2, "Exactly one commit at gesture end")
+    }
+
+    @Test
+    func noUnconditionalRootReplacementRemainsInConversationRegionStack() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/Conversation/ConversationRegionStack.swift"),
+            encoding: .utf8)
+        #expect(source.contains("func updateNSView(_ view: ConversationRegionContainer<AnyView, AnyView>, context: Context)"))
+        #expect(source.contains("view.applyRoots(content:"))
+        #expect(!source.contains("view.content.rootView = AnyView("),
+            "updateNSView must never assign a type-erased root directly")
+        #expect(!source.contains("view.accessory.rootView = accessoryRoot()"))
+        #expect(source.contains("static func dismantleNSView"))
+    }
 }

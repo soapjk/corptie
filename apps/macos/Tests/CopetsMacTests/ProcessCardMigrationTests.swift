@@ -86,9 +86,9 @@ final class ProcessCardMigrationTests: XCTestCase {
         let widthUpdates = cell.widthLayoutUpdateCount
         let hostUpdates = cell.hostUpdateCount
         cell.refreshProcessElapsed(now: start.addingTimeInterval(5))
-        XCTAssertEqual(cell.displayedProcessSummary, "Working for 5.00s · 1 step")
+        XCTAssertEqual(cell.displayedProcessSummary, "Working for 5s · 1 step")
         cell.refreshProcessElapsed(now: start.addingTimeInterval(6))
-        XCTAssertEqual(cell.displayedProcessSummary, "Working for 6.00s · 1 step")
+        XCTAssertEqual(cell.displayedProcessSummary, "Working for 6s · 1 step")
         XCTAssertEqual(cell.contentConfigurationCount, configurations)
         XCTAssertEqual(cell.widthLayoutUpdateCount, widthUpdates)
         let tickStart = ProcessInfo.processInfo.systemUptime

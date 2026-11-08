@@ -24,6 +24,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private weak var tableView: NSTableView?
     private weak var scrollView: NSScrollView?
     private weak var processCollapseButton: NSButton?
+    private weak var processCollapseHost: NSView?
     private var visibleProcessCollapseRowID: String?
     private var pendingProcessCollapseRowID: String?
     private var hasExpandedProcessRows = false
@@ -43,7 +44,11 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var lastAppliedContentRevision: UInt64?
     private var lastAppliedContentSessionID: String?
     private var canAdvanceProcessClock: Bool
-    private var processClockTimer: Timer?
+    /// The live elapsed clock is a chain of one-shot ticks, not a retained
+    /// repeating Timer. Stopping only bumps the generation; a tick already
+    /// queued in the RunLoop sees the stale generation and expires on its own.
+    private(set) var isProcessClockScheduled = false
+    private var processClockGeneration: UInt64 = 0
     private var activeProcessClockRowIndex: Int?
     private var revisionsByID: [String: Int] = [:]
     private var pendingImageGeometryRows = Set<String>()
@@ -221,7 +226,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     isolated deinit {
-        processClockTimer?.invalidate()
+        processClockGeneration &+= 1
+        isProcessClockScheduled = false
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -232,14 +238,14 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         presentationActive = active
         if !active {
             needsPresentationLayout = true
-            processClockTimer?.invalidate(); processClockTimer = nil
+            stopProcessClock()
         }
         else {
             if needsPresentationLayout {
                 needsPresentationLayout = false
                 synchronizeTableWidth()
                 reconcileLayout()
-                updateProcessCollapseButton()
+                positionProcessCollapseButton()
             }
             if needsTypographyReflow { reflowForTypography() }
             synchronizeProcessClock(); scheduleImageGeometryCommit(); scheduleUnderfilledHistoryEvaluation()
@@ -258,19 +264,52 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         })
         let shouldTick = presentationActive && canAdvanceProcessClock && activeProcessClockRowIndex != nil
         guard shouldTick else {
-            processClockTimer?.invalidate()
-            processClockTimer = nil
+            stopProcessClock()
             return
         }
-        guard processClockTimer == nil else { return }
-        let timer = Timer(timeInterval: ConversationProcessPresentation.elapsedRefreshInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshVisibleProcessElapsed() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        processClockTimer = timer
+        guard !isProcessClockScheduled else { return }
+        isProcessClockScheduled = true
+        scheduleProcessClockTick()
     }
 
-    var isProcessClockScheduled: Bool { processClockTimer != nil }
+    /// Stops the chain without owning anything to invalidate. A one-shot tick
+    /// already queued in the RunLoop fails the generation check on fire and
+    /// simply does not reschedule itself, so stopping leaves no object behind.
+    private func stopProcessClock() {
+        processClockGeneration &+= 1
+        isProcessClockScheduled = false
+    }
+
+    private func scheduleProcessClockTick() {
+        guard isProcessClockScheduled else { return }
+        let generation = processClockGeneration
+        let interval = ConversationProcessPresentation.elapsedRefreshInterval
+        // Fire at the next whole-second boundary of the running turn, so the
+        // label changes exactly when its displayed integer second changes.
+        let now = Date()
+        let fireAt: Date
+        if let index = activeProcessClockRowIndex, rows.indices.contains(index),
+           let start = rows[index].processStartedAt {
+            let elapsed = now.timeIntervalSince(start)
+            fireAt = start.addingTimeInterval((elapsed.rounded(.down) + 1) * interval)
+        } else {
+            fireAt = now.addingTimeInterval(interval)
+        }
+        let timer = Timer(fire: max(fireAt, now.addingTimeInterval(0.02)),
+                          interval: interval, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isProcessClockScheduled,
+                      self.processClockGeneration == generation else { return }
+                self.refreshVisibleProcessElapsed()
+                self.scheduleProcessClockTick()
+            }
+        }
+        // .default contains no NSEventTrackingRunLoopMode: during a window
+        // drag / live resize the tick never fires. On mouse-up the overdue
+        // one-shot fires once, reads the real clock, and realigns to the next
+        // boundary, so the label catches up without ever drifting.
+        RunLoop.main.add(timer, forMode: .default)
+    }
 
     private func refreshVisibleProcessElapsed(now: Date = Date()) {
         guard presentationActive, canAdvanceProcessClock, let tableView,
@@ -296,7 +335,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         collapseButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.process-follow-collapse")
         collapseButton.setAccessibilityLabel(L10n("Collapse") + " · " + L10n("Execution process"))
         collapseButton.isHidden = true
-        scrollView.addSubview(collapseButton, positioned: .above, relativeTo: scrollView.contentView)
+        // The handle lives in the message document, not in the viewport. Its
+        // frame is pinned to the end of the expanded process card, so scrolling
+        // and live resize move it with the content instead of chasing the
+        // visible rect on every frame.
+        let host = scrollView.documentView ?? tableView
+        host.addSubview(collapseButton, positioned: .above, relativeTo: nil)
+        processCollapseHost = host
         processCollapseButton = collapseButton
         if let firstLayoutScrollView = scrollView as? FirstLayoutRestoringScrollView {
             firstLayoutScrollView.onLayout = { [weak self] in
@@ -685,7 +730,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         defer { SessionSwitchTrace.shared.finish(trace) }
         let nextRows = ConversationTimeSeparatorPolicy.applying(to: Self.uniquedRows(virtualizedProcessRows(nextRows)))
         hasExpandedProcessRows = nextRows.contains { $0.nativeStyle == .process && $0.isExpanded }
-        defer { synchronizeProcessClock(); updateProcessCollapseButton(); scheduleUnderfilledHistoryEvaluation() }
+        defer { synchronizeProcessClock(); positionProcessCollapseButton(); scheduleUnderfilledHistoryEvaluation() }
         suppressNearTopDuringLayout()
         guard let tableView else {
             rows = nextRows
@@ -954,6 +999,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 document.setFrameSize(NSSize(width: document.frame.width, height: height))
             }
         }
+        // Measured row heights can move the process card's bottom edge. Snap
+        // the pinned handle to it, but never during a live resize frame:
+        // windowDidEndLiveResize performs that single catch-up on mouse-up.
+        if !(scrollView?.window?.inLiveResize ?? false),
+           !(scrollView.map(ConsoleNativeSplitView.isResizing) ?? false) {
+            positionProcessCollapseButton()
+        }
     }
 
     func setTopClearance(_ value: CGFloat) {
@@ -1188,7 +1240,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     }
 
     @objc private func viewportBoundsDidChange(_ notification: Notification) {
-        updateProcessCollapseButton()
+        // The collapse handle is document-anchored; scrolling never repositions it.
         viewportDidScroll()
     }
 
@@ -1205,56 +1257,52 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         onToggleExpansion(turnID)
     }
 
-    private func updateProcessCollapseButton() {
+    /// The collapse handle is anchored to the bottom edge of the last expanded
+    /// process group. Its frame lives in document coordinates, so neither
+    /// scrolling nor a live resize moves it; only a content/layout change (new
+    /// rows, measured row heights, or a finished resize) repositions it.
+    private func positionProcessCollapseButton() {
         guard hasExpandedProcessRows,
-              let tableView, let scrollView, let button = processCollapseButton,
+              let tableView, let button = processCollapseButton,
+              let host = processCollapseHost ?? button.superview,
               let column = tableView.tableColumns.first, !rows.isEmpty else {
             processCollapseButton?.isHidden = true
             visibleProcessCollapseRowID = nil
             return
         }
-        let clip = scrollView.contentView
-        let visible = tableView.convert(clip.bounds, from: clip)
-        let readable = NSRect(x: visible.minX, y: visible.minY + topClearance,
-                              width: visible.width,
-                              height: max(0, visible.height - topClearance - bottomClearance))
-        let range = tableView.rows(in: readable)
-        guard range.location != NSNotFound else {
+        guard let headerIndex = rows.lastIndex(where: {
+            $0.nativeStyle == .process && $0.isExpanded && $0.expandableTurnId != nil
+        }) else {
+            button.isHidden = true
+            visibleProcessCollapseRowID = nil
+            return
+        }
+        let lastMountedRow = min(rows.count, tableView.numberOfRows) - 1
+        guard lastMountedRow >= 0 else {
+            button.isHidden = true
+            visibleProcessCollapseRowID = nil
+            return
+        }
+        let endIndex = min(processGroupEndIndexes[rows[headerIndex].id] ?? headerIndex, lastMountedRow)
+        let endRect = tableView.rect(ofRow: endIndex)
+        guard endRect.height > 0 else {
             button.isHidden = true
             visibleProcessCollapseRowID = nil
             return
         }
         let cardWidth = MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 0, expanded: true, laneWidth: column.width)
-        let candidateIndexes = Set((range.location..<min(rows.count, NSMaxRange(range))).map { index in
-            rows[index].processParentID.flatMap { rowIndexesByID[$0] } ?? index
-        })
-        let candidates: [ProcessCollapseCandidate] = candidateIndexes.sorted().compactMap { index in
-                let row = rows[index]
-                guard row.nativeStyle == .process, row.isExpanded,
-                      row.expandableTurnId != nil else { return nil }
-                var rowRect = tableView.rect(ofRow: index)
-                if let last = processGroupEndIndexes[row.id] {
-                    rowRect.size.height = tableView.rect(ofRow: last).maxY - rowRect.minY
-                }
-                return ProcessCollapseCandidate(id: row.id,
-                    frame: CGRect(x: rowRect.minX + 2,
-                                  y: rowRect.minY + (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) + row.replyIdentityHeight,
-                                  width: cardWidth,
-                                  height: max(0, rowRect.height - (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) - row.replyIdentityHeight)),
-                    headerHeight: row.processCurrentStepTitle == nil ? 32 : 48)
-            }
-        guard let placement = ProcessCollapsePlacementPolicy.placement(
-            candidates: candidates, viewport: readable,
-            handleSize: button.frame.size) else {
-            button.isHidden = true
-            visibleProcessCollapseRowID = nil
-            return
-        }
-        visibleProcessCollapseRowID = placement.id
-        let buttonRect = NSRect(origin: placement.origin, size: button.frame.size)
-        let converted = tableView.convert(buttonRect, to: scrollView)
-        if button.frame != converted { button.frame = converted }
+        let size = button.frame.size
+        let margin: CGFloat = 10
+        let rightEdge = min(endRect.maxX, endRect.minX + 2 + cardWidth)
+        let targetInTable = NSRect(
+            x: max(endRect.minX + margin, rightEdge - size.width - margin),
+            y: max(endRect.minY, endRect.maxY - size.height - margin),
+            width: size.width, height: size.height)
+        let target = host === tableView
+            ? targetInTable : tableView.convert(targetInTable, to: host)
+        if button.frame != target { button.frame = target }
+        visibleProcessCollapseRowID = rows[headerIndex].id
         button.isHidden = false
     }
 
@@ -1329,8 +1377,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         resizeLayoutCommitCount += 1
         #endif
         // Read current geometry once; never replay queued intermediate widths.
+        // The collapse handle is left alone during live resize: it is pinned
+        // to the process card, not to the viewport.
         synchronizeTableWidth()
-        updateProcessCollapseButton()
         reconcileLayout()
     }
 
@@ -1346,6 +1395,9 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
               window === scrollView?.window else { return }
         guard presentationActive else { needsPresentationLayout = true; return }
         commitContainerGeometry()
+        // Row heights may have changed with the new column width; snap the
+        // document-anchored handle back onto the process card's bottom edge.
+        positionProcessCollapseButton()
     }
 
     func setReservesVerticalScrollerGutter(_ reserves: Bool) {

@@ -131,4 +131,54 @@ import XCTest
             } else { XCTAssertNil(marker("quick", in: host)) }
         }
     }
+
+    func testLiveResizeHoldsContentRootsAndCommitsLatestOnce() {
+        let view = ConversationRegionContainer<AnyView, AnyView>(
+            content: AnyView(Color.clear), accessory: AnyView(Text("Header")),
+            atTop: true, height: 64)
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        view.layoutSubtreeIfNeeded()
+        let baseline = view.rootCommitCount
+
+        view.liveResizeOverride = true
+        for frame in 0..<10 {
+            view.applyRoots(content: AnyView(Text("Messages \(frame)")),
+                accessory: AnyView(Text("Header \(frame)")), overlap: 0)
+        }
+        XCTAssertEqual(view.rootCommitCount, baseline,
+            "An AnyView root replacement rebuilds the whole transcript + rail tree")
+        XCTAssertTrue(view.hasPendingRoots)
+
+        // Geometry still reaches both hosts on every frame: text keeps wrapping
+        // live while no view hierarchy is rebuilt.
+        view.setFrameSize(NSSize(width: 620, height: 600))
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.content.frame.width, 620, accuracy: 0.5)
+        XCTAssertEqual(view.accessory.frame.width, 620, accuracy: 0.5)
+        XCTAssertEqual(view.rootCommitCount, baseline)
+
+        view.liveResizeOverride = false
+        view.commitPendingRoots()
+        XCTAssertEqual(view.rootCommitCount, baseline + 1, "Exactly one commit at gesture end")
+        XCTAssertFalse(view.hasPendingRoots)
+        view.commitPendingRoots()
+        XCTAssertEqual(view.rootCommitCount, baseline + 1, "Commit is idempotent")
+    }
+
+    func testDiscardingPendingRootsRestoresImmediateUpdates() {
+        let view = ConversationRegionContainer<AnyView, AnyView>(
+            content: AnyView(Color.clear), accessory: AnyView(Color.clear),
+            atTop: true, height: 0)
+        view.liveResizeOverride = true
+        view.applyRoots(content: AnyView(Text("Held")), accessory: AnyView(Text("Held")), overlap: 0)
+        XCTAssertTrue(view.hasPendingRoots)
+        view.discardPendingRoots()
+        XCTAssertFalse(view.hasPendingRoots)
+
+        view.liveResizeOverride = false
+        let baseline = view.rootCommitCount
+        view.applyRoots(content: AnyView(Text("Fresh")), accessory: AnyView(Text("Fresh")), overlap: 0)
+        XCTAssertEqual(view.rootCommitCount, baseline + 1)
+        XCTAssertFalse(view.hasPendingRoots)
+    }
 }

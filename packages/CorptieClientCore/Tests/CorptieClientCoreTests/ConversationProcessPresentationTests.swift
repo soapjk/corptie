@@ -40,7 +40,16 @@ struct ConversationProcessPresentationTests {
             now: base.addingTimeInterval(-5)) == nil)
         #expect(ConversationProcessPresentation.startedAt(for: [running]) == base)
         #expect(ConversationProcessPresentation.durationText(for: [running], now: base) == "0.00s")
-        #expect(ConversationProcessPresentation.elapsedRefreshInterval == 1.0 / 100.0)
+        #expect(ConversationProcessPresentation.elapsedRefreshInterval == 1.0)
+        // The live label is a wall-clock read on a one-second cadence. A
+        // sub-second repeating timer on the main thread regresses window drag.
+        #expect(ConversationProcessPresentation.elapsedRefreshInterval >= 1.0)
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(5), showSeconds: true, fractionDigits: 0) == "5s")
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(59.6), showSeconds: true, fractionDigits: 0) == "1m 0s")
+        #expect(ConversationProcessPresentation.durationText(
+            startedAt: base, endingAt: base.addingTimeInterval(3_661), showSeconds: true, fractionDigits: 0) == "1h 1m 1s")
         #expect(ConversationProcessPresentation.durationText(
             startedAt: base, endingAt: base.addingTimeInterval(5)) == "5.00s")
         #expect(ConversationProcessPresentation.durationText(

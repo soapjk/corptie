@@ -99,6 +99,47 @@ struct MainWindowResizeLayoutTests {
         #expect(scanned > 200, "the guardrail must actually scan the client sources")
     }
 
+    @Test
+    func processClockTimerStaysOutOfEventTrackingModes() throws {
+        let here = URL(fileURLWithPath: #filePath)
+        let macos = here.deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let file = macos.appendingPathComponent(
+            "Sources/CopetsMac/Conversation/Timeline/AppKitChatTimelineCoordinator.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        // .common contains NSEventTrackingRunLoopMode: a repeating timer
+        // registered there fires on every window drag / live resize frame and
+        // dirties the process cell while AppKit composites that same frame.
+        #expect(source.contains("RunLoop.main.add(timer, forMode: .default)"))
+        #expect(!source.contains("RunLoop.main.add(timer, forMode: .common)"))
+        // The elapsed label is a live wall clock: it keeps its own timer so
+        // the turn duration advances even when the provider is silent. But it
+        // must be a chain of one-shot ticks, not a retained repeating timer
+        // that needs an explicit invalidate and can outlive a stopped turn.
+        #expect(source.contains("repeats: false"))
+        #expect(!source.contains("repeats: true"))
+        #expect(source.contains("processClockGeneration"))
+    }
+
+    @Test
+    func liveElapsedClockKeepsOneSecondCadence() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let file = root.appendingPathComponent(
+            "packages/CorptieClientCore/Sources/CorptieClientCore/ConversationProcessDuration.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        // Display precision must match cadence; a sub-second repeating timer
+        // on the main thread regresses window drag / live resize frames.
+        #expect(source.contains("elapsedRefreshInterval: TimeInterval = 1.0"))
+        #expect(!source.contains("1.0 / 100.0"))
+        #expect(!source.contains("1.0 / 10.0"))
+    }
+
     @MainActor
     @Test
     func liveResizeFollowsEveryNativeSizeWithoutWaitingForAFrameScheduler() {

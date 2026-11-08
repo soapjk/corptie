@@ -268,7 +268,8 @@ private struct ResidentSessionPageHeader: View {
             entry = Entry(inputs: inputs, root: root(inputs))
             SessionSwitchTrace.shared.mark(.pageHostCreated, sessionID: sessionID)
             addChild(entry.host)
-            view.addSubview(entry.surface)
+            // reveal() is the single attachment point; it also detaches every
+            // inactive page so the window only ever lays out one page tree.
             entries.append(entry)
         }
         current = entry; sequence &+= 1; entry.lastUsed = sequence
@@ -293,12 +294,23 @@ private struct ResidentSessionPageHeader: View {
     private func reveal(_ entry: Entry) {
         SessionSwitchTrace.shared.mark(.nativePageVisibilityCommitted, sessionID: entry.inputs.scope.sessionID)
         visiblePage = entry
+        // Only the active page belongs in the window's view hierarchy. Hidden
+        // NSViews still take part in the window's layout pass; detaching them
+        // keeps switch-back instant without adding layout work per Session.
+        if entry.surface.superview !== view { view.addSubview(entry.surface) }
+        if entry.surface.frame != view.bounds { entry.surface.frame = view.bounds }
+        if entry.host.view.frame != entry.surface.bounds { entry.host.view.frame = entry.surface.bounds }
         for other in entries {
             let hidden = other !== entry
             other.surface.autoresizingMask = hidden ? [] : [.width, .height]
             other.surface.isHidden = hidden
             other.surface.alphaValue = hidden ? 0 : 1
             other.surface.setAccessibilityHidden(hidden)
+            if hidden {
+                // Detach only. Freezing here would invalidate an already-warm
+                // page's binding; callers own the freeze/resume lifecycle.
+                other.surface.removeFromSuperview()
+            }
         }
         fallbackHost?.view.autoresizingMask = []
         fallbackHost?.view.isHidden = true
@@ -310,7 +322,7 @@ private struct ResidentSessionPageHeader: View {
     }
     private func showFallback() {
         cancelPendingPresentation()
-        entries.forEach { $0.inputs.freeze(); $0.surface.autoresizingMask = []; $0.surface.isHidden = true; $0.surface.setAccessibilityHidden(true) }
+        entries.forEach { $0.inputs.freeze(); $0.surface.autoresizingMask = []; $0.surface.isHidden = true; $0.surface.setAccessibilityHidden(true); $0.surface.removeFromSuperview() }
         current = nil; visiblePage = nil
         if let fallbackHost { fallbackHost.rootView = fallbackRoot }
         else {

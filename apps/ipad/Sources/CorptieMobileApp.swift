@@ -1680,7 +1680,7 @@ private struct PadProcessCard: View {
 
     private func summary(at date: Date, startedAt: Date) -> String {
         let duration = ConversationProcessPresentation.durationText(
-            startedAt: startedAt, endingAt: date, showSeconds: true)
+            startedAt: startedAt, endingAt: date, showSeconds: true, fractionDigits: 0)
             ?? presentation.duration
         return ConversationProcessPresentation(state: presentation.state, count: presentation.count,
             duration: duration).summary(languageCode: languageCode)
