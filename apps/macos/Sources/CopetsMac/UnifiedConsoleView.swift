@@ -411,6 +411,9 @@ struct UnifiedConsoleView: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .consoleHoverFeedback()
                 .fixedSize().help(L10n("更多选项"))
+                WorkColumnCollapseButton()
+                    .frame(width: 28, height: 28)
+                    .consoleHoverFeedback()
             }
             outlineCreationMenu
         }
