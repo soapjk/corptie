@@ -550,7 +550,7 @@ protocol ConsoleSplitContentUpdating: AnyObject {
 }
 
 @MainActor
-final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewController, ConsoleSplitContentUpdating {
+final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewController, ConsoleSplitContentUpdating, WorkColumnControlling {
     private let sidebarController: ConsolePaneController<Sidebar>
     private let detailController: ConsolePaneController<Detail>
     private var mode: ConsoleNavigationMode
@@ -572,6 +572,8 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     /// Test seam: `NSWindow.inLiveResize` is not settable outside AppKit.
     var liveResizeOverride: Bool?
     private let widthDefaults: UserDefaults
+    private let workRestoreHandle = WorkColumnRestoreHandle(frame: .zero)
+    private var collapseObservation: NSKeyValueObservation?
 
     init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail, defaults: UserDefaults? = nil) {
         self.mode = mode
@@ -609,6 +611,22 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         // Reserve the transcript column beside the two-cell widget rail.
         detail.minimumThickness = ConversationDetailWidgetMetrics.railWidth + 264
         addSplitViewItem(detail)
+        workRestoreHandle.translatesAutoresizingMaskIntoConstraints = false
+        workRestoreHandle.expand = { [weak self] in self?.setWorkColumnCollapsed(false) }
+        detailController.view.addSubview(workRestoreHandle, positioned: .above, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            workRestoreHandle.leadingAnchor.constraint(equalTo: detailController.view.leadingAnchor, constant: 8),
+            workRestoreHandle.topAnchor.constraint(equalTo: detailController.view.topAnchor, constant: 4),
+            workRestoreHandle.widthAnchor.constraint(equalToConstant: 32),
+            workRestoreHandle.heightAnchor.constraint(equalToConstant: 36)
+        ])
+        collapseObservation = sidebar.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, change in
+            let collapsed = change.newValue ?? false
+            MainActor.assumeIsolated {
+                self?.workRestoreHandle.isHidden = !collapsed
+                self?.workRestoreHandle.resetHover()
+            }
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingDidEnd(_:)),
             name: ConsoleNativeSplitView.didEndDividerTracking, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingWillBegin(_:)),
@@ -706,8 +724,18 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         mode == .taskCards ? "console.nativeSidebar.cardsWidth" : "console.nativeSidebar.listWidth.v2"
     }
 
+    func setWorkColumnCollapsed(_ collapsed: Bool) {
+        guard isActive, isViewLoaded, let item = splitViewItems.first,
+              item.isCollapsed != collapsed else { return }
+        if collapsed { saveWidth() }
+        // One native layout change; no per-frame transcript width animation.
+        item.isCollapsed = collapsed
+        if !collapsed { restoreWidth() }
+    }
+
     private func restoreWidth() {
-        guard isViewLoaded, splitView.bounds.width > 0 else { return }
+        guard isViewLoaded, splitView.bounds.width > 0,
+              splitViewItems.first?.isCollapsed == false else { return }
         isRestoring = true
         let stored = widthDefaults.double(forKey: widthKey)
         let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : 284)

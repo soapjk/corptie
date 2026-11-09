@@ -110,6 +110,68 @@ struct ConsoleWindowSplitViewTests {
     }
 
     @Test
+    func workToolbarCollapseAndEdgeRestoreRetainWidthAndHostedContent() throws {
+        _ = NSApplication.shared
+        let suite = "ConsoleWindowSplitViewTests.collapse.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = ConsoleSplitController(mode: .workOutline, sidebar: WorkColumnCollapseButton(),
+            detail: Text("Current conversation"), defaults: defaults)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1400, height: 800),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.contentViewController = nil; window.close() }
+        controller.view.layoutSubtreeIfNeeded()
+        let children = controller.splitViewItems.map(\.viewController)
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let collapse = try #require(descendants(controller.view).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityIdentifier() == "work-outline-collapse" })
+        let handle = try #require(descendants(controller.view).compactMap { $0 as? WorkColumnRestoreHandle }.first)
+        #expect(handle.isHidden)
+        NotificationCenter.default.post(name: ConsoleNativeSplitView.willBeginDividerTracking, object: controller.splitView)
+        controller.splitView.setPosition(400, ofDividerAt: 0)
+        controller.view.layoutSubtreeIfNeeded()
+        NotificationCenter.default.post(name: ConsoleNativeSplitView.didEndDividerTracking, object: window)
+        let before = children[1].view.frame.width
+        let commits = controller.contentUpdateCount
+        collapse.performClick(nil)
+        controller.view.layoutSubtreeIfNeeded()
+        #expect(controller.splitViewItems[0].isCollapsed)
+        #expect(!handle.isHidden)
+        #expect(children[1].view.frame.width >= before + 399)
+        #expect(!handle.showsButton)
+        #expect(handle.frame.width == 32)
+        // The wider overlay stays click-through until the narrow strip is hovered.
+        #expect(handle.hitTest(NSPoint(x: handle.frame.minX + 20, y: handle.frame.midY)) == nil)
+        let event = try #require(NSEvent.mouseEvent(with: .mouseMoved, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        handle.mouseEntered(with: event)
+        #expect(handle.showsButton)
+        #expect(handle.hitTest(NSPoint(x: handle.frame.minX + 20, y: handle.frame.midY)) != nil)
+        handle.mouseExited(with: event)
+        #expect(!handle.showsButton)
+        for width in [1800.0, 1100.0, 1400.0] {
+            window.setContentSize(.init(width: width, height: 800))
+            controller.view.layoutSubtreeIfNeeded()
+            #expect(controller.splitViewItems[0].isCollapsed)
+            #expect(!handle.isHidden)
+        }
+        #expect(handle.accessibilityPerformPress())
+        controller.view.layoutSubtreeIfNeeded()
+        #expect(!controller.splitViewItems[0].isCollapsed)
+        #expect(handle.isHidden)
+        #expect(abs(children[0].view.frame.width - 400) < 1)
+        #expect(abs(defaults.double(forKey: "console.nativeSidebar.listWidth.v2") - 400) < 1)
+        #expect(controller.contentUpdateCount == commits)
+        #expect(controller.splitViewItems[0].viewController === children[0])
+        #expect(controller.splitViewItems[1].viewController === children[1])
+        // Divider-driven collapse also exposes the same restore affordance.
+        controller.splitViewItems[0].isCollapsed = true
+        #expect(!handle.isHidden)
+    }
+
+    @Test
     func windowResizeKeepsDefaultAndUserSidebarWidths() throws {
         _ = NSApplication.shared
         let suite = "ConsoleWindowSplitViewTests.fixedWidth.\(UUID().uuidString)"
