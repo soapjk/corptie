@@ -14,6 +14,7 @@ struct RoleDetailView: View {
     @State private var systemPrompt: String
     @State private var selectedSkillIds: Set<String>
     @State private var showSkillPicker = false
+    @State private var showMcpManager = false
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
@@ -86,6 +87,9 @@ struct RoleDetailView: View {
             RoleSkillPickerView(skills: client.skills, selectedSkillIds: selectedSkillIds) { selection in
                 selectedSkillIds = selection
             }
+        }
+        .sheet(isPresented: $showMcpManager) {
+            McpManagementView(roles: [agent], initialRoleId: agent.roleId)
         }
         .task {
             await client.refreshSkills()
@@ -198,6 +202,16 @@ struct RoleDetailView: View {
                     isEnabled: true,
                     onAdd: { showSkillPicker = true }
                 )
+                field("MCP") {
+                    HStack {
+                        Text(L10n("Manage MCP assignments, tool permissions, and credentials for this role."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L10n("Manage MCP")) { showMcpManager = true }
+                            .accessibilityIdentifier("role-manage-mcp")
+                    }
+                }
             }
             if let saveError {
                 Text(saveError)

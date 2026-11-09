@@ -2058,3 +2058,19 @@
 "请在官方 CLI 或 App 中登录、退出或切换账号。Corptie 不提供登录流程；保存来源仅做本地检查，不会发送模型请求。" = "Sign in, sign out, or switch accounts in the official CLI or app. Corptie does not provide a sign-in flow. Saving the source only checks local data and sends no model requests.";
 "保存来源将确认使用其中的当前账号，并影响此引擎后续的新请求；不会中断正在执行的请求。" = "Saving confirms this source’s current account for future requests with this engine. Running requests are not interrupted.";
 "Save applies pending general, execution engine, session defaults, proxy and trusted workspace settings. Other actions are saved separately." = "Save applies pending general, execution engine, session defaults, proxy and trusted workspace settings. Other actions are saved separately.";
+
+"Manage MCP assignments, tool permissions, and credentials for this role." = "Manage MCP assignments, tool permissions, and credentials for this role.";
+
+"Remove %@?" = "Remove %@?";
+
+"Unassign this MCP from the roles below before removing it. Their existing sessions will also lose access." = "Unassign this MCP from the roles below before removing it. Their existing sessions will also lose access.";
+
+"Unassign" = "Unassign";
+
+"Unassign %@ from %@" = "Unassign %@ from %@";
+
+"Remove the registration, %d managed package copies, and %d credential references. Original sources and external services are preserved." = "Remove the registration, %d managed package copies, and %d credential references. Original sources and external services are preserved.";
+
+"Updating MCP removal status" = "Updating MCP removal status";
+
+"Remove MCP" = "Remove MCP";
