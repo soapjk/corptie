@@ -571,6 +571,7 @@ final class BackendClient: ObservableObject {
 
     func stop() {
         eventStream.stop()
+        eventRouter.stop()
         AppStateSyncController.shared.stop()
         coldTimelineLoadTask?.cancel()
         coldTimelineLoadTask = nil
@@ -911,6 +912,10 @@ final class BackendClient: ObservableObject {
         in detail: CodexThreadDetail
     ) -> PendingCollaborationConfirmation? {
         CollaborationConfirmationController.pendingCollaborationConfirmation(in: detail)
+    }
+
+    func prioritizeVisibleTimeline() async {
+        await timelineSyncController.foregroundDidChange()
     }
 
     private func reconcileTimelineRevisionIndex() async {

@@ -144,28 +144,58 @@ actor SessionTimelineDeltaProcessor {
 }
 
 actor SessionTimelineNetworkPermitPool {
-    private var available: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UUID
+        let sessionID: String?
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+    private let limit: Int
+    private var active: [String?] = []
+    private var waiters: [Waiter] = []
+    private var foregroundID: String?
 
-    init(limit: Int = 4) {
-        available = max(1, limit)
+    init(limit: Int = 4) { self.limit = max(1, limit) }
+
+    func setForegroundSession(_ id: String?) {
+        foregroundID = id
+        drain()
     }
 
-    func acquire() async {
-        if available > 0 {
-            available -= 1
-            return
-        }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+    @discardableResult
+    func acquire(sessionID: String? = nil) async -> Bool {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: false); return }
+                waiters.append(Waiter(id: id, sessionID: sessionID, continuation: continuation))
+                drain()
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
         }
     }
 
-    func release() {
-        if waiters.isEmpty {
-            available += 1
-        } else {
-            waiters.removeFirst().resume()
+    func release(sessionID: String? = nil) {
+        guard let index = active.firstIndex(where: { $0 == sessionID }) else { return }
+        active.remove(at: index)
+        drain()
+    }
+
+    private func cancel(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
+    }
+
+    private func drain() {
+        while active.count < limit {
+            let foreground = waiters.firstIndex { $0.sessionID == nil || $0.sessionID == foregroundID }
+            let backgroundCount = active.filter { $0 != nil && $0 != foregroundID }.count
+            // Keep one slot available to visible work even during cold-start hydration.
+            let backgroundLimit = max(1, limit - 1)
+            guard let index = foreground ?? (backgroundCount < backgroundLimit ? waiters.indices.first : nil) else { return }
+            let waiter = waiters.remove(at: index)
+            active.append(waiter.sessionID)
+            waiter.continuation.resume(returning: true)
         }
     }
 }
@@ -184,15 +214,19 @@ final class ActiveTimelineSyncEngine {
 
     private var jobs: [String: Job] = [:]
     private let permits: SessionTimelineNetworkPermitPool
+    private let foregroundSessionID: () -> String?
+    private var lastForegroundID: String?
     private let localRevision: (String) -> Int
     private let synchronize: (TaskSession, Int) async -> Bool
 
     init(
         concurrencyLimit: Int = 4,
+        foregroundSessionID: @escaping () -> String? = { nil },
         localRevision: @escaping (String) -> Int,
         synchronize: @escaping (TaskSession, Int) async -> Bool
     ) {
         permits = SessionTimelineNetworkPermitPool(limit: concurrencyLimit)
+        self.foregroundSessionID = foregroundSessionID
         self.localRevision = localRevision
         self.synchronize = synchronize
     }
@@ -206,6 +240,7 @@ final class ActiveTimelineSyncEngine {
 
     func schedule(_ session: TaskSession, desiredRevision: Int) {
         guard desiredRevision > localRevision(session.id) else { return }
+        ChatPerformanceTrace.timelineStage("scheduled", sessionID: session.id, revision: desiredRevision)
         var job = jobs[session.id] ?? Job(
             generation: UUID(),
             session: session,
@@ -223,6 +258,19 @@ final class ActiveTimelineSyncEngine {
             await self?.run(sessionID: session.id, generation: generation)
         }
         jobs[session.id] = job
+    }
+
+    func foregroundDidChange() async {
+        let current = foregroundSessionID()
+        let previous = lastForegroundID
+        lastForegroundID = current
+        // A read for the old foreground must not occupy the reserved slot after navigation.
+        if let previous, previous != current, let old = jobs[previous] {
+            old.task?.cancel()
+            jobs[previous] = nil
+            schedule(old.session, desiredRevision: old.desiredRevision)
+        }
+        await permits.setForegroundSession(current)
     }
 
     func stop() {
@@ -244,13 +292,17 @@ final class ActiveTimelineSyncEngine {
               job.generation == generation {
             let revision = localRevision(sessionID)
             if revision >= job.desiredRevision { return }
-            await permits.acquire()
+            lastForegroundID = foregroundSessionID()
+            await permits.setForegroundSession(lastForegroundID)
+            guard await permits.acquire(sessionID: sessionID) else { return }
             if Task.isCancelled {
-                await permits.release()
+                await permits.release(sessionID: sessionID)
                 return
             }
+            ChatPerformanceTrace.timelineStage("fetch-started", sessionID: sessionID, revision: revision)
             let succeeded = await synchronize(job.session, revision)
-            await permits.release()
+            ChatPerformanceTrace.timelineStage("fetch-finished", sessionID: sessionID, revision: localRevision(sessionID))
+            await permits.release(sessionID: sessionID)
             if succeeded, localRevision(sessionID) > revision {
                 failureCount = 0
             } else {

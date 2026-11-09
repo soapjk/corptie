@@ -8,6 +8,7 @@ final class BackendEventStream {
     private let baseURL: URL
     private let urlSession: URLSession
     private var task: Task<Void, Never>?
+    private var connectedTask: Task<Void, Never>?
     private var cursor = 0
     private var generation: UInt64 = 0
 
@@ -44,7 +45,10 @@ final class BackendEventStream {
                         throw URLError(.badServerResponse)
                     }
                     failureLogged = false
-                    await connected()
+                    // Reconciliation may perform network reads. Receiving new wakes must
+                    // not wait for settings, automation or snapshot hydration.
+                    connectedTask?.cancel()
+                    connectedTask = Task { await connected() }
                     guard !Task.isCancelled, generation == self.generation else { return }
                     for try await event in ServerSentEventStream.events(from: bytes) {
                         guard !Task.isCancelled, generation == self.generation else { return }
@@ -76,6 +80,8 @@ final class BackendEventStream {
         generation &+= 1
         task?.cancel()
         task = nil
+        connectedTask?.cancel()
+        connectedTask = nil
         // A reconnect, including a Data Root handoff, keeps the existing cursor.
         // EventReplayRequired can explicitly rebase it against the new backend.
     }
