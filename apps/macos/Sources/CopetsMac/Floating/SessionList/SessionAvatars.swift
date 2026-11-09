@@ -112,7 +112,7 @@ struct AnimatedAvatarImage: NSViewRepresentable {
     func updateNSView(_ imageView: AspectFillAnimatedImageView, context: Context) {
         imageView.animates = animates
         if context.coordinator.path != path {
-            imageView.image = AvatarImageSupport.loadImage(at: path)
+            imageView.image = AvatarImageSupport.displayImage(at: path)
             context.coordinator.path = path
         }
     }

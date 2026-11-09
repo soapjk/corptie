@@ -448,4 +448,35 @@ final class MainWindowTitlebarDispatchTests: XCTestCase {
         XCTAssertTrue(light.contains("removeAnimation(forKey:"))
         XCTAssertTrue(light.contains("NSViewRepresentable"))
     }
+
+    /// The first guardrail only inspected two files under Sources/CopetsMac and
+    /// missed infinite SwiftUI animations shipped by the shared
+    /// CorptieConversation package that macOS renders (MessageStatusGlow on
+    /// every user message, ConsoleWorkTitle on running work rows). Scan every
+    /// Swift file that actually goes into the macOS build.
+    func testNoInfiniteSwiftUIAnimationShipsInMacOSBuild() throws {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let roots = [
+            repo.appendingPathComponent("apps/macos/Sources/CopetsMac"),
+            repo.appendingPathComponent("packages/CorptieConversation/Sources/CorptieConversation")
+        ]
+        for root in roots {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+            ) else {
+                XCTFail("Cannot enumerate \(root.path)")
+                continue
+            }
+            for case let url as URL in enumerator where url.pathExtension == "swift" {
+                let source = try String(contentsOf: url, encoding: .utf8)
+                XCTAssertFalse(source.contains("repeatForever"),
+                               "\(url.lastPathComponent) schedules an infinite SwiftUI animation")
+            }
+        }
+    }
 }

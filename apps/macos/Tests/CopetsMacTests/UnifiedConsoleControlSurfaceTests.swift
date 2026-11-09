@@ -877,7 +877,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workingWorkTitleUsesAnAccessibleFlowingColorGradient() throws {
+    func workingWorkTitleUsesAStaticColorGradientOnMacOS() throws {
         #expect(ConsoleWorkOutlineMetrics.workingGradientDuration == 2.6)
 
         let host = try source(named: "UnifiedConsoleView.swift")
@@ -886,11 +886,11 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(source.contains("private struct ConsoleFlowingGradientWorkTitle: View"))
         #expect(source.contains("animates: !accessibilityReduceMotion"))
-        #expect(source.contains(".repeatForever(autoreverses: false)"))
-        #expect(source.contains("flowingTitle(progress:"))
-        #expect(source.contains(".cyan, .blue, .purple, .pink, .orange, .cyan"))
-        #expect(source.contains(".offset(x: proxy.size.width * (progress - 1))"))
-        #expect(source.contains(".mask(Text(title))"))
+        // macOS must not schedule a SwiftUI repeating animation: it never stops
+        // and re-layouts the whole window on every display cycle.
+        #expect(!source.contains("repeatForever"))
+        #expect(!source.contains("flowingTitle(progress:"))
+        #expect(source.contains(".cyan, .blue, .purple, .pink, .orange"))
         #expect(source.contains(".accessibilityLabel(title)"))
         #expect(host.contains("isWorking: processingWorkIDs.contains(work.id)"))
         #expect(host.contains("typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle"))

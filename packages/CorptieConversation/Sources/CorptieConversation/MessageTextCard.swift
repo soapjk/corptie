@@ -359,14 +359,11 @@ public struct MessageTextCard<Content: View>: View {
 /// An overlay only: receipt changes must never resize a message or its neighbours.
 public struct MessageStatusGlow: View {
     let status: UserMessageStatusPresentation
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @State private var visible = false
-    @State private var bright = false
 
     public init(status: UserMessageStatusPresentation) { self.status = status }
 
-    private var active: Bool { visible && !reduceMotion && scenePhase == .active && status.lightPulses }
+    private var active: Bool { visible && status.lightPulses }
     private var color: Color {
         switch status.light {
         case .blue: .blue
@@ -377,21 +374,19 @@ public struct MessageStatusGlow: View {
         case .off: .clear
         }
     }
+    /// A static glow only. A SwiftUI repeating animation here never stops once a
+    /// message reaches a pulsing state: every such message keeps an animating
+    /// attribute-graph node alive, re-evaluates the whole ViewGraph and forces
+    /// a full-window layout on every display cycle. Status is already carried
+    /// by the colour, so the pulse is pure decoration and must not own a frame.
     public var body: some View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
             .stroke(color, lineWidth: 5)
             .blur(radius: 4)
-            .opacity(active ? (bright ? 0.85 : 0.25) : 0.65)
+            .opacity(active ? 0.55 : 0.65)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .onChange(of: active, initial: true) { _, running in
-                var reset = Transaction(); reset.disablesAnimations = true
-                withTransaction(reset) { bright = false }
-                if running {
-                    withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { bright = true }
-                }
-            }
-        .onAppear { visible = true }
-        .onDisappear { visible = false }
+            .onAppear { visible = true }
+            .onDisappear { visible = false }
     }
 }

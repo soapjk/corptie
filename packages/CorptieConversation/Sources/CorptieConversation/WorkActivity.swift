@@ -47,7 +47,6 @@ public struct ConsoleWorkTitle: View {
 private struct ConsoleFlowingGradientWorkTitle: View {
     let title: String
     let animates: Bool
-    @State private var progress: CGFloat = 0
     #if os(iOS)
     @Environment(\.scenePhase) private var scenePhase
     @State private var isVisible = false
@@ -72,43 +71,14 @@ private struct ConsoleFlowingGradientWorkTitle: View {
             .onAppear { isVisible = true }
             .onDisappear { isVisible = false }
         #else
-        if animates {
-            flowingTitle(progress: progress)
-                .onAppear { progress = 1 }
-                .onDisappear { progress = 0 }
-        } else {
-            Text(title)
-                .foregroundStyle(staticGradient)
-        }
-        #endif
-    }
-
-    private func flowingTitle(progress: CGFloat) -> some View {
+        // macOS keeps the colour treatment but must not own a SwiftUI repeating
+        // animation: once started it never stops, and every frame re-evaluates
+        // the whole window's attribute graph and layout tree.
         Text(title)
-            .foregroundStyle(.clear)
-            .overlay {
-                GeometryReader { proxy in
-                    seamlessGradient
-                        .frame(width: proxy.size.width * 2, height: proxy.size.height)
-                        .offset(x: proxy.size.width * (progress - 1))
-                        // Let SwiftUI interpolate this paint-only offset; a
-                        // TimelineView would rebuild the text/mask every tick.
-                        .animation(.linear(duration: WorkActivityAnimation.duration)
-                            .repeatForever(autoreverses: false), value: progress)
-                }
-                .mask(Text(title))
-            }
+            .foregroundStyle(staticGradient)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(title)
-    }
-
-    private var seamlessGradient: LinearGradient {
-        LinearGradient(
-            colors: [.cyan, .blue, .purple, .pink, .orange, .cyan,
-                     .blue, .purple, .pink, .orange, .cyan],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
+        #endif
     }
 
     private var staticGradient: LinearGradient {
