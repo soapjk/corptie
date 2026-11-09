@@ -538,15 +538,17 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
-    func remove(_ server: ManagedMcpServer, roleId: String?) async {
+    func remove(_ server: ManagedMcpServer, roleId: String?) async -> Bool {
         isWorking = true
         defer { isWorking = false }
         do {
             _ = try await request("mcp-servers/\(server.serverId)", method: "DELETE",
                                   as: McpRemovalEnvelope.self)
             await load(roleId: roleId)
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -613,8 +615,6 @@ struct McpManagementView: View {
     @State private var credentialTarget: McpAssignmentCredentialTarget?
     @State private var toolTarget: McpAssignmentToolTarget?
     @State private var removingServer: ManagedMcpServer?
-    @State private var removalImpact: McpDeletionImpactEnvelope.Impact?
-    @State private var showRemovalConfirmation = false
     @State private var diagnosticSessionName = ""
     @State private var sessionAvailability: McpSessionAvailabilityEnvelope.Availability?
 
@@ -623,6 +623,13 @@ struct McpManagementView: View {
     var preferredSize = CGSize(width: 760, height: 620)
     @State private var showsDiagnostics = false
     @State private var diagnosticTask: Task<Void, Never>?
+
+    init(roles: [Role], preferredSize: CGSize = CGSize(width: 760, height: 620),
+         initialRoleId: String = "") {
+        self.roles = roles
+        self.preferredSize = preferredSize
+        _selectedRoleId = State(initialValue: initialRoleId)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -699,22 +706,8 @@ struct McpManagementView: View {
         .sheet(item: $toolTarget) { target in
             McpAssignmentToolView(model: model, target: target)
         }
-        .confirmationDialog("删除 MCP Server？", isPresented: $showRemovalConfirmation) {
-            if let server = removingServer, removalImpact?.canRemove == true {
-                Button("删除 \(server.name)", role: .destructive) {
-                    Task { await model.remove(server, roleId: selectedAgent?.roleId) }
-                }
-            }
-        } message: {
-            if let impact = removalImpact, !impact.canRemove {
-                Text(
-                    "无法删除：仍分配给 \(impact.assignedAgents.map(\.name).joined(separator: "、"))。请先解除这些角色的分配。"
-                )
-            } else if let impact = removalImpact {
-                Text(
-                    "将移除登记及 \(impact.managedPackageCopies) 份受控包副本，并清理 \(impact.credentialReferences) 个凭据引用。不会删除原始来源或外部服务。"
-                )
-            }
+        .sheet(item: $removingServer) { server in
+            McpRemovalView(model: model, server: server, roleId: selectedAgent?.roleId)
         }
     }
 
@@ -856,12 +849,7 @@ struct McpManagementView: View {
                     }
                     Divider()
                     Button("删除", role: .destructive) {
-                        Task {
-                            guard let impact = await model.deletionImpact(server) else { return }
-                            removingServer = server
-                            removalImpact = impact
-                            showRemovalConfirmation = true
-                        }
+                        removingServer = server
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -926,6 +914,98 @@ struct McpManagementView: View {
         }
     }
 
+}
+
+private struct McpRemovalView: View {
+    @ObservedObject var model: McpManagementModel
+    let server: ManagedMcpServer
+    let roleId: String?
+    @Environment(\.dismiss) private var dismiss
+    @State private var impact: McpDeletionImpactEnvelope.Impact?
+    @State private var isRefreshing = true
+
+    private var isBusy: Bool { isRefreshing || model.isWorking || model.isLoading }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10nFormat("Remove %@?", server.name))
+                .font(.title3.bold())
+            if let impact {
+                if !impact.assignedAgents.isEmpty {
+                    Text(L10n("Unassign this MCP from the roles below before removing it. Their existing sessions will also lose access."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(impact.assignedAgents, id: \.roleId) { role in
+                                HStack {
+                                    Text(role.name)
+                                        .lineLimit(2)
+                                    Spacer()
+                                    Button(L10n("Unassign"), role: .destructive) {
+                                        Task {
+                                            await model.assign(server, to: role.roleId, enabled: false)
+                                            await refreshImpact()
+                                        }
+                                    }
+                                    .disabled(isBusy)
+                                    .accessibilityLabel(L10nFormat("Unassign %@ from %@", server.name, role.name))
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 200)
+                    .accessibilityIdentifier("mcp-removal-assignments")
+                } else {
+                    Text(L10nFormat("Remove the registration, %d managed package copies, and %d credential references. Original sources and external services are preserved.", impact.managedPackageCopies, impact.credentialReferences))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let error = model.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if isBusy {
+                    ProgressView().controlSize(.small)
+                        .accessibilityLabel(L10n("Updating MCP removal status"))
+                } else if impact == nil {
+                    Button(L10n("Retry")) { Task { await refreshImpact() } }
+                }
+                Spacer()
+                Button(L10n("Cancel"), role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isBusy)
+                Button(L10n("Remove MCP"), role: .destructive) {
+                    Task {
+                        if await model.remove(server, roleId: roleId) {
+                            dismiss()
+                        } else {
+                            await refreshImpact()
+                        }
+                    }
+                }
+                .disabled(isBusy || impact?.canRemove != true)
+                .accessibilityIdentifier("mcp-confirm-removal")
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+        .interactiveDismissDisabled(isBusy)
+        .task { await refreshImpact() }
+    }
+
+    private func refreshImpact() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
+        impact = await model.deletionImpact(server)
+    }
 }
 
 private struct McpRuntimeEventsView: View {

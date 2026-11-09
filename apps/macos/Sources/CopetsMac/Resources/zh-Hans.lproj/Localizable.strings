@@ -2417,3 +2417,19 @@
 "Only the listed stale Git registrations will be removed. Local branches will be retained." = "仅清理列表中的失效 Git 登记，保留本地分支。";
 
 "Behind main by %d commits" = "落后 main %d 个提交";
+
+"Manage MCP assignments, tool permissions, and credentials for this role." = "管理此角色的 MCP 分配、工具权限和凭据。";
+
+"Remove %@?" = "删除 %@？";
+
+"Unassign this MCP from the roles below before removing it. Their existing sessions will also lose access." = "此 MCP 仍分配给以下角色。请先解除分配，再删除；解除后这些角色的现有会话也将无法使用此 MCP。";
+
+"Unassign" = "解除分配";
+
+"Unassign %@ from %@" = "解除 %2$@ 对 %1$@ 的分配";
+
+"Remove the registration, %d managed package copies, and %d credential references. Original sources and external services are preserved." = "将移除登记及 %d 份受控包副本，并清理 %d 个凭据引用。不会删除原始来源或外部服务。";
+
+"Updating MCP removal status" = "正在更新 MCP 删除状态";
+
+"Remove MCP" = "删除 MCP";
