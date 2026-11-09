@@ -44,8 +44,46 @@ final class BackendEventRouter {
         let sessionCleared: (SessionReplacement) -> Void
     }
 
+    private var recoveryGeneration = UUID()
+    private var recoveryTask: Task<Void, Never>?
+    private var pendingRecovery: Set<String> = []
     private let ports: Ports
     init(ports: Ports) { self.ports = ports }
+
+    func stop() {
+        recoveryGeneration = UUID()
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        pendingRecovery.removeAll()
+    }
+
+    private func scheduleRecovery(_ event: String) {
+        pendingRecovery.insert(event)
+        guard recoveryTask == nil else { return }
+        let generation = recoveryGeneration
+        recoveryTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.recoveryGeneration == generation { self.recoveryTask = nil } }
+            while !Task.isCancelled, self.recoveryGeneration == generation, !self.pendingRecovery.isEmpty {
+                let events = self.pendingRecovery
+                self.pendingRecovery.removeAll()
+                await AppStateSyncController.shared.refreshSnapshot()
+                guard !Task.isCancelled else { return }
+                await self.ports.reconcileTimelineRevisions()
+                if events.contains("BackendStoreReady") {
+                    await self.ports.loadSettings()
+                    await self.ports.syncNewSessionDefaults()
+                    await self.ports.loadProviders()
+                }
+                guard !Task.isCancelled else { return }
+                await self.ports.loadAutomations()
+                if let selected = self.ports.selectedSession() {
+                    await self.ports.loadScheduledTasks(selected)
+                    self.ports.scheduleTimelineSync(selected, selected.timelineRevision ?? 0)
+                }
+            }
+        }
+    }
 
     func handle(_ eventName: String, data: String) async {
         if eventName == "SessionAbilitiesChanged", let bytes = data.data(using: .utf8),
@@ -85,30 +123,8 @@ final class BackendEventRouter {
            let envelope = try? JSONDecoder().decode(TaskCollaborationFlowEvent.Envelope.self, from: bytes) {
             ports.channelMessage(envelope)
         }
-        if eventName == "BackendStoreReady" {
-            // Startup requests are allowed to receive a retryable 503 while the
-            // migration Worker is running. Reissue their authoritative reads as
-            // soon as the Store crosses its independent readiness boundary.
-            await AppStateSyncController.shared.refreshSnapshot()
-            await ports.loadSettings()
-            await ports.syncNewSessionDefaults()
-            await ports.loadProviders()
-            await ports.reconcileTimelineRevisions()
-            await ports.loadAutomations()
-            if let selectedSession = ports.selectedSession() { await ports.loadScheduledTasks(selectedSession) }
-            return
-        }
-        if eventName == "EventReplayRequired" {
-            // The bounded wake-event buffer cannot cover this cursor. State and
-            // timelines have their own durable authorities, so repair those
-            // directly instead of replaying ambiguous side effects.
-            await AppStateSyncController.shared.refreshSnapshot()
-            await ports.reconcileTimelineRevisions()
-            await ports.loadAutomations()
-            if let selectedSession = ports.selectedSession() {
-                await ports.loadScheduledTasks(selectedSession)
-                ports.scheduleTimelineSync(selectedSession, selectedSession.timelineRevision ?? 0)
-            }
+        if eventName == "BackendStoreReady" || eventName == "EventReplayRequired" {
+            scheduleRecovery(eventName)
             return
         }
         if eventName == "SessionTimelineChanged" {

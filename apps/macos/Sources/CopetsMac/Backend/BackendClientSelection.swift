@@ -41,6 +41,7 @@ extension BackendClient {
         workspaceRecoveryStatus = nil
         workspaceStatusController.stopRefreshing()
         Task { [weak self] in
+            await self?.prioritizeVisibleTimeline()
             await Task.yield()
             guard let self,
                   self.sessionSelectionController.generation == generation,

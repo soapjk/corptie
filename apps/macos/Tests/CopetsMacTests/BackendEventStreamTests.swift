@@ -63,3 +63,40 @@ extension BackendEventStreamTests {
         XCTAssertEqual(connections, 1)
     }
 }
+
+private final class TimelineWakeProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200,
+            httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("id: 1\nevent: SessionTimelineChanged\ndata: {}\n\n".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
+extension BackendEventStreamTests {
+    @MainActor
+    func testTimelineWakeDoesNotWaitForSlowConnectionRecovery() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [TimelineWakeProtocol.self]
+        let session = URLSession(configuration: config)
+        let stream = BackendEventStream(baseURL: URL(string: "http://127.0.0.1:54321")!, urlSession: session)
+        var received = false
+        var recoveryFinished = false
+        stream.start(connected: {
+            try? await Task.sleep(for: .seconds(30))
+            if !Task.isCancelled { recoveryFinished = true }
+        }, disconnected: {}, receive: { name, _ in
+            if name == "SessionTimelineChanged" { received = true }
+        })
+        defer { stream.stop(); session.invalidateAndCancel() }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !received && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(received)
+        XCTAssertFalse(recoveryFinished)
+    }
+}

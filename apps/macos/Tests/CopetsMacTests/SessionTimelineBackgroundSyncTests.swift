@@ -218,6 +218,46 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         XCTAssertEqual(engine.scheduledSessionCount, 0)
     }
 
+    @MainActor
+    func testForegroundReserveAndPromotionBypassSaturatedBackground() async {
+        let pool = SessionTimelineNetworkPermitPool(limit: 4)
+        for id in ["a", "b", "c"] { _ = await pool.acquire(sessionID: id) }
+        var promoted = false
+        let waiting = Task { @MainActor in
+            let acquired = await pool.acquire(sessionID: "selected")
+            promoted = acquired
+            if acquired { await pool.release(sessionID: "selected") }
+        }
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertFalse(promoted, "Background requests must leave the reserved slot free")
+        await pool.setForegroundSession("selected")
+        for _ in 0..<100 where !promoted { await Task.yield() }
+        XCTAssertTrue(promoted, "Promotion must use the reserve without waiting for a background request")
+        for id in ["a", "b", "c"] { await pool.release(sessionID: id) }
+        await waiting.value
+    }
+
+    @MainActor
+    func testCancelledQueuedReadDoesNotHoldOrConsumePermit() async {
+        let pool = SessionTimelineNetworkPermitPool(limit: 2)
+        _ = await pool.acquire(sessionID: "background")
+        var acquired: Bool?
+        let waiting = Task { @MainActor in
+            acquired = await pool.acquire(sessionID: "cancelled")
+            if acquired == true { await pool.release(sessionID: "cancelled") }
+        }
+        for _ in 0..<50 { await Task.yield() }
+        waiting.cancel()
+        for _ in 0..<100 where acquired == nil { await Task.yield() }
+        XCTAssertEqual(acquired, false)
+        await pool.setForegroundSession("front")
+        let frontAcquired = await pool.acquire(sessionID: "front")
+        XCTAssertTrue(frontAcquired)
+        await pool.release(sessionID: "front")
+        await pool.release(sessionID: "background")
+        await waiting.value
+    }
+
     private func decodeEnvelope(_ json: String) throws -> SessionTimelineChangeEnvelope {
         try JSONDecoder().decode(SessionTimelineChangeEnvelope.self, from: Data(json.utf8))
     }

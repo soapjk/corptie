@@ -29,6 +29,7 @@ final class SessionTimelineSyncController {
     private var sessions: [TaskSession] { activeSessions() }
     private var selectedSession: TaskSession? { currentSelectedSession() }
     private lazy var activeTimelineSyncEngine = ActiveTimelineSyncEngine(
+        foregroundSessionID: { [weak self] in self?.selectedSession?.id },
         localRevision: {
             SessionTimelineRepository.shared.detail(for: $0) == nil
                 ? -1
@@ -60,6 +61,10 @@ final class SessionTimelineSyncController {
         self.storeDetail = storeDetail
         self.reportSelectedLoadError = reportSelectedLoadError
         self.clearSelectedLoadError = clearSelectedLoadError
+    }
+
+    func foregroundDidChange() async {
+        await activeTimelineSyncEngine.foregroundDidChange()
     }
 
     func resetRouteTasks() {
@@ -110,6 +115,7 @@ final class SessionTimelineSyncController {
 
     func applyTimelineRevisionAdvance(sessionId: String, revision: Int) {
         guard revision > 0 else { return }
+        ChatPerformanceTrace.timelineStage("wake-received", sessionID: sessionId, revision: revision)
         let previous = knownTimelineRevisionBySessionID[sessionId] ?? 0
         knownTimelineRevisionBySessionID[sessionId] = max(previous, revision)
         // State patches and Timeline wake events race. Always let the sync
@@ -148,6 +154,7 @@ final class SessionTimelineSyncController {
                 SessionTimelineRepository.shared.state(for: session.id).discardRetainedContext(
                     for: (envelope.changes ?? []).filter { $0.operation == "delete" }.map(\.itemId))
                 storeDetail(reconciledDetail, session.id, revision)
+                ChatPerformanceTrace.timelineStage("published", sessionID: session.id, revision: revision)
                 await warmPresentationCache(for: session.id)
                 return true
             case .duplicate:
@@ -174,6 +181,7 @@ final class SessionTimelineSyncController {
         guard sessionRouteIsCurrent(session) else { return false }
         let reconciledDetail = mergePending(snapshot.detail)
         storeDetail(reconciledDetail, session.id, snapshot.timelineRevision)
+        ChatPerformanceTrace.timelineStage("published", sessionID: session.id, revision: snapshot.timelineRevision)
         await warmPresentationCache(for: session.id)
         if selectedSession?.id == session.id {
             clearSelectedLoadError()

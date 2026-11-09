@@ -81,6 +81,11 @@ enum ChatPerformanceTrace {
         return try await operation()
     }
 
+    static func timelineStage(_ stage: StaticString, sessionID: String, revision: Int) {
+        os_signpost(.event, log: log, name: "TimelineSyncStage", "%{public}s session=%{private}s revision=%{public}d",
+                    String(describing: stage), sessionID, revision)
+    }
+
     static func event(_ name: StaticString, value: Int = 0) {
         os_signpost(.event, log: log, name: name, "%{public}d", value)
     }
