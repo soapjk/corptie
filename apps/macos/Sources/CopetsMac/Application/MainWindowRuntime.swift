@@ -79,9 +79,16 @@ final class MainWindowPresentationState: ObservableObject {
 /// for the full-size transparent title bar. SwiftUI owns the content under the
 /// title bar, so NSWindow's default empty-title-bar handler never sees it.
 @MainActor
-final class MainWindow: NSWindow {
+class MainWindow: NSWindow {
     weak var compactWindowControls: CompactWindowControlsView?
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isOverStandardWindowButton(event),
+           compactWindowControls?.button(at: event.locationInWindow) == nil {
+            MainWindowMouseActivation.prepare(event, window: self,
+                applicationIsActive: NSApp.isActive, modalWindow: NSApp.modalWindow) {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
         if event.type == .leftMouseDown, attachedSheet == nil,
            let button = compactWindowControls?.button(at: event.locationInWindow) {
             button.mouseDown(with: event)
@@ -128,6 +135,20 @@ final class MainWindow: NSWindow {
                 button.convert(event.locationInWindow, from: nil)
             )
         }
+    }
+}
+
+/// Complete activation before a custom drag consumes the original mouse-down.
+/// Command-click and modal/sheet routing retain AppKit's background behavior.
+@MainActor
+enum MainWindowMouseActivation {
+    static func prepare(_ event: NSEvent, window: NSWindow, applicationIsActive: Bool,
+                        modalWindow: NSWindow?, activate: () -> Void) {
+        guard event.type == .leftMouseDown, !event.modifierFlags.contains(.command),
+              window.attachedSheet == nil, window.canBecomeKey,
+              modalWindow == nil || modalWindow === window else { return }
+        if !applicationIsActive { activate() }
+        if !window.isKeyWindow { window.makeKey() }
     }
 }
 

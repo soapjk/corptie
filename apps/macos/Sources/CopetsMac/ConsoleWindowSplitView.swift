@@ -219,6 +219,12 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
             .clipped()
         } accessory: {
             header().environment(\.detailColumnVisibility, visibility)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .overlay(alignment: .bottom) {
+                    if Header.self != EmptyView.self {
+                        Divider().allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
         }
         .environment(\.detailToggleExclusion, toggleExclusion)
         // `onGeometryChange` only calls the action when the band changes, so
