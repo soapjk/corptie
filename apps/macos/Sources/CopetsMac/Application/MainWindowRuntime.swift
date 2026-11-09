@@ -81,6 +81,45 @@ final class MainWindowPresentationState: ObservableObject {
 @MainActor
 class MainWindow: NSWindow {
     weak var compactWindowControls: CompactWindowControlsView?
+
+    /// Every live-resize layout pass makes AppKit rebuild the whole window's
+    /// key view loop (`NSView._layoutSubtreeWithOldSize` →
+    /// `_recursiveSetDefaultKeyViewLoop` → SwiftUI
+    /// `FocusBridge.updateDefaultKeyViewLoop`). That walk is O(views): a running
+    /// Session keeps accumulating hosting views, so dragging gets slower the
+    /// longer the app has been used and stays slow after the turn stops.
+    /// Rebuild the loop once after the resize ends instead of on every frame.
+    private var keyViewLoopResizeObserver: NSObjectProtocol?
+
+    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
+                  backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
+        autorecalculatesKeyViewLoop = false
+        keyViewLoopResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didEndLiveResizeNotification,
+            object: self,
+            queue: .main
+        ) { [weak self] _ in
+            // `inLiveResize` can still be true while the notification is
+            // delivered; deferring one turn keeps the rebuild off the last
+            // drag frame and restores Tab navigation after the gesture.
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { self?.recalculateKeyViewLoop() }
+            }
+        }
+    }
+
+    isolated deinit {
+        if let keyViewLoopResizeObserver {
+            NotificationCenter.default.removeObserver(keyViewLoopResizeObserver)
+        }
+    }
+
+    override func recalculateKeyViewLoop() {
+        guard !inLiveResize else { return }
+        super.recalculateKeyViewLoop()
+    }
+
     override func sendEvent(_ event: NSEvent) {
         if event.type == .leftMouseDown, !isOverStandardWindowButton(event),
            compactWindowControls?.button(at: event.locationInWindow) == nil {

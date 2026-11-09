@@ -78,58 +78,24 @@ struct ConnectionIndicatorLight: View {
     let size: CGFloat
     let glowSize: CGFloat
     let isBreathing: Bool
-    @State private var breathPhase = false
+
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            color.opacity(0.42),
-                            color.opacity(0.22),
-                            color.opacity(0.0)
-                        ],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: glowSize / 2
-                    )
-                )
-                .frame(width: glowSize, height: glowSize)
-
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [
-                            color,
-                            color.opacity(0.88)
-                        ],
-                        center: .center,
-                        startRadius: 0,
-                        endRadius: size / 2
-                    )
-                )
-                .frame(width: size, height: size)
-        }
+        // The pulse is a compositor-side CALayer animation. A SwiftUI
+        // An infinite SwiftUI animation on this always-mounted indicator kept the
+        // window's display cycle running forever, which made every AppKit
+        // layout pass recurse through the whole hosting-view tree.
+        StatusLightLayer(
+            color: NSColor(color),
+            dotSize: size,
+            glowSize: glowSize,
+            isBreathing: isBreathing,
+            reduceMotion: accessibilityReduceMotion,
+            duration: 1.25,
+            minimumOpacity: 0.28
+        )
         .frame(width: glowSize, height: glowSize)
-        .opacity(isBreathing ? (breathPhase ? 0.28 : 1.0) : 1.0)
-        .animation(.easeInOut(duration: 1.25).repeatForever(autoreverses: true), value: breathPhase)
-        .onAppear {
-            breathPhase = false
-            if isBreathing {
-                DispatchQueue.main.async {
-                    breathPhase = true
-                }
-            }
-        }
-        .onChange(of: isBreathing) { _, nextValue in
-            breathPhase = false
-            if nextValue {
-                DispatchQueue.main.async {
-                    breathPhase = true
-                }
-            }
-        }
     }
 }
 

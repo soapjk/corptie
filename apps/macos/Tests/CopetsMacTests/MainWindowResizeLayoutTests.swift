@@ -52,6 +52,28 @@ struct MainWindowResizeLayoutTests {
         #expect(split.contains("detailController.host.rootView = detail"))
     }
 
+    /// A 25s main-thread sample of a slow drag showed 80% of frames inside
+    /// `NSView._layoutSubtreeWithOldSize` → `_recursiveSetDefaultKeyViewLoop`
+    /// → `FocusBridge.updateDefaultKeyViewLoop`. AppKit rebuilds the whole
+    /// window's Tab chain on every resize frame; its cost grows with the
+    /// hosting views a Session accumulates and never drops back when the turn
+    /// stops. The window must opt out of automatic rebuilds, skip any explicit
+    /// rebuild during a live resize, and pay for exactly one after it ends.
+    @Test
+    func mainWindowDefersKeyViewLoopRebuildUntilResizeEnds() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let runtime = try String(contentsOf: root.appendingPathComponent("Application/MainWindowRuntime.swift"), encoding: .utf8)
+        #expect(runtime.contains("autorecalculatesKeyViewLoop = false"))
+        #expect(runtime.contains("override func recalculateKeyViewLoop()"))
+        #expect(runtime.contains("guard !inLiveResize else { return }"))
+        #expect(runtime.contains("NSWindow.didEndLiveResizeNotification"))
+        #expect(runtime.contains("self?.recalculateKeyViewLoop()"))
+    }
+
     /// AppKit's implicit animations on layout inputs rewrite the model frame or
     /// constraint constant on every frame. Each write re-solves Auto Layout and
     /// hands the hosted SwiftUI tree a new size proposal, so a 0.2s animation
@@ -392,5 +414,38 @@ final class MainWindowTitlebarDispatchTests: XCTestCase {
         XCTAssertEqual(hostingView.renderedContentSize, hostingView.bounds.size)
         XCTAssertTrue(hostingView.contentUsesIdentityTransform)
         window.orderOut(nil)
+    }
+
+    /// A 60s idle main-thread sample showed 94% of frames inside AppKit's
+    /// display cycle: `NSWindow layoutIfNeeded` -> `_layoutSubtreeWithOldSize`
+    /// -> `NSHostingView.layout()` -> `ViewGraph.updateOutputs` ->
+    /// `RepeatAnimation.animate`. The trigger was a decorative
+    /// `.animation(...repeatForever...)` on an always-mounted status light.
+    /// Once started, that animation never stops on its own, so stopping an
+    /// execution does not restore smoothness and the growing view tree makes
+    /// every layout pass more expensive. Decorative pulses must live on the
+    /// compositor instead.
+    func testDecorativeIndicatorsNeverRunRepeatForeverSwiftUIAnimations() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let paths = [
+            "SessionStatusLight.swift",
+            "Conversation/ConversationMetadataViews.swift"
+        ]
+        for path in paths {
+            let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+            XCTAssertFalse(source.contains("repeatForever"),
+                           "\(path) must not schedule an infinite SwiftUI animation")
+            XCTAssertFalse(source.contains("breathPhase"),
+                           "\(path) must not drive a pulse through SwiftUI @State")
+        }
+        let light = try String(contentsOf: root.appendingPathComponent("SessionStatusLight.swift"), encoding: .utf8)
+        XCTAssertTrue(light.contains("CABasicAnimation(keyPath: \"opacity\")"))
+        XCTAssertTrue(light.contains("pulse.repeatCount = .infinity"))
+        XCTAssertTrue(light.contains("removeAnimation(forKey:"))
+        XCTAssertTrue(light.contains("NSViewRepresentable"))
     }
 }
