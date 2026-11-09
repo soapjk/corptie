@@ -129,13 +129,16 @@ export class SessionChannelMailboxService {
       LEFT JOIN session_mailbox_messages mm ON mm.channel_delivery_id=d.delivery_id
       WHERE COALESCE(mm.disposition,'pending')='pending'
       AND (NOT EXISTS(SELECT 1 FROM session_mailbox_settings ms WHERE ms.recipient_session_id=m.recipient_session_id AND ms.paused=1) OR mm.manual_requested=1)
-      AND m.channel_id=? AND m.sender_session_id=? AND m.recipient_session_id=?
+      AND m.recipient_session_id=?
       AND d.status IN ('pending','queued') AND i.delivery_id IS NULL
       ${barrier ? "AND (m.created_at < ? OR d.delivery_id=?)" : ""}
-      ORDER BY (o.sequence >= ?) DESC, o.sequence LIMIT ?`, [head.channel.channelId, head.message.senderSessionId,
-      head.message.recipientSessionId, ...(barrier ? [barrier, deliveryId] : []), sequence, this.maxMessages + 1])
+      ORDER BY (o.sequence >= ?) DESC, o.sequence LIMIT ?`, [head.message.recipientSessionId, ...(barrier ? [barrier, deliveryId] : []), sequence, this.maxMessages + 1])
       .sort((a, b) => a.sequence - b.sequence)
-      .map(row => this.service.getDeliveryEnvelope(row.delivery_id));
+      .map(row => this.service.getDeliveryEnvelope(row.delivery_id))
+      .filter(item => {
+        try { this.service.resolveDeliveryRoute(item.delivery.deliveryId); return true; }
+        catch { return false; }
+      });
   }
 
   waitMs(deliveryId, operationId) {
@@ -227,7 +230,7 @@ export class SessionChannelMailboxService {
 export function batchPresentation(items) {
   if (items.length === 1) return items[0].message.body;
   return `协作消息 · 已合并 ${items.length} 条\n\n` + items.map((item, index) =>
-    `${index + 1}. [${item.message.createdAt}] ${item.message.body}`).join("\n\n");
+    `${index + 1}. [${item.message.createdAt}] [${item.message.senderSessionId}] ${item.message.body}`).join("\n\n");
 }
 
 function sameRecipientContext(left = {}, right = {}) {

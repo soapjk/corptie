@@ -70,3 +70,19 @@ test("only a queued user message in its own Session can be cancelled", async () 
     await store.close();
   }
 });
+
+test("cancellation evidence survives requeue and records uncertainty without inventing an actor",async()=>{
+  const store=new CorptieStore({dbPath:":memory:",configPath:"/unused-evidence-config",manageProcessEnvironment:false});
+  try{
+    await store.initialize({resolveDataPath:false});
+    const core=new CollaborationCore(store);core.registerAgent({agentId:"agent:evidence",name:"Evidence"});
+    core.bindSession({agentId:"agent:evidence",sessionId:"session:evidence"});
+    store.enqueueAgentTask({taskId:"op:evidence",agentId:"agent:evidence",sessionId:"session:evidence",kind:"user",priority:1,text:"test",source:{mailboxDispatchAttempted:true}});
+    const cancelled=store.updateAgentTask("op:evidence",{status:"cancelled"});
+    assert.equal(cancelled.executionEvidence.cancellation.actor,"unknown");
+    assert.equal(cancelled.executionEvidence.cancellation.phase,"acceptance_unknown");
+    const queued=store.updateAgentTask("op:evidence",{status:"queued"});
+    assert.deepEqual(queued.executionEvidence,cancelled.executionEvidence);
+    assert.equal(queued.completedAt,null);
+  }finally{await store.close();}
+});

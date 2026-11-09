@@ -572,6 +572,8 @@ export class SessionChannelService {
       channel: this.#presentChannel(row),
       message: {
         messageId: row.message_id,
+      execution: { operationId: row.sender_operation_id ?? null, turnId: row.sender_turn_id ?? null,
+        sessionId: row.sender_provider_session_id ?? null, bindingId: row.sender_binding_id ?? null },
         channelId: row.channel_id,
         senderSessionId: row.sender_session_id,
         recipientSessionId: row.message_recipient_session_id,
@@ -626,6 +628,11 @@ export class SessionChannelService {
     }
     const messageId = `channel_message:${this.idFactory()}`;
     const deliveryId = `channel_delivery:${this.idFactory()}`;
+    // Capture execution identity from the authenticated route, never caller metadata.
+    const senderRoute = this.#requireLogicalSession(senderSessionId, "senderSessionId");
+    const senderOperation = this.store.getRunningAgentTaskForSession(senderRoute.legacySessionId);
+    const senderSession = this.store.getSession(senderRoute.legacySessionId);
+    const senderTurnId = senderOperation?.targetTurnId ?? senderSession?.external?.activeTurnId ?? null;
     this.store.db.run(
       `INSERT INTO session_collaboration_messages (
          message_id, channel_id, sender_session_id, recipient_session_id, message_kind, delivery_intent,
@@ -636,6 +643,9 @@ export class SessionChannelService {
         inReplyToMessageId, JSON.stringify(input.resourceContext ?? {}),
         requiredText(input.idempotencyKey, "idempotencyKey"), timestamp]
     );
+    this.store.db.run(`UPDATE session_collaboration_messages SET sender_operation_id=?,sender_turn_id=?,
+      sender_provider_session_id=?,sender_binding_id=? WHERE message_id=?`,
+      [senderOperation?.taskId ?? null,senderTurnId,senderRoute.legacySessionId,senderRoute.activeBinding?.bindingId ?? null,messageId]);
     this.store.db.run(
       `INSERT INTO session_collaboration_deliveries (
          delivery_id, message_id, recipient_session_id, status, attempt_count,

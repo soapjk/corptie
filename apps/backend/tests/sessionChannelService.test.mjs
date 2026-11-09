@@ -1009,3 +1009,21 @@ test('restart registers paused mailbox work so it can report reasons, and pages 
   const first=f.store.getAgentTask([...ids][0]);assert.equal(f.unified.dispatchDecision(first).code,'MAILBOX_PAUSED');
  }finally{await f.close();}
 });
+
+test("one idle mailbox batch accepts multiple authorized senders and preserves every source", async () => {
+  const f = await mailboxFixture();
+  try {
+    f.store.createSession({ id:"provider:c",title:"Session_c",agentId:"agent:a",sessionKind:"worker",workId:"work:channel",taskId:"task:a",cwd:f.directory });
+    f.store.createLogicalSessionRoute({logicalSessionId:"session:c",legacySessionId:"provider:c",providerThreadId:"provider:c",providerSessionId:"provider:c",providerId:"another-provider",boundCwd:f.directory,sessionName:"Session_c"});
+    f.service.collaborationCore.bindSession({agentId:"agent:a",sessionId:"provider:c"});
+    const request=f.service.requestChannel({requestingSessionId:"session:c",recipientSessionId:"session:b",body:"second independent result",idempotencyKey:"multi-source"});
+    f.service.confirmRequest(request.requestId,{recipientSessionId:"session:b"},{type:"direct_user"});
+    const work=f.enqueue();f.advance(6000);f.store.claimAgentTask(work.taskId);
+    const batch=f.mailbox.prepareBatch(f.head.deliveryId,work.taskId),items=f.mailbox.getItems(batch.batch_id);
+    assert.equal(items.length,2);
+    assert.deepEqual(new Set(items.map(item=>item.message.senderSessionId)),new Set(["session:a","session:c"]));
+    assert.equal(new Set(items.map(item=>item.channel.channelId)).size,2);
+    f.mailbox.mark(batch.batch_id,"accepted",{turnId:"turn:multi-source"});
+    assert.ok(items.every(item=>f.service.getDelivery(item.delivery.deliveryId).targetTurnId==="turn:multi-source"));
+  } finally {await f.close();}
+});

@@ -1,3 +1,4 @@
+import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import test from "node:test";
 import { ExecutionChecklistService } from "../src/application/executionChecklistService.mjs";
 import assert from "node:assert/strict";
@@ -274,6 +275,7 @@ test("completion reports wait for parent, batch results through mailbox, and nev
   for (const accepted of receipt.dispatches) {
     const row = f.coordinator.get(accepted.dispatchId);
     const work = f.store.updateAgentTask(row.operation_id, { status: "completed", targetTurnId: "finished" });
+    f.store.upsertTimelineItemProjection(work.sessionId,{id:`result:${row.dispatch_id}`,turnId:"finished",type:"agentMessage",text:"交付结果",status:"completed",createdAt:new Date().toISOString()});
     f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: work });
   }
   f.coordinator.flushReports();
@@ -284,7 +286,7 @@ test("completion reports wait for parent, batch results through mailbox, and nev
   const reports = f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
   assert.equal(reports.length, 1);
   assert.equal(reports[0].intent, "response_required");
-  assert.match(reports[0].body, /未验收|不代表已验收/);
+  assert.match(reports[0].body, /不代表目标完成或已验收/);
   assert.match(reports[0].body, /first|dispatch/);
   f.coordinator.flushReports();
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 1);
@@ -335,22 +337,22 @@ test("restart resumes accepted preparation even after mode is switched off", asy
   assert.equal(f.store.listTaskCoordinationDispatches(f.parent.id).length, 1);
 });
 
-test("retry replaces stale failure reports with a new immutable report generation", async t => {
+test("retry retains failure as state and emits a result only after an actual final report", async t => {
   const f = await fixture(t); f.fail("PREPARATION_FAILED");
   f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?", [f.source.sessionId]);
   const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("report_retry")] });
   const id = receipt.dispatches[0].dispatchId;
   await f.coordinator.runDispatch(id); f.coordinator.flushReports();
   const failedReportID = f.coordinator.get(id).report_message_id;
-  assert.ok(failedReportID);
+  assert.equal(failedReportID,null);
   f.fail(null); f.coordinator.retryDispatch(f.source, f.role.agentId, id); await f.coordinator.runDispatch(id);
   const work = f.store.updateAgentTask(f.coordinator.get(id).operation_id, { status: "completed", targetTurnId: "retry-turn" });
+  f.store.upsertTimelineItemProjection(work.sessionId,{id:"result:retry",turnId:"retry-turn",type:"agentMessage",text:"实际交付",status:"completed",createdAt:new Date().toISOString()});
   f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: work }); f.coordinator.flushReports();
   const successReportID = f.coordinator.get(id).report_message_id;
   assert.ok(successReportID);
   assert.notEqual(successReportID, failedReportID);
-  const old = f.mailbox.raw("logical:parent", failedReportID);
-  assert.throws(() => f.coordinator.validateMailbox(old, JSON.parse(old.authorization_json)), { code: "COORDINATION_REPORT_SCOPE_INVALID" });
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
   const current = f.mailbox.raw("logical:parent", successReportID);
   f.coordinator.validateMailbox(current, JSON.parse(current.authorization_json));
 });
@@ -843,7 +845,7 @@ test("generated summary projection changes cannot reject an otherwise unchanged 
  });
 });
 
-for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`dispatch blockage reaches the parent once and a cancelled child can receive new instructions (${provider})`,async t=>{
+for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`dispatch blockage remains state-only and a cancelled child can receive new instructions (${provider})`,async t=>{
  const {createRuntimeAgentWorkQueue}=await import('../src/runtime/runtimeAgentWorkQueue.mjs');
  const f=await fixture(t,provider);
  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('blocked-report')]});
@@ -865,19 +867,16 @@ for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`disp
  assert.equal(f.mailbox.get(logical,dispatch.mailbox_message_id).dispatchBlock.code,'MAILBOX_PAUSED');
  f.coordinator.flushReports();
  let reports=f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
- assert.equal(reports.length,1);assert.match(reports[0].body,/MAILBOX_PAUSED/);assert.equal(reports[0].intent,'response_required');
+ assert.equal(reports.length,0);
  assert.equal(f.store.listTaskCoordinationDispatches(f.parent.id)[0].errorMessage,'接收会话的邮箱已暂停自动处理。');
- f.coordinator.flushReports();assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+ f.coordinator.flushReports();assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,0);
  f.mailbox.setPaused(logical,false);await queue.drainAgentWork(childSession);
  assert.equal(sends,1);assert.equal(f.coordinator.get(id).status,'running');assert.equal(f.coordinator.get(id).error_code,null);
  assert.equal(f.store.getAgentTask(dispatch.operation_id).source.dispatchBlock,undefined);
- // A delayed status notice is historical telemetry, not an executable command;
- // it remains readable after the child resumes, and tells the parent to query state.
- assert.doesNotThrow(()=>f.mailbox.validate(reports[0]));
- assert.throws(()=>f.coordinator.validateMailbox({...reports[0],recipient_session_id:'logical:wrong'},JSON.parse(reports[0].authorization_json)),{code:'COORDINATION_REPORT_SCOPE_INVALID'});
+
 });
 
-test('ordinary child mailbox failures notify the exact parent without a coordination dispatch and do not repeat',async t=>{
+test('ordinary child mailbox failures retain their state without generating parent messages',async t=>{
  const f=await fixture(t);
  const admitted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('ordinary-report')]});
  await f.coordinator.runDispatch(admitted.dispatches[0].dispatchId);
@@ -890,15 +889,15 @@ test('ordinary child mailbox failures notify the exact parent without a coordina
   dispatchBlock:{code:'WORKTREE_CONFLICT_OR_RECOVERY',message:'工作区有冲突',kind:'waiting'}}});
  f.mailbox.reportDispatchBlock(blocked);f.mailbox.reportDispatchBlock(blocked);
  const reports=f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'");
- assert.equal(reports.length,1);assert.equal(reports[0].intent,'response_required');assert.match(reports[0].body,/WORKTREE_CONFLICT_OR_RECOVERY/);
- assert.equal(f.store.getAgentTask(work.taskId).source.dispatchBlock.reportMessageId,reports[0].message_id);
+ assert.equal(reports.length,0);
+ assert.equal(f.store.getAgentTask(work.taskId).source.dispatchBlock.reportMessageId,undefined);
  const other=f.store.createTask({workId:f.work.id,title:'Unrelated_parent',mainAgentId:f.role.agentId});f.open('unrelated-origin',other.id);
  const wrong=f.mailbox.receiveEvent({recipientSessionId:logical,sourceType:'background',sourceId:'wrong-origin',intent:'action_required',body:'Another instruction',
   idempotencyKey:'wrong-origin',authorization:{ownerLogicalSessionId:logical,sourceId:'wrong-origin',sourceSessionId:'logical:unrelated-origin'}});
  const wrongWork=f.store.getAgentTask(f.mailbox.raw(logical,wrong.messageId).operation_id);
  f.mailbox.reportDispatchBlock(f.store.updateAgentTask(wrongWork.taskId,{source:{...wrongWork.source,dispatchBlock:{code:'MAILBOX_PAUSED',message:'Paused',kind:'paused'}}}));
  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:unrelated-origin'").n,0);
- assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,0);
 });
 
 const readQuery = (tool, fields = {}) => ({ tool, taskId: null, sessionId: null, query: null,
@@ -1418,7 +1417,7 @@ for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
     for (const dispatch of receipt.dispatches) {
       const row = f.coordinator.get(dispatch.dispatchId);
       assert.equal(row.status, "queued");
-      f.coordinator.onRuntimeEvent("AgentWorkStarted", { task: { taskId: row.operation_id } });
+      f.coordinator.onRuntimeEvent("AgentWorkStarted", { task: f.store.updateAgentTask(row.operation_id,{status:"running"}) });
     }
     let shown = checklist.display(checklist.read(f.parent.id));
     assert.deepEqual(shown.steps.slice(0, 2).map(s => s.assignment.status), ["running", "running"]);
@@ -1427,7 +1426,7 @@ for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
     const firstChild = f.store.getTask(first.target_task_id);
     const firstSession = f.store.getSession(firstChild.current_session_id);
     f.store.upsertSession({ ...firstSession, status: "completed", executionStatus: "completed" });
-    f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: { taskId: first.operation_id, status: "completed" } });
+    f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: f.store.updateAgentTask(first.operation_id,{status:"completed"}) });
     shown = checklist.display(checklist.read(f.parent.id));
     assert.equal(shown.steps[0].assignment.status, "completed");
     assert.equal(shown.steps[1].assignment.status, "running");
@@ -1437,3 +1436,90 @@ for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
     assert.equal(f.starts.length, 2);
   });
 }
+
+
+test('ten minutes of busy/batch/cancel telemetry creates no parent conversation or mailbox work',async t=>{
+ const f=await fixture(t);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('quiet-status')]});
+ const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+ const operation=f.store.getAgentTask(f.coordinator.get(id).operation_id);
+ for(let minute=0;minute<10;minute++) {
+  for(const code of ['SESSION_BUSY','CHANNEL_BATCH_WAIT']) {
+   const work={...operation,source:{...operation.source,dispatchBlock:{code,message:code,kind:'waiting'}}};
+   f.coordinator.onRuntimeEvent('AgentWorkDispatchBlocked',{task:work,reason:work.source.dispatchBlock});
+   f.mailbox.reportDispatchBlock(work);f.coordinator.flushReports();
+  }
+ }
+ f.coordinator.onRuntimeEvent('AgentWorkCompleted',{task:f.store.updateAgentTask(operation.taskId,{status:'cancelled'})});f.coordinator.flushReports();
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,0);
+ assert.equal(f.coordinator.get(id).status,'cancelled');
+});
+
+test('a completed host round without a final result does not manufacture a delivery',async t=>{
+ const f=await fixture(t);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('no-result')]});
+ const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+ const operation=f.store.updateAgentTask(f.coordinator.get(id).operation_id,{status:'completed',targetTurnId:'round:ended'});
+ f.coordinator.onRuntimeEvent('AgentWorkCompleted',{task:operation});f.coordinator.flushReports();
+ assert.equal(f.coordinator.get(id).status,'completed');
+ assert.equal(f.coordinator.get(id).report_message_id,null);
+ assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,0);
+});
+
+test("late operation events cannot replace a stored completion or emit its result twice", async t => {
+  const f = await fixture(t);
+  f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?",[f.source.sessionId]);
+  const admission = f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item("late-events")]});
+  const id = admission.dispatches[0].dispatchId;
+  await f.coordinator.runDispatch(id);
+  const row = f.coordinator.get(id);
+  const old = f.store.updateAgentTask(row.operation_id,{status:"running",targetTurnId:"original-turn"});
+  const work = f.store.updateAgentTask(row.operation_id,{status:"completed"});
+  f.store.upsertTimelineItemProjection(work.sessionId,{id:"final:stable",turnId:"original-turn",type:"agentMessage",text:"交付结果",status:"completed",createdAt:new Date().toISOString()});
+  f.coordinator.onRuntimeEvent("AgentWorkCompleted",{task:work});
+  f.coordinator.flushReports();
+  const report = f.coordinator.get(id).report_message_id;
+  assert.ok(report);
+  f.coordinator.onRuntimeEvent("AgentWorkStarted",{task:old});
+  assert.equal(f.coordinator.get(id).status,"completed");
+  // Recover an interrupted report-link update using the durable result receipt.
+  f.store.db.run("UPDATE task_coordination_dispatches SET report_message_id=NULL WHERE dispatch_id=?",[id]);
+  const restored = new TaskCoordinationService({store:f.store,collaboration:f.collaboration,mailbox:f.mailbox});
+  restored.flushReports();
+  assert.equal(restored.get(id).report_message_id,report);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+});
+
+test("retry of a cancelled accepted execution reports its original result identity without replay",async t=>{
+  const f=await fixture(t);
+  const admission=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item("cancel-evidence")]});
+  const id=admission.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+  const row=f.coordinator.get(id);
+  f.store.updateAgentTask(row.operation_id,{status:"running",targetTurnId:"accepted-turn"});
+  const cancelled=f.store.updateAgentTask(row.operation_id,{status:"cancelled",cancellation:{actor:"user",reason:"USER_STOP"}});
+  f.coordinator.onRuntimeEvent("AgentWorkCompleted",{task:cancelled});
+  const result=f.coordinator.retryDispatch(f.source,f.role.agentId,id);
+  assert.equal(result.status,"cancelled");
+  assert.equal(result.retryAction,"inspect_original_result");
+  assert.equal(result.originalTurnId,"accepted-turn");
+  assert.equal(result.executionEvidence.cancellation.reason,"USER_STOP");
+  assert.equal(result.executionEvidence.cancellation.phase,"execution_started");
+  assert.equal(f.store.getAgentTask(row.operation_id).status,"cancelled");
+});
+
+test("an identical final already sent through Channel is linked instead of reported twice",async t=>{
+  const f=await fixture(t);f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?",[f.source.sessionId]);
+  const admission=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item("channel-final")]});
+  const id=admission.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+  const row=f.coordinator.get(id),work=f.store.updateAgentTask(row.operation_id,{status:"running",targetTurnId:"result-turn"});
+  const child=f.store.getLogicalSessionByLegacySessionId(work.sessionId);
+  const channels=new SessionChannelService({store:f.store,collaborationCore:f.core});
+  const sent=channels.requestChannel({requestingSessionId:child.logicalSessionId,recipientSessionId:"logical:parent",body:"实际交付结果",deliveryIntent:"response_required",idempotencyKey:"channel-final"});
+  assert.equal(sent.status,"sent");
+  f.store.upsertTimelineItemProjection(work.sessionId,{id:"final:channel",turnId:"result-turn",type:"agentMessage",text:"实际交付结果",status:"completed",createdAt:new Date().toISOString()});
+  f.coordinator.onRuntimeEvent("AgentWorkCompleted",{task:f.store.updateAgentTask(work.taskId,{status:"completed"})});
+  f.coordinator.flushReports();
+  const receipt=f.store.selectOne("SELECT * FROM coordination_result_receipts WHERE dispatch_id=?",[id]);
+  assert.ok(receipt?.channel_message_id);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+});

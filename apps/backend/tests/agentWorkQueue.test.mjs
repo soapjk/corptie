@@ -101,6 +101,7 @@ test("orphaned dispatched work is cancelled while pre-dispatch work is requeued"
     targetTurnId: "turn-interrupted"
   }), {
     status: "cancelled",
+    cancellation: { actor: "runtime_recovery", reason: "PROVIDER_STOPPED_AFTER_DISPATCH" },
     lastError: "Provider stopped after dispatch; message was not resent."
   });
   assert.deepEqual(interruptedAgentWorkRecoveryPatch({
