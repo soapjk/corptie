@@ -3,7 +3,6 @@ import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { randomUUID } from "node:crypto";
 import { dispatchReady, dispatchBlocked } from "../utils/dispatchDecision.mjs";
 import { formatTrustedChannelMessage } from "../collaboration/trustedCollaborationEvent.mjs";
-import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
 
 const actionable = intent => ["action_required", "response_required", "notification"].includes(intent);
 const fail = (code, statusCode = 409) => { throw Object.assign(new Error(code), { code, statusCode }); };
@@ -197,7 +196,7 @@ export class SessionMailboxService {
     const work = row.operation_id ? this.store.getAgentTask(row.operation_id)
       : row.channel_delivery_id ? this.store.getAgentTaskForDelivery(row.channel_delivery_id) : null;
     if (work?.status === "queued") {
-      const cancelled = this.store.updateAgentTask(work.taskId, { status: "cancelled",
+      const cancelled = this.store.updateAgentTask(work.taskId, { status: "cancelled", cancellation: { actor: "mailbox", reason },
         source: { ...work.source, mailboxDisposition: reason } });
       return cancelled;
     }
@@ -247,29 +246,9 @@ export class SessionMailboxService {
     return this.dispatchDecision(operation).allowed;
   }
 
-  reportDispatchBlock(operation) {
-    const block=operation.source?.dispatchBlock;
-    // Coordination has its own durable, grouped status outbox.
-    if(!block || block.reportMessageId || operation.source?.coordinationDispatchId) return;
-    if(this.store.getAgentTask(operation.taskId)?.source?.dispatchBlock?.reportMessageId) return;
-    const recipient=this.store.getSession(operation.sessionId), child=recipient?.taskId && this.store.getTask(recipient.taskId);
-    const parent=child?.parent_task_id && this.store.getTask(child.parent_task_id);
-    if(!parent || parent.work_id!==child.work_id) return;
-    const row=operation.source?.mailboxMessageId && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[operation.source.mailboxMessageId]);
-    const envelope=row?.channel_delivery_id && this.channelService?.getDeliveryEnvelope(row.channel_delivery_id);
-    const origin=envelope?.message?.senderSessionId ?? decode(row?.authorization_json).sourceSessionId ?? parent.current_session_id;
-    if(!origin) return;
-    const logical=this.store.getLogicalSession(origin) ?? this.store.getLogicalSessionByLegacySessionId(origin);
-    const session=logical && this.store.getSession(logical.legacySessionId);
-    if(!logical || session?.taskId!==parent.id || session.workId!==child.work_id || session.archived || session.deletedAt) return;
-    const sourceId=`mailbox-dispatch:${operation.taskId}`;
-    this.store.runInTransaction(()=>{
-      const message=this.receiveEvent({recipientSessionId:logical.logicalSessionId,sourceType:"system",sourceId,
-        body:`${CHILD_TASK_RESULT_NOTICE_PREFIX}子会话的消息尚未派发，请向用户说明具体原因并读取最新状态；这不是新的执行指令。\n${JSON.stringify({childTaskId:child.id,childSessionId:operation.sessionId,operationId:operation.taskId,code:block.code,message:block.message,kind:block.kind})}`,
-        intent:"response_required",priority:5,idempotencyKey:JSON.stringify([operation.taskId,operation.updatedAt,block.code,block.message]),
-        authorization:{ownerLogicalSessionId:logical.logicalSessionId,sourceId,purpose:"dispatch_status"}});
-      this.store.updateAgentTask(operation.taskId,{source:{...operation.source,dispatchBlock:{...block,reportMessageId:message.messageId}}});
-    });
+  reportDispatchBlock() {
+    // Dispatch telemetry already lives on the original operation. It is not
+    // a question or a result and must never create a parent mailbox operation.
   }
 
   dispatchDecision(operation) {
@@ -387,7 +366,8 @@ export class SessionMailboxService {
     if (!rows.length) return;
     for (const row of rows) {
       const work = this.store.getAgentTask(row.operation_id);
-      this.workEvent(status === "failed" ? "AgentWorkFailed" : "AgentWorkCompleted", { ...work, status, targetTurnId: turnId });
+      const settled = work && this.store.updateAgentTask(work.taskId, { status, targetTurnId: turnId });
+      if (settled) this.workEvent(status === "failed" ? "AgentWorkFailed" : "AgentWorkCompleted", settled);
     }
     this.notify(logical);
   }

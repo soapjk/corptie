@@ -42,6 +42,7 @@ export function interruptedAgentWorkRecoveryPatch(task) {
   if (task.targetTurnId || task.source?.batchId || task.source?.mailboxDispatchAttempted) {
     return {
       status: "cancelled",
+      cancellation: { actor: "runtime_recovery", reason: "PROVIDER_STOPPED_AFTER_DISPATCH" },
       lastError: "Provider stopped after dispatch; message was not resent."
     };
   }

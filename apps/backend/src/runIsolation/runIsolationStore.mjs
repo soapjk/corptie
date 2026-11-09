@@ -20,6 +20,28 @@ export class RunIsolationStore {
     this.db = new DatabaseSync(this.path);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.db.exec(SCHEMA);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS run_execution_evidence(
+      run_id TEXT NOT NULL REFERENCES isolation_runs(run_id) ON DELETE CASCADE,
+      generation INTEGER NOT NULL,evidence_json TEXT NOT NULL,created_at TEXT NOT NULL,output_taken INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(run_id,generation));`);
+  }
+
+  saveExecutionEvidence(runId, generation, evidence) {
+    this.transaction(() => this.db.prepare(`INSERT INTO run_execution_evidence(run_id,generation,evidence_json,created_at)
+      VALUES(?,?,?,?) ON CONFLICT(run_id,generation) DO NOTHING`)
+      .run(runId,generation,JSON.stringify(evidence),this.clock().toISOString()));
+  }
+  takeExecutionOutput(runId, generation) {
+    return this.transaction(() => {
+      const row=this.db.prepare("SELECT evidence_json FROM run_execution_evidence WHERE run_id=? AND generation=? AND output_taken=0").get(runId,generation);
+      if(!row)return null;
+      this.db.prepare("UPDATE run_execution_evidence SET output_taken=1 WHERE run_id=? AND generation=?").run(runId,generation);
+      return JSON.parse(row.evidence_json).capturedOutput ?? null;
+    });
+  }
+  executionEvidence(runId, generation) {
+    const row=this.db.prepare("SELECT evidence_json FROM run_execution_evidence WHERE run_id=? AND generation=?").get(runId,generation);
+    return row ? JSON.parse(row.evidence_json) : null;
   }
 
   close() { this.db?.close(); this.db = null; }

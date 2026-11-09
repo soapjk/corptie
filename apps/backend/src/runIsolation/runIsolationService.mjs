@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { open, readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { relative } from "node:path";
 import { spawn } from "node:child_process";
 import { DataRootVerifier, createRunDirectories, deriveRunPaths } from "./dataRootVerifier.mjs";
@@ -157,8 +157,8 @@ export class RunIsolationService {
   }
 
   pin({runId,expectedResourceVersion,fencingToken,reason,retainUntil},session){let run=this.#authorize(runId,session);assertFence({expectedResourceVersion,fencingToken},run);const until=Date.parse(retainUntil);if(!reason||!Number.isFinite(until)||until<=this.clock().getTime()||until>this.clock().getTime()+14*24*60*60*1000)throw contractError("RECEIPT_RETENTION_INVALID","Pin requires a reason and retainUntil within 14 days.");run=this.store.updateRun(runId,{expectedVersion:run.resourceVersion,fencingToken:run.fencingToken,fromStates:[run.state],state:run.state,patch:{pinned:true,retainUntil}});this.store.appendEvent(runId,"RunPinned",{reasonHash:evidenceHash(reason),retainUntil});return {runId,retainUntil,reason,resourceVersion:run.resourceVersion}}
-  inspect(runId,session){return this.#authorize(runId,session)}
-  takeCommandOutput(runId){const output=this.commandOutputs.get(runId)??null;this.commandOutputs.delete(runId);return output}
+  inspect(runId,session){const run=this.#authorize(runId,session);return {...run,executionEvidence:this.store.executionEvidence(runId,run.generation)}}
+  takeCommandOutput(runId){const run=this.store?.getRun(runId);const stored=run?this.store.takeExecutionOutput(runId,run.generation):null;const output=this.commandOutputs.get(runId)??stored??null;this.commandOutputs.delete(runId);return output}
   recoverExpiredRuns({heartbeatTimeoutMilliseconds=30_000}={}){const cutoff=this.clock().getTime()-heartbeatTimeoutMilliseconds;const recovered=[];for(let run of this.store.listRuns()){if(!["preparing","ready","running","stopping"].includes(run.state)||Date.parse(run.heartbeatAt)>cutoff)continue;const error=businessError(contractError("RUN_HEARTBEAT_EXPIRED","Run heartbeat expired during recovery."));run=this.store.updateRun(run.runId,{expectedVersion:run.resourceVersion,fencingToken:run.fencingToken,fromStates:[run.state],state:"orphaned",patch:{outcome:"unknown",error}});this.store.appendEvent(run.runId,"HeartbeatMissed",{heartbeatAt:run.heartbeatAt});recovered.push(run)}return recovered}
   async reconcile(cleanupOperationId,session){const operation=this.store.getCleanup(cleanupOperationId);if(!operation)throw contractError("RUN_CLEANUP_OUTCOME_UNKNOWN","Cleanup operation not found.");if(operation.receipt&&operation.receipt.outcome!=="unknown")return operation.receipt;let run=this.#authorize(operation.runId,session);run=this.store.claimFence(run.runId,run.resourceVersion);this.store.resetCleanupForReconcile(cleanupOperationId,run.fencingToken);return this.cleanup({runId:run.runId,policy:"janitor_expiry",expectedResourceVersion:run.resourceVersion,fencingToken:run.fencingToken,idempotencyKey:operation.idempotencyKey,cleanupOperationId},session)}
 
@@ -168,6 +168,25 @@ export class RunIsolationService {
     // this process generation exited. Do not reclassify an in-place exec (for
     // example swift -> swift-driver) as a foreign PID during terminal cleanup.
     const execution=this.executions.get(runId);if(completion.kind==="exit"&&execution?.process)this.store.exitProcess(execution.process.runId,execution.process.role,execution.process.generation,this.clock().toISOString());
+    // Commit the child-handle evidence before cleanup can remove logs/resources.
+    // Missing terminal evidence after a crash remains unknown; never replay it.
+    let capturedOutput=null,outputTruncated=false,outputError=null;
+    if(execution?.captureOutput){
+      try {
+        const file=await open(execution.logPath,"r");
+        try { const stat=await file.stat();const size=Math.min(stat.size,4*1024*1024);const buffer=Buffer.alloc(size);
+          const {bytesRead}=await file.read(buffer,0,size,Math.max(0,stat.size-size));capturedOutput=buffer.subarray(0,bytesRead).toString("utf8");outputTruncated=stat.size>size;
+        } finally { await file.close(); }
+      } catch(error){outputError=error.code??"OUTPUT_READ_FAILED";}
+    }
+    this.store.saveExecutionEvidence(runId,run.generation,{
+      runId,generation:run.generation,logicalSessionId:run.logicalSessionId,taskId:run.taskId,
+      observedAt:this.clock().toISOString(),kind:completion.kind,exitCode:completion.code??null,signal:completion.signal??null,
+      error:completion.error?businessError(completion.error):null,
+      processes:this.store.processes(runId),resourceLeases:this.store.activeLeases(runId),
+      capturedOutput,outputTruncated,outputError,logPath:execution?.logPath??null
+    });
+    if(capturedOutput!==null)this.commandOutputs.set(runId,capturedOutput);
     const requested=completion.requestedOutcome??this.executions.get(runId)?.requestedOutcome;
     const outcome=requested??(completion.kind==="error"||completion.signal?"infrastructure_failed":completion.code===0?"passed":"failed");
     const terminalState=outcome==="passed"?"completed":outcome==="cancelled"?"cancelled":"failed";
@@ -176,7 +195,6 @@ export class RunIsolationService {
     this.store.appendEvent(runId,"RunStopping",{outcome,code:completion.code??null,signal:completion.signal??null});
     const reconciliation=await this.#stopProcesses(run);if(!["matchedExited","esrch"].includes(reconciliation))throw contractError("RUN_PROCESS_IDENTITY_INDETERMINATE","Process completion could not be reconciled safely.");
     await this.portBroker.release(run.runContext.serverHandleId);this.runtimeSecrets.delete(runId);this.store.releaseRunResourceLeases(runId,run.fencingToken);
-    if(execution?.captureOutput){const output=await readFile(execution.logPath,"utf8").catch(()=>"");this.commandOutputs.set(runId,output.length>4*1024*1024?output.slice(-4*1024*1024):output)}
     const completedAt=this.clock().toISOString();run=this.store.updateRun(runId,{expectedVersion:run.resourceVersion,fencingToken:run.fencingToken,fromStates:["stopping"],state:"cleaning",patch:{outcome,phaseTimestamps:{...run.phaseTimestamps,stoppedAt:completedAt,completedAt},error:terminalError}});
     const receipt=this.#runReceipt(run,terminalState,terminalError);this.store.saveRunReceipt(runId,receipt);this.store.appendEvent(runId,"RunCompleted",{state:terminalState,outcome,reconciliation});
     const policy=outcome==="passed"?"success_default":outcome==="cancelled"?"cancelled_ttl":outcome==="infrastructure_failed"?"infrastructure_ttl":"failure_ttl";

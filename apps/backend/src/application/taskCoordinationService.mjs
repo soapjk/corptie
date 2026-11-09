@@ -42,7 +42,8 @@ export class TaskCoordinationService {
     const session = task?.current_session_id && this.store.getSession(task.current_session_id);
     return { dispatchId: row.dispatch_id, targetTaskId: row.target_task_id, mailboxMessageId: row.mailbox_message_id,
       deliveryId: row.operation_id, status: row.status === "running" && session?.status === "blocked" ? "blocked" : row.status,
-      errorCode: row.error_code, errorMessage: row.error_message };
+      errorCode: row.error_code, errorMessage: row.error_message,
+      executionEvidence: row.operation_id ? this.store.getAgentTask(row.operation_id)?.executionEvidence ?? null : null };
   }
   pendingCreation(parentTaskId, actorId, request, runtime) {
     if (request.action !== "create") return null;
@@ -229,13 +230,13 @@ export class TaskCoordinationService {
       const delivery=deliveryId && this.store.getMessageDelivery?.(deliveryId);
       const turnId=operation.targetTurnId ?? delivery?.providerTurnId ?? message.adopted_turn_id;
       if(turnId || operation.status==="completed" || message.disposition==="adopted") {
-        this.update(id,{status:operation.status==="completed" ? "completed" : operation.status==="failed" ? "failed" : "running",error_code:null,error_message:null});
-        return {...this.receipt(this.get(id)),reused:true};
+        this.update(id,{status:operation.status==="completed" ? "completed" : operation.status==="failed" ? "failed" : operation.status==="cancelled" ? "cancelled" : "running",error_code:null,error_message:null});
+        return {...this.receipt(this.get(id)),reused:true, retryAction: terminal.has(operation.status) ? "inspect_original_result" : "reuse_running", originalOperationId: operation.taskId, originalTurnId: turnId ?? null};
       }
       if(operation.status==="queued") {
         this.update(id,{status:"queued",error_code:null,error_message:null});
         this.mailbox.wake(operation.sessionId,operation.taskId);
-        return {...this.receipt(this.get(id)),reused:true};
+        return {...this.receipt(this.get(id)),reused:true, retryAction:"reuse_queued", originalOperationId:operation.taskId, originalTurnId:null};
       }
       const neverAttempted=operation.source?.mailboxDispatchAttempted!==true && !delivery;
       const rejected=delivery && ["rejected","not_sent"].includes(delivery.status) && !delivery.providerTurnId;
@@ -247,12 +248,12 @@ export class TaskCoordinationService {
         this.update(id,{status:"unknown",error_code:"DISPATCH_ACCEPTANCE_UNKNOWN",
           error_message:"原指令是否已被接收尚未确认；已保留原消息，等待现有投递恢复核对，不重复发送。"});
       }
-      return {...this.receipt(this.get(id)),reused:true};
+      return {...this.receipt(this.get(id)),reused:true, retryAction:this.get(id).status === "queued" ? "requeue_unaccepted" : "reconcile_unknown", originalOperationId:operation.taskId, originalTurnId:null};
     }
-    if(row.status!=="failed") return {...this.receipt(row),reused:true};
+    if(row.status!=="failed") return {...this.receipt(row),reused:true,retryAction:"reuse_existing",originalOperationId:row.operation_id};
     this.update(id, { status: "accepted", error_code: null, error_message: null, report_message_id: null });
     setImmediate(() => this.runDispatch(id));
-    return this.receipt(this.get(id));
+    return {...this.receipt(this.get(id)),retryAction:"restart_preparation",originalOperationId:row.operation_id};
   }
   onRuntimeEvent(type, payload) {
     if(type==="TaskChanged" && payload?.entity?.id){
@@ -264,17 +265,13 @@ export class TaskCoordinationService {
         setImmediate(()=>this.runDispatch(row.dispatch_id));
       }
     }
-    const deletion = payload?.operation;
-    if (type === "TaskChanged" && deletion?.input?.actor?.type === "parent_session" && ["succeeded", "failed"].includes(deletion.state)) {
-      const recipientSessionId = deletion.input.actor.id;
-      try {
-        this.mailbox.receiveEvent({ recipientSessionId, sourceType: "background", sourceId: deletion.operationId,
-          body: `子任务删除结果：${JSON.stringify({ taskId: deletion.taskId, operationId: deletion.operationId, state: deletion.state, errorCode: deletion.errorCode, errorMessage: deletion.errorMessage?.slice(0, 2000) })}`,
-          intent: "response_required", priority: 5, idempotencyKey: `delete-result:${deletion.operationId}:${deletion.state}`,
-          authorization: { ownerLogicalSessionId: recipientSessionId, sourceId: deletion.operationId, purpose: "parent_report" } });
-      } catch (error) { console.warn(`[child-delete-report] ${error.code ?? error.message}`); }
-    }
-    const work = payload?.task;
+    const receivedWork = payload?.task;
+    const currentWork = receivedWork?.taskId ? this.store.getAgentTask(receivedWork.taskId) : null;
+    // Events are notifications about stored state, not a second state authority.
+    // A late started/cancelled event must not roll a newer operation back.
+    const work = currentWork ?? receivedWork;
+    if (currentWork && receivedWork?.status && currentWork.status !== receivedWork.status) return;
+    if (currentWork?.updatedAt && receivedWork?.updatedAt && receivedWork.updatedAt < currentWork.updatedAt) return;
     if(work?.taskId && ["AgentWorkDispatchBlocked","AgentWorkDispatchReady"].includes(type)) {
       const row=this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?",[work.taskId]);
       if(row && !terminal.has(row.status)) {
@@ -288,7 +285,7 @@ export class TaskCoordinationService {
     if (work?.taskId && ["AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
       const row = this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?", [work.taskId]);
       if (row) {
-        const status = type === "AgentWorkStarted" ? "running" : type === "AgentWorkFailed" ? "failed" : work.status === "cancelled" ? "cancelled" : "completed";
+        const status = currentWork?.status ?? (type === "AgentWorkStarted" ? "running" : type === "AgentWorkFailed" ? "failed" : work.status === "cancelled" ? "cancelled" : "completed");
         this.update(row.dispatch_id, { status, error_code:type === "AgentWorkStarted" ? null : work.source?.dispatchBlock?.code ?? null,
           error_message: type === "AgentWorkStarted" ? null : work.lastError ?? null });
       }
@@ -303,15 +300,20 @@ export class TaskCoordinationService {
   flushReports() {
     const rows = this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
       JOIN logical_sessions l ON l.logical_session_id=d.source_session_id JOIN sessions s ON s.id=l.legacy_session_id
-      WHERE d.status IN ('completed','failed','cancelled','unknown','waiting_dispatch','blocked') AND d.report_message_id IS NULL
+      WHERE d.status='completed' AND d.report_message_id IS NULL
+      AND EXISTS(SELECT 1 FROM agent_operations result_op JOIN session_items result_item
+        ON result_item.session_id=result_op.session_id AND result_item.turn_id=result_op.target_turn_id
+        WHERE result_op.task_id=d.operation_id AND result_item.type='agentMessage'
+          AND COALESCE(result_item.presentation_role,'') NOT IN ('commentary','reasoning'))
       AND s.archived=0 AND s.deleted_at IS NULL AND s.status NOT IN ('running','blocked')
       AND NOT EXISTS(SELECT 1 FROM agent_operations op WHERE op.session_id=s.id AND op.status='running')
       ORDER BY d.created_at LIMIT 100`);
     const groups = new Map();
     for (const row of rows) {
-      const key = `${row.source_session_id}:${row.progress_batch_id??"legacy"}`;
+      if (this.reconcileReportedResult(row)) continue;
+      const key = row.source_session_id;
       const group = groups.get(key) ?? [];
-      if (group.length < 5) group.push(row);
+      if (group.length < 8) group.push(row);
       groups.set(key, group);
     }
     for (const group of groups.values()) {
@@ -320,26 +322,71 @@ export class TaskCoordinationService {
       if (!session || session.archived || session.deletedAt || sessionHasActiveRun(session) || this.store.getRunningAgentTaskForSession(session.id)) continue;
       if (this.store.listQueuedAgentTasksForSession(session.id, 100).some(op => op.source?.type !== "mailbox_event")) continue;
       const first = group[0];
-      try { this.sourceContext(first); } catch { continue; }
+      try { for (const row of group) this.sourceContext(row); } catch { continue; }
       const results = group.map(row => {
         const work = row.operation_id ? this.store.getAgentTask(row.operation_id) : null;
         const reply = work?.targetTurnId ? this.store.selectOne(`SELECT id,binding_id,substr(text,1,1200) AS text,length(text) AS fullLength
           FROM session_items WHERE session_id=? AND turn_id=? AND type='agentMessage'
           AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY created_at DESC,id DESC LIMIT 1`, [work.sessionId, work.targetTurnId]) : null;
         return { ...this.receipt(row), childSessionId: work?.sessionId ?? null, turnId: work?.targetTurnId ?? null,
+          outcome: "execution_ended", targetOutcome: "not_assessed",
           finalMessageId: reply?.id ?? null, bindingId: reply?.binding_id ?? null,
           resultExcerpt: reply?.text ?? null, excerptTruncated: (reply?.fullLength ?? 0) > 1200 };
       });
-      const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}以下是派发或执行状态通知，可能包含尚未启动的等待或阻塞原因。请读取权威状态，向用户说明具体原因；等待或阻塞不能当作已经执行；这不是新的执行指令。执行完成不代表已验收，不自动合并或删除。\n${JSON.stringify(results)}`;
+      if (!results.some(result => result.finalMessageId)) continue;
+      const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}本批为子会话执行结果，不是用户新指令，也不代表目标完成或已验收。一次读取本批全部结果，结合原请求判断交付、问题或后台等待；继续此前已授权的审查、集成、验证及后续待办。不要逐条确认收件、查询调度状态或向用户转述内部回执。只有实质决策或阶段成果才汇报。\n${JSON.stringify(results)}`;
       this.store.runInTransaction(() => {
         const message = this.mailbox.receiveEvent({ recipientSessionId, sourceType: "background", sourceId: first.dispatch_id,
           body, intent: "response_required", priority: 5, idempotencyKey: `report:${first.dispatch_id}:${first.report_generation}`,
           authorization: { ownerLogicalSessionId: recipientSessionId, sourceId: first.dispatch_id,
             coordinationDispatchId: first.dispatch_id, purpose: "parent_report", reportGeneration: first.report_generation,
-            statusNotice:group.some(row=>["waiting_dispatch","blocked"].includes(row.status)) } });
-        for (const row of group) { this.update(row.dispatch_id, { report_message_id: message.messageId }); this.progress.correlateReports(row.dispatch_id,results.find(result=>result.dispatchId===row.dispatch_id)?.finalMessageId??null); }
+            statusNotice:false } });
+        for (const row of group) {
+          const result = results.find(result => result.dispatchId === row.dispatch_id);
+          this.recordResultReceipt(row, result, message.messageId);
+          this.update(row.dispatch_id, { report_message_id: message.messageId });
+          this.progress.correlateReports(row.dispatch_id,result?.finalMessageId??null);
+        }
       });
     }
+  }
+  recordResultReceipt(row, result, mailboxMessageId, channelMessageId = null) {
+    if (!result?.finalMessageId || !result.turnId || !result.childSessionId) return;
+    this.store.db.run(`INSERT OR IGNORE INTO coordination_result_receipts
+      (recipient_session_id,execution_session_id,turn_id,final_message_id,dispatch_id,mailbox_message_id,channel_message_id,created_at)
+      VALUES(?,?,?,?,?,?,?,?)`, [row.source_session_id,result.childSessionId,result.turnId,result.finalMessageId,
+      row.dispatch_id,mailboxMessageId,channelMessageId,new Date().toISOString()]);
+  }
+  reconcileReportedResult(row) {
+    const operation = this.store.getAgentTask(row.operation_id);
+    if (!operation?.targetTurnId) return false;
+    const result = this.store.selectOne(`SELECT id,text FROM session_items WHERE session_id=? AND turn_id=?
+      AND type='agentMessage' AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning')
+      ORDER BY created_at DESC,id DESC LIMIT 1`,[operation.sessionId,operation.targetTurnId]);
+    if (!result) return false;
+    const receipt = this.store.selectOne(`SELECT mailbox_message_id FROM coordination_result_receipts
+      WHERE recipient_session_id=? AND execution_session_id=? AND turn_id=? AND final_message_id=?`,
+      [row.source_session_id,operation.sessionId,operation.targetTurnId,result.id]);
+    if (receipt) {
+      this.update(row.dispatch_id,{report_message_id:receipt.mailbox_message_id});
+      return true;
+    }
+    // Only exact content from the same authenticated execution is a duplicate.
+    // A question, partial update or similar wording must not hide a final result.
+    const channel = this.store.selectOne(`SELECT m.message_id,mm.message_id AS mailbox_message_id
+      FROM session_collaboration_messages m JOIN session_collaboration_deliveries d ON d.message_id=m.message_id
+      JOIN session_mailbox_messages mm ON mm.channel_delivery_id=d.delivery_id
+      WHERE m.recipient_session_id=? AND m.sender_provider_session_id=? AND m.sender_turn_id=?
+      AND m.sender_operation_id=? AND m.body=? AND m.delivery_intent IN ('action_required','response_required','notification')
+      AND d.status IN ('pending','queued','delivered') AND mm.disposition IN ('pending','adopted')
+      ORDER BY m.created_at LIMIT 1`,[row.source_session_id,operation.sessionId,operation.targetTurnId,operation.taskId,result.text]);
+    if (!channel) return false;
+    this.store.runInTransaction(() => {
+      this.recordResultReceipt(row,{childSessionId:operation.sessionId,turnId:operation.targetTurnId,finalMessageId:result.id},channel.mailbox_message_id,channel.message_id);
+      this.update(row.dispatch_id,{report_message_id:channel.mailbox_message_id});
+      this.progress.correlateReports(row.dispatch_id,result.id);
+    });
+    return true;
   }
   recover() {
     for(const row of this.store.selectAll(`SELECT b.batch_id FROM coordination_progress_batches b

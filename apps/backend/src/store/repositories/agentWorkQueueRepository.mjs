@@ -204,9 +204,9 @@ export class AgentWorkQueueRepository {
   cancelQueuedUserAgentTask(sessionId, taskId) {
     const timestamp = new Date().toISOString();
     this.db.run(
-      `UPDATE agent_operations SET status = 'cancelled', completed_at = ?, updated_at = ?
+      `UPDATE agent_operations SET status = 'cancelled', completed_at = ?, updated_at = ?, execution_evidence_json = ?
        WHERE task_id = ? AND session_id = ? AND kind = 'user' AND status = 'queued'`,
-      [timestamp, timestamp, taskId, sessionId]
+      [timestamp, timestamp, JSON.stringify({ cancellation: { actor: "user", reason: "QUEUED_MESSAGE_CANCELLED", phase: "not_started", occurredAt: timestamp, resultRecoverability: "not_applicable" } }), taskId, sessionId]
     );
     if (this.db.getRowsModified() === 0) return null;
     this.scheduleSave();
@@ -221,10 +221,21 @@ export class AgentWorkQueueRepository {
     const timestamp = new Date().toISOString();
     const completedAt = Object.hasOwn(patch, "completedAt")
       ? patch.completedAt
-      : (["completed", "failed", "cancelled"].includes(status) ? timestamp : item.completedAt);
+      : (["completed", "failed", "cancelled"].includes(status) ? (status === item.status ? item.completedAt ?? timestamp : timestamp) : null);
+    const evidence = { ...item.executionEvidence };
+    if (status === "cancelled" && item.status !== "cancelled") {
+      const turnId = patch.targetTurnId ?? item.targetTurnId;
+      evidence.cancellation = {
+        actor: patch.cancellation?.actor ?? "unknown",
+        reason: patch.cancellation?.reason ?? patch.lastError ?? "CANCELLATION_REASON_UNAVAILABLE",
+        phase: turnId ? "execution_started" : item.source?.mailboxDispatchAttempted || item.startedAt ? "acceptance_unknown" : "not_started",
+        occurredAt: timestamp, resultRecoverability: turnId ? "inspect_original_turn" : "unknown",
+        operationId: taskId, sessionId: item.sessionId, turnId: turnId ?? null
+      };
+    }
     this.db.run(
       `UPDATE agent_operations SET status = ?, session_id = ?, target_turn_id = ?, last_error = ?,
-       started_at = ?, completed_at = ?, source_json = ?, updated_at = ? WHERE task_id = ?`,
+       started_at = ?, completed_at = ?, source_json = ?, execution_evidence_json = ?, updated_at = ? WHERE task_id = ?`,
       [
         status,
         Object.hasOwn(patch, "sessionId") ? patch.sessionId : item.sessionId,
@@ -233,6 +244,7 @@ export class AgentWorkQueueRepository {
         Object.hasOwn(patch, "startedAt") ? patch.startedAt : item.startedAt,
         completedAt,
         JSON.stringify(Object.hasOwn(patch, "source") ? (patch.source ?? {}) : item.source),
+        JSON.stringify(evidence),
         timestamp,
         taskId
       ]
@@ -251,6 +263,7 @@ function agentTaskFromRow(row) {
     priority: Number(row.priority),
     text: row.text,
     source: parseJson(row.source_json, {}),
+    executionEvidence: parseJson(row.execution_evidence_json, {}),
     localVisibility: row.local_visibility,
     status: row.status,
     deliveryId: row.channel_delivery_id || row.delivery_id || null,

@@ -15,7 +15,7 @@ export function createTaskExecutionComposition({
     stopSession: async sessionId => {
       const deliveries = store.selectAll("SELECT delivery_id,status FROM message_deliveries WHERE session_id=? AND status IN ('queued','dispatching','accepted','processing','delivery_unknown')", [sessionId]);
       for (const delivery of deliveries.filter(d => d.status === "queued")) store.updateMessageDelivery(delivery.delivery_id, { status: "cancelled" });
-      for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["queued"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled" });
+      for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["queued"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled", cancellation: { actor: "task_deletion", reason: "TASK_DELETED" } });
       const session = store.getSession(sessionId);
       const active = ["running", "blocked"].includes(session?.status) || (store.listUnsettledSessionTurns?.(sessionId).length ?? 0) > 0;
       if (active) {
@@ -27,7 +27,7 @@ export function createTaskExecutionComposition({
         if (!active) throw Object.assign(new Error("投递是否已执行尚未确认，需先恢复投递状态。"), { code: "SESSION_STATE_UNAVAILABLE" });
         store.updateMessageDelivery(delivery.delivery_id, { status: "cancelled" });
       }
-      for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["running"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled" });
+      for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["running"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled", cancellation: { actor: "task_deletion", reason: "TASK_DELETED" } });
     },
     inspectWorktree: (taskId) => inspectTaskWorktree(taskId),
     removeWorktree: (input) => removeTaskDeletionWorktree(input),

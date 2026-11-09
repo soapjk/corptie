@@ -1,4 +1,15 @@
 export function migrateTaskCoordination({ db, ensureColumn }) {
+  for (const column of ["sender_operation_id", "sender_turn_id", "sender_provider_session_id", "sender_binding_id"]) {
+    ensureColumn("session_collaboration_messages", column, "TEXT");
+  }
+  db.run(`CREATE INDEX IF NOT EXISTS channel_execution_result ON session_collaboration_messages(recipient_session_id,sender_operation_id,sender_turn_id);
+  CREATE TABLE IF NOT EXISTS coordination_result_receipts (
+    recipient_session_id TEXT NOT NULL, execution_session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL, final_message_id TEXT NOT NULL, dispatch_id TEXT NOT NULL,
+    mailbox_message_id TEXT NOT NULL, channel_message_id TEXT, created_at TEXT NOT NULL,
+    PRIMARY KEY(recipient_session_id,execution_session_id,turn_id,final_message_id)
+  );`);
+  ensureColumn("agent_operations", "execution_evidence_json", "TEXT");
   ensureColumn("tasks", "coordination_enabled", "INTEGER NOT NULL DEFAULT 0");
   db.run(`CREATE TABLE IF NOT EXISTS task_coordination_dispatches (
     dispatch_id TEXT PRIMARY KEY, source_session_id TEXT NOT NULL, parent_task_id TEXT NOT NULL,

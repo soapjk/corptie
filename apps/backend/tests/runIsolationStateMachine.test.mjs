@@ -9,3 +9,20 @@ test("cancel follows ready-stopping-cleaning and idempotently replays its RunRec
 test("startup recovery marks expired active Runs orphaned exactly once",async t=>{let now=new Date("2026-08-30T00:00:00.000Z");const {service}=await fixture(t,{clock:()=>new Date(now)});const {context}=await service.prepareRun(prepareInput({idempotencyKey:"prepare-expiry"}),session);now=new Date("2026-08-30T00:01:00.000Z");const recovered=service.recoverExpiredRuns({heartbeatTimeoutMilliseconds:30_000});assert.equal(recovered.length,1);assert.equal(recovered[0].state,"orphaned");assert.equal(recovered[0].error.code,"RUN_HEARTBEAT_EXPIRED");assert.equal(service.recoverExpiredRuns({heartbeatTimeoutMilliseconds:30_000}).length,0);assert.equal(service.store.getRun(context.runId).state,"orphaned")});
 test("control Store persists binding, port and retention contracts",async t=>{const {service}=await fixture(t);const {context}=await service.prepareRun(prepareInput({idempotencyKey:"prepare-control-schema"}),session);const tables=new Set(service.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row=>row.name));for(const name of ["data_root_bindings","port_leases","retention_policies","cleanup_receipts"])assert.equal(tables.has(name),true);assert.equal(service.store.db.prepare("SELECT COUNT(*) AS count FROM data_root_bindings WHERE state='verified'").get().count,1);assert.equal(service.store.db.prepare("SELECT COUNT(*) AS count FROM port_leases WHERE run_id=? AND state='active'").get(context.runId).count,1);assert.equal(service.store.db.prepare("SELECT max_pin_ttl_seconds FROM retention_policies WHERE policy_version='run-retention-v1'").get().max_pin_ttl_seconds,14*24*60*60)});
 test("only one cleanup lease may claim a Run and old fences cannot continue",async t=>{const {service}=await fixture(t);const {context}=await service.prepareRun(prepareInput({idempotencyKey:"prepare-cleanup-claim"}),session);const run=service.store.getRun(context.runId);service.store.createCleanup({cleanupOperationId:"cleanup:first-claim",runId:run.runId,idempotencyKey:"first-claim",requestHash:"a".repeat(64),ownerNonce:run.ownerNonce,fence:run.fencingToken,expectedRunVersion:run.resourceVersion,startedAt:new Date().toISOString()});await assert.rejects(service.cleanup({runId:run.runId,policy:"success_default",expectedResourceVersion:run.resourceVersion,fencingToken:run.fencingToken,idempotencyKey:"second-claim",cleanupOperationId:"cleanup:second-claim"},session),{code:"RUN_CLEANUP_BLOCKED"});const claimed=service.store.claimFence(run.runId,run.resourceVersion);assert.throws(()=>service.heartbeat({runId:run.runId,fencingToken:run.fencingToken},session),{code:"RUN_STALE_FENCE"});assert.ok(claimed.fencingToken>run.fencingToken)});
+
+test("terminal evidence and captured output survive cleanup and reopening the control database",async t=>{
+  const {service}=await fixture(t,{serviceOptions:{commandResolver:async()=>({executable:process.execPath,args:["-e","console.log('durable child result')"],captureOutput:true})}});
+  const {context}=await service.prepareRun(prepareInput({idempotencyKey:"terminal-evidence"}),session);
+  const run=service.store.getRun(context.runId);
+  const receipt=await service.execute({runId:run.runId,expectedResourceVersion:run.resourceVersion,fencingToken:run.fencingToken,commandDescriptorRef:"test:echo"},session);
+  assert.equal(receipt.outcome,"passed");
+  const evidence=service.inspect(run.runId,session).executionEvidence;
+  assert.equal(evidence.exitCode,0);
+  assert.equal(evidence.logicalSessionId,session.logicalSessionId);
+  assert.ok(evidence.resourceLeases.length>0);
+  assert.match(evidence.capturedOutput,/durable child result/);
+  service.commandOutputs.clear();service.store.close();await service.store.initialize();
+  assert.deepEqual(service.inspect(run.runId,session).executionEvidence,evidence);
+  assert.match(service.takeCommandOutput(run.runId),/durable child result/);
+  assert.equal(service.takeCommandOutput(run.runId),null);
+});
