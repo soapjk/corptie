@@ -512,6 +512,11 @@ struct SessionConversationSurface: View {
     private var messageViewport: some View {
         VStack(spacing: 0) {
             conversationTopChrome
+                .overlay(alignment: .bottom) {
+                    if showsHeader {
+                        Divider().allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
             messageViewportBody
         }
     }
