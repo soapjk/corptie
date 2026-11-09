@@ -89,12 +89,19 @@ public struct ConversationServerDetail: View {
                             ProgressView("正在同步其余详情…").font(.caption)
                         }
                     }
-                    if let message = displayStore.error { Label(message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
-                    if let message = runtime.error { Text(message).font(.caption).foregroundStyle(.secondary) }
-                    HStack {
-                        Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                            .buttonStyle(.plain).disabled(refreshing || selected == nil).help("刷新卡片").accessibilityLabel("刷新卡片")
-                        if runtime.needsRecovery { Button("核对回执，不重发") { Task { guard allows(activity?.generation ?? 0) else { return }; await runtime.recover(store: store, selected: selected, api: api) } }.font(.caption) }
+                    if displayStore.error != nil || runtime.error != nil || runtime.needsRecovery {
+                        ConversationDetailModuleCard(title: "详情状态", systemImage: "exclamationmark.triangle") {
+                            if let message = displayStore.error { Text(message).font(.caption).foregroundStyle(.secondary) }
+                            if let message = runtime.error { Text(message).font(.caption).foregroundStyle(.secondary) }
+                            if runtime.needsRecovery {
+                                Button("核对回执，不重发") {
+                                    Task {
+                                        guard allows(activity?.generation ?? 0) else { return }
+                                        await runtime.recover(store: store, selected: selected, api: api)
+                                    }
+                                }.font(.caption)
+                            }
+                        }
                     }
                 }
             }

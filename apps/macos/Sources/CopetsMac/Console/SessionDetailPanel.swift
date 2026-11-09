@@ -266,17 +266,9 @@ struct SessionDetailPanel: View {
                     ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(baseURL)), route: .desktop)
                 })
                 .id(session.id)
-            if richDetailReady != false {
-                if !detailResourceItems.isEmpty { ConversationDetailResourceMenu(items: detailResourceItems) }
-            } else { nativeDetailContent }
+            if richDetailReady == false { nativeDetailContent }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private var detailResourceItems: [ConversationDetailResourceMenu.Item] {
-        var items: [ConversationDetailResourceMenu.Item] = []
-        if let id = session.taskId { items.append(.init(.manageMemory) { AppTabRouter.shared.openMemory(ownerType: "task", ownerId: id) }) }
-        else if let id = session.workId { items.append(.init(.manageMemory) { AppTabRouter.shared.openMemory(ownerType: "work", ownerId: id) }) }
-        return items
     }
     private var detailAdapters: ConversationDetailAdapters {
         let task = displayValues.tasks.first { $0.id == session.taskId }
