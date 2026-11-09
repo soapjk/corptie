@@ -64,10 +64,14 @@ struct ConversationLegacyServerDetail: View {
                 }
             }, canPerformInCard: { cardID, action in actionRuntime.isIdle(cardID: cardID, actionID: action.id) }),
                 excludingCardIDs: [])
-            if let error = store.error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
-            if let error = actionRuntime.error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary) }
-            if actionRuntime.needsRecovery, let selected = presentationAPI {
-                Button("核对回执（不重发）") { Task { await actionRuntime.recover(store: store, selected: selected, api: api) } }
+            if store.error != nil || actionRuntime.error != nil || actionRuntime.needsRecovery {
+                ConversationDetailModuleCard(title: "详情状态", systemImage: "exclamationmark.triangle") {
+                    if let error = store.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                    if let error = actionRuntime.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                    if actionRuntime.needsRecovery, let selected = presentationAPI {
+                        Button("核对回执（不重发）") { Task { await actionRuntime.recover(store: store, selected: selected, api: api) } }
+                    }
+                }
             }
         }
         .task(id: scope) {

@@ -111,6 +111,9 @@ struct SessionConversationSurface: View {
         usesComposerJumpToLatest && !showsWelcome
             && (quickMessagePresentation.showsMessages || composerJumpToLatestAction != nil)
     }
+    private var quickMessageOverlap: CGFloat {
+        showsDockQuickMessages && !hasPinnedChecklist ? ConversationQuickMessages.rowHeight + 4 : 0
+    }
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
@@ -500,7 +503,7 @@ struct SessionConversationSurface: View {
     }
 
     private var conversationLayout: some View {
-        ConversationRegionStack {
+        ConversationRegionStack(accessoryOverlap: quickMessageOverlap) {
             messageViewport
         } accessory: {
             inputDock
@@ -620,15 +623,15 @@ struct SessionConversationSurface: View {
                         isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
                     )
                 }
-                VStack(spacing: 6) {
-                    if let session = selectedSession {
-                        if let page = renderInputs { SessionSendFailureSurface(message: page.sendFailure) }
-                        else { SessionSendFailureView(sessionID: session.id) }
-                    }
-                    sessionReadinessNotice
-                    ConversationComposerDock {
-                        if showsDockQuickMessages { dockQuickMessages }
-                    } composer: {
+                ConversationComposerDock {
+                    if showsDockQuickMessages { dockQuickMessages }
+                } composer: {
+                    VStack(spacing: 6) {
+                        if let session = selectedSession {
+                            if let page = renderInputs { SessionSendFailureSurface(message: page.sendFailure) }
+                            else { SessionSendFailureView(sessionID: session.id) }
+                        }
+                        sessionReadinessNotice
                         sessionComposer
                     }
                 }
@@ -737,7 +740,7 @@ struct SessionConversationSurface: View {
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
                 topClearance: topChromeClearance,
-                bottomClearance: 0,
+                bottomClearance: quickMessageOverlap,
                 reservesVerticalScrollerGutter: !compactComposer,
                 trailingScrollerExtension: 0
             )
