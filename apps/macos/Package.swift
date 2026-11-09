@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "CorptieMac", targets: ["CorptieMac"])
     ],
     dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
         .package(path: "../../packages/CorptieClientCore"),
         .package(path: "../../packages/CorptieConversation"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.1"),
@@ -30,6 +31,7 @@ let package = Package(
         .executableTarget(
             name: "CorptieMac",
             dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "CorptieClientCore", package: "CorptieClientCore"),
                 .product(name: "CorptieClientSecurity", package: "CorptieClientCore"),
                 .product(name: "CorptieConversation", package: "CorptieConversation"),
