@@ -231,8 +231,12 @@ struct SessionConversationHeaderSurface: View {
         }
     }
 
+    private var showsContinuationFailure: Bool {
+        session?.external?.workspace?.continuationState == "failed"
+    }
+
     private var headerIdentityCapsule: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             if let selectedTitle {
                 Button {
                     copySessionTitle(selectedTitle)
@@ -250,6 +254,20 @@ struct SessionConversationHeaderSurface: View {
                             ConsoleScheduledWakeIcon(isActive: scenePhase == .active && isPresentationActive)
                                 .accessibilityIdentifier("conversation-task-scheduled-wake")
                         }
+                        // Status badges ride on the title row. A separate row
+                        // would make the capsule taller than the fixed header
+                        // accessory height and clip the path line underneath.
+                        if showsHistoricalThread {
+                            Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: true, vertical: false)
+                        } else if showsContinuationFailure {
+                            Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
                         copyConfirmation(visible: didCopySessionTitle)
                     }
                 }
@@ -257,18 +275,10 @@ struct SessionConversationHeaderSurface: View {
                 .help(L10n("Click to copy Session title"))
                 .accessibilityLabel(L10n("Copy Session title"))
                 .accessibilityValue(selectedTitle)
-                .frame(height: 28)
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if showsHistoricalThread {
-                    Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.orange)
-                } else if session?.external?.workspace?.continuationState == "failed" {
-                    Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.orange)
-                }
+                // 14pt text only needs ~17pt of line height. A 28pt box was
+                // padding the header vertically now that the metadata line
+                // sits 2pt below the title.
+                .frame(height: 20)
             }
             HStack(alignment: .center, spacing: 6) {
                 if let selectedSession = session {

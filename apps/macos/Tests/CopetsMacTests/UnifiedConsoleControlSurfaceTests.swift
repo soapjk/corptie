@@ -316,11 +316,16 @@ struct UnifiedConsoleControlSurfaceTests {
         let searchPosition = try #require(controls.range(of: "searchToggleButton"))
         let sortPosition = try #require(controls.range(of: "outlineSortMenu"))
         let archivePosition = try #require(controls.range(of: "taskArchiveToggle"))
-        let createPosition = try #require(controls.range(of: "outlineCreationMenu"))
         #expect(sortPosition.lowerBound < togglePosition.lowerBound)
         #expect(searchPosition.lowerBound < sortPosition.lowerBound)
         #expect(togglePosition.lowerBound < archivePosition.lowerBound)
-        #expect(archivePosition.lowerBound < createPosition.lowerBound)
+        // Search / More own this row alone. The Create control has its own
+        // layout in the Work column; putting it back here would make the two
+        // panes' top rows different heights again.
+        #expect(!controls.contains("outlineCreationMenu"))
+        #expect(source.contains("consoleSidebarCreationRow"))
+        #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)"))
+        #expect(MainWindowPageLayoutMetrics.headerRowHeight == 48)
         #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
@@ -342,6 +347,16 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(mobile.contains("PlatformWorkOutlineToolbar("))
         #expect(mobile.contains(".platformWorkOutlineToolbarControl()"))
         #expect(source.contains(".platformWorkOutlineToolbarControl()"))
+    }
+
+    @Test
+    func conversationHeaderAccessorySharesTheTopRowHeight() throws {
+        let split = try source(named: "ConsoleWindowSplitView.swift")
+        #expect(split.contains(
+            "accessoryHeight: Header.self == EmptyView.self ? 0 : MainWindowPageLayoutMetrics.headerRowHeight"))
+        // 72pt pinned a ~45pt header, leaving ~27pt of dead space below it.
+        #expect(!split.contains("EmptyView.self ? 0 : 72"))
+        #expect(MainWindowPageLayoutMetrics.headerRowHeight < 56)
     }
 
     @Test @MainActor

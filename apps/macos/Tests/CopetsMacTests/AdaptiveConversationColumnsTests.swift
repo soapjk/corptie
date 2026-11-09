@@ -21,7 +21,10 @@ struct AdaptiveConversationColumnsTests {
             } detail: {
                 NativeProbe(view: inspector)
             } header: {
-                NativeProbe(view: header).frame(height: 64)
+                // Track the real accessory height. A taller probe would spill
+                // out of the pinned header band and falsely overlap the
+                // transcript in this geometry test.
+                NativeProbe(view: header).frame(height: MainWindowPageLayoutMetrics.headerRowHeight)
             }
         }
     }
@@ -47,7 +50,7 @@ struct AdaptiveConversationColumnsTests {
                 let headerFrame = header.convert(header.bounds, to: host)
                 let transcriptFrame = transcript.convert(transcript.bounds, to: host)
                 #expect(abs(headerFrame.width - width) < 2)
-                #expect(abs(headerFrame.height - 64) < 2)
+                #expect(abs(headerFrame.height - MainWindowPageLayoutMetrics.headerRowHeight) < 2)
                 if let previousHeader { #expect(headerFrame == previousHeader) }
                 previousHeader = headerFrame
                 let docked = visible && width >= AdaptiveConversationColumns<Color, Color, EmptyView>.minimumDockedWidth

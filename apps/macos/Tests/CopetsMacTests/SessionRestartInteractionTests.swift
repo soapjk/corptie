@@ -57,7 +57,18 @@ struct SessionRestartInteractionTests {
 
         #expect(source.contains("GlassEffectContainer(spacing: 6)"))
         #expect(row.contains("headerIdentityCapsule"))
-        #expect(row.contains("VStack(alignment: .leading, spacing: 4)"))
+        // Keep the title close to the path/worktree metadata line: two rows
+        // only, so the capsule has a constant height that fits the pinned
+        // header accessory. Badges ride along the title row instead of adding
+        // a third row that would clip the path line.
+        #expect(row.contains("VStack(alignment: .leading, spacing: 2)"))
+        #expect(row.contains("if showsHistoricalThread {"))
+        #expect(row.contains("} else if showsContinuationFailure {"))
+        #expect(!row.contains("HStack(alignment: .firstTextBaseline, spacing: 6)"))
+        // The title box hugs its 14pt text; do not restore the old 28pt
+        // control-height box that made the whole header look thick.
+        #expect(row.contains(".frame(height: 20)"))
+        #expect(!row.contains(".frame(height: 28)"))
         #expect(row.contains(".multilineTextAlignment(.leading)"))
         #expect(row.contains("SessionHeaderProviderIdentity(session: selectedSession, providers: providers)"))
         #expect(row.contains(".foregroundStyle(.primary)"))

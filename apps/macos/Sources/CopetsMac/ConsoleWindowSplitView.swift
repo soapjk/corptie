@@ -171,7 +171,8 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
     }
 
     var body: some View {
-        ConversationRegionStack(accessoryAtTop: true, accessoryHeight: Header.self == EmptyView.self ? 0 : 72) {
+        ConversationRegionStack(accessoryAtTop: true,
+                                accessoryHeight: Header.self == EmptyView.self ? 0 : MainWindowPageLayoutMetrics.headerRowHeight) {
             ZStack(alignment: .trailing) {
                 HStack(spacing: 0) {
                     transcript()

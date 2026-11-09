@@ -359,6 +359,9 @@ struct UnifiedConsoleView: View {
 
     var consoleNavigationContent: some View {
         VStack(spacing: 0) {
+            // Create belongs to the Work column itself, not to the thin top
+            // row shared with the conversation header across the divider.
+            consoleSidebarCreationRow
             // Keep one search field mounted as the query gains/loses results.
             // Replacing the field here would lose focus and marked input.
             if isSearching {
@@ -395,32 +398,32 @@ struct UnifiedConsoleView: View {
         .modifier(ConsoleTopEdgeEffectModifier())
     }
 
+    /// Search and More own this one row. Its height matches the conversation
+    /// header accessory on the other pane, so the two top rows line up as a
+    /// single thin band without measuring anything during a live resize.
     private var consoleSidebarHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 4) {
-                Spacer(minLength: 8)
-                searchToggleButton
-                    .consoleHoverFeedback()
-                Menu {
-                    outlineSortMenu
-                    navigationModeToggle
-                    taskArchiveToggle
-                } label: {
-                    Image(systemName: "ellipsis").frame(width: 28, height: 28)
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        HStack(spacing: 4) {
+            Spacer(minLength: 8)
+            searchToggleButton
                 .consoleHoverFeedback()
-                .fixedSize().help(L10n("更多选项"))
-                WorkColumnCollapseButton()
-                    .frame(width: 28, height: 28)
-                    .consoleHoverFeedback()
+            Menu {
+                outlineSortMenu
+                navigationModeToggle
+                taskArchiveToggle
+            } label: {
+                Image(systemName: "ellipsis").frame(width: 28, height: 28)
             }
-            outlineCreationMenu
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .consoleHoverFeedback()
+            .fixedSize().help(L10n("更多选项"))
+            WorkColumnCollapseButton()
+                .frame(width: 28, height: 28)
+                .consoleHoverFeedback()
         }
         .platformWorkOutlineToolbarDensity(.titlebar)
         .padding(.horizontal, 16)
         .padding(.top, 2)
-        .padding(.bottom, 14)
+        .frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)
     }
 
     var navigationMode: ConsoleNavigationMode {
@@ -940,6 +943,16 @@ struct UnifiedConsoleView: View {
         pendingSelectionTask = nil
         viewportController.hydrate(session.id)
         backendClient.select(session: session)
+    }
+
+    /// Create is a Work-column control with its own layout: it sits below the
+    /// shared top band rather than thickening the row that has to line up
+    /// with the conversation title on the other side of the divider.
+    private var consoleSidebarCreationRow: some View {
+        outlineCreationMenu
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 6)
     }
 
     var outlineCreationMenu: some View {
