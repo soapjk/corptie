@@ -4,6 +4,7 @@ import { readdir, realpath } from 'node:fs/promises';
 import { resolve, join, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
+import { libraryDependencies, isBundledRuntimeDependency } from './macho-library-dependencies.mjs';
 
 const app = await realpath(resolve(process.argv[2]));
 assert.equal(process.execPath, join(app, 'Contents/Helpers/node'));
@@ -52,11 +53,9 @@ async function inspect(directory) {
         `External runtime search path: ${path}: ${rpath}`);
       }
       const libraries = execFileSync('/usr/bin/otool', ['-L', path], { encoding: 'utf8' });
-      for (const line of libraries.split('\n').slice(1)) {
-        const dependency = line.trim().split(' (')[0];
-        if (!dependency) continue;
-        assert.ok(dependency.startsWith('/usr/lib/') || dependency.startsWith('/System/Library/')
-          || dependency.startsWith('@'), `External library dependency: ${path}: ${dependency}`);
+      for (const dependency of libraryDependencies(libraries)) {
+        assert.ok(isBundledRuntimeDependency(dependency),
+          `External library dependency: ${path}: ${dependency}`);
       }
     }
   }

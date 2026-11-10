@@ -236,10 +236,10 @@ export class CodexAccountManager {
 
   async assertProfileReady(profile = this.registry.current) {
     const record = this.state.accounts[profile.profileId];
-    if (!record || record.deletedAt) throw fail("CODEX_ACCOUNT_REQUIRED", "请在账号管理中添加账号，并保存默认账号选择。");
+    if (!record || record.deletedAt) throw fail("CODEX_ACCOUNT_REQUIRED", "请先指定账号：在账号列表中选择一个账号，或点击“添加账号”使用本机已有登录。");
     const status = await this.status(record);
     if (status.state !== "ready" && !(record.legacy && profile.mode === "native" && status.state === "external")) {
-      throw fail("CODEX_ACCOUNT_NOT_READY", "此会话绑定的账号凭证不可用，请在账号管理中更新该账号；不会自动切换其他账号。");
+      throw fail("CODEX_ACCOUNT_NOT_READY", "此会话绑定的账号凭证不可用，请在账号列表中更新该账号的凭证；不会自动切换其他账号。");
     }
   }
 
@@ -285,7 +285,9 @@ export class CodexAccountManager {
       return record;
     }
     const existing = Object.values(this.state.accounts).find(record => !record.deletedAt && this.profile(record)?.mode === "isolated" && credential.identity && record.identity === credential.identity);
-    if (existing) throw fail("CODEX_ACCOUNT_EXISTS", "此账号已在管理列表中，请选择现有账号或更新其凭证。");
+    // Selecting a locally discovered login is idempotent: if that identity is
+    // already registered, reuse it instead of rejecting the selection.
+    if (existing) return existing;
     const record = await this.allocate(input.name ?? credential.label, { identity: credential.identity, kind: credential.kind,
       importedFrom: input.source.path });
     await this.prepare(this.profile(record));
@@ -403,6 +405,7 @@ export class CodexAccountManager {
     return this.serial(async () => {
       let flow = null;
       let discovered;
+      let accountId = null;
       switch (input.action) {
         case "discover": {
           const inspected = await Promise.all(this.candidates.filter(source => source.kind !== "keychain").map(async source => {
@@ -416,7 +419,7 @@ export class CodexAccountManager {
           discovered = inspected.filter(Boolean);
           break;
         }
-        case "import": await this.importCredential(input); break;
+        case "import": accountId = (await this.importCredential(input)).id; break;
         case "login": flow = await this.startLogin(input); break;
         case "rename": this.record(input.accountId).name = this.name(input.name); await this.persist(); break;
         case "delete": await this.remove(input.accountId); break;
@@ -424,6 +427,7 @@ export class CodexAccountManager {
           const login = this.logins.get(input.loginId);
           if (!login) throw fail("CODEX_LOGIN_NOT_FOUND", "登录请求已结束或应用已重启，请重新登录。");
           await this.finishLogin(login);
+          accountId = login.accountId ?? null;
           flow = { id: login.id, state: login.state, accountId: login.accountId ?? null, message: login.message ?? null };
           break;
         }
@@ -434,7 +438,7 @@ export class CodexAccountManager {
         }
         default: throw fail("CODEX_ACCOUNT_ACTION_INVALID", "账号操作无效。");
       }
-      return { accounts: await this.list(), flow, discovered };
+      return { accounts: await this.list(), flow, discovered, accountId };
     });
   }
 

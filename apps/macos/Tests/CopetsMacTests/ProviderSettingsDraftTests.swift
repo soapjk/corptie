@@ -49,6 +49,38 @@ import Testing
         #expect(draft.values["test"]?.source?.path == "/tmp/official")
     }
 
+    @Test func accountAndBinaryEditsAreSubmittedTogetherByTheSharedSave() async throws {
+        // Onboarding now uses this same draft: switching the Codex account and
+        // choosing a binary must never take two different submission paths.
+        let draft = ProviderSettingsDraft()
+        draft.receive(try status())
+        draft.edit("test", path: "/tmp/custom-codex", enabled: true, accountId: "account-b")
+        var submitted: [[String: Any]] = []
+        try await draft.save { body in
+            submitted = body
+            return try status(source: "/tmp/official")
+        }
+        #expect(submitted.count == 1)
+        #expect(submitted[0]["path"] as? String == "/tmp/custom-codex")
+        #expect(submitted[0]["accountId"] as? String == "account-b")
+        #expect(submitted[0]["enabled"] as? Bool == true)
+    }
+
+    @Test func savingDoesNotRebuildCardsMidAutomaticCheck() async throws {
+        // An automatic check starts immediately after the save that applies
+        // the selected account. Rebuilding the card here would cancel it.
+        let draft = ProviderSettingsDraft()
+        draft.receive(try status())
+        draft.edit("test", accountId: "account-b")
+        let generation = draft.refreshGeneration
+        try await draft.save { _ in try status(source: "/tmp/official") }
+        #expect(draft.refreshGeneration == generation)
+        #expect(!draft.isDirty)
+        draft.edit("test", enabled: false)
+        draft.discard()
+        #expect(draft.refreshGeneration == generation + 1)
+    }
+
     @Test func providerChangesParticipateInTheSharedSaveButtonAndDiscard() throws {
         let shared = SettingsDraftState()
         shared.receive(try JSONDecoder().decode(BackendSettings.self, from: Data("{\"dataRoot\":\"/tmp/root\"}".utf8)))

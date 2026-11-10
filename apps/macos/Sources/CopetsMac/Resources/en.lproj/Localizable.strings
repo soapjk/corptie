@@ -2074,3 +2074,20 @@
 "Updating MCP removal status" = "Updating MCP removal status";
 
 "Remove MCP" = "Remove MCP";
+
+/* First-run zero-touch provider setup */
+"正在后台自动检测…" = "Checking in the background…";
+"请指定账号" = "Choose an account";
+"正在应用配置…" = "Applying settings…";
+"配置已更改 · 即将自动检测" = "Settings changed · Checking shortly";
+"自动检测失败" = "Automatic check failed";
+"正在准备自动检测…" = "Preparing automatic check…";
+"已就绪 · 账号：%@" = "Ready · Account: %@";
+"请指定账号：选择上方列表中的账号，或点击“添加账号”后使用本机已有登录。" = "No account selected: choose one above, or use Add Account to add a local sign-in.";
+"程序路径、账号等配置变更后会自动保存并在后台检测连接，结果直接显示在这里，无需手动检测。" = "Program path and account changes are saved automatically and checked in the background. The result appears here; no manual test is needed.";
+"尚未指定账号：请选择上方列表中的账号，或点击“添加账号”。" = "No account selected: pick one above or use Add Account.";
+"选择账号后会自动保存并在后台检测连接，无需手动操作。" = "Choosing an account saves it automatically and runs a background check.";
+"请先为 Codex 指定账号" = "Choose a Codex account first";
+"默认程序与账号已自动检测完成，可直接进入。" = "The default program and account were checked automatically. You can continue.";
+"请选择列表中的账号，或点击“添加账号”使用本机已有登录。" = "Pick an account above, or use Add Account to add a local sign-in.";
+"添加账号" = "Add Account";

@@ -48,3 +48,49 @@ test("event debounce updates the cursor and close cancels pending timers", () =>
   assert.equal(timers.size, 0);
   assert.equal(intervals.size, 0);
 });
+
+test("identical sync failures back off per bot and are logged only once", async () => {
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    let calls = 0;
+    let fail = true;
+    const scheduler = new FeishuSyncScheduler({
+      store: {
+        listFeishuAssignments: () => [{ botId: "bot" }],
+        getFeishuBot: () => ({ enabled: true })
+      },
+      syncBotOnce: async () => {},
+      requestSync: async () => {
+        calls += 1;
+        if (fail) throw new Error("Feishu API 230099: card table number over limit");
+      }
+    });
+
+    await scheduler.runPeriodicSync("bot");
+    assert.equal(calls, 1);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /backoff 2000ms/);
+
+    // Still inside the backoff window: no replay and no duplicate log line.
+    await scheduler.runPeriodicSync("bot");
+    assert.equal(calls, 1);
+    assert.equal(logs.length, 1);
+
+    // A distinct failure is worth one more line; a success resets the state.
+    scheduler.failureState.get("bot").nextAllowedAt = 0;
+    await scheduler.runPeriodicSync("bot");
+    assert.equal(logs.length, 1, "the same signature must not be logged again");
+
+    fail = false;
+    scheduler.failureState.get("bot").nextAllowedAt = 0;
+    await scheduler.runPeriodicSync("bot");
+    const state = scheduler.failureState.get("bot");
+    assert.equal(state.consecutive, 0);
+    assert.equal(state.nextAllowedAt, 0);
+    assert.equal(state.lastSignature, null);
+  } finally {
+    console.error = originalError;
+  }
+});

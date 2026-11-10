@@ -741,6 +741,11 @@ enum ComposerSendPolicy {
 }
 
 struct ComposerQuickMessagesBar: View {
+    /// Kept in sync with `SessionConversationContent.quickMessageOverlap` so the
+    /// floating control never pushes the quick-message strip out of the
+    /// transcript's overlap region.
+    static let jumpControlSize: CGFloat = 30
+
     let backendClient: BackendClient
     let sessionId: String
     let taskID: String?
@@ -754,28 +759,35 @@ struct ComposerQuickMessagesBar: View {
     let send: (String) -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            if showsMessages {
-                MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
-                    taskID: taskID, online: online, refreshRevision: refreshRevision,
-                    enabled: enabled,
-                    activity: activity,
-                    load: { try await backendClient.quickMessages(for: sessionId) }) { text in
-                    send(text)
-                }
-            } else {
-                Spacer(minLength: 0)
-            }
+        // The round glass control sits directly above the chips, centred over
+        // the reading lane. spacing 0 keeps its lower edge touching the strip;
+        // the strip itself lives in the region that overlaps the transcript, so
+        // the glass floats above message text instead of on an opaque dock.
+        VStack(spacing: 0) {
             if let onJumpToLatest {
                 Button(action: onJumpToLatest) {
                     Image(systemName: "arrow.down")
                         .font(.system(size: 12, weight: .bold))
-                        .frame(width: 30, height: 30)
+                        .frame(width: Self.jumpControlSize, height: Self.jumpControlSize)
                 }
                 .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow))
                 .help(L10n("Jump to latest message"))
                 .accessibilityLabel(L10n("Jump to latest message"))
                 .accessibilityIdentifier("conversation-jump-to-latest")
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            HStack(spacing: 8) {
+                if showsMessages {
+                    MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
+                        taskID: taskID, online: online, refreshRevision: refreshRevision,
+                        enabled: enabled,
+                        activity: activity,
+                        load: { try await backendClient.quickMessages(for: sessionId) }) { text in
+                        send(text)
+                    }
+                } else {
+                    Spacer(minLength: 0)
+                }
             }
         }
     }

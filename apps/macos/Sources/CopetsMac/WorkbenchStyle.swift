@@ -27,12 +27,23 @@ enum WorkbenchStyle {
 }
 
 
-/// One horizontal layout for the transcript, checklist and input dock.
+/// One horizontal layout for the checklist and input dock.
 struct WorkbenchReadingLane: ViewModifier {
     let compact: Bool
     func body(content: Content) -> some View {
         content.frame(maxWidth: compact ? .infinity : WorkbenchStyle.readingWidth)
             .padding(.horizontal, compact ? 0 : WorkbenchStyle.readingInset)
             .frame(maxWidth: .infinity)
+    }
+}
+
+/// On standard pages the native transcript owns the *whole* detail width. The
+/// centred reading lane is applied to its table by
+/// `AppKitChatTimelineCoordinator`, which keeps the trailing gutter free for
+/// the overlay scroller instead of letting the indicator paint over the last
+/// message card. Compact/floating pages keep their narrow, full-width table.
+struct WorkbenchTimelineViewport: ViewModifier {
+    func body(content: Content) -> some View {
+        content.frame(maxWidth: .infinity)
     }
 }

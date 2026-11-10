@@ -264,7 +264,7 @@ export class FirstRunSetupService {
           !== JSON.stringify(oldSource && { kind: oldSource.kind, path: oldSource.path });
         const applySource = sourceChanged || value.confirmSource === true;
         if (applySource) {
-          if (provider.accounts) throw new Error("请在账号管理中导入凭证。");
+          if (provider.accounts) throw new Error("此执行引擎使用账号列表：请在账号列表中指定账号，无需导入凭证来源。");
           if (!this.runtimeSettings || !source || !isAbsolute(source.path ?? "")) throw new Error(`${provider.name}：请选择有效的凭证来源路径。`);
           await this.runtimeSettings.validateSource(provider.id, source);
         }
@@ -329,7 +329,7 @@ export class FirstRunSetupService {
   }
 
   async saveCredentialSource(input) {
-    if (this.provider(input.providerId).accounts) throw new Error("请在账号管理中导入凭证。");
+    if (this.provider(input.providerId).accounts) throw new Error("此执行引擎使用账号列表：请在账号列表中指定账号，无需导入凭证来源。");
     if (!this.runtimeSettings) throw new Error("此环境不支持凭证来源设置。");
     await this.runtimeSettings.saveSource(input.providerId, input);
     return this.row(this.provider(input.providerId));

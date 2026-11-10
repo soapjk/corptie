@@ -509,26 +509,39 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestIsAdjacentToTheComposerInsteadOfOffsetAboveItsWholeRegion() throws {
-        let source = try source(named: "Conversation/SessionConversationContent.swift")
-        let composer = try self.source(named: "Conversation/Composer/MessageComposer.swift")
-        #expect(source.contains("onJumpToLatest: composerJumpToLatestAction"))
-        #expect(source.contains("if !usesComposerJumpToLatest"))
-        #expect(!source.contains("composerClearance + 8"))
+    func jumpToLatestFloatsCenteredAboveQuickMessagesInBaseLiquidGlass() throws {
+        let conversation = try source(named: "Conversation/SessionConversationContent.swift")
+        let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
+        let styles = try source(named: "Floating/Chrome/ConversationButtonStyles.swift")
+        #expect(conversation.contains("onJumpToLatest: composerJumpToLatestAction"))
+        #expect(conversation.contains("if !usesComposerJumpToLatest"))
+        #expect(!conversation.contains("composerClearance + 8"))
         #expect(composer.contains("VStack(alignment: .leading, spacing: 4)"))
         #expect(composer.contains("HStack(spacing: 8)"))
         #expect(composer.contains("quickMessagePresentation == nil"))
         #expect(composer.contains("struct ComposerQuickMessagesBar: View"))
         #expect(composer.contains("Button(action: onJumpToLatest)"))
         #expect(composer.contains("JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow)"))
-        #expect(source.contains("bottomClearance: quickMessageOverlap"))
-        #expect(source.contains("ConversationRegionStack(accessoryOverlap: quickMessageOverlap)"))
-        #expect(!source.contains(".onPreferenceChange(ConversationChromeFramePreferenceKey.self)"))
-        #expect(!source.contains("conversationChromeFrame(.composer)"))
-        #expect(source.contains("ConversationComposerDock"))
-        #expect(!source.contains("quickMessageClearance"))
-        #expect(source.contains("quickMessagePresentation: quickMessagePresentation"))
-        #expect(source.contains("appKitScrollToBottomRevision &+= 1"))
+        #expect(conversation.contains("bottomClearance: quickMessageOverlap"))
+        #expect(conversation.contains("ConversationRegionStack(accessoryOverlap: quickMessageOverlap)"))
+        #expect(!conversation.contains(".onPreferenceChange(ConversationChromeFramePreferenceKey.self)"))
+        #expect(!conversation.contains("conversationChromeFrame(.composer)"))
+        #expect(conversation.contains("ConversationComposerDock"))
+        #expect(!conversation.contains("quickMessageClearance"))
+        #expect(conversation.contains("quickMessagePresentation: quickMessagePresentation"))
+        #expect(conversation.contains("appKitScrollToBottomRevision &+= 1"))
+
+        // Centred above, touching, floating over the transcript.
+        #expect(composer.contains("VStack(spacing: 0)"))
+        #expect(composer.contains(".frame(maxWidth: .infinity, alignment: .center)"))
+        #expect(composer.contains("static let jumpControlSize: CGFloat = 30"))
+        #expect(conversation.contains("ComposerQuickMessagesBar.jumpControlSize"))
+        // Untinted system liquid glass only: no opaque plate, stroke or brand fill.
+        #expect(styles.contains(".platformGlassSurface(in: Circle(), interactive: true)"))
+        #expect(!styles.contains("CorptiePalette.connected"))
+        #expect(!styles.contains(".background(background, in: Circle())"))
+        #expect(!styles.contains("strokeBorder(border"))
+        #expect(!styles.contains(".tint("))
     }
 
     @Test
@@ -878,7 +891,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workingWorkTitleUsesAStaticColorGradientOnMacOS() throws {
+    func workingWorkTitleFlowsThroughCALayerWithoutASwiftUIAnimation() throws {
         #expect(ConsoleWorkOutlineMetrics.workingGradientDuration == 2.6)
 
         let host = try source(named: "UnifiedConsoleView.swift")
@@ -887,18 +900,25 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(source.contains("private struct ConsoleFlowingGradientWorkTitle: View"))
         #expect(source.contains("animates: !accessibilityReduceMotion"))
-        // macOS must not schedule a SwiftUI repeating animation: it never stops
-        // and re-layouts the whole window on every display cycle.
+        // The flow must be compositor-side. A SwiftUI repeating animation never
+        // stops and re-layouts the whole window on every display cycle.
         #expect(!source.contains("repeatForever"))
         #expect(!source.contains("flowingTitle(progress:"))
-        #expect(source.contains(".cyan, .blue, .purple, .pink, .orange"))
-        #expect(source.contains(".accessibilityLabel(title)"))
-        #expect(host.contains("isWorking: processingWorkIDs.contains(work.id)"))
-        #expect(host.contains("typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle"))
-        #expect(!source.contains("ConsoleBreathingWorkTitle"))
-        #expect(!source.contains("workingPulseMinimumOpacity"))
         #expect(!source.contains("Timer.publish"))
         #expect(!source.contains("hasAdvancedGradient"))
+        #expect(!source.contains("ConsoleBreathingWorkTitle"))
+        #expect(!source.contains("workingPulseMinimumOpacity"))
+        #expect(source.contains(".cyan, .blue, .purple, .pink, .orange"))
+        #expect(source.contains(".accessibilityLabel(title)"))
+        // Reduce Motion / inactive pages keep the calm colour-only treatment.
+        #expect(source.contains(".foregroundStyle(staticGradient)"))
+        #expect(source.contains("WorkTitleFlowLayer(title: title, fontSize: fontSize, weight: weight)"))
+        #expect(source.contains("CABasicAnimation(keyPath: \"transform.translation.x\")"))
+        #expect(source.contains("flow.repeatCount = .infinity"))
+        #expect(source.contains("gradient.removeAnimation(forKey: Key.flow)"))
+        #expect(source.contains("masked.speed = 0"))
+        #expect(host.contains("isWorking: processingWorkIDs.contains(work.id)"))
+        #expect(host.contains("typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle"))
     }
 
     @Test

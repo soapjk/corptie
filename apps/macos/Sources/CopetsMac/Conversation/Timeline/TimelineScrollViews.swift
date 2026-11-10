@@ -26,6 +26,9 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
 
     override func tile() {
         super.tile()
+        // With a viewport-wide scroll view AppKit already parks the overlay
+        // indicator on its trailing edge; the centred message table leaves
+        // that whole gutter empty. No manual scroller placement is needed.
         guard trailingScrollerExtension > 0 else { return }
         let contentWidth = max(0, bounds.width - trailingScrollerExtension)
         contentView.setFrameSize(NSSize(width: contentWidth, height: contentView.frame.height))

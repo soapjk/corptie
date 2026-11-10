@@ -94,9 +94,24 @@ test("discovery lists only readable credentials without reading the keychain imp
   ];
   const result = await manager.operation({ action: "discover" });
   assert.deepEqual(result.discovered, [{ kind: "file", path: valid, label: "ChatGPT 账号" }]);
+  assert.equal(result.accountId, null);
   assert.ok(!JSON.stringify(result).includes("test-token"));
   const imported = await manager.operation({ action: "import", source: result.discovered[0] });
   assert.equal(imported.accounts.accounts.find(account => account.origin === "imported")?.name, "ChatGPT 账号");
+  assert.equal(imported.accountId, imported.accounts.accounts.find(account => account.origin === "imported")?.id);
+});
+
+test("selecting the same local login twice is idempotent and reuses the registered account", async t => {
+  const { manager, root } = await fixture(t);
+  const source = { kind: "file", path: join(root, "official-auth.json") };
+  await writeFile(source.path, credential("same-account"));
+  const first = await manager.operation({ action: "import", source });
+  const added = first.accounts.accounts.find(row => row.origin === "imported");
+  assert.ok(added);
+  assert.equal(first.accountId, added.id);
+  const second = await manager.operation({ action: "import", source });
+  assert.equal(second.accountId, added.id);
+  assert.equal(second.accounts.accounts.filter(row => row.origin === "imported").length, 1);
 });
 
 test("refreshes one account through its managed Home and coalesces simultaneous refresh requests", async t => {

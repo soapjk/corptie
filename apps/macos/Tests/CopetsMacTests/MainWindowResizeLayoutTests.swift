@@ -357,6 +357,33 @@ struct MainWindowResizeLayoutTests {
         #expect(!legacyBoard.contains("w * 0.34"))
         #expect(!unifiedConsole.contains("w * 0.34"))
     }
+
+    /// Guard the idle-churn cut at both ends: a durable revision bump or a
+    /// metadata-only snapshot must not advance the presentation version, and
+    /// hidden pages must not keep an offscreen hosting tree per cached cell.
+    @Test
+    func idleBackgroundEventsNeverRebuildTheDisplayProjection() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let repository = try String(contentsOf: root.appendingPathComponent("SessionTimelineRepository.swift"), encoding: .utf8)
+        let coordinator = try String(contentsOf: root.appendingPathComponent("Conversation/Timeline/AppKitChatTimelineCoordinator.swift"), encoding: .utf8)
+        let sharedCell = try String(contentsOf: root.appendingPathComponent("MacSharedMessageTextCard.swift"), encoding: .utf8)
+
+        #expect(repository.contains("let contentChanged = (self.detail?.items ?? []) != detail.items"))
+        #expect(repository.contains("guard contentChanged else { return }"))
+
+        #expect(coordinator.contains("releaseDetachedCells()"))
+        #expect(coordinator.contains("cellCacheCapacity"))
+        #expect(!coordinator.contains("cellRecency.count > 96"))
+        #expect(coordinator.contains("evicted.releaseRenderingResources()"))
+
+        #expect(sharedCell.contains("func releaseRenderingResources()"))
+        #expect(sharedCell.contains("NSLayoutConstraint.deactivate(hostConstraints)"))
+        #expect(sharedCell.contains("guard window == nil, superview == nil else { return }"))
+    }
 }
 
 @MainActor

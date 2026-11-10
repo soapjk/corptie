@@ -44,12 +44,15 @@ struct SessionRestartInteractionTests {
         #expect(!source.contains("GitHubPushButtonVisual"))
         #expect(!source.contains("prepareGitHubPush()"))
         #expect(!source.contains("Commit and Push to GitHub"))
-        #expect(source.contains("case manageWorktrees"))
+        #expect(!source.contains("case manageWorktrees"))
         #expect(source.contains("case reconnect"))
+        // The metadata row lost its worktree chip, but the ellipsis menu keeps
+        // the only entry point to worktree management.
+        #expect(source.contains("openWorktreeManagement()"))
     }
 
     @Test
-    func sessionHeaderKeepsProviderPathAndWorktreeBelowTheTitle() throws {
+    func sessionHeaderKeepsProviderPathAndServiceDotBelowTheTitle() throws {
         let source = try contents(of: "Conversation/ConversationHeader.swift")
         let rowStart = try #require(source.range(of: "private var headerControlRow: some View"))
         let rowEnd = try #require(source.range(of: "private var selectedTitle:", range: rowStart.upperBound..<source.endIndex))
@@ -77,10 +80,16 @@ struct SessionRestartInteractionTests {
         #expect(!row.contains("GitBranchStamp(headState: gitHeadState)"))
         #expect(!row.contains("Label(L10n(\"Context handoff\")"))
         #expect(row.contains("ProjectServiceStatusDot(status: status.service)"))
-        #expect(row.contains("if hasWorktreeTarget {\n                    headerActionButton(.manageWorktrees)"))
+        // The amber worktree count is gone from the metadata line. Worktree
+        // management stays in the ellipsis menu, gated by hasWorktreeTarget.
+        #expect(!row.contains("headerActionButton(.manageWorktrees)"))
+        #expect(!row.contains("ProjectWorktreeStatusChip"))
         #expect(!source.contains("shouldSuggestWorktreeManagement"))
         #expect(source.contains("session?.external?.workspace?.repositoryId != nil || displayedProjectStatus != nil"))
-        #expect(source.contains(".accessibilityIdentifier(\"session.detail.worktree\")"))
+        #expect(!source.contains("session.detail.worktree"))
+        // Title clearance comes from a top inset, not from growing the pinned
+        // 48pt accessory.
+        #expect(row.contains(".padding(.top, 8)"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.detach\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.actions\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.toggle-column\")"))
@@ -88,6 +97,20 @@ struct SessionRestartInteractionTests {
         #expect(row.contains(".menuStyle(.borderlessButton)"))
         #expect(row.contains(".menuIndicator(.hidden)"))
         #expect(!row.contains(".conversationGlassControl()"))
+    }
+
+    @Test
+    func conversationHeaderCallSitesGiveBackTheBottomPadding() throws {
+        let legacy = try contents(of: "UnifiedConsoleView.swift")
+        let legacyStart = try #require(legacy.range(of: "DetailHeaderView(session: session,"))
+        let legacyHeader = String(legacy[legacyStart.lowerBound...].prefix(220))
+        #expect(!legacyHeader.contains(".padding(.bottom, 8)"))
+
+        let resident = try contents(of: "Console/SessionPageHostSwitcher.swift")
+        let residentStart = try #require(resident.range(
+            of: "ResidentSessionPageHeader(inputs: inputs, backend: backend)"))
+        let residentHeader = String(resident[residentStart.lowerBound...].prefix(140))
+        #expect(!residentHeader.contains(".padding(.bottom, 8)"))
     }
 
     @Test

@@ -12,6 +12,9 @@ final class WorkbenchReadingLayoutTests: XCTestCase {
         let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
         let coordinator = AppKitChatTimelineView.Coordinator(followsLatest: .constant(true),
             onToggleExpansion: { _ in }, onAction: { _ in }, onNearTop: {})
+        // The centred lane is an explicit standard-page opt-in, not a global
+        // timeline default (detached/compact pages keep a full-width table).
+        coordinator.setCentersReadingLane(true)
         coordinator.attach(tableView: table, scrollView: scroll)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 600),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -40,6 +43,29 @@ final class WorkbenchReadingLayoutTests: XCTestCase {
         coordinator.setReservesVerticalScrollerGutter(false)
         XCTAssertEqual(table.frame.minX, 0, accuracy: 0.5)
         XCTAssertEqual(table.tableColumns[0].width, scroll.contentView.bounds.width, accuracy: 0.5)
+        withExtendedLifetime(coordinator) {}
+    }
+
+    func testCompactTimelineKeepsFullWidthTableWhenReadingLaneIsNotRequested() throws {
+        _ = NSApplication.shared
+        let table = AppKitChatTimelineView.makeTableView()
+        let scroll = AppKitChatTimelineView.makeScrollView(tableView: table)
+        let coordinator = AppKitChatTimelineView.Coordinator(followsLatest: .constant(true),
+            onToggleExpansion: { _ in }, onAction: { _ in }, onNearTop: {})
+        coordinator.attach(tableView: table, scrollView: scroll)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        defer { window.contentView = nil; window.close() }
+        coordinator.updateSkin(.codexFlat)
+        window.layoutIfNeeded()
+        scroll.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        let viewport = scroll.contentView.bounds.width
+        XCTAssertEqual(table.frame.minX, 0, accuracy: 0.5)
+        XCTAssertEqual(table.frame.width, viewport, accuracy: 0.5)
+        XCTAssertEqual(table.tableColumns[0].width, viewport, accuracy: 0.5)
         withExtendedLifetime(coordinator) {}
     }
 }

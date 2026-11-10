@@ -142,7 +142,8 @@ extension UnifiedConsoleView {
                         .foregroundStyle(.secondary)
                         .frame(width: 18)
                     ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing,
-                        isActive: sidebarState.isSelected)
+                        isActive: sidebarState.isSelected,
+                        fontSize: 12, weight: .medium)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

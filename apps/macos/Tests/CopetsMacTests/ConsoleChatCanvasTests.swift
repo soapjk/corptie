@@ -31,7 +31,9 @@ struct ConsoleChatCanvasTests {
         let shared = try String(contentsOf: root.appendingPathComponent("../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkActivity.swift"), encoding: .utf8)
         let label = try String(contentsOf: root.appendingPathComponent("ConsoleConversationCardLabel.swift"), encoding: .utf8)
         #expect(canvas.contains("ConsoleConversationCardLabel(title: task.title"))
-        #expect(label.contains("ConsoleWorkTitle(title: title, isWorking: execution == .running, isActive: isActive)"))
+        #expect(label.contains("ConsoleWorkTitle(title: title, isWorking: execution == .running, isActive: isActive"))
+        // The CA-painted macOS title needs the native font the SwiftUI row uses.
+        #expect(label.contains("fontSize: 13, weight: .semibold"))
         #expect(shared.contains("animates: !accessibilityReduceMotion && isActive"))
         #expect(shared.contains("paused: !isVisible"))
     }

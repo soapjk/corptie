@@ -22,7 +22,8 @@ struct ConsoleConversationCardLabel<Summary: View>: View {
                         (needsAttention || execution == .blocked) ? Color.orange : Color.secondary.opacity(0.65))
                     .frame(width: 7, height: 7)
                     .help(status).accessibilityLabel(status)
-                ConsoleWorkTitle(title: title, isWorking: execution == .running, isActive: isActive)
+                ConsoleWorkTitle(title: title, isWorking: execution == .running, isActive: isActive,
+                    fontSize: 13, weight: .semibold)
                     .font(.system(size: 13, weight: .semibold)).lineLimit(2).help(title)
                 if let session { SessionTitleBadges(session: session) }
                 if isFixed {

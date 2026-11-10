@@ -79,8 +79,9 @@ struct ResidentSessionPageRoot: View {
                 activity: inputs.activity, detailPresentation: detailPresentation)
                 .frame(maxHeight: .infinity)
         } header: {
+            // Keep the total height inside the pinned 48pt accessory: the
+            // header moved its padding from the bottom to the top.
             ResidentSessionPageHeader(inputs: inputs, backend: backend)
-                .padding(.bottom, 8)
         }
         .padding(.horizontal, MainWindowPageLayoutMetrics.outerPadding)
         .padding(.bottom, MainWindowPageLayoutMetrics.outerPadding)

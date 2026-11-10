@@ -328,6 +328,28 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         fatalError("init(coder:) has not been implemented")
     }
 
+    func releaseRenderingResources() {
+        guard window == nil, superview == nil else { return }
+        updateReplyIdentityHeader(nil)
+        onToggleExpansion = nil
+        onAction = nil
+        onImageGeometryChanged = nil
+        timelineActions.removeAll(keepingCapacity: true)
+        representedImages.removeAll(keepingCapacity: true)
+        failedImageIndices.removeAll(keepingCapacity: true)
+        representedImageGeometries.removeAll(keepingCapacity: true)
+        representedProcessRow = nil
+        renderedRow = nil
+        measuredLayout = nil
+        renderedWidth = 0
+        representedRowID = nil
+        representedContentRevision = nil
+        representedReplyIdentity = nil
+        expandableTurnId = nil
+        copiedText = ""
+        contextTimestamp = ""
+    }
+
     func updateCallbacks(
         onToggleExpansion: @escaping (String) -> Void,
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void

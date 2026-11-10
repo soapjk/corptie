@@ -104,9 +104,34 @@ if [[ "${LINKED_SDK_VERSION}" != "${MACOS_SDK_VERSION}" ]]; then
   exit 1
 fi
 
-STAGING_ROOT="$(mktemp -d /tmp/corptie-pkg-staging-XXXXXX)"
-Dmg_STAGING="$(mktemp -d /tmp/corptie-dmg-staging-XXXXXX)"
-SCRIPTS_DIR="$(mktemp -d /tmp/corptie-pkg-scripts-XXXXXX)"
+# The staging tree holds two full copies of the app bundle (pkg root + DMG
+# source) plus an npm install. /tmp lives on the system volume, which can be
+# almost full even when this checkout lives on a large external volume. Keep
+# the temporary tree on a volume with room; callers can force one explicitly.
+PKG_MIN_FREE_KB=$((3 * 1024 * 1024)) # 3 GiB
+resolve_pkg_temp_root() {
+  local override="${CORPTIE_PKG_TEMP_ROOT:-}" system_free checkout_free
+  if [[ -n "${override}" ]]; then
+    printf '%s\n' "${override}"
+    return 0
+  fi
+  system_free="$(df -k /tmp | awk 'NR == 2 { print $4 }')"
+  checkout_free="$(df -k "${ROOT}" | awk 'NR == 2 { print $4 }')"
+  [[ "${system_free}" =~ ^[0-9]+$ ]] || system_free=0
+  [[ "${checkout_free}" =~ ^[0-9]+$ ]] || checkout_free=0
+  if (( system_free < PKG_MIN_FREE_KB && checkout_free > system_free )); then
+    printf '%s\n' "${ROOT}/.corptie/package-tmp"
+  else
+    printf '%s\n' "/tmp"
+  fi
+}
+PKG_TEMP_ROOT="$(resolve_pkg_temp_root)"
+mkdir -p "${PKG_TEMP_ROOT}"
+echo "Packaging temporary root: ${PKG_TEMP_ROOT}"
+
+STAGING_ROOT="$(mktemp -d "${PKG_TEMP_ROOT}/corptie-pkg-staging-XXXXXX")"
+Dmg_STAGING="$(mktemp -d "${PKG_TEMP_ROOT}/corptie-dmg-staging-XXXXXX")"
+SCRIPTS_DIR="$(mktemp -d "${PKG_TEMP_ROOT}/corptie-pkg-scripts-XXXXXX")"
 PKGBUILD_STDERR=""
 cleanup() {
   rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"
@@ -122,6 +147,22 @@ mkdir -p "${APP_DIR}/Contents/Resources/licenses"
 cp "${NODE_DISTRIBUTION}/LICENSE" "${APP_DIR}/Contents/Resources/licenses/Node.js-LICENSE"
 printf 'Node.js %s (darwin-arm64)\n' "$(node --version)" > "${APP_DIR}/Contents/Resources/licenses/Node.js-version.txt"
 cp "${BUILD_BIN}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}"
+# SwiftPM can link binary targets (notably Sparkle) as @rpath frameworks. The
+# binary keeps that dependency after its build-machine RPATH is removed, so the
+# framework must be embedded next to the executable or dyld kills the app at
+# launch with "Library not loaded". Copy only frameworks actually referenced.
+while IFS= read -r framework_name; do
+  [[ -n "${framework_name}" ]] || continue
+  source_framework="${BUILD_BIN_DIR}/${framework_name}"
+  if [[ ! -d "${source_framework}" ]]; then
+    echo "Linked framework is missing from the build directory: ${source_framework}" >&2
+    exit 1
+  fi
+  /usr/bin/ditto "${source_framework}" "${APP_DIR}/Contents/MacOS/${framework_name}"
+  echo "Embedded linked framework: ${framework_name}"
+done < <(otool -L "${BUILD_BIN}" \
+  | awk '$1 ~ /^@rpath\// { s = $1; sub(/^@rpath\//, "", s); split(s, p, "/"); if (p[1] ~ /\.framework$/) print p[1] }' \
+  | sort -u)
 # SwiftPM can embed the build machine's Xcode toolchain as a fallback RPATH.
 # Installed apps may search only system libraries or bundle-relative locations.
 while IFS= read -r runtime_path; do
@@ -157,7 +198,7 @@ fi
 if [ -f "${ICON_ICNS_SOURCE}" ]; then
   cp "${ICON_ICNS_SOURCE}" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 else
-  ICONSET_DIR="$(mktemp -d /tmp/corptie-iconset-XXXXXX).iconset"
+  ICONSET_DIR="$(mktemp -d "${PKG_TEMP_ROOT}/corptie-iconset-XXXXXX").iconset"
   mkdir -p "${ICONSET_DIR}"
   for size in 16 32 128 256 512; do
     sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}.png" >/dev/null
@@ -328,6 +369,14 @@ else
   # signing identity, but make the local build explicitly network-independent.
   SIGN_FLAGS+=(--options runtime --timestamp=none)
 fi
+# Embedded frameworks arrive with their upstream vendor's signature. Under the
+# hardened runtime dyld rejects a library whose Team ID differs from the app's,
+# so every nested Mach-O must be re-signed with the app identity before the
+# outer bundle is sealed.
+for framework in "${APP_DIR}/Contents/MacOS"/*.framework; do
+  [[ -d "${framework}" ]] || continue
+  codesign "${SIGN_FLAGS[@]}" --deep "${framework}"
+done
 # Sign nested Mach-O code explicitly, before sealing the outer bundle. Native
 # addons share the app's identity, so Node does not need disabled library validation.
 while IFS= read -r -d '' native_file; do
@@ -351,6 +400,17 @@ else
   codesign "${SIGN_FLAGS[@]}" "${APP_DIR}"
 fi
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+# A valid signature does not mean dyld can launch the app: an @rpath dependency
+# that resolves only on the build machine produces a package that crashes on
+# every launch. Fail the build here instead of shipping it.
+while IFS= read -r dependency; do
+  relative_path="${dependency#@rpath/}"
+  if [[ ! -e "${APP_DIR}/Contents/MacOS/${relative_path}" ]]; then
+    echo "Packaged app is missing a linked @rpath dependency: ${dependency}" >&2
+    exit 1
+  fi
+done < <(otool -L "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}" \
+  | awk '$1 ~ /^@rpath\// { print $1 }')
 if [[ "${APP_SIGNING_IDENTITY}" != "-" ]]; then
   corptie_verify_signed_bundle_identity "${APP_DIR}"
 fi
@@ -360,7 +420,7 @@ fi
 echo "Bundled Node binary size (bytes): $(stat -f %z "${APP_DIR}/Contents/Helpers/node")"
 
 PKG_FILE="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
-PKGBUILD_STDERR="$(mktemp /tmp/corptie-pkgbuild-stderr-XXXXXX)"
+PKGBUILD_STDERR="$(mktemp "${PKG_TEMP_ROOT}/corptie-pkgbuild-stderr-XXXXXX")"
 if pkgbuild \
     --root "${STAGING_ROOT}" \
     --identifier "com.corptie.pkg" \

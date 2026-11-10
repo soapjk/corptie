@@ -23,6 +23,60 @@ final class ResizeWorkBudgetTests: XCTestCase {
         XCTAssertEqual(state.presentationRevision, revision + 1)
     }
 
+    func testIdleRevisionAndMetadataSnapshotsDoNotAdvancePresentationVersion() {
+        let state = SessionTimelineState(sessionID: "idle")
+        let items = [item(0), item(1, turn: "turn-1")]
+        let initial = detail(items: items)
+        state.apply(initial, timelineRevision: 3)
+        let revision = state.presentationRevision
+        let tail = state.tailContentRevision
+
+        // A newer durable revision with byte-identical items is bookkeeping.
+        // It must not rebuild the display projection and dirty the window.
+        state.apply(initial, timelineRevision: 4)
+        XCTAssertEqual(state.presentationRevision, revision)
+        XCTAssertEqual(state.tailContentRevision, tail)
+
+        // A metadata-only snapshot (updatedAt / status / actions) is the
+        // common shape of an idle background poll. Same rule applies.
+        state.apply(detail(items: items, updatedAt: "2026-11-10T03:00:00Z"), timelineRevision: 5)
+        XCTAssertEqual(state.presentationRevision, revision)
+        XCTAssertEqual(state.tailContentRevision, tail)
+        XCTAssertEqual(state.detail?.updatedAt, "2026-11-10T03:00:00Z",
+            "Suppressing the version bump must not discard fresh metadata")
+
+        // Real content still advances immediately.
+        var changed = items
+        changed[1].userMessageStatus = "queued"
+        state.apply(detail(items: changed), timelineRevision: 6)
+        XCTAssertEqual(state.presentationRevision, revision + 1)
+    }
+
+    func testEvictedDetachedCellReleasesItsHostingTree() {
+        let cell = AppKitSharedMessageTextCell(identifier: .init("release"))
+        let row = processRow(count: 1)
+        cell.setContent(row, availableWidth: 480, onToggleExpansion: { _ in })
+        XCTAssertEqual(cell.subviews.count, 1)
+        cell.releaseRenderingResources()
+        XCTAssertTrue(cell.subviews.isEmpty, "An offscreen evicted cell must not retain its NSHostingView")
+        XCTAssertFalse(cell.updateLayoutIfContentUnchanged(row, availableWidth: 480),
+            "A released cell must be rebuilt from scratch instead of reusing stale content")
+    }
+
+    func testMountedCellKeepsItsHostingTree() {
+        let cell = AppKitSharedMessageTextCell(identifier: .init("mounted"))
+        let row = processRow(count: 1)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 480, height: 120),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = cell
+        defer { window.contentView = nil; window.orderOut(nil) }
+        cell.setContent(row, availableWidth: 480, onToggleExpansion: { _ in })
+        XCTAssertEqual(cell.subviews.count, 1)
+        cell.releaseRenderingResources()
+        XCTAssertEqual(cell.subviews.count, 1,
+            "A cell still owned by AppKit must never be stripped into a blank row")
+    }
+
     func testResidentHistoryCanBeRecoveredWhileReadingAndCompactedOnReturnToLatest() {
         let source = detail(items: (0..<1000).map { item($0) })
         let state = SessionTimelineState(sessionID: "test")
@@ -152,10 +206,10 @@ final class ResizeWorkBudgetTests: XCTestCase {
             createdAt: "2026-11-06T00:00:00Z")
     }
 
-    private func detail(items: [CodexThreadItem]) -> CodexThreadDetail {
+    private func detail(items: [CodexThreadItem], updatedAt: String = "") -> CodexThreadDetail {
         CodexThreadDetail(id: "thread", title: "Test", status: .complete, source: nil,
             connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil, activityStatus: nil,
-            cwd: nil, createdAt: "", updatedAt: "", canSend: true, sendUnavailableReason: nil,
+            cwd: nil, createdAt: "", updatedAt: updatedAt, canSend: true, sendUnavailableReason: nil,
             capabilities: nil, turnCount: 1000, items: items)
     }
 

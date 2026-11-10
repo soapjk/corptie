@@ -190,8 +190,10 @@ struct SettingsWindowLayoutTests {
         #expect(groups.contains("ForEach(draft.providers)"))
         #expect(!groups.contains(".filter"))
         #expect(groups.contains("FirstRunProviderCard(provider: provider"))
-        #expect(groups.contains("allowsAutomaticChecks: false"))
-        #expect(firstRun.contains("guard checkGeneration > 0 else { return }"))
+        #expect(groups.contains("settingsDraft: draft"))
+        #expect(!groups.contains("pathChanged"))
+        #expect(firstRun.contains("guard autoCheckTrigger > 0 else { return }"))
+        #expect(!firstRun.contains("Button(L10n(\"检测连接\")"))
         #expect(!groups.contains("TaskCreationDefaultsSettingsView"))
     }
 }

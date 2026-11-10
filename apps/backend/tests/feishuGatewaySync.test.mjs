@@ -4,7 +4,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { FeishuGatewayManager } from "../src/feishu/feishuGatewayManager.mjs";
 import { formatUsageText } from "../src/feishu/feishuPresentation.mjs";
-import { fetchBotIdentity, formatFeishuFailureForLog } from "../src/feishu/feishuCliRuntime.mjs";
+import {
+  fetchBotIdentity, formatFeishuFailureForLog,
+  feishuApiRejection, normalizeFeishuCliFailure
+} from "../src/feishu/feishuCliRuntime.mjs";
 
 test("Feishu failure diagnostics redact secrets and stay on one line", () => {
   const secret = "super-secret-value";
@@ -1193,4 +1196,174 @@ test("runtime recovery does not seed an in-progress assistant id into the seen s
 
   assert.deepEqual(sent, ["当前会话：Session A\n状态：正在处理", "Recovered completed reply"]);
   assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-recovered-id"), true);
+});
+
+// Regression: a reply with many markdown tables was rejected with
+// 230099 / ErrCode 11310, and because the item was never marked delivered the
+// 2s periodic sync replayed the same multi-KB card 3000+ times. Every replay
+// also logged the full `--data` command line.
+function feishuRejection(code = 230099, detail = "card table number over limit") {
+  const error = new Error(`Feishu API ${code}: ${detail}`);
+  error.name = "FeishuApiRejection";
+  error.feishuCode = code;
+  error.permanent = true;
+  return error;
+}
+
+function syncManagerFor(items, delivered = []) {
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { id: "assignment-a", botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ id: "binding-a", chatId: "chat-a" }];
+      },
+      getFeishuBot() {
+        return { enabled: true, profile: "profile-a" };
+      },
+      markFeishuItemDelivered(assignmentId, itemId) {
+        delivered.push({ assignmentId, itemId });
+      }
+    },
+    async getSnapshot() {
+      return { title: "Session A", status: "complete", items };
+    }
+  });
+  // Skip the bootstrap welcome message so only the reply under test is sent.
+  manager.botRuntime.set("bot-a", {
+    lastStatus: "complete",
+    seenItems: new Set(),
+    collaborationConfirmationCards: []
+  });
+  return manager;
+}
+
+const tableReplyItem = {
+  id: "reply-a",
+  type: "agentMessage",
+  status: "completed",
+  presentationRole: "final_answer",
+  text: "| 模型 | 输入数量 |\n|---|---|\n| BTC | 52 |\n| 组合 | 74 |"
+};
+
+test("lark-cli rejections become short permanent errors without the card payload", () => {
+  const payload = "x".repeat(4000);
+  const apiResponse = JSON.stringify({
+    ok: false,
+    error: {
+      type: "api", subtype: "unknown", code: 230099,
+      message: "Failed to create card content, ext=ErrCode: 11310; ErrMsg: card table number over limit; ErrorValue: table;"
+    },
+    _notice: { update: { message: "lark-cli 1.0.99 available, current 1.0.97" } }
+  });
+  const commandError = new Error(`Command failed: /opt/homebrew/bin/lark-cli --data {"content":"${payload}"}\n${apiResponse}`);
+  commandError.stderr = apiResponse;
+
+  const rejection = normalizeFeishuCliFailure(commandError);
+  assert.equal(rejection.permanent, true);
+  assert.equal(rejection.feishuCode, 230099);
+  assert.match(rejection.message, /card table number over limit/);
+  assert.equal(rejection.message.includes(payload), false);
+  assert.ok(formatFeishuFailureForLog(rejection).length < 400);
+
+  const transport = normalizeFeishuCliFailure(new Error(`Command failed: lark-cli --data {"content":"${payload}"}`));
+  assert.equal(transport.permanent, false);
+  assert.equal(transport.message.includes(payload), false);
+  assert.equal(feishuApiRejection({ code: 0, msg: "ok" }), null);
+});
+
+test("a permanently rejected card is downgraded to plain text and consumed exactly once", async () => {
+  const delivered = [];
+  const downgraded = [];
+  let cardAttempts = 0;
+  const manager = syncManagerFor([tableReplyItem], delivered);
+  manager.sendText = async () => {
+    cardAttempts += 1;
+    throw feishuRejection();
+  };
+  manager.sendPlainText = async (_botId, _chatId, text) => {
+    downgraded.push(text);
+    return [];
+  };
+
+  await manager.syncBot("bot-a");
+  await manager.syncBot("bot-a");
+
+  assert.equal(cardAttempts, 1, "the rejected card must not be replayed on the next sync");
+  assert.deepEqual(downgraded, [tableReplyItem.text]);
+  assert.deepEqual(delivered, [{ assignmentId: "assignment-a", itemId: "reply-a" }]);
+  assert.equal(manager.botRuntime.get("bot-a").seenItems.has("reply-a"), true);
+});
+
+test("a card that also fails to downgrade is abandoned instead of replayed forever", async () => {
+  const delivered = [];
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    const manager = syncManagerFor([tableReplyItem], delivered);
+    let attempts = 0;
+    manager.sendText = async () => {
+      attempts += 1;
+      throw feishuRejection();
+    };
+    manager.sendPlainText = async () => {
+      throw feishuRejection(230099, "text message rejected");
+    };
+    await manager.syncBot("bot-a");
+    await manager.syncBot("bot-a");
+
+    assert.equal(attempts, 1);
+    assert.deepEqual(delivered, [{ assignmentId: "assignment-a", itemId: "reply-a" }]);
+    assert.equal(logs.length, 1, "an identical permanent failure is logged once");
+    assert.match(logs[0], /delivery abandoned/);
+    assert.ok(logs[0].length < 400);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("a transient transport failure leaves the item unconsumed for a later retry", async () => {
+  const delivered = [];
+  const manager = syncManagerFor([tableReplyItem], delivered);
+  let attempts = 0;
+  manager.sendText = async () => {
+    attempts += 1;
+    throw new Error("ETIMEDOUT");
+  };
+  manager.sendPlainText = async () => assert.fail("transient failures must not be downgraded");
+
+  await assert.rejects(manager.syncBot("bot-a"), /ETIMEDOUT/);
+  await assert.rejects(manager.syncBot("bot-a"), /ETIMEDOUT/);
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(delivered, []);
+  assert.equal(manager.botRuntime.get("bot-a").seenItems.has("reply-a"), false);
+});
+
+test("a permanently rejected card update is retired instead of replayed every sync", async () => {
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    const manager = syncManagerFor([]);
+    manager.botRuntime.get("bot-a").lastAssistantCards = [{
+      itemId: "reply-a", messageId: "message-a", text: "done",
+      sessionTitle: "Session A", sessionStatus: "running"
+    }];
+    let updates = 0;
+    manager.updateSentMessageCard = async () => {
+      updates += 1;
+      throw feishuRejection();
+    };
+    await manager.syncBot("bot-a");
+    await manager.syncBot("bot-a");
+
+    assert.equal(updates, 1);
+    assert.deepEqual(manager.botRuntime.get("bot-a").lastAssistantCards, []);
+    assert.equal(logs.length, 1);
+  } finally {
+    console.error = originalError;
+  }
 });

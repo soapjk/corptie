@@ -59,15 +59,24 @@ final class SessionTimelineState: ObservableObject {
         } else { retainedTurnContext = [] }
         let detail = ResidentTimelineWindow.compact(detail, protectingHistory: protectsHistoryWindow)
         let nextRevision = max(self.timelineRevision, timelineRevision ?? self.timelineRevision)
-        guard self.detail != detail || self.timelineRevision != nextRevision || retainedTurnContext != previousContext else { return }
+        // Only the ordered item list and the retained turn context feed the
+        // display projection. A newer durable revision, or a metadata-only
+        // snapshot (updatedAt / status / actions), carries no new renderable
+        // content. Bumping the presentation version for those background
+        // polls made every open page rebuild its display cache, rebind its
+        // AppKit rows and dirty the whole window while the user was idle.
+        let contentChanged = (self.detail?.items ?? []) != detail.items
+            || retainedTurnContext != previousContext
+        guard contentChanged || self.timelineRevision != nextRevision else { return }
         self.timelineRevision = nextRevision
-        presentationRevision &+= 1
-        tailContentRevision = timelineTailContentRevision(for: detail.items)
         let ids = Set(detail.items.map(\.id))
         let context = retainedTurnContext.filter { !ids.contains($0.id) }
         presentationDetail = context.isEmpty ? detail
             : ResidentTimelineWindow.replacingItems(in: detail, with: context + detail.items)
         self.detail = detail
+        guard contentChanged else { return }
+        presentationRevision &+= 1
+        tailContentRevision = timelineTailContentRevision(for: detail.items)
     }
 }
 

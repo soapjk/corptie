@@ -31,7 +31,8 @@ import {
 } from "./feishuDeliveryPolicy.mjs";
 import {
   execFileAsync, resolveLarkCli, resolveIdentityLarkCli, runWithInput,
-  larkCliEnvironment, fetchBotIdentity, formatFeishuFailureForLog
+  larkCliEnvironment, fetchBotIdentity, formatFeishuFailureForLog,
+  feishuApiRejection, normalizeFeishuCliFailure, isPermanentFeishuFailure
 } from "./feishuCliRuntime.mjs";
 export { fetchBotIdentity, formatFeishuFailureForLog } from "./feishuCliRuntime.mjs";
 import { isClearCommand } from "../commands/unifiedCommands.mjs";
@@ -800,76 +801,100 @@ export class FeishuGatewayManager {
         continue;
       }
 
-      if (projection === "collaboration_confirmation") {
-        const result = await this.sendCard(botId, chatId, buildCollaborationConfirmationCard({
-          sessionId: assignment.sessionId,
-          sessionTitle: snapshot.title,
-          item
-        }));
-        const messageId = sentMessageId(result);
-        if (messageId) {
-          runtime.collaborationConfirmationCards.push({
-            itemId: item.id,
-            messageId,
-            status: collaborationConfirmationStatus(item)
-          });
-        }
-      } else if (projection === "approval") {
-        await this.sendCard(botId, chatId, buildApprovalCard({
-          sessionId: assignment.sessionId,
-          sessionTitle: snapshot.title,
-          item
-        }));
-      } else if (projection === "collaboration") {
-        await this.sendCard(botId, chatId, buildCollaborationMessageCard({
-          sessionTitle: snapshot.title,
-          item
-        }));
-      } else if (projection === "user") {
-        const pendingIndex = (runtime.pendingFeishuRequests ?? []).findIndex((request) => request.messageId === item.id);
-        if (pendingIndex >= 0) {
-          runtime.pendingFeishuRequests[pendingIndex].userItemSeen = true;
-        } else {
-          await this.sendText(botId, chatId, `电脑端：${item.text}`, {
+      let failure = null;
+      try {
+        if (projection === "collaboration_confirmation") {
+          const result = await this.sendCard(botId, chatId, buildCollaborationConfirmationCard({
+            sessionId: assignment.sessionId,
             sessionTitle: snapshot.title,
-            sessionStatus: snapshot.status
-          });
-        }
-      } else if (projection === "assistant") {
-        const request = pendingRequestForFinalItem(runtime, snapshot.items, item);
-        const sentCards = request
-          ? [await this.sendFinalReply(botId, request.messageId, item.text, {
-              sessionTitle: snapshot.title,
-              sessionStatus: snapshot.status
-            })]
-          : await this.sendText(botId, chatId, item.text, {
+            item
+          }));
+          const messageId = sentMessageId(result);
+          if (messageId) {
+            runtime.collaborationConfirmationCards.push({
+              itemId: item.id,
+              messageId,
+              status: collaborationConfirmationStatus(item)
+            });
+          }
+        } else if (projection === "approval") {
+          await this.sendCard(botId, chatId, buildApprovalCard({
+            sessionId: assignment.sessionId,
+            sessionTitle: snapshot.title,
+            item
+          }));
+        } else if (projection === "collaboration") {
+          await this.sendCard(botId, chatId, buildCollaborationMessageCard({
+            sessionTitle: snapshot.title,
+            item
+          }));
+        } else if (projection === "user") {
+          const pendingIndex = (runtime.pendingFeishuRequests ?? []).findIndex((request) => request.messageId === item.id);
+          if (pendingIndex >= 0) {
+            runtime.pendingFeishuRequests[pendingIndex].userItemSeen = true;
+          } else {
+            await this.sendText(botId, chatId, `电脑端：${item.text}`, {
               sessionTitle: snapshot.title,
               sessionStatus: snapshot.status
             });
-        runtime.lastAssistantCards = (sentCards ?? [])
-          .map((sent) => ({
-            itemId: item.id,
-            messageId: sentMessageId(sent.result),
-            text: sent.text,
+          }
+        } else if (projection === "assistant") {
+          const request = pendingRequestForFinalItem(runtime, snapshot.items, item);
+          const sentCards = request
+            ? [await this.sendFinalReply(botId, request.messageId, item.text, {
+                sessionTitle: snapshot.title,
+                sessionStatus: snapshot.status
+              })]
+            : await this.sendText(botId, chatId, item.text, {
+                sessionTitle: snapshot.title,
+                sessionStatus: snapshot.status
+              });
+          runtime.lastAssistantCards = (sentCards ?? [])
+            .map((sent) => ({
+              itemId: item.id,
+              messageId: sentMessageId(sent.result),
+              text: sent.text,
+              sessionTitle: snapshot.title,
+              sessionStatus: snapshot.status
+            }))
+            .filter((card) => card.messageId);
+          if (request) {
+            request.finalDelivered = true;
+            request.finalItemId = item.id;
+            await this.clearPendingRequest(botId, request.messageId).catch((error) => {
+              console.log(`[feishu] bot=${botId} final typing reaction cleanup failed: ${formatFeishuFailureForLog(error)}`);
+            });
+          }
+        } else {
+          await this.sendCard(botId, chatId, buildSessionItemCard(item, {
             sessionTitle: snapshot.title,
             sessionStatus: snapshot.status
-          }))
-          .filter((card) => card.messageId);
-        if (request) {
-          request.finalDelivered = true;
-          request.finalItemId = item.id;
-          await this.clearPendingRequest(botId, request.messageId).catch((error) => {
-            console.log(`[feishu] bot=${botId} final typing reaction cleanup failed: ${error.message}`);
-          });
+          }));
         }
-      } else {
-        await this.sendCard(botId, chatId, buildSessionItemCard(item, {
-          sessionTitle: snapshot.title,
-          sessionStatus: snapshot.status
-        }));
+      } catch (error) {
+        failure = error;
       }
-      // Persist only after the remote call succeeds. A restart must not turn
-      // an unsent item into an in-memory-only "seen" item.
+
+      // A permanent rejection (e.g. card table number over limit) will never
+      // succeed on a later sync. Downgrade once to plain text so the reply is
+      // still delivered, then consume the item. Without this, the 2s periodic
+      // sync replays the same rejected payload indefinitely.
+      if (isPermanentFeishuFailure(failure)) {
+        const fallback = fallbackFeishuText(item);
+        try {
+          await this.sendPlainText(botId, chatId, fallback);
+          failure = null;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      // Transient failures stay unconsumed; the scheduler backs off and retries.
+      if (failure && !isPermanentFeishuFailure(failure)) throw failure;
+      if (failure) {
+        console.error(`[feishu] bot=${botId} item=${item.id} delivery abandoned: ${formatFeishuFailureForLog(failure)}`);
+      }
+      // Persist after a successful send, a successful downgrade, or an
+      // explicitly abandoned item. Only transient failures leave it unseen.
       if (projection !== "hidden") this.store.markFeishuItemDelivered?.(assignment.id, item.id);
       runtime.seenItems.add(item.id);
     }
@@ -886,21 +911,30 @@ export class FeishuGatewayManager {
       }
     }
     if (runtime.lastAssistantCards?.some((card) => card.sessionStatus !== snapshot.status)) {
+      const retained = [];
       for (const card of runtime.lastAssistantCards) {
-        await this.updateSentMessageCard(
-          botId,
-          card.messageId,
-          buildMessageCard(card.text, {
-            sessionTitle: snapshot.title,
-            sessionStatus: snapshot.status
-          })
-        );
+        try {
+          await this.updateSentMessageCard(
+            botId,
+            card.messageId,
+            buildMessageCard(card.text, {
+              sessionTitle: snapshot.title,
+              sessionStatus: snapshot.status
+            })
+          );
+        } catch (error) {
+          // A rejected card update would otherwise be replayed on every tick.
+          if (!isPermanentFeishuFailure(error)) throw error;
+          console.error(`[feishu] bot=${botId} card=${card.messageId} update abandoned: ${formatFeishuFailureForLog(error)}`);
+          continue;
+        }
+        retained.push({
+          ...card,
+          sessionTitle: snapshot.title,
+          sessionStatus: snapshot.status
+        });
       }
-      runtime.lastAssistantCards = runtime.lastAssistantCards.map((card) => ({
-        ...card,
-        sessionTitle: snapshot.title,
-        sessionStatus: snapshot.status
-      }));
+      runtime.lastAssistantCards = retained;
     }
     this.botRuntime.set(botId, runtime);
   }
@@ -956,25 +990,40 @@ export class FeishuGatewayManager {
     }
   }
 
-  async sendCard(botId, chatId, card) {
+  async sendRawMessage(botId, chatId, msgType, content) {
     const bot = this.store.getFeishuBot(botId);
     if (!bot || !this.cliPath) throw new Error("Feishu bot transport is unavailable.");
-    const { stdout } = await execFileAsync(this.cliPath, [
-      "--profile", bot.profile,
-      "api", "POST", "/open-apis/im/v1/messages",
-      "--as", "bot",
-      "--params", JSON.stringify({ receive_id_type: "chat_id" }),
-      "--data", JSON.stringify({
-        receive_id: chatId,
-        msg_type: "interactive",
-        content: JSON.stringify(card)
-      })
-    ], { maxBuffer: 4 * 1024 * 1024, env: larkCliEnvironment(this.cliPath) });
-    const result = JSON.parse(stdout || "{}");
-    if (result.code && result.code !== 0) {
-      throw new Error(result.msg || `Feishu API error ${result.code}`);
+    let stdout;
+    try {
+      ({ stdout } = await execFileAsync(this.cliPath, [
+        "--profile", bot.profile,
+        "api", "POST", "/open-apis/im/v1/messages",
+        "--as", "bot",
+        "--params", JSON.stringify({ receive_id_type: "chat_id" }),
+        "--data", JSON.stringify({ receive_id: chatId, msg_type: msgType, content })
+      ], { maxBuffer: 4 * 1024 * 1024, env: larkCliEnvironment(this.cliPath) }));
+    } catch (error) {
+      throw normalizeFeishuCliFailure(error);
     }
+    const result = JSON.parse(stdout || "{}");
+    const rejection = feishuApiRejection(result);
+    if (rejection) throw rejection;
     return result;
+  }
+
+  async sendCard(botId, chatId, card) {
+    return this.sendRawMessage(botId, chatId, "interactive", JSON.stringify(card));
+  }
+
+  // Cards with many markdown tables can be rejected by Feishu's card element
+  // limits. Plain text has no element limit, so use it as the one-shot
+  // downgrade instead of replaying the rejected card on every sync tick.
+  async sendPlainText(botId, chatId, text) {
+    const sent = [];
+    for (const chunk of splitMessage(text, 3500)) {
+      sent.push(await this.sendRawMessage(botId, chatId, "text", JSON.stringify({ text: chunk })));
+    }
+    return sent;
   }
 
   async updateCard(botId, token, card) {
@@ -1031,14 +1080,18 @@ export class FeishuGatewayManager {
     if (!bot || !this.cliPath) throw new Error("Feishu bot transport is unavailable.");
     const args = ["--profile", bot.profile, "api", method, path, "--as", "bot"];
     if (data) args.push("--data", JSON.stringify(data));
-    const { stdout } = await execFileAsync(this.cliPath, args, {
-      maxBuffer: 4 * 1024 * 1024,
-      env: larkCliEnvironment(this.cliPath)
-    });
-    const result = JSON.parse(stdout || "{}");
-    if (result.code && result.code !== 0) {
-      throw new Error(result.msg || `Feishu API error ${result.code}`);
+    let stdout;
+    try {
+      ({ stdout } = await execFileAsync(this.cliPath, args, {
+        maxBuffer: 4 * 1024 * 1024,
+        env: larkCliEnvironment(this.cliPath)
+      }));
+    } catch (error) {
+      throw normalizeFeishuCliFailure(error);
     }
+    const result = JSON.parse(stdout || "{}");
+    const rejection = feishuApiRejection(result);
+    if (rejection) throw rejection;
     return result;
   }
 }
@@ -1089,6 +1142,13 @@ function requiredText(value, message) {
 
 function optionalText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function fallbackFeishuText(item) {
+  const text = optionalText(item?.text);
+  if (text) return text;
+  const type = optionalText(item?.type) || "unknown";
+  return `[Corptie] 有一条 ${type} 卡片未能以卡片格式送达，请在桌面端查看。`;
 }
 
 function splitMessage(text, limit) {

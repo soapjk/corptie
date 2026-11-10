@@ -112,7 +112,13 @@ struct SessionConversationSurface: View {
             && (quickMessagePresentation.showsMessages || composerJumpToLatestAction != nil)
     }
     private var quickMessageOverlap: CGFloat {
-        showsDockQuickMessages && !hasPinnedChecklist ? ConversationQuickMessages.rowHeight + 4 : 0
+        guard showsDockQuickMessages, !hasPinnedChecklist else { return 0 }
+        // The centred jump control now occupies one extra row above the chips.
+        // Grow the accessory overlap by exactly that height so the chips keep
+        // their position and the glass circle lands over the transcript.
+        let jumpControlHeight: CGFloat = composerJumpToLatestAction != nil
+            ? ComposerQuickMessagesBar.jumpControlSize : 0
+        return ConversationQuickMessages.rowHeight + 4 + jumpControlHeight
     }
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
@@ -742,9 +748,10 @@ struct SessionConversationSurface: View {
                 topClearance: topChromeClearance,
                 bottomClearance: quickMessageOverlap,
                 reservesVerticalScrollerGutter: !compactComposer,
-                trailingScrollerExtension: 0
+                trailingScrollerExtension: 0,
+                centersReadingLane: !compactComposer
             )
-            .modifier(WorkbenchReadingLane(compact: compactComposer))
+            .modifier(WorkbenchTimelineViewport())
             .sheet(item: $pendingFork) { selection in
                 SessionForkSheet(selection: selection, backendClient: backendClient)
             }

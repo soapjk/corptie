@@ -80,7 +80,29 @@ final class ProviderSettingsDraft {
     func discard() {
         values = baseline
         conflicts = []
+        // Only an explicit discard rebuilds the cards. Saving must not do so:
+        // an automatic check runs right after a save and its task would be
+        // cancelled by the card's `.id(...refreshGeneration)` being replaced.
         refreshGeneration += 1
+    }
+
+    /// One rule for onboarding and Settings: a specified account is either the
+    /// runtime's current account or a selectable registered account.
+    func hasSpecifiedAccount(_ id: String) -> Bool {
+        guard let value = values[id], let accountId = value.accountId, !accountId.isEmpty else { return false }
+        guard let projection = providers.first(where: { $0.id == id })?.accounts else { return true }
+        if projection.selectedAccountId == accountId { return true }
+        return projection.accounts.contains { $0.id == accountId && $0.canSelect }
+    }
+
+    /// First run picks an account without asking. Never overwrites a choice
+    /// that is already usable.
+    @discardableResult
+    func stageDefaultAccount(for provider: FirstRunProvider) -> Bool {
+        guard provider.accounts != nil, !hasSpecifiedAccount(provider.id) else { return false }
+        guard let candidate = provider.accounts?.accounts.first(where: { $0.canSelect }) else { return false }
+        edit(provider.id, accountId: candidate.id)
+        return true
     }
 
     func load() async {
@@ -114,6 +136,5 @@ final class ProviderSettingsDraft {
             if values[provider.id] == submitted[provider.id] { values[provider.id] = saved }
         }
         conflicts = []
-        refreshGeneration += 1
     }
 }

@@ -25,12 +25,6 @@ struct ProviderAccount: Decodable, Identifiable {
     let canReauthorize: Bool
     let deletionReason: String?
 
-    @MainActor var selectionLabel: String {
-        if canSelect { return name }
-        if origin == "native" { return L10nFormat("%@（需导入）", name) }
-        return L10nFormat("%@（%@）", name, status)
-    }
-
     @MainActor var status: String {
         switch state {
         case "ready": L10n("凭证已保存")
@@ -47,98 +41,41 @@ struct ProviderAccountLogin: Decodable {
     let state: String
     let authUrl: URL?
     let message: String?
+    let accountId: String?
 }
 
-private struct ProviderAccountResponse: Decodable {
+/// Shared with the onboarding container so first run can import the machine's
+/// default local sign-in without reimplementing the account response shape.
+struct ProviderAccountResponse: Decodable {
     let accounts: ProviderAccountsProjection
     let flow: ProviderAccountLogin?
     let discovered: [DiscoveredAccountSource]?
+    let accountId: String?
 }
 
-struct ProviderAccountsView: View {
-    let provider: FirstRunProvider
-    let projection: ProviderAccountsProjection
-    let draft: ProviderSettingsDraft?
-    let disabled: Bool
-    let updated: (FirstRunProvider) -> Void
-    @State private var managing = false
-    @State private var saving = false
-    @State private var error: String?
-
-    private var selection: String { draft?.values[provider.id]?.accountId ?? projection.selectedAccountId ?? "" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Picker(L10n("当前使用账号"), selection: Binding(get: { selection }, set: select)) {
-                    if selection.isEmpty { Text(L10n("请选择账号")).tag("") }
-                    ForEach(projection.accounts) { account in
-                        Text(account.selectionLabel)
-                            .tag(account.id)
-                            .disabled(!account.canSelect && account.id != selection)
-                    }
-                }
-                .disabled(disabled || saving)
-                Button(L10n("管理账号…")) { managing = true }.disabled(disabled || saving)
-            }
-            Text(L10n("新会话使用此账号。打开旧会话时，会用此账号恢复原线程。运行中的请求会先完成。"))
-                .font(.caption).foregroundStyle(.secondary)
-            if projection.accounts.contains(where: { $0.origin == "native" && !$0.canSelect }) {
-                Text(L10n("原有原生环境需在“管理账号”中导入，才能切换使用。"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if draft != nil {
-                Text(L10n("切换账号在点击页面底部“保存设置”后生效。"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let error { Text(error).foregroundStyle(.red).font(.caption) }
-        }
-        .sheet(isPresented: $managing) {
-            ProviderAccountManagerSheet(providerId: provider.id, projection: projection, changed: refresh)
-        }
-    }
-
-    private func select(_ id: String) {
-        guard id != selection, projection.accounts.contains(where: { $0.id == id && $0.canSelect }) else { return }
-        if let draft {
-            draft.edit(provider.id, accountId: id)
-        } else {
-            saving = true
-            Task {
-                defer { saving = false }
-                do {
-                    let status: FirstRunStatus = try await FirstRunSetupAPI.request("first-run/settings", body: [
-                        "providers": [["providerId": provider.id, "enabled": provider.enabled,
-                                       "path": provider.program?.adoptedPath ?? provider.path, "accountId": id]]
-                    ])
-                    if let row = status.providers.first(where: { $0.id == provider.id }) { updated(row) }
-                    error = nil
-                } catch { self.error = error.localizedDescription }
-            }
-        }
-    }
-
-    private func refresh(_ accounts: ProviderAccountsProjection) {
-        var row = provider
-        row.accounts = accounts
-        updated(row)
-    }
-}
-
-private struct DiscoveredAccountSource: Decodable, Identifiable {
+struct DiscoveredAccountSource: Decodable, Identifiable {
     let kind: String
     let path: String
     let label: String
     var id: String { "\(kind)|\(path)" }
 }
 
-private struct ProviderAccountManagerSheet: View {
-    private enum Page { case accounts, method, local }
-    let providerId: String
-    let changed: (ProviderAccountsProjection) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var projection: ProviderAccountsProjection
-    @State private var page = Page.accounts
+/// Account selection lives inline in the provider card. Registered accounts and
+/// locally discovered logins are listed together so either can be used with a
+/// single click. There is no separate "管理账号" sheet: the trailing plus is
+/// the only entry point for adding an account.
+struct ProviderAccountsView: View {
+    let provider: FirstRunProvider
+    let projection: ProviderAccountsProjection
+    let draft: ProviderSettingsDraft
+    let disabled: Bool
+    /// Choosing (or importing) an account saves the shared draft and runs the
+    /// background connection check. There is no manual "check" button.
+    let accountChanged: () -> Void
+    let updated: (FirstRunProvider) -> Void
+
+    private enum AddPage { case hidden, method, local }
+    @State private var addPage = AddPage.hidden
     @State private var sources: [DiscoveredAccountSource] = []
     @State private var target: ProviderAccount?
     @State private var editing: String?
@@ -149,49 +86,32 @@ private struct ProviderAccountManagerSheet: View {
     @State private var showDelete = false
     @State private var showCustomSource = false
 
-    init(providerId: String, projection: ProviderAccountsProjection, changed: @escaping (ProviderAccountsProjection) -> Void) {
-        self.providerId = providerId
-        self.changed = changed
-        _projection = State(initialValue: projection)
-    }
+    private var endpoint: String { "providers/\(provider.id)/accounts" }
+    private var selection: String { draft.values[provider.id]?.accountId ?? projection.selectedAccountId ?? "" }
 
-    private var endpoint: String { "providers/\(providerId)/accounts" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
-            Group {
-                switch page {
-                case .accounts: accountList
-                case .method: addMethods
-                case .local: localSources
-                }
-            }
-            .disabled(busy)
-            if let login = projection.activeLogin {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(L10n("等待浏览器完成登录…"))
-                    Button(L10n("取消登录")) { perform("cancelLogin", fields: ["loginId": login.id]) }
-                        .disabled(busy)
-                }
-                .font(.caption)
-            }
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            HStack {
-                if page != .accounts {
-                    Button(L10n("返回")) {
-                        page = page == .local ? .method : .accounts
-                        error = nil
-                    }
-                    .disabled(busy)
-                }
-                Spacer()
-                Button(L10n("完成")) { dismiss() }
+    /// Locally detected logins that have not been registered as accounts yet.
+    private var availableLocalSources: [DiscoveredAccountSource] {
+        sources.filter { source in
+            !projection.accounts.contains { account in
+                account.importedFrom == source.path || account.runtimeDirectory == source.path
             }
         }
-        .padding(18)
-        .frame(width: 460)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            accountList
+            if addPage != .hidden { addFlow }
+            if let login = projection.activeLogin { pendingLogin(login) }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            if !draft.hasSpecifiedAccount(provider.id) {
+                Label(L10n("尚未指定账号：请选择上方列表中的账号，或点击“添加账号”。"),
+                      systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .task { await detectLocalAccounts() }
+        .task(id: projection.activeLogin?.id) { await pollLogin() }
         .confirmationDialog(L10n("删除此账号？"), isPresented: $showDelete, presenting: deletion) { account in
             Button(L10n(account.removesListingOnly == true ? "从列表移除" : "删除账号"), role: .destructive) {
                 perform("delete", fields: ["accountId": account.id])
@@ -212,135 +132,196 @@ private struct ProviderAccountManagerSheet: View {
                 Button(L10n("按 Codex Home 从钥匙串读取…")) { chooseSource(kind: "keychain") }
             }
         }
-        .task(id: projection.activeLogin?.id) { await pollLogin() }
-    }
-
-    private var title: String {
-        switch page {
-        case .accounts: L10n("管理账号")
-        case .method: target == nil ? L10n("添加账号") : L10n("更新凭证")
-        case .local: L10n("本机已有登录")
-        }
     }
 
     private var accountList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if projection.accounts.isEmpty {
-                Text(L10n("还没有登记的账号。")).foregroundStyle(.secondary)
-            } else {
-                List(projection.accounts) { account in accountRow(account) }
-                    .frame(height: min(230, CGFloat(projection.accounts.count) * 54 + 10))
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(projection.accounts) { account in
+                accountRow(account)
+                Divider()
+            }
+            ForEach(availableLocalSources) { source in
+                localSourceRow(source)
+                Divider()
             }
             Button {
                 target = nil
                 error = nil
-                page = .method
+                addPage = .method
             } label: {
                 Label(L10n("添加账号"), systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .padding(.vertical, 7)
             .disabled(projection.activeLogin != nil)
         }
+        .disabled(disabled || busy)
     }
 
     private func accountRow(_ account: ProviderAccount) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                if editing == account.id {
-                    TextField(L10n("账号名称"), text: $name).onSubmit { rename(account) }
-                } else {
-                    Button(account.name) { name = account.name; editing = account.id }
-                        .buttonStyle(.plain)
-                        .help(L10n("点击改名"))
+        HStack(spacing: 8) {
+            Button {
+                if account.canSelect {
+                    select(account.id)
+                } else if account.origin == "native", projection.sourceKinds.contains("directory") {
+                    target = nil
+                    importSource(kind: "directory", path: account.runtimeDirectory)
                 }
-                Text(originLabel(account))
-                    .font(.caption).foregroundStyle(.secondary)
-                if account.state != "ready" { Text(account.status).font(.caption).foregroundStyle(.secondary) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: account.id == selection ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(account.id == selection ? Color.accentColor : Color.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if editing == account.id {
+                            TextField(L10n("账号名称"), text: $name).onSubmit { rename(account) }
+                        } else {
+                            Text(account.name)
+                        }
+                        Text(originLabel(account)).font(.caption).foregroundStyle(.secondary)
+                        if account.state != "ready" {
+                            Text(account.status).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
             }
-            Spacer()
+            .buttonStyle(.plain)
+            .disabled(!account.canSelect && !(account.origin == "native" && projection.sourceKinds.contains("directory")))
             if editing == account.id {
                 Button(L10n("保存")) { rename(account) }
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button(L10n("取消")) { editing = nil }
-            } else if account.origin == "native" && projection.sourceKinds.contains("directory") {
-                Button(L10n("导入…")) {
-                    target = nil
-                    importSource(kind: "directory", path: account.runtimeDirectory)
-                }
-                .buttonStyle(.borderless)
-                .help(L10n("导入为 Corptie 独立账号"))
-                .disabled(projection.activeLogin != nil)
-            } else if account.canReauthorize {
+            } else {
                 Menu {
-                    Button(L10n("更新凭证…")) { target = account; error = nil; page = .method }
+                    Button(L10n("改名")) { name = account.name; editing = account.id }
+                    if account.canReauthorize {
+                        Button(L10n("更新凭证…")) { target = account; error = nil; addPage = .method }
+                    }
+                    Button(L10n("删除"), role: .destructive) {
+                        if account.canDelete { deletion = account; showDelete = true }
+                        else { error = account.deletionReason ?? L10n("此账号暂时不能删除。") }
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle").accessibilityLabel(L10n("账号操作"))
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled(projection.activeLogin != nil)
             }
-            Button {
-                if account.canDelete { deletion = account; showDelete = true }
-                else { error = account.deletionReason ?? L10n("此账号暂时不能删除。") }
-            } label: {
-                Image(systemName: "trash").foregroundStyle(account.canDelete ? Color.primary : Color.secondary)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(L10nFormat("删除 %@", account.name))
-            .help(account.deletionReason ?? L10n("删除账号"))
         }
+        .padding(.vertical, 6)
     }
 
-    private func originLabel(_ account: ProviderAccount) -> String {
-        switch account.origin {
-        case "legacy": L10n("原有 Corptie 环境")
-        case "native": L10n("本机已有登录 · 需导入")
-        case "imported": L10n("从本机导入")
-        default: account.importedFrom == nil ? L10n("在 Corptie 中登录") : L10n("从本机导入")
-        }
-    }
-
-    private var addMethods: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button(L10n("登录 Codex")) {
-                perform("login", fields: targetFields) { _ in page = .accounts }
-            }
-            Button(L10n("使用本机已有登录")) {
-                perform("discover") { result in
-                    sources = result.discovered ?? []
-                    page = .local
+    private func localSourceRow(_ source: DiscoveredAccountSource) -> some View {
+        Button {
+            target = nil
+            importSource(kind: source.kind, path: source.path)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.label)
+                    Text(L10n("本机已有登录 · 点按直接使用"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(source.path).font(.caption).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 4)
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .padding(.vertical, 6)
     }
 
-    private var localSources: some View {
+    @ViewBuilder private var addFlow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if sources.isEmpty {
-                Text(L10n("未发现本机登录凭证。")).foregroundStyle(.secondary)
+            Divider()
+            HStack {
+                Text(L10n(target == nil ? "添加账号" : "更新凭证"))
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button(L10n("收起")) { addPage = .hidden; target = nil; error = nil }
+                    .buttonStyle(.plain)
             }
-            List {
-                ForEach(sources) { source in
-                    Button {
-                        importSource(kind: source.kind, path: source.path)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(source.label)
-                            Text(source.path).font(.caption).foregroundStyle(.secondary)
+            switch addPage {
+            case .hidden:
+                EmptyView()
+            case .method:
+                HStack(spacing: 12) {
+                    Button(L10n("使用本机已有登录")) {
+                        perform("discover") { result in
+                            sources = result.discovered ?? []
+                            addPage = .local
                         }
                     }
-                    .buttonStyle(.plain)
+                    Button(L10n("登录 Codex")) {
+                        perform("login", fields: targetFields) { _ in
+                            addPage = .hidden
+                            target = nil
+                        }
+                    }
+                }
+                Text(L10n("检测到的本机登录已直接列在上方，可点按使用；这里用于指定其他路径或在 Corptie 内登录。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            case .local:
+                if sources.isEmpty {
+                    Text(L10n("未发现本机登录凭证。")).font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(sources) { source in
+                        Button {
+                            target = nil
+                            importSource(kind: source.kind, path: source.path)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(source.label)
+                                Text(source.path).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 Button { showCustomSource = true } label: {
                     Label(L10n("指定路径…"), systemImage: "folder")
                 }
                 .buttonStyle(.plain)
+                Button(L10n("返回")) { addPage = .method }.buttonStyle(.plain)
             }
-            .frame(height: min(210, CGFloat(sources.count) * 48 + 54))
+        }
+        .disabled(disabled || busy)
+    }
+
+    private func pendingLogin(_ login: ProviderAccountLogin) -> some View {
+        HStack {
+            ProgressView().controlSize(.small)
+            Text(L10n("等待浏览器完成登录…"))
+            Button(L10n("取消登录")) { perform("cancelLogin", fields: ["loginId": login.id]) }
+        }
+        .font(.caption)
+    }
+
+    private func originLabel(_ account: ProviderAccount) -> String {
+        switch account.origin {
+        case "legacy": L10n("原有 Corptie 环境")
+        case "native": L10n("本机已有登录 · 点按使用")
+        case "imported": L10n("从本机导入")
+        default: account.importedFrom == nil ? L10n("在 Corptie 中登录") : L10n("从本机导入")
         }
     }
 
     private var targetFields: [String: Any] { target.map { ["accountId": $0.id] } ?? [:] }
+
+    private func select(_ id: String) {
+        guard id != selection, projection.accounts.contains(where: { $0.id == id && $0.canSelect }) else { return }
+        // Both onboarding and settings stage the change in the same draft;
+        // the shared automation then saves it and checks the connection.
+        draft.edit(provider.id, accountId: id)
+        accountChanged()
+    }
 
     private func rename(_ account: ProviderAccount) {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -358,13 +339,43 @@ private struct ProviderAccountManagerSheet: View {
     private func importSource(kind: String, path: String) {
         var fields = targetFields
         fields["source"] = ["kind": kind, "path": path]
-        perform("import", fields: fields) { _ in page = .accounts }
+        perform("import", fields: fields) { _ in
+            addPage = .hidden
+            target = nil
+            editing = nil
+        }
     }
 
     private func apply(_ result: ProviderAccountResponse) {
-        projection = result.accounts
-        changed(projection)
+        let before = draft.values[provider.id]?.accountId
+        // Importing a local login (or finishing a login) immediately stages
+        // that account as the selected one; the shared save action commits it.
+        if let id = result.accountId ?? result.flow?.accountId,
+           result.accounts.accounts.contains(where: { $0.id == id && $0.canSelect }) {
+            draft.edit(provider.id, accountId: id)
+        }
+        changed(result.accounts)
+        if draft.values[provider.id]?.accountId != before { accountChanged() }
         if let message = result.flow?.message { error = message }
+    }
+
+    private func changed(_ accounts: ProviderAccountsProjection) {
+        var row = provider
+        row.accounts = accounts
+        updated(row)
+    }
+
+    /// Detecting local logins is a best-effort enhancement. A read-only preview
+    /// backend rejects account operations, which must not surface an error on
+    /// every provider card; the plus button remains the explicit fallback.
+    private func detectLocalAccounts() async {
+        do {
+            let result: ProviderAccountResponse = try await FirstRunSetupAPI.request(endpoint,
+                body: ["action": "discover"])
+            sources = result.discovered ?? []
+        } catch {
+            sources = []
+        }
     }
 
     private func pollLogin() async {

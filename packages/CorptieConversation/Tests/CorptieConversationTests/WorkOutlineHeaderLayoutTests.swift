@@ -227,4 +227,24 @@ private struct FrameProbe: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) { capture.views[id] = view }
     private final class ProbeView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
 }
+
+@MainActor struct WorkTitleFlowLayerTests {
+    @Test func runningTitleInstallsACompositorAnimationAndPausesWithoutAWindow() throws {
+        let view = WorkTitleFlowLayerView(frame: NSRect(x: 0, y: 0, width: 240, height: 18))
+        view.configure(title: "Running Work", fontSize: 13, weight: .regular)
+        view.layout()
+        #expect(view.hasFlowAnimation)
+        #expect(view.isPlaybackPaused, "an off-window title must not run on the layer clock")
+
+        // A title/font change must not tear down the flow.
+        view.configure(title: "Another Running Work", fontSize: 13, weight: .medium)
+        #expect(view.hasFlowAnimation)
+
+        // A narrower row rebuilds the animation for the new cycle width.
+        view.setFrameSize(NSSize(width: 120, height: 18))
+        view.layout()
+        #expect(view.hasFlowAnimation)
+        #expect(view.isPlaybackPaused)
+    }
+}
 #endif

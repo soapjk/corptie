@@ -720,6 +720,15 @@ protocol AppKitChatRowRendering: AnyObject {
                     onAction: @escaping (AppKitChatTimelineRow.Action) -> Void)
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool
     func refreshProcessElapsed(now: Date)
+    /// Drop the SwiftUI hosting tree and the row-bound callbacks of a cell
+    /// that has left both the reuse cache and the view hierarchy. Evicted
+    /// offscreen cells otherwise keep an NSHostingView, its constraints, its
+    /// KVO dependencies and an AttributeGraph subgraph reachable forever.
+    func releaseRenderingResources()
+}
+
+extension AppKitChatRowRendering {
+    func releaseRenderingResources() {}
 }
 
 @Observable @MainActor
@@ -732,6 +741,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     var onImageGeometryChanged: (() -> Void)?
     private var representedImageGeometries: [MessageImageGeometry?] = []
     private var host: NSHostingView<MacSharedMessageTextCard>?
+    private var hostConstraints: [NSLayoutConstraint] = []
     private var skin = ConversationSkin.classic
     private var row: AppKitChatTimelineRow?
     private var measuredLayout: NativeTimelineLayoutCache.Layout?
@@ -752,6 +762,28 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         clipsToBounds = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func releaseRenderingResources() {
+        // A cell still owned by AppKit may be returned by the table without
+        // another delegate call; only fully detached offscreen cells can be
+        // stripped without risking a blank row.
+        guard window == nil, superview == nil else { return }
+        NSLayoutConstraint.deactivate(hostConstraints)
+        hostConstraints.removeAll(keepingCapacity: true)
+        host?.removeFromSuperview()
+        host = nil
+        menu = nil
+        menuIdentity = nil
+        row = nil
+        measuredLayout = nil
+        measuredWidth = nil
+        representedImageGeometries.removeAll(keepingCapacity: true)
+        elapsedSummary.text = nil
+        mountedLayout.value = nil
+        onToggleExpansion = { _ in }
+        onAction = { _ in }
+        onImageGeometryChanged = nil
+    }
 
     func updateAppearance(skin: ConversationSkin) {
         guard self.skin != skin else { return }
@@ -835,12 +867,14 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             host.setContentHuggingPriority(.required, for: .vertical)
             host.setContentCompressionResistancePriority(.required, for: .vertical)
             addSubview(host)
-            NSLayoutConstraint.activate([
+            let constraints = [
                 host.leadingAnchor.constraint(equalTo: leadingAnchor),
                 host.trailingAnchor.constraint(equalTo: trailingAnchor),
                 host.topAnchor.constraint(equalTo: topAnchor),
                 host.bottomAnchor.constraint(equalTo: bottomAnchor)
-            ])
+            ]
+            NSLayoutConstraint.activate(constraints)
+            hostConstraints = constraints
             self.host = host
         }
         self.host?.menu = menu

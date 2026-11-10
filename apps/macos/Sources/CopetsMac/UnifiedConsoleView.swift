@@ -1293,9 +1293,10 @@ struct UnifiedConsoleView: View {
                 }
                 }
             } header: {
+                // The header owns its own top inset; adding bottom padding here
+                // would push the pinned 48pt accessory past its divider.
                 DetailHeaderView(session: session,
                     historicalWorkspacePath: backendClient.selectedDetail?.cwd)
-                    .padding(.bottom, 8)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
             .environment(\.detailColumnVisibility, $showsDetailColumn)

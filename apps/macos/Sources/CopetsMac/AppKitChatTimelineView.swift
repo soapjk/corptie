@@ -34,6 +34,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var bottomClearance: CGFloat = 0
     var reservesVerticalScrollerGutter = true
     var trailingScrollerExtension: CGFloat = 0
+    /// Standard pages own the whole detail width so the overlay indicator can
+    /// sit in the trailing blank gutter. The coordinator then keeps the message
+    /// table in the centred reading lane. Compact/floating hosts keep the old
+    /// full-width table and their own narrow viewport.
+    var centersReadingLane = false
 
     nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
         rows.firstIndex(where: {
@@ -81,6 +86,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         (scrollView as? FirstLayoutRestoringScrollView)?.trailingScrollerExtension = trailingScrollerExtension
         context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
+        context.coordinator.setCentersReadingLane(centersReadingLane)
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
@@ -147,6 +153,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         scrollView.horizontalScrollElasticity = .none
         let documentView = TimelineScrollDocumentView()
         documentView.autoresizingMask = [.width]
+        // Width-autoresizing is the default; the coordinator switches it off
+        // only for the centred reading lane, where it owns the table's origin.
         tableView.autoresizingMask = [.width]
         documentView.addSubview(tableView)
         scrollView.documentView = documentView
@@ -163,6 +171,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         )
         (scrollView as? FirstLayoutRestoringScrollView)?.trailingScrollerExtension = trailingScrollerExtension
         context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
+        context.coordinator.setCentersReadingLane(centersReadingLane)
         context.coordinator.updateSkin(skin)
         context.coordinator.updateBaseDirectory(baseDirectory)
         context.coordinator.updateProcessCollapseLocalization()

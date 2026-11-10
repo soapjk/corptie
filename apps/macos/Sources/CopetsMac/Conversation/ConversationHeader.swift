@@ -229,6 +229,10 @@ struct SessionConversationHeaderSurface: View {
             .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(.secondary)
         }
+        // The pinned 48pt header accessory is top-aligned. Move the title off
+        // the window's top edge without growing the accessory: both header call
+        // sites give back the same 8pt of bottom padding.
+        .padding(.top, 8)
     }
 
     private var showsContinuationFailure: Bool {
@@ -299,10 +303,6 @@ struct SessionConversationHeaderSurface: View {
                     .buttonStyle(.plain)
                     .help(L10nFormat("Copy full workspace path: %@", cwd))
                 }
-                if hasWorktreeTarget {
-                    headerActionButton(.manageWorktrees)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
                 if let status = displayedProjectStatus {
                     ProjectServiceStatusDot(status: status.service)
                         .help(projectServiceStatusHelp(status))
@@ -345,7 +345,6 @@ struct SessionConversationHeaderSurface: View {
     private enum HeaderAction {
         case returnToActiveThread
         case reconnect
-        case manageWorktrees
     }
 
     private var primaryHeaderAction: HeaderAction? {
@@ -391,21 +390,6 @@ struct SessionConversationHeaderSurface: View {
             }
             .buttonStyle(.plain)
             .help(L10n("Reconnect session"))
-        case .manageWorktrees:
-            Button {
-                openWorktreeManagement()
-            } label: {
-                if let status = displayedProjectStatus {
-                    ProjectWorktreeStatusChip(status: status, showsSurface: false)
-                } else {
-                    Label("Worktree", systemImage: "arrow.triangle.branch")
-                        .font(WorkbenchTypography.font(for: .conversationMetadata))
-                }
-            }
-            .buttonStyle(.plain)
-            .help(L10n("Manage project worktrees and service"))
-            .accessibilityLabel(L10n("Manage project worktrees and service"))
-            .accessibilityIdentifier("session.detail.worktree")
         }
     }
 

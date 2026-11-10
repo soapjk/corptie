@@ -458,7 +458,7 @@ test("account management is advertised only by providers that implement it, and 
   assert.equal(row.accounts.selectedAccountId, "old");
   assert.equal(other.accounts, undefined);
   await assert.rejects(f.service.accountOperation(other.id, null), /不支持账号管理/);
-  await assert.rejects(f.service.saveCredentialSource({ providerId: provider.id }), /账号管理/);
+  await assert.rejects(f.service.saveCredentialSource({ providerId: provider.id }), /账号列表.*指定账号/);
   const saved = await f.service.saveSettings({ providers: [
     { providerId: provider.id, path: row.path, enabled: row.enabled, accountId: "new" }
   ] });

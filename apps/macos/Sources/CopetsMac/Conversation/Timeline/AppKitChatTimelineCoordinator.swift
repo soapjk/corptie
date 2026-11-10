@@ -55,6 +55,11 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var imageGeometryCommitScheduled = false
     private var cellsByKey: [CellCacheKey: NSTableCellView & AppKitChatRowRendering] = [:]
     private var cellRecency: [CellCacheKey] = []
+    /// A flat 96-cell bound multiplied by every resident page used to keep
+    /// hundreds of offscreen NSHostingView trees (and their constraints, KVO
+    /// dependencies and AttributeGraph subgraphs) reachable at a high-water
+    /// plateau. Warm reuse only needs the rows around the visible viewport.
+    private static let cellCacheCapacity = 32
     private var lastMeasuredWidth: CGFloat = 0
     private var scrollCommandGeneration = 0
     private var nearTopSuppressionGeneration = 0
@@ -111,6 +116,10 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
     private var topClearance: CGFloat = 0
     private var bottomClearance: CGFloat = 0
     private var reservesVerticalScrollerGutter = true
+    /// Opt-in: only the wide, standard conversation page spreads the scroll
+    /// view across the detail column and pins its table to the reading lane.
+    /// Detached/compact hosts keep the historical full-width table.
+    private var centersReadingLane = false
 
     private struct CellCacheKey: Hashable {
         let sessionID: String
@@ -239,6 +248,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         if !active {
             needsPresentationLayout = true
             stopProcessClock()
+            releaseDetachedCells()
         }
         else {
             if needsPresentationLayout {
@@ -250,6 +260,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             if needsTypographyReflow { reflowForTypography() }
             synchronizeProcessClock(); scheduleImageGeometryCommit(); scheduleUnderfilledHistoryEvaluation()
         }
+    }
+
+    /// Hidden resident pages keep their semantic rows but must not retain an
+    /// offscreen SwiftUI hosting tree per cached cell. Cells still mounted in
+    /// a live window are visible rows AppKit owns; leaving them intact keeps
+    /// switching back instant.
+    func releaseDetachedCells() {
+        let detachedKeys = cellsByKey.filter { $0.value.window == nil }.map(\.key)
+        guard !detachedKeys.isEmpty else { return }
+        for key in detachedKeys {
+            cellsByKey.removeValue(forKey: key)?.releaseRenderingResources()
+        }
+        cellRecency.removeAll { cellsByKey[$0] == nil }
     }
 
     func setProcessClockEnabled(_ enabled: Bool) {
@@ -675,10 +698,12 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         cellRecency.removeAll { cellsByKey[$0] == nil }
         cellsByKey[key] = cell
         touchCell(key)
-        while cellRecency.count > 96, let oldest = cellRecency.first {
+        while cellRecency.count > Self.cellCacheCapacity, let oldest = cellRecency.first {
             cellRecency.removeFirst()
             SessionSwitchTrace.shared.recordCell(.capacityEvicted, sessionID: oldest.sessionID, rowID: oldest.rowID)
-            cellsByKey[oldest] = nil
+            if let evicted = cellsByKey.removeValue(forKey: oldest) {
+                evicted.releaseRenderingResources()
+            }
         }
     }
 
@@ -1407,6 +1432,13 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         reconcileLayout()
     }
 
+    func setCentersReadingLane(_ centers: Bool) {
+        guard centersReadingLane != centers else { return }
+        centersReadingLane = centers
+        synchronizeTableWidth()
+        reconcileLayout()
+    }
+
     private func synchronizeTableWidth(reflowingRows: Bool = true) {
         guard presentationActive else { needsPresentationLayout = true; return }
         guard let tableView, let scrollView else { return }
@@ -1416,7 +1448,50 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
            !timelineScrollView.forcesOverlayScrollers {
             timelineScrollView.forcesOverlayScrollers = true
         }
-        // Constraints own horizontal geometry; only wrapping-dependent row work remains.
+        // Only the wide standard page spreads the scroll view across the whole
+        // detail column: AppKit then parks its overlay indicator on the far
+        // right, inside the blank gutter, while the message table keeps the
+        // centred reading lane. Compact hosts stay full-width end to end.
+        let viewportWidth = scrollView.contentView.bounds.width
+        let centers = centersReadingLane && reservesVerticalScrollerGutter
+        // AppKit's uniform column autoresizing would silently stretch a pinned
+        // lane back to the document width on the next tile. Switch it off only
+        // while the lane is active and restore the defaults when it is not.
+        if centers {
+            if tableView.autoresizingMask != [] { tableView.autoresizingMask = [] }
+            if tableView.columnAutoresizingStyle != .noColumnAutoresizing {
+                tableView.columnAutoresizingStyle = .noColumnAutoresizing
+            }
+            if let column = tableView.tableColumns.first, column.resizingMask != [] {
+                column.resizingMask = []
+            }
+        } else {
+            if tableView.autoresizingMask != [.width] { tableView.autoresizingMask = [.width] }
+            if tableView.columnAutoresizingStyle != .uniformColumnAutoresizingStyle {
+                tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+            }
+            if let column = tableView.tableColumns.first, column.resizingMask != .autoresizingMask {
+                column.resizingMask = .autoresizingMask
+            }
+        }
+        let lane = centers
+            ? WorkbenchStyle.lane(viewportWidth: viewportWidth)
+            : CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
+        let laneWidth = min(viewportWidth, max(120, lane.width))
+        let laneMinX = centers ? (viewportWidth - laneWidth) / 2 : 0
+        let laneFrame = NSRect(x: laneMinX, y: tableView.frame.minY,
+                               width: laneWidth, height: tableView.frame.height)
+        if abs(tableView.frame.minX - laneFrame.minX) >= 0.5
+            || abs(tableView.frame.width - laneFrame.width) >= 0.5 {
+            tableView.frame = laneFrame
+        }
+        if let column = tableView.tableColumns.first, abs(column.width - laneWidth) >= 0.5 {
+            column.width = laneWidth
+        }
+        if let document = scrollView.documentView,
+           abs(document.frame.width - viewportWidth) >= 0.5 {
+            document.setFrameSize(NSSize(width: viewportWidth, height: document.frame.height))
+        }
         let width = tableView.bounds.width
         guard width > 0, abs((lastReflowMeasurementWidth ?? -1) - width) >= 0.5 else { return }
         lastReflowMeasurementWidth = width
