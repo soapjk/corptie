@@ -369,11 +369,16 @@ test("adopted child instructions recover from the mailbox turn, not the cancelle
   f.store.upsertSessionTurn(turn);
   f.mailbox.adopt(logical.logicalSessionId, [row.mailbox_message_id]);
   assert.equal(f.store.getAgentTask(row.operation_id).status, "cancelled");
+  const retry = f.coordinator.retryDispatch(f.source,f.role.agentId,id);
+  assert.equal(retry.status,"running");
+  assert.equal(retry.retryAction,"reuse_running");
+  assert.equal(retry.originalTurnId,"adopted-turn");
   f.coordinator.recover();
   assert.equal(f.coordinator.get(id).status, "running");
   f.store.db.run(`INSERT INTO session_items(id,session_id,turn_id,turn_status,type,title,text,binding_id,presentation_role,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?)`, ["final:adopted", child.current_session_id, turn.turnId, "completed", "agentMessage", "Result", "Exact child result", turn.bindingId, "final_answer", new Date().toISOString()]);
   f.store.upsertSessionTurn({ ...turn, executionStatus: "completed" });
+  assert.equal(f.coordinator.retryDispatch(f.source,f.role.agentId,id).status,"completed");
   f.coordinator.recover();
   assert.equal(f.coordinator.get(id).status, "completed");
   f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?", [f.source.sessionId]);
