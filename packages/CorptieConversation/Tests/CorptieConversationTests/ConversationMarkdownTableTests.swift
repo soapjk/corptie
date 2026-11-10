@@ -201,3 +201,39 @@ private func tables(_ text: String) -> [ConversationMarkdownTable] {
     cold.sort(); warm.sort()
     print("TABLE_PARSE_LAYOUT rows=11 columns=3 cold_p50_ms=\(cold[50]) cold_p95_ms=\(cold[95]) cached_p95_ms=\(warm[95])")
 }
+
+#if os(macOS)
+@Test @MainActor func tableLinksUseInheritedOpenerAndPreserveCustomHandler() throws {
+    _ = NSApplication.shared
+    let table = try #require(tables("| Link |\n| --- |\n| [Open](https://example.test/document) |").first)
+    let target = try #require(URL(string: "https://example.test/document"))
+    for custom in [false, true] {
+        var inheritedURLs: [URL] = []
+        var customURLs: [URL] = []
+        let handler: ((URL) -> Void)? = custom ? { customURLs.append($0) } : nil
+        let root = ConversationMarkdownTableView(table: table, layout: .measured(table, width: 320), openLink: handler)
+            .environment(\.openURL, OpenURLAction { url in inheritedURLs.append(url); return .handled })
+        let host = NSHostingView(rootView: root)
+        host.frame = CGRect(x: 0, y: 0, width: 320, height: 180)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        func linkView(_ view: NSView) -> NSTextView? {
+            if let text = view as? NSTextView, text.string.contains("Open") { return text }
+            return view.subviews.lazy.compactMap { linkView($0) }.first
+        }
+        let deadline = Date().addingTimeInterval(2)
+        while linkView(host) == nil && Date() < deadline {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        let text = try #require(linkView(host))
+        #expect(text.isSelectable)
+        // Exercise the actual rendered native text's delegate, without launching a browser.
+        #expect(text.delegate?.textView?(text, clickedOnLink: target, at: 0) == true)
+        #expect(text.delegate?.textView?(text, clickedOnLink: target.absoluteString, at: 0) == true)
+        #expect(inheritedURLs == (custom ? [] : [target, target]))
+        #expect(customURLs == (custom ? [target, target] : []))
+    }
+}
+#endif

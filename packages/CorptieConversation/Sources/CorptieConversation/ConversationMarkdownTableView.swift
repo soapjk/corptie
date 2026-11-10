@@ -176,11 +176,12 @@ public struct ConversationMarkdownTableView: View {
     public let table: ConversationMarkdownTable
     public let layout: ConversationMarkdownTableLayout
     public var allowsSelection: Bool
-    public var openLink: (URL) -> Void
+    @Environment(\.openURL) private var openURL
+    public var openLink: ((URL) -> Void)?
     public var selectText: (() -> Void)?
 
     public init(table: ConversationMarkdownTable, layout: ConversationMarkdownTableLayout,
-                allowsSelection: Bool = true, openLink: @escaping (URL) -> Void = { _ in },
+                allowsSelection: Bool = true, openLink: ((URL) -> Void)? = nil,
                 selectText: (() -> Void)? = nil) {
         self.table = table; self.layout = layout
         self.allowsSelection = allowsSelection; self.openLink = openLink
@@ -195,7 +196,9 @@ public struct ConversationMarkdownTableView: View {
                         TableNativeText(text: layout.cells[row][column],
                             size: CGSize(width: layout.columnWidths[column] - 16,
                                          height: layout.textHeights[row][column]),
-                            allowsSelection: allowsSelection, openLink: openLink)
+                            allowsSelection: allowsSelection, openLink: { url in
+                                if let openLink { openLink(url) } else { openURL(url) }
+                            })
                             .frame(width: layout.columnWidths[column] - 16,
                                    height: layout.textHeights[row][column])
                             .padding(.horizontal, ConversationMarkdownTableLayout.horizontalInset)
@@ -311,7 +314,10 @@ private struct TableNativeText: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var openLink: (URL) -> Void = { _ in }
         func textView(_ view: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-            if let url = link as? URL { openLink(url); return true }; return false
+            let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
+            guard let url else { return false }
+            openLink(url)
+            return true
         }
     }
     func makeCoordinator() -> Coordinator { Coordinator() }

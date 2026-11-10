@@ -150,7 +150,7 @@ struct ConversationDetailRichContentView: View {
                     if let text = block.text {
                         Text(text).textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
-                            .environment(\.openURL, OpenURLAction { _ in .discarded })
+
                     }
                 case .table(let table):
                     if let layout = block.tableLayout {
