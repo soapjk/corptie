@@ -219,19 +219,30 @@ export class TaskCoordinationService {
     const recipient = this.store.getLogicalSession(row.recipient_session_id);
     if (!recipient || this.store.getSession(recipient.legacySessionId)?.taskId !== child.id || terminal.has(dispatch.status)) fail("COORDINATION_INSTRUCTION_STALE");
   }
+  adoptedExecution(operation) {
+    if (!operation?.taskId) return operation;
+    const message = this.store.selectOne(`SELECT * FROM session_mailbox_messages
+      WHERE operation_id=? AND disposition='adopted' AND adopted_turn_id IS NOT NULL`, [operation.taskId]);
+    if (!message) return operation;
+    const turn = this.store.getSessionTurn(message.adopted_provider_session_id,message.adopted_binding_id,message.adopted_turn_id);
+    const status = turn?.executionStatus ?? turn?.execution_status;
+    return { ...operation, status: ["running","blocked"].includes(status) ? "running"
+      : ["completed","failed","cancelled"].includes(status) ? status : "unknown",
+      targetTurnId: message.adopted_turn_id };
+  }
   retryDispatch(metadata, actorId, id) {
     const scope = this.collaboration.coordinationScope(metadata, actorId), row = this.get(id);
     if (!row || row.source_session_id !== scope.logicalSessionId || row.parent_task_id !== scope.parent.id) fail("TASK_PARENT_OUTSIDE_SCOPE");
     if(row.mailbox_message_id) {
       const message=this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[row.mailbox_message_id]);
-      const operation=row.operation_id && this.store.getAgentTask(row.operation_id);
+      const operation=row.operation_id && this.adoptedExecution(this.store.getAgentTask(row.operation_id));
       if(!message || !operation) fail("DISPATCH_RECEIPT_NOT_FOUND","原投递记录不存在，无法恢复原指令。");
       const deliveryId=operation.deliveryId ?? operation.source?.deliveryId;
       const delivery=deliveryId && this.store.getMessageDelivery?.(deliveryId);
       const turnId=operation.targetTurnId ?? delivery?.providerTurnId ?? message.adopted_turn_id;
       if(turnId || operation.status==="completed" || message.disposition==="adopted") {
-        this.update(id,{status:operation.status==="completed" ? "completed" : operation.status==="failed" ? "failed" : operation.status==="cancelled" ? "cancelled" : "running",error_code:null,error_message:null});
-        return {...this.receipt(this.get(id)),reused:true, retryAction: terminal.has(operation.status) ? "inspect_original_result" : "reuse_running", originalOperationId: operation.taskId, originalTurnId: turnId ?? null};
+        this.update(id,{status:operation.status==="completed" ? "completed" : operation.status==="failed" ? "failed" : operation.status==="cancelled" ? "cancelled" : operation.status==="unknown" ? "unknown" : "running",error_code:null,error_message:null});
+        return {...this.receipt(this.get(id)),reused:true, retryAction: operation.status === "unknown" ? "reconcile_unknown" : terminal.has(operation.status) ? "inspect_original_result" : "reuse_running", originalOperationId: operation.taskId, originalTurnId: turnId ?? null};
       }
       if(operation.status==="queued") {
         this.update(id,{status:"queued",error_code:null,error_message:null});
@@ -266,7 +277,7 @@ export class TaskCoordinationService {
       }
     }
     const receivedWork = payload?.task;
-    const currentWork = receivedWork?.taskId ? this.store.getAgentTask(receivedWork.taskId) : null;
+    const currentWork = receivedWork?.taskId ? this.adoptedExecution(this.store.getAgentTask(receivedWork.taskId)) : null;
     // Events are notifications about stored state, not a second state authority.
     // A late started/cancelled event must not roll a newer operation back.
     const work = currentWork ?? receivedWork;
