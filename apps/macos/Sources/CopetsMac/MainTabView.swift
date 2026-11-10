@@ -100,7 +100,6 @@ extension View {
 enum AppTab: String, CaseIterable, Identifiable {
     case console
     case automations
-    case scenes
     case worktrees
     case resources
     case roles = "agents"
@@ -121,12 +120,11 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: 0
         case .automations: 1
-        case .scenes: 2
-        case .worktrees: 3
-        case .resources: 4
-        case .roles: 5
-        case .memory: 6
-        case .settings: 7
+        case .worktrees: 2
+        case .resources: 3
+        case .roles: 4
+        case .memory: 5
+        case .settings: 6
         }
     }
 
@@ -134,7 +132,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: L10n("Workbench")
         case .automations: L10n("Automations")
-        case .scenes: L10n("Scenes")
         case .worktrees: L10n("Worktrees")
         case .resources: L10n("资源管理")
         case .roles: L10n("Roles")
@@ -147,7 +144,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: "circle.hexagongrid.fill"
         case .automations: "bolt.badge.clock"
-        case .scenes: "camera.macro"
         case .worktrees: "arrow.triangle.branch"
         case .resources: "folder"
         case .roles: "person.2"
@@ -345,8 +341,6 @@ private struct MainTabPageHost: NSViewRepresentable {
                 root = AnyView(UnifiedConsoleView())
             case .automations:
                 root = AnyView(AutomationsView())
-            case .scenes:
-                root = AnyView(ScenesView())
             case .worktrees:
                 root = AnyView(WorktreeManagementView())
             case .resources:
