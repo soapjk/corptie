@@ -12,7 +12,10 @@ enum NativeMarkdownAttributedText {
         case .agent: .agent
         case .process: .process
         }
-        return MessageMarkdown.make(text: text, style: sharedStyle, boundary: boundary, typography: typography)
+        // Reuse the existing cached link preparation used by MarkdownMessageView.
+        // Native TextKit does not automatically linkify plain URLs.
+        let prepared = style == .process ? text : ClickableMessageText.markdown(from: text, baseDirectory: nil)
+        return MessageMarkdown.make(text: prepared, style: sharedStyle, boundary: boundary, typography: typography)
     }
 }
 

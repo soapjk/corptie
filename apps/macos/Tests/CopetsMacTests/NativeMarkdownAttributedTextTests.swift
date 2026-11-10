@@ -5,6 +5,16 @@ import CorptieConversation
 
 @MainActor
 final class NativeMarkdownAttributedTextTests: XCTestCase {
+    func testBareWebURLsAreClickableButCodeRemainsLiteral() throws {
+        let url = "https://example.test/document?q=hello"
+        let result = NativeMarkdownAttributedText.make(text: "参考：\(url)。\n`https://example.test/code`", style: .agent)
+        let range = (result.string as NSString).range(of: url)
+        XCTAssertNotEqual(range.location, NSNotFound)
+        XCTAssertEqual(result.attribute(.link, at: range.location, effectiveRange: nil) as? URL, URL(string: url))
+        let code = (result.string as NSString).range(of: "https://example.test/code")
+        XCTAssertNil(result.attribute(.link, at: code.location, effectiveRange: nil))
+    }
+
     func testReusedTextMeasurementMatchesFreshLayoutAcrossWidthsLineLimitsAndMutation() {
         let source = NSMutableAttributedString(string: String(repeating: "长正文 Mixed words 😀\n", count: 100),
             attributes: [.font: NSFont.systemFont(ofSize: 16)])

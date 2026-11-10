@@ -12,5 +12,8 @@ struct CollapsibleDetailText: View {
     var body: some View {
         ConversationDetailText(text: text, collapsedLineLimit: collapsedLineLimit, font: font,
             color: color, lineSpacing: lineSpacing, expandLabel: L10n("Expand"), collapseLabel: L10n("Collapse"))
+            .environment(\.openURL, OpenURLAction { url in
+                MessageLinkOpener.open(url, baseDirectory: nil)
+            })
     }
 }
