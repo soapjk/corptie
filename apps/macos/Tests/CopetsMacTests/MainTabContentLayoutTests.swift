@@ -5,21 +5,13 @@ import Testing
 struct MainTabContentLayoutTests {
     @Test
     func selectedIndexTracksTheStableTabOrder() {
-        #expect(AppTab.allCases == [.console, .automations, .scenes, .worktrees, .resources, .roles, .memory, .settings])
+        #expect(AppTab.allCases == [.console, .automations, .worktrees, .resources, .roles, .memory, .settings])
         #expect(AppTab.console.index == 0)
         #expect(AppTab.automations.index == 1)
-        #expect(AppTab.scenes.index == 2)
-        #expect(AppTab.worktrees.index == 3)
-        #expect(AppTab.resources.index == 4)
-        #expect(AppTab.roles.index == 5)
+        #expect(AppTab.worktrees.index == 2)
+        #expect(AppTab.resources.index == 3)
+        #expect(AppTab.roles.index == 4)
         #expect(AppTab.console.systemImage == "circle.hexagongrid.fill")
-        #expect(AppTab.scenes.systemImage == "camera.macro")
-    }
-
-    @MainActor
-    @Test
-    func sceneNavigationSymbolExistsInTheSystemLibrary() {
-        #expect(NSImage(systemSymbolName: AppTab.scenes.systemImage, accessibilityDescription: nil) != nil)
     }
 
     @Test
@@ -255,7 +247,7 @@ struct MainTabContentLayoutTests {
     @Test
     func navigationDestinationsKeepTheirAutomationContractAfterRestyling() {
         #expect(AppTab.allCases.map(\.navigationAccessibilityIdentifier) == [
-            "main-tab.console", "main-tab.automations", "main-tab.scenes", "main-tab.worktrees",
+            "main-tab.console", "main-tab.automations", "main-tab.worktrees",
             "main-tab.resources", "main-tab.agents", "main-tab.memory", "main-window.settings"
         ])
     }
