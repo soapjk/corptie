@@ -5,7 +5,7 @@ import {
   mergeWorkerSessionContexts
 } from "../src/application/workSessionContext.mjs";
 import { SessionContextDelivery } from "../src/application/sessionContextDelivery.mjs";
-import { EXECUTION_CHECKLIST_INSTRUCTIONS } from "../src/application/executionChecklistInstructions.mjs";
+import { EXECUTION_CHECKLIST_INSTRUCTIONS, EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS } from "../src/application/executionChecklistInstructions.mjs";
 import { taskExecutionPrompt } from "../src/application/taskAcceptance.mjs";
 
 test("checklist policy is required Worker context and the default startup uses the same policy", () => {
@@ -313,4 +313,15 @@ test("complete Artifact metadata is delivered alongside a large Task definition"
   const result = buildWorkSessionContext({ session: { id: "s", sessionKind: "worker", taskId: task.id, workId: task.work_id }, task, artifactIndex: { items } });
   assert.ok(result.prompt.includes(task.description));
   for (const item of items) assert.ok(result.prompt.includes(item.artifactId));
+});
+
+test("essential checklist instructions remain in the leading context when a Provider abbreviates a long binding", () => {
+  const context = workerContext();
+  const head = context.corePrompt.slice(0, 1400);
+  assert.ok(head.includes(EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS));
+  assert.match(head, /action=get/);
+  assert.match(head, /Plain Markdown checkboxes do not create the checklist card/);
+  assert.match(head, /load the exact execution-checklist domain/);
+  assert.ok(context.corePrompt.indexOf(EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS)
+    < context.corePrompt.indexOf("Handle requests within the bound Task scope normally"));
 });

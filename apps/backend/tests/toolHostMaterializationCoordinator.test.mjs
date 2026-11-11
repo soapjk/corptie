@@ -11,6 +11,7 @@ import {
 import { appliedToolMaterializationReceipt } from "../src/agent-provider/toolSchemaCapabilities.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { scheduledSessionTaskDynamicTools } from "../src/application/scheduledSessionTaskDynamicTools.mjs";
+import { executionChecklistDynamicTools } from "../src/application/executionChecklistDynamicTools.mjs";
 import { collaborationDynamicTools } from "../src/collaboration/collaborationDynamicTools.mjs";
 
 async function fixture(overrides = {}) {
@@ -720,7 +721,7 @@ test("Task creation discovery survives wrong hints and mixed Chinese/English wit
     }
     assert.equal(value.applyCount, 0);
     const empty = await value.coordinator.search({ logicalSessionId: value.binding.logicalSessionId,
-      providerBindingId: value.binding.providerBindingId, intent: "zzzzzz-unrelated", domainHint: "collaboration" });
+      providerBindingId: value.binding.providerBindingId, intent: "zzzzzzqvnp", domainHint: "collaboration" });
     assert.deepEqual(empty.domains, []);
   } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
 });
@@ -1093,4 +1094,21 @@ test("Registry port never converts a local restricted gateway registration into 
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
   }
+});
+
+test("the reported checklist query ranks the checklist contract before Task creation", async () => {
+  const value = await fixture();
+  try {
+    value.catalog.register({ id: "collaboration", tools: collaborationDynamicTools, execute: () => assert.fail("read only") });
+    value.catalog.register({ id: "execution-checklist", tools: executionChecklistDynamicTools, execute: () => assert.fail("read only") });
+    for (const intent of ["execution checklist create update task checklist items", "创建任务清单并更新事项", "用清单模式完成剩下的任务"]) {
+      const result = await value.coordinator.search({ logicalSessionId: value.binding.logicalSessionId,
+        providerBindingId: value.binding.providerBindingId, intent, domainHint: "checklist" });
+      const first = result.domains[0];
+      assert.equal(first.domainId, "execution-checklist", intent);
+      assert.equal(first.recommendedTool, "corptie_execution_checklist_manage");
+      assert.ok(first.tools[0].inputSchema.properties.action.enum.includes("create"));
+      assert.ok(JSON.stringify(result).indexOf('"domainId":"execution-checklist"') < 1000);
+    }
+  } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
 });

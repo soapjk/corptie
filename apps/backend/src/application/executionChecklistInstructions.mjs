@@ -1,3 +1,7 @@
+// Keep the essential tool workflow near the start of Worker context so it also
+// survives a Provider's compacted or abbreviated view of a long binding.
+export const EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS = "Execution checklist: for multi-step work or a user request for checklist mode (清单模式), call corptie_execution_checklist_manage action=get, then create/reuse a saved checklist and update item statuses. Plain Markdown checkboxes do not create the checklist card. If the tool is missing, load the exact execution-checklist domain with the current Tool Catalog version; do not stop at catalog search or substitute a written list. Follow-up and resumed requests retain this obligation. If unavailable, state the actual tool failure. The checklist records progress and never blocks execution.";
+
 // Shared execution policy, independent of the first message and Provider.
 // This is guidance for model tool use, never new business authorization.
 export const EXECUTION_CHECKLIST_INSTRUCTIONS = [

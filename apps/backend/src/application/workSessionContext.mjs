@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy.mjs";
-import { EXECUTION_CHECKLIST_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
+import { EXECUTION_CHECKLIST_INSTRUCTIONS, EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
 
 export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; manually create or switch Worktrees only when the direct user explicitly requests it. Scoped child Task tools may automatically allocate child Worktrees during autonomous decomposition, without a separate user creation request. This does not authorize manual Worktree changes; shell cd or command workdir never changes the logical Workspace.";
 
@@ -48,6 +48,7 @@ export function buildWorkSessionContext({
 
   const prefixLines = [
     `<corptie_work_session_binding session_id="${xml(session.id)}" task_id="${xml(task.id)}" work_id="${xml(task.work_id)}">`,
+    EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS,
     "This is the authoritative Task binding for execution ownership, evidence, and lifecycle operations in this Worker Session.",
     "Role is reusable configuration (instructions, skills and assignments); Provider is the execution engine. Session alone executes, holds authorization context and sends or receives messages. Historical Agent/agentId fields in resource contracts refer to Role, not an independent actor.",
     "Handle requests within the bound Task scope normally.",
