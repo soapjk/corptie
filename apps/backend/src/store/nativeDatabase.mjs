@@ -5,13 +5,20 @@ import { quickMessageContribution } from "../application/quickMessageRecommendat
 
 export class NativeDatabase {
   constructor(path, options = {}) {
-    this.database = new DatabaseSync(path, { readOnly: options.readOnly === true });
+    this.path = path;
+    try { this.database = new DatabaseSync(path, { readOnly: options.readOnly === true }); }
+    catch (error) { throw withDatabasePath(error, path); }
     this.database.function("corptie_quick_message_eligible_v1", { deterministic: true },
       (type, text, status, presentation_role, raw_metadata_json) =>
         quickMessageContribution({ type, text, status, presentation_role, raw_metadata_json }) == null ? 0 : 1);
     this.rowsModified = 0;
     this.observability = new SqliteQueryObservability();
     this.writeBlocked = false;
+  }
+
+  measure(sql, source, operation, action) {
+    try { return this.observability.measure(sql, source, operation, action); }
+    catch (error) { throw withDatabasePath(error, this.path); }
   }
 
   run(sql, params = []) {
@@ -21,7 +28,7 @@ export class NativeDatabase {
       error.statusCode = 503;
       throw error;
     }
-    return this.observability.measure(sql, queryCallerSource(), "run", () => {
+    return this.measure(sql, queryCallerSource(), "run", () => {
       const bindings = normalizeSqliteBindings(params);
       if (bindings.length > 0) {
         const result = this.database.prepare(sql).run(...bindings);
@@ -40,7 +47,7 @@ export class NativeDatabase {
   }
 
   all(sql, params = [], source = "unknown") {
-    return this.observability.measure(sql, source, "selectAll", ({ addRows }) => {
+    return this.measure(sql, source, "selectAll", ({ addRows }) => {
       const rows = this.database.prepare(sql).all(...normalizeSqliteBindings(params));
       for (const row of rows) normalizeSqliteRowPrototype(row);
       addRows(rows);
@@ -49,7 +56,7 @@ export class NativeDatabase {
   }
 
   get(sql, params = [], source = "unknown") {
-    return this.observability.measure(sql, source, "selectOne", ({ addRow }) => {
+    return this.measure(sql, source, "selectOne", ({ addRow }) => {
       const row = this.database.prepare(sql).get(...normalizeSqliteBindings(params)) ?? null;
       if (row) {
         normalizeSqliteRowPrototype(row);
@@ -63,7 +70,9 @@ export class NativeDatabase {
     const startedAt = performance.now();
     let rowCount = 0;
     let estimatedResultBytes = 0;
-    const iterator = this.database.prepare(sql).iterate(...normalizeSqliteBindings(params));
+    let iterator;
+    try { iterator = this.database.prepare(sql).iterate(...normalizeSqliteBindings(params)); }
+    catch (error) { throw withDatabasePath(error, this.path); }
     try {
       for (const row of iterator) {
         normalizeSqliteRowPrototype(row);
@@ -71,6 +80,8 @@ export class NativeDatabase {
         estimatedResultBytes += estimateSqliteRowBytes(row);
         yield row;
       }
+    } catch (error) {
+      throw withDatabasePath(error, this.path);
     } finally {
       iterator.return?.();
       this.observability.record({
@@ -136,4 +147,14 @@ function normalizeSqliteBindings(params) {
 function isMutatingSQL(sql) {
   const normalized = String(sql ?? "").trim().replace(/^(?:--[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*/g, "").toUpperCase();
   return !/^(?:SELECT|PRAGMA\s+(?:TABLE_INFO|INDEX_LIST|INDEX_INFO|QUICK_CHECK|INTEGRITY_CHECK|FOREIGN_KEY_CHECK)|EXPLAIN)\b/.test(normalized);
+}
+
+
+// Preserve the original Error and stack; never log SQL text or bound values.
+function withDatabasePath(error, path) {
+  if (error && typeof error === "object") {
+    try { Object.defineProperty(error, "databasePath", { value: path, configurable: true }); }
+    catch { /* Diagnostics must not replace the original failure. */ }
+  }
+  return error;
 }

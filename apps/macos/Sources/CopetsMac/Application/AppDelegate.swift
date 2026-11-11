@@ -443,8 +443,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.center()
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
+        var didApplyFirstRunSize = false
         let hostingView = MainWindowSurfaceContainer(
-            rootView: FirstRunSetupRoot { MainWindowContentView() }
+            rootView: FirstRunSetupRoot(onSetupRequired: { [weak window] in
+                guard let window, !didApplyFirstRunSize else { return }
+                didApplyFirstRunSize = true
+                let screen = window.screen?.visibleFrame ?? visibleFrame
+                window.setContentSize(MainWindowInitialLayout.contentSize(for: screen, firstRun: true))
+                window.center()
+            }) { MainWindowContentView() }
                 .background { WindowDragArea() }
                 .environmentObject(resizeState),
             resizeState: resizeState

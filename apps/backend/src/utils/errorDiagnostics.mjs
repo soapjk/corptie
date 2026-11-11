@@ -1,7 +1,7 @@
 import { types } from "node:util";
 import { redactInlineSecrets } from "./providerRawMetadata.mjs";
 
-const FIELDS = ["name", "message", "stack", "code", "errno", "syscall", "status", "statusCode", "exit", "exitCode", "exit_code", "signal"];
+const FIELDS = ["databasePath", "errcode", "errstr", "name", "message", "stack", "code", "errno", "syscall", "status", "statusCode", "exit", "exitCode", "exit_code", "signal"];
 const CONTEXT = ["sessionId", "taskId", "workId", "serverId", "providerId", "requestId", "operation", "stage", "method", "status", "toolName", "logicalSessionId", "providerSessionId", "bindingId", "turnId", "messageId", "jobId", "transitionId", "attemptId", "operationId", "repositoryId", "worktreeId", "attempt"];
 const RETRY_SCOPES = new Set(["collaboration-http.events", "catalog-mcp.revision"]);
 const retryLogs = new Map();

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { logError } from "../utils/errorDiagnostics.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 
 export function handleProviderModelsHttpRequest({ request, response, url, sessionApplicationService, sendJson, unifiedErrorStatus }) {
@@ -27,13 +29,21 @@ export function handleProviderSetupHttpRequest({
 }) {
   const accountsMatch = url.pathname.match(/^\/providers\/([^/]+)\/accounts$/);
   if (accountsMatch && ["GET", "POST"].includes(request.method)) {
-    Promise.resolve().then(async () => firstRunSetup.accountOperation(decodeURIComponent(accountsMatch[1]),
-      request.method === "POST" ? await readJson(request) : null))
+    const requestId = randomUUID();
+    let stage = "list";
+    Promise.resolve().then(async () => {
+      const input = request.method === "POST" ? await readJson(request) : null;
+      if (input && ["discover", "import", "select", "login", "delete", "rename", "cancel"].includes(input.action)) stage = input.action;
+      return firstRunSetup.accountOperation(decodeURIComponent(accountsMatch[1]), input);
+    })
       .then(result => sendJson(response, 200, result))
-      .catch(error => sendJson(response, error.statusCode ?? 400, {
-        error: error.code && !error.statusCode ? "无法完成账号操作，请检查本地运行目录和权限。" : error.message,
-        code: error.code ?? null
-      }));
+      .catch(error => {
+        logError("provider-setup.accounts", error, { requestId, operation: "accountOperation", stage, method: request.method });
+        sendJson(response, error.statusCode ?? 400, {
+          error: error.code && !error.statusCode ? "无法完成账号操作，请检查本地运行目录和权限。" : error.message,
+          code: error.code ?? null, requestId
+        });
+      });
     return true;
   }
 
@@ -63,11 +73,13 @@ export function handleProviderSetupHttpRequest({
   }
 
   if (url.pathname === "/first-run" && request.method === "GET") {
+    const requestId = randomUUID();
     firstRunSetup.status().then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, 400, { error: error.message }));
+      .catch((error) => firstRunFailure(error, request, response, url.pathname, requestId, sendJson));
     return true;
   }
   if (request.method === "POST" && ["/first-run/settings", "/first-run/provider", "/first-run/credentials", "/first-run/program", "/first-run/check", "/first-run/check/cancel", "/first-run/programs", "/first-run/authentication", "/first-run/assistant", "/first-run/complete", "/first-run/check-and-complete"].includes(url.pathname)) {
+    const requestId = randomUUID();
     readJson(request).then(async (input) => {
       if (url.pathname === "/first-run/check-and-complete") return firstRunSetup.checkAndComplete(input);
       if (url.pathname === "/first-run/settings") return firstRunSetup.saveSettings(input);
@@ -80,7 +92,7 @@ export function handleProviderSetupHttpRequest({
       if (url.pathname === "/first-run/provider") return firstRunSetup.setEnabled(input);
       return url.pathname === "/first-run/assistant" ? firstRunSetup.prepareAssistant() : firstRunSetup.complete(input);
     }).then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, 400, { error: error.message }));
+      .catch((error) => firstRunFailure(error, request, response, url.pathname, requestId, sendJson));
     return true;
   }
 
@@ -93,4 +105,10 @@ export function handleProviderSetupHttpRequest({
   }
 
   return false;
+}
+
+
+function firstRunFailure(error, request, response, operation, requestId, sendJson) {
+  logError("first-run.http", error, { operation, requestId, method: request.method, stage: "request" });
+  sendJson(response, 400, { error: error.message, requestId });
 }
