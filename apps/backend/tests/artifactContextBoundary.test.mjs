@@ -195,3 +195,14 @@ class MemoryReadStore {
     return this.usage.get(this.key(turnExecutionId)) ?? { uniqueBytes: 0, uniquePages: 0 };
   }
 }
+
+test("Work Chat does not enumerate Artifacts and reports omitted Tasks", () => {
+  const work = { id: "w", name: "Work", workspaceId: "ws", contributorAgentIds: [], tags: [] };
+  const context = new WorkChatContextService({ store: {
+    getWork: () => work, listTasksByWork: () => Array.from({ length: 85 }, (_, i) => ({ id: `t:${i}`, title: "Task" })),
+    resolveWorkspaceRoot: () => "/tmp/project", getWorkChatSession: () => ({ id: "s" })
+  }, artifactService: { indexForSession: () => assert.fail("no directory") } }).build("w");
+  assert.equal(context.counts.omittedTasks, 5);
+  assert.equal(context.truncated, true);
+  assert.doesNotMatch(context.prompt, /artifactId/);
+});

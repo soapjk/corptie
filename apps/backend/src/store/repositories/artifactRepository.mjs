@@ -356,7 +356,7 @@ export class ArtifactRepository {
     return row ? artifactReferenceFromRow(row) : null;
   }
 
-  listArtifactReferences({ artifactId = null, taskId = null, sessionId = null, includeRevoked = false, limit = null, targetedOnly = false } = {}) {
+  listArtifactReferences({ artifactId = null, taskId = null, sessionId = null, includeRevoked = false, limit = null, targetedOnly = false, requiredOnly = false } = {}) {
     const clauses = [];
     const params = [];
     if (artifactId) { clauses.push("artifact_id = ?"); params.push(artifactId); }
@@ -364,6 +364,7 @@ export class ArtifactRepository {
     if (sessionId) { clauses.push("session_id = ?"); params.push(sessionId); }
     if (!includeRevoked) clauses.push("revoked_at IS NULL");
     if (targetedOnly) clauses.push("(task_id IS NOT NULL OR session_id IS NOT NULL)");
+    if (requiredOnly) clauses.push("required = 1");
     return this.selectAll(
       `SELECT * FROM artifact_references ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
        ORDER BY required DESC, authorized_at DESC ${limit == null ? "" : "LIMIT ?"}`,

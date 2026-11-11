@@ -34,7 +34,7 @@ test("an existing append-context Session receives the new checklist rule without
   assert.ok(refreshed.context.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
 });
 
-test("Task and Artifact updates remain independently deliverable after validation", () => {
+test("Artifact directory changes do not affect context while Task updates remain deliverable", () => {
   const session = { id: "s", sessionKind: "worker", taskId: "t", workId: "w" };
   const task = { id: "t", work_id: "w", title: "Task", description: "Original scope",
     acceptance_criteria: "Complete", verification_criteria: "Verify", revision: 1, resource_version: 1 };
@@ -49,7 +49,7 @@ test("Task and Artifact updates remain independently deliverable after validatio
   assert.equal(first.contextSections.filter(s => s.prompt).map(s => s.prompt).join("\n\n"), first.prompt);
   cache.prepare(reference, first, policy).commit();
   const changedIndex = cache.prepare(reference, build("Artifact two"), policy);
-  assert.match(changedIndex.context.prompt, /Artifact two/);
+  assert.doesNotMatch(changedIndex.context.prompt, /Artifact one|Artifact two/);
   assert.doesNotMatch(changedIndex.context.prompt, /Original scope|authoritative Task binding/);
   assert.match(changedIndex.context.prompt, /<direct>current<\/direct>/);
   changedIndex.commit();
@@ -303,16 +303,17 @@ test("all supplied context remains complete without a local size configuration o
   const referenceContext = { prompt: "参考".repeat(40000) };
   const merged = mergeWorkerSessionContexts({ baseContext: base, memoryContext,
     requiredContexts: [required], referenceContext, directUserIntentContext: { prompt: "current user" } });
-  for (const part of [base.prompt, memoryContext.prompt, required.prompt, referenceContext.prompt, "current user"]) assert.ok(merged.prompt.includes(part));
+  for (const part of [base.taskPrompt, memoryContext.prompt, required.prompt, referenceContext.prompt, "current user"]) assert.ok(merged.prompt.includes(part));
   assert.deepEqual(merged.contextSections.filter(s => s.prompt).map(s => s.prompt).join("\n\n"), merged.prompt);
 });
 
-test("complete Artifact metadata is delivered alongside a large Task definition", () => {
+test("optional Artifact directories are never delivered alongside a complete Task definition", () => {
   const task = { id: "task:large", work_id: "work:large", title: "Large", description: "定义".repeat(40000), revision: 1, resource_version: 1 };
   const items = Array.from({ length: 100 }, (_, i) => ({ artifactId: `artifact:${i}`, title: "Artifact".repeat(100), required: i === 0 }));
   const result = buildWorkSessionContext({ session: { id: "s", sessionKind: "worker", taskId: task.id, workId: task.work_id }, task, artifactIndex: { items } });
   assert.ok(result.prompt.includes(task.description));
-  for (const item of items) assert.ok(result.prompt.includes(item.artifactId));
+  assert.ok(result.prompt.includes(items[0].artifactId));
+  for (const item of items.slice(1)) assert.ok(!result.prompt.includes(`\"artifactId\":\"${item.artifactId}\"`));
 });
 
 test("essential checklist instructions remain in the leading context when a Provider abbreviates a long binding", () => {
@@ -324,4 +325,21 @@ test("essential checklist instructions remain in the leading context when a Prov
   assert.match(head, /load the exact execution-checklist domain/);
   assert.ok(context.corePrompt.indexOf(EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS)
     < context.corePrompt.indexOf("Handle requests within the bound Task scope normally"));
+});
+
+test("critical workflow and full preferences are resent while unchanged Task and protocol are reused", () => {
+  const preference = "用户原始完整偏好".repeat(100);
+  const build = () => mergeWorkerSessionContexts({ baseContext: workerContext(),
+    directUserIntentContext: { prompt: "user-source-evidence" },
+    requiredContexts: [{ contextKey: "global-preferences", prompt: preference }] });
+  const reference = { sessionId: "s", providerId: "p", bindingId: "b" };
+  const delivery = new SessionContextDelivery();
+  delivery.prepare(reference, build(), { mode: "append" }).commit();
+  const next = delivery.prepare(reference, build(), { mode: "append" }).context;
+  assert.match(next.prompt, /finish all authorized changes/);
+  assert.ok(next.prompt.includes(preference));
+  assert.match(next.prompt, /user-source-evidence/);
+  assert.ok(next.contextDelivery.reusedSectionIds.includes("task-definition"));
+  assert.ok(next.contextDelivery.sentSectionIds.includes("execution-workflow"));
+  assert.ok(build().prompt.indexOf(preference) < build().prompt.indexOf("This is the authoritative Task binding"));
 });

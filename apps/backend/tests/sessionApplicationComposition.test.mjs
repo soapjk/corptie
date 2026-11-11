@@ -28,13 +28,17 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
         getTask: () => task, getWork: () => ({ id: "work:one", name: "Work" }), selectOne: () => null,
         getSessionToolCatalogMaterialization: () => null },
       agentProviderRegistry: registry, sessionBindingRepository: { resolve: () => reference },
-      artifactService: { indexForSession: () => ({ items: [] }) }, resolveContextReferences: async () => null,
+      artifactService: { indexForSession: () => assert.fail("ordinary messages must not build Artifact directories") }, resolveContextReferences: async () => null,
       mcpAssignmentRevisionForAgent: () => null, assertForkDispatchAllowed() {}, assertSessionRecoveryMessageBoundary() {}, emitEvent() {}
     });
     const messages = ["Custom startup: implement the feature and verify it", "Follow-up: repair the edge case and run its checks"];
     for (const message of messages) await service.sendMessage(session.id, message);
     assert.deepEqual(sent.map(value => value.message), messages);
-    for (const value of sent) assert.ok(value.context.sessionContext.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+    for (const value of sent) {
+      assert.ok(value.context.sessionContext.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));
+      assert.match(value.context.sessionContext.prompt, /finish all authorized changes/);
+      assert.doesNotMatch(value.context.sessionContext.prompt, /Optional Artifact index/);
+    }
     assert.equal(sent.length, 2);
   });
 }
@@ -215,7 +219,7 @@ test("Worker message context injects bounded selected references after authorita
     toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
       { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
     ]) }),
-    artifactService: { indexForSession: () => ({ items: [] }) },
+    artifactService: { indexForSession: () => assert.fail("ordinary messages must not build Artifact directories") },
     mcpAssignmentRevisionForAgent: () => null,
     resolveContextReferences: async (id, options) => {
       calls.push([id, options]);
@@ -249,7 +253,7 @@ test("Worker message context retains user-saved Global preferences independently
       getTask: () => task, getWork: () => ({ id: "work:one", name: "Work one" }),
       selectOne: () => null, getSessionToolCatalogMaterialization: () => null },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
-    artifactService: { indexForSession: () => ({ items: [] }) },
+    artifactService: { indexForSession: () => assert.fail("ordinary messages must not build Artifact directories") },
     mcpAssignmentRevisionForAgent: () => null,
     resolveContextReferences: async () => null,
     memoryRecallService: {
@@ -358,7 +362,7 @@ for (const providerId of ['codex-app-server', 'claude-code', 'openclacky']) {
         sessionBindingRepository: { resolve: () => reference }, memoryTopicService: topics,
         assertForkDispatchAllowed() {}, assertSessionRecoveryMessageBoundary() {}, emitEvent() {},
         workChatContextService: { build: () => ({ prompt: 'Required Work' }) },
-        artifactService: { indexForSession: () => ({ items: [] }) },
+        artifactService: { indexForSession: () => assert.fail("ordinary messages must not build Artifact directories") },
         mcpAssignmentRevisionForAgent: () => null,
         resolveContextReferences: async () => ({ prompt: 'Required selected document' }),
         resolveAssignedCapabilities: async () => [],
