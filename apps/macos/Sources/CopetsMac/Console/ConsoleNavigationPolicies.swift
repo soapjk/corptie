@@ -428,3 +428,26 @@ enum ConsoleChatPreviewPolicy {
         showsAll ? max(0, total) : min(5, max(0, total))
     }
 }
+
+/// Peer headings share the same text origin, typography and full row width.
+struct ConsolePrimarySectionHeading: View {
+    let title: String
+    var isProcessing = false
+    var hasUnread = false
+    var isActive = true
+
+    var body: some View {
+        HStack(spacing: 7) {
+            ConsoleWorkTitle(title: title, isWorking: isProcessing,
+                isActive: isActive, fontSize: 12, weight: .medium)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            ConsoleGroupStatusIndicators(isExpanded: true, isProcessing: isProcessing, hasUnread: hasUnread)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 3)
+        .accessibilityLabel(title)
+    }
+}

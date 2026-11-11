@@ -39,7 +39,13 @@ final class ConsoleFlatSessionListTests: XCTestCase {
         let chats = ConsoleFlatSessionList.partitionedRows(rows, sort: .name).chats
         let count = ConsoleChatPreviewPolicy.visibleCount(total: chats.count, showsAll: false)
         XCTAssertEqual(chats.prefix(count).map(\.id), ["chat-8", "chat-7", "chat-6", "chat-5", "chat-4"])
-        XCTAssertEqual(ConsoleChatPreviewPolicy.visibleCount(total: chats.count, showsAll: true), 9)
+        var showsAll = false
+        for _ in 0..<3 {
+            showsAll.toggle()
+            XCTAssertEqual(ConsoleChatPreviewPolicy.visibleCount(total: chats.count, showsAll: showsAll), 9)
+            showsAll.toggle()
+            XCTAssertEqual(ConsoleChatPreviewPolicy.visibleCount(total: chats.count, showsAll: showsAll), 5)
+        }
         XCTAssertEqual(ConsoleChatPreviewPolicy.visibleCount(total: 3, showsAll: false), 3)
         XCTAssertEqual(ConsoleChatPreviewPolicy.visibleCount(total: 0, showsAll: false), 0)
         XCTAssertEqual(ConsoleChatPreviewPolicy.visibleCount(total: 5, showsAll: false), 5)

@@ -26,6 +26,8 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var rows: [Row] = []
     var isExpanded = false
     var isSection = false
+    // Presentation only: unlike isSection, a section-styled group may own rows.
+    var usesSectionStyle = false
     var allowsCollapse = true
     var showsDisclosureIndicator = true
     var showsRowDisclosureIndicator = true
@@ -208,7 +210,8 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         }
 
         func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
-            (item as? Node)?.group?.isSection == true
+            guard let group = (item as? Node)?.group else { return false }
+            return group.isSection || group.usesSectionStyle
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { false }
@@ -314,6 +317,7 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
         scroll.documentView = outline
+        WorkNavigationScrollStyle.configure(scroll)
         context.coordinator.update(outline, initial: true)
         return scroll
     }
