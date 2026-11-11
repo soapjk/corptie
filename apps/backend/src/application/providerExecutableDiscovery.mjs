@@ -53,8 +53,8 @@ function readVersion(path, { timeoutMs, signal }) {
 // a version is a recommendation, never proof of model access or login.
 export class ProviderExecutableDiscovery {
   constructor({ candidates, controlledPath = () => null, probeVersion = readVersion,
-    budgetMs = 8000, perCandidateMs = 2000, maxCandidates = 32 }) {
-    Object.assign(this, { candidates, controlledPath, probeVersion, budgetMs, perCandidateMs, maxCandidates });
+    budgetMs = 8000, perCandidateMs = 2000, maxCandidates = 32, preserveLegacySelection = false }) {
+    Object.assign(this, { candidates, controlledPath, probeVersion, budgetMs, perCandidateMs, maxCandidates, preserveLegacySelection });
     this.inventory = [];
     this.cache = new Map();
     this.pending = null;
@@ -113,8 +113,9 @@ export class ProviderExecutableDiscovery {
 
   describe(saved = {}) {
     const controlledPath = this.controlledPath();
-    const recommendedPath = controlledPath || this.inventory.find(item => item.version && item.state === "discovered")?.path || "";
-    const mode = controlledPath ? "controlled" : saved.selectionMode === "manual" ? "manual" : "auto";
+    const recommendedPath = controlledPath || this.inventory.find(item => item.version && item.state === "discovered")?.path
+      || this.inventory[0]?.path || "";
+    const mode = controlledPath ? "controlled" : (saved.selectionMode === "manual" || (this.preserveLegacySelection && !saved.selectionMode && (saved.configuredPath || saved.confirmed))) ? "manual" : "auto";
     return { mode, recommendedPath, adoptedPath: controlledPath || saved.configuredPath || "",
       model: saved.probe?.model ?? "", effectiveModel: saved.probe?.effectiveModel ?? null,
       candidates: this.inventory.map(({ fingerprint, ...item }) => item) };

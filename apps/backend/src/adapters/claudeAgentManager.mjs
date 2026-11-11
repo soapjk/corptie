@@ -25,7 +25,7 @@ import { buildToolChoice, optionResolution, advanceAskUserChoice } from "./claud
 import {
   claudeConnectionTestOptions,
   claudeProviderErrorDiagnostic,
-  claudeRuntimeEnvironment,
+  claudeSecretValues, claudeRuntimeEnvironment,
   claudeSdkResultError,
   normalizeClaudeProviderError
 } from "../agent-provider/providers/claudeProviderConfiguration.mjs";
@@ -218,7 +218,7 @@ export class ClaudeAgentManager {
       };
     } catch (error) {
       const failure = normalizeClaudeProviderError(error, {
-        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+        secretValues: claudeSecretValues(this.environment())
       });
       console.log(`[claude-sdk] context usage unavailable id=${id} code=${failure.code}`);
       return null;
@@ -234,7 +234,7 @@ export class ClaudeAgentManager {
       return normalizeClaudeAccountUsage(await readUsage.call(query), session.currentModel);
     } catch (error) {
       const failure = normalizeClaudeProviderError(error, {
-        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+        secretValues: claudeSecretValues(this.environment())
       });
       console.log(`[claude-sdk] account usage unavailable id=${id} code=${failure.code}`);
       return unavailableClaudeAccountUsage(this.get(id)?.currentModel);
@@ -459,7 +459,7 @@ export class ClaudeAgentManager {
         // Closing the Query below is the authoritative cancellation path. The
         // SDK can reject interrupt() when its child process has already exited.
         const failure = normalizeClaudeProviderError(error, {
-          secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+          secretValues: claudeSecretValues(this.environment())
         });
         console.warn(`[claude-sdk] interrupt request failed id=${session.id} code=${failure.code}`);
       }
@@ -476,7 +476,7 @@ export class ClaudeAgentManager {
         await query.close();
       } catch (error) {
         const failure = normalizeClaudeProviderError(error, {
-          secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+          secretValues: claudeSecretValues(this.environment())
         });
         console.warn(`[claude-sdk] query close failed id=${session.id} code=${failure.code}`);
       }
@@ -926,7 +926,7 @@ export class ClaudeAgentManager {
         }
       }
     } catch (error) {
-      const secretValues = [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean);
+      const secretValues = claudeSecretValues(this.environment());
       if (!session.interruptRequested && error?.name !== "AbortError") logError("claude-sdk.query", error, { sessionId: session.id, secretValues });
       const failure = normalizeClaudeProviderError(error, {
         secretValues

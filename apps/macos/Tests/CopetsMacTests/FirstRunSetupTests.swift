@@ -39,7 +39,7 @@ struct FirstRunSetupTests {
         #expect(source.contains("automaticallyChecksChanges: false"))
         #expect(source.contains("guard automaticallyChecksChanges else { return }"))
         #expect(source.contains("first-run/check-and-complete"))
-        #expect(source.contains("检测已开启provider并进入corptie"))
+        #expect(source.contains("进入客户端"))
         #expect(source.contains("请指定账号"))
         #expect(source.contains("添加指定二进制文件路径"))
         #expect(!source.contains("private var pathField:"))
@@ -382,7 +382,7 @@ struct FirstRunSetupTests {
     }
 
     @Test @MainActor
-    func galleryOnlyMountsOneEditorAndKeepsOtherSummariesCompact() async throws {
+    func galleryKeepsShortEditorsNaturalAndOtherSummariesCompact() async throws {
         let providers = ["Codex", "Claude Code", "OpenClacky"].map { name in
             FirstRunProvider(id: name, name: name, path: "/fixture/engine",
                 executable: true, enabled: true, checkState: "available", message: nil)
@@ -407,7 +407,7 @@ struct FirstRunSetupTests {
             try await Task.sleep(for: .milliseconds(40))
             host.layoutSubtreeIfNeeded()
             let editors = scrollers(host)
-            #expect(editors.count == (selected == nil ? 0 : 1))
+            #expect(editors.isEmpty) // These short editors need no scroll container.
             #expect(host.fittingSize.width <= host.bounds.width + 2)
             #expect(host.fittingSize.height <= host.bounds.height + 2)
             for editor in editors {
@@ -417,6 +417,65 @@ struct FirstRunSetupTests {
                 #expect(editor.documentView?.bounds.width ?? 0 <= editor.contentView.bounds.width + 2)
                 #expect(!editor.hasHorizontalScroller)
             }
+        }
+    }
+
+    @Test @MainActor
+    func configurationViewportShrinksShortContentAndScrollsOverflowWithoutDoubleMounting() async {
+        for (height, expected): (CGFloat, CGFloat) in [(36, 36), (900, 300)] {
+            var appearances = 0
+            let host = NSHostingView(rootView: FirstRunProviderConfigurationViewport {
+                Color.clear.frame(height: height).onAppear { appearances += 1 }
+            })
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 416, height: 300),
+                styleMask: .borderless, backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(abs(host.fittingSize.height - expected) < 1)
+            // Fitting an alternative must not start duplicate editor lifecycles.
+            #expect(appearances == 1)
+            func countScrolls(_ view: NSView) -> Int {
+                (view is NSScrollView ? 1 : 0) + view.subviews.reduce(0) { $0 + countScrolls($1) }
+            }
+            #expect(countScrolls(host) == (height > 300 ? 1 : 0))
+            window.contentView = nil
+        }
+    }
+
+    @Test @MainActor
+    func actualProviderConfigurationKeepsNaturalHeightAndCapsLongProgramList() async {
+        for count in [1, 40] {
+            let candidates = (0..<count).map { index in
+                ProviderProgramInventory.Candidate(id: String(index), path: "/fixture/engine-\(index)",
+                    resolvedPath: "/fixture/engine-\(index)", sources: ["cli"],
+                    version: "1.0.\(index)", state: "discovered", prerelease: false)
+            }
+            let program = ProviderProgramInventory(mode: "manual", recommendedPath: candidates[0].path,
+                adoptedPath: candidates[0].path, model: "", candidates: candidates, running: [])
+            let provider = FirstRunProvider(id: "fixture", name: "Engine", path: candidates[0].path,
+                executable: true, enabled: true, checkState: "available", message: nil, program: program)
+            let host = NSHostingView(rootView: FirstRunProviderCard(provider: provider, busy: false,
+                scanGeneration: 0, isDefault: false, updated: { _ in }, settingsDraft: draft(for: [provider]),
+                automaticallyChecksChanges: false, compact: true,
+                presentation: .init(expanded: true, expand: {}, save: {})))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 420),
+                styleMask: .borderless, backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(host.fittingSize.height < (count == 1 ? 240 : 390))
+            #expect(abs(host.fittingSize.width - 440) < 2)
+            func scrolls(_ view: NSView) -> [NSScrollView] {
+                (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrolls($0) }
+            }
+            let owners = scrolls(host)
+            #expect(owners.count == (count == 1 ? 0 : 1))
+            if let scroll = owners.first {
+                #expect(scroll.documentView!.bounds.height > scroll.contentView.bounds.height)
+                #expect(!scroll.hasHorizontalScroller)
+            }
+            window.contentView = nil
         }
     }
 

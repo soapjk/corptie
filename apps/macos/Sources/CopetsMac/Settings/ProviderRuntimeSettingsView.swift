@@ -1,14 +1,16 @@
 import AppKit
 import SwiftUI
+import Observation
 
 struct ProviderCredentialSource: Decodable, Equatable, Identifiable {
     var id: String { "\(kind)|\(path)" }
     var state: String? = nil
+    var label: String? = nil
     let kind: String
     let path: String
 }
 
-struct ProviderRuntimeSettingsProjection: Decodable {
+struct ProviderRuntimeSettingsProjection: Decodable, Equatable {
     let runtimeDirectory: String
     let credentialTarget: String?
     let formatDescription: String?
@@ -19,6 +21,50 @@ struct ProviderRuntimeSettingsProjection: Decodable {
     let state: String
     let message: String
     let sourceChanged: Bool
+    var connection: ProviderConnectionConfiguration? = nil
+}
+
+struct ProviderConnectionDraft: Equatable {
+    var endpoint: String
+    var model: String
+    var authType: String
+    var credential: String?
+}
+
+struct ProviderConnectionConfiguration: Decodable, Equatable {
+    struct Current: Decodable, Equatable {
+        let endpoint: String
+        let model: String
+        let authType: String
+        let credentialConfigured: Bool
+    }
+    let managedSource: ProviderCredentialSource
+    let importKind: String
+    let current: Current?
+}
+
+/// Local editor state has one owner in the resident provider card, so fitting a
+/// short or scrollable presentation cannot reset an open configuration flow.
+@MainActor @Observable
+final class ProviderRuntimeEditorState {
+    var selectedSource: ProviderCredentialSource?
+    var showConnection = false
+    var showAdvanced = false
+    var endpoint: String
+    var model: String
+    var authType: String
+    var credential = ""
+    var saving = false
+    var error: String?
+
+    init(runtime: ProviderRuntimeSettingsProjection, source: ProviderCredentialSource?,
+         connection: ProviderConnectionDraft?) {
+        selectedSource = source ?? runtime.source
+        endpoint = connection?.endpoint ?? runtime.connection?.current?.endpoint ?? ""
+        model = connection?.model ?? runtime.connection?.current?.model ?? ""
+        let auth = connection?.authType ?? runtime.connection?.current?.authType ?? "authToken"
+        authType = auth == "helper" ? "authToken" : auth
+    }
 }
 
 struct ProviderRuntimeSettingsView: View {
@@ -28,13 +74,14 @@ struct ProviderRuntimeSettingsView: View {
     let updated: (FirstRunProvider) -> Void
     let sourceDraft: ProviderCredentialSource?
     let sourceEdited: ((ProviderCredentialSource) -> Void)?
-    @State private var kind: String
-    @State private var path: String
-    @State private var saving = false
-    @State private var error: String?
+    let connectionDraft: ProviderConnectionDraft?
+    let connectionEdited: ((ProviderConnectionDraft) -> Void)?
+    @State private var editor: ProviderRuntimeEditorState
 
     init(providerId: String, runtime: ProviderRuntimeSettingsProjection, busy: Bool,
          sourceDraft: ProviderCredentialSource? = nil, sourceEdited: ((ProviderCredentialSource) -> Void)? = nil,
+         connectionDraft: ProviderConnectionDraft? = nil, connectionEdited: ((ProviderConnectionDraft) -> Void)? = nil,
+         editorState: ProviderRuntimeEditorState? = nil,
          updated: @escaping (FirstRunProvider) -> Void) {
         self.providerId = providerId
         self.runtime = runtime
@@ -42,114 +89,191 @@ struct ProviderRuntimeSettingsView: View {
         self.updated = updated
         self.sourceDraft = sourceDraft
         self.sourceEdited = sourceEdited
-        _kind = State(initialValue: sourceDraft?.kind ?? runtime.source?.kind ?? runtime.candidates.first?.kind ?? "directory")
-        _path = State(initialValue: sourceEdited != nil ? (sourceDraft?.path ?? "") : (runtime.source?.path ?? runtime.candidates.first?.path ?? ""))
+        self.connectionDraft = connectionDraft
+        self.connectionEdited = connectionEdited
+        _editor = State(initialValue: editorState ?? ProviderRuntimeEditorState(
+            runtime: runtime, source: sourceDraft, connection: connectionDraft))
+    }
+
+    private var selection: ProviderCredentialSource? { sourceDraft ?? editor.selectedSource ?? runtime.source }
+    private var rows: [ProviderCredentialSource] {
+        var rows = runtime.candidates
+        if let selection, !rows.contains(where: { $0.id == selection.id }) { rows.append(selection) }
+        return rows
+    }
+    private var canReuseCredential: Bool {
+        if connectionDraft?.authType == editor.authType, connectionDraft?.credential != nil { return true }
+        return selection?.id == runtime.connection?.managedSource.id
+            && runtime.connection?.current?.authType == editor.authType
+            && runtime.connection?.current?.credentialConfigured == true
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            Text(L10n("独立运行目录")).font(.callout.weight(.medium))
-            Text(verbatim: runtime.runtimeDirectory).font(.caption.monospaced()).textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(L10n("由 Corptie 自动创建，用于保存此引擎的独立配置、运行数据和集成资源。"))
-                .font(.caption).foregroundStyle(.secondary)
-            Button(L10n("在 Finder 中显示")) {
-                NSWorkspace.shared.open(URL(fileURLWithPath: runtime.runtimeDirectory, isDirectory: true))
-            }
-            Text(L10n("官方登录凭证来源")).font(.callout.weight(.medium))
+        VStack(alignment: .leading, spacing: 8) {
             if runtime.sourceKinds.isEmpty {
-                Text(L10n(runtime.message)).font(.caption).foregroundStyle(.secondary)
+                Text(L10n("此引擎暂不支持在此管理账号或模型来源。")).font(.caption).foregroundStyle(.secondary)
             } else {
-                if let description = runtime.formatDescription {
-                    Text(L10n(description)).font(.caption).foregroundStyle(.secondary)
-                }
-                Picker(L10n("来源类型"), selection: $kind) {
-                    ForEach(runtime.sourceKinds, id: \.self) { value in
-                        Text(label(value)).tag(value)
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { source in
+                        Button { select(source) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: selection?.id == source.id ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selection?.id == source.id ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(sourceName(source)).font(.callout).lineLimit(1)
+                                    Text(sourceDetail(source)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.vertical, 6).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).help(source.path)
+                        .accessibilityLabel(sourceName(source))
+                        .accessibilityValue(L10n(selection?.id == source.id ? "已选择" : "未选择"))
+                        Divider()
                     }
-                }
-                TextField(L10n("凭证来源的绝对路径"), text: $path)
-                    .textFieldStyle(.roundedBorder).font(.caption.monospaced())
-                    .accessibilityLabel(L10n("凭证来源路径"))
-                HStack {
-                    Button(L10n("选择来源…")) { chooseSource() }
-                    if !runtime.candidates.isEmpty {
-                        Menu(L10n("发现的候选来源")) {
-                            ForEach(runtime.candidates) { candidate in
-                                Button("\(candidate.path) · \(candidate.state == "found" ? L10n("本地可读取") : L10n("未找到或不可读取"))") { kind = candidate.kind; path = candidate.path }
+                    Menu {
+                        if runtime.sourceKinds.contains("file") {
+                            Button(L10n("选择账号凭证文件…")) { chooseSource(kind: "file") }
+                        }
+                        if runtime.sourceKinds.contains("directory") {
+                            Button(L10n("选择账号配置目录…")) { chooseSource(kind: "directory") }
+                        }
+                        if let connection = runtime.connection {
+                            Button(L10n("导入本机模型配置…")) { chooseSource(kind: connection.importKind) }
+                            if connectionEdited != nil {
+                                Button(L10n("手动添加模型来源…")) { beginConnection() }
                             }
                         }
+                    } label: {
+                        Label(L10n("添加账号或模型来源"), systemImage: "plus")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
                     }
-                    if sourceEdited == nil {
-                        Button(L10n("应用凭证来源")) { Task { await save() } }
-                            .disabled(path.isEmpty)
-                    }
-                    if saving { ProgressView().controlSize(.small) }
-                }
-                .disabled(busy || saving)
-                Text(L10n(runtime.message)).font(.caption).foregroundStyle(.secondary)
-                Button(L10n("重新检查本地状态")) { Task { await refresh() } }
-                    .disabled(busy || saving)
-                Text(L10n("请在官方 CLI 或 App 中登录、退出或切换账号。Corptie 不提供登录流程；保存来源仅做本地检查，不会发送模型请求。"))
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(L10n("保存来源将确认使用其中的当前账号，并影响此引擎后续的新请求；不会中断正在执行的请求。"))
-                    .font(.caption).foregroundStyle(.secondary)
-                if let target = runtime.credentialTarget {
-                    Text(L10n("后续请求前会将所选来源的凭证同步到以下本地文件，不会写回来源。来源丢失时会停止使用，不会自动切换账号。"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(verbatim: target).font(.caption.monospaced()).textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !runtime.sourceKinds.contains("keychain") {
-                    Text(L10n("此适配器当前支持凭证目录和文件，不支持直接读取系统钥匙串。"))
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if kind == "keychain" {
-                    Text(L10n("请选择官方登录环境目录。读取其系统钥匙串凭证时，macOS 可能请求授权。"))
-                        .font(.caption).foregroundStyle(.secondary)
+                    .menuStyle(.borderlessButton)
+                    .accessibilityIdentifier("provider.source.add")
                 }
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            if runtime.sourceChanged && connectionDraft == nil {
+                Text(L10n(runtime.message)).font(.caption).foregroundStyle(.orange)
+            } else if ["missing", "unavailable"].contains(runtime.state) && connectionDraft == nil {
+                Text(L10n(runtime.message)).font(.caption).foregroundStyle(.red)
+            }
+            if let error = editor.error { Text(error).font(.caption).foregroundStyle(.red) }
+            DisclosureGroup(L10n("高级信息"), isExpanded: $editor.showAdvanced) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L10n("独立运行目录")).font(.caption.weight(.medium))
+                    Text(verbatim: runtime.runtimeDirectory).font(.caption.monospaced()).textSelection(.enabled)
+                    Button(L10n("在 Finder 中显示")) {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: runtime.runtimeDirectory, isDirectory: true))
+                    }
+                    if runtime.sourceKinds.isEmpty {
+                        Text(L10n(runtime.message)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let description = runtime.formatDescription {
+                        Text(L10n(description)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 6)
+            }
+            .font(.caption).foregroundStyle(.secondary)
         }
-        .onChange(of: kind) { _, _ in sourceEdited?(.init(kind: kind, path: path)) }
-        .onChange(of: path) { _, _ in sourceEdited?(.init(kind: kind, path: path)) }
-        .onChange(of: sourceDraft) { _, source in
-            if let source { kind = source.kind; path = source.path }
+        .disabled(busy || editor.saving)
+        .sheet(isPresented: $editor.showConnection) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(L10n("添加模型来源")).font(.headline)
+                connectionFields
+            }
+            .padding(20).frame(width: 400)
         }
+        .onChange(of: sourceDraft) { _, value in editor.selectedSource = value }
+        .onChange(of: connectionDraft) { _, value in if value == nil { editor.credential = "" } }
     }
 
-    private func label(_ kind: String) -> String {
-        L10n(kind == "file" ? "凭证文件" : kind == "keychain" ? "官方环境的钥匙串凭证" : "官方配置目录")
+    private var connectionFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField(L10n("服务地址"), text: $editor.endpoint).textFieldStyle(.roundedBorder)
+                .accessibilityLabel(L10n("服务地址"))
+            Picker(L10n("认证方式"), selection: $editor.authType) {
+                Text("Bearer Token").tag("authToken")
+                Text("API Key").tag("apiKey")
+            }
+            SecureField(L10n(canReuseCredential ? "留空保留当前密钥" : "密钥"), text: $editor.credential)
+                .textFieldStyle(.roundedBorder).accessibilityLabel(L10n("密钥"))
+            TextField(L10n("模型名称"), text: $editor.model).textFieldStyle(.roundedBorder)
+                .accessibilityLabel(L10n("模型名称"))
+            HStack {
+                Button(L10n("取消")) { editor.showConnection = false; editor.credential = "" }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(L10n("添加到列表")) {
+                    guard let connectionEdited else { return }
+                    let key = editor.credential.trimmingCharacters(in: .whitespacesAndNewlines)
+                    connectionEdited(.init(endpoint: editor.endpoint.trimmingCharacters(in: .whitespacesAndNewlines),
+                        model: editor.model.trimmingCharacters(in: .whitespacesAndNewlines), authType: editor.authType,
+                        credential: key.isEmpty ? connectionDraft?.credential : key))
+                    editor.showConnection = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(editor.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || editor.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || (editor.credential.isEmpty && !canReuseCredential))
+            }
+        }
+        .font(.callout)
+        .padding(.vertical, 6)
     }
 
-    private func chooseSource() {
+    private func beginConnection() {
+        editor.endpoint = connectionDraft?.endpoint ?? runtime.connection?.current?.endpoint ?? ""
+        editor.model = connectionDraft?.model ?? runtime.connection?.current?.model ?? ""
+        let auth = connectionDraft?.authType ?? runtime.connection?.current?.authType ?? "authToken"
+        editor.authType = auth == "helper" ? "authToken" : auth
+        editor.credential = ""
+        editor.showConnection = true
+    }
+
+    private func sourceName(_ source: ProviderCredentialSource) -> String {
+        if source.id == runtime.connection?.managedSource.id { return L10n("自定义模型来源") }
+        if source.kind == runtime.connection?.importKind { return L10n("本机模型配置") }
+        return source.label.map { L10n($0) } ?? L10n("本机账号")
+    }
+
+    private func sourceDetail(_ source: ProviderCredentialSource) -> String {
+        if source.id == runtime.connection?.managedSource.id {
+            if let draft = connectionDraft { return draft.model }
+            return runtime.connection?.current?.model ?? L10n("模型来源")
+        }
+        if source.kind == runtime.connection?.importKind { return URL(fileURLWithPath: source.path).lastPathComponent }
+        return L10n(source.kind == "directory" ? "配置目录" : "凭证文件")
+    }
+
+    private func select(_ source: ProviderCredentialSource) {
+        editor.selectedSource = source
+        if let sourceEdited { sourceEdited(source) }
+        else { Task { await save(source) } }
+    }
+
+    private func chooseSource(kind: String) {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = kind != "file"
-        panel.canChooseFiles = kind == "file"
+        panel.canChooseDirectories = kind == "directory"
+        panel.canChooseFiles = kind != "directory"
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
-        if panel.runModal() == .OK, let url = panel.url { path = url.path }
+        if panel.runModal() == .OK, let url = panel.url {
+            select(.init(kind: kind, path: url.path))
+        }
     }
 
-    @MainActor private func refresh() async {
-        saving = true
-        error = nil
-        defer { saving = false }
-        do {
-            let status: FirstRunStatus = try await FirstRunSetupAPI.request("first-run")
-            if let row = status.providers.first(where: { $0.id == providerId }) { updated(row) }
-        } catch { self.error = error.localizedDescription }
-    }
-
-    @MainActor private func save() async {
-        saving = true
-        error = nil
-        defer { saving = false }
+    @MainActor private func save(_ source: ProviderCredentialSource) async {
+        editor.saving = true
+        editor.error = nil
+        defer { editor.saving = false }
         do {
             let row: FirstRunProvider = try await FirstRunSetupAPI.request("first-run/credentials", body: [
-                "providerId": providerId, "kind": kind, "path": path
+                "providerId": providerId, "kind": source.kind, "path": source.path
             ])
             updated(row)
-        } catch { self.error = error.localizedDescription }
+        } catch { editor.error = error.localizedDescription }
     }
 }

@@ -103,8 +103,12 @@ export function claudeConnectionTestOptions(input = {}, options = {}) {
         ? { maxBudgetUsd: validation.configuration.maxBudgetUsd }
         : {})
     },
-    secretValues: [apiKey].filter(Boolean)
+    secretValues: [...new Set([apiKey, ...claudeSecretValues(environment)].filter(Boolean))]
   };
+}
+
+export function claudeSecretValues(environment = {}) {
+  return [environment?.ANTHROPIC_API_KEY, environment?.ANTHROPIC_AUTH_TOKEN, environment?.CLAUDE_CODE_OAUTH_TOKEN].filter(Boolean);
 }
 
 export function claudeRuntimeEnvironment(environment = process.env) {

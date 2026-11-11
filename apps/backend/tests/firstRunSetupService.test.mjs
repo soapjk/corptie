@@ -1,3 +1,4 @@
+import { createProviderCredentialAdapters } from "../src/adapters/providerCredentialAdapters.mjs";
 import { ProviderRuntimeSettings, jsonCredentialReader } from "../src/application/providerRuntimeSettings.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -499,4 +500,63 @@ test("explicit entry rejects an empty enabled set without probing", async t => {
   await assert.rejects(f.service.checkAndComplete(), /Provider/);
   assert.equal(f.probes.length, 0);
   assert.equal(f.launches(), 0);
+});
+
+
+test("one shared settings submission applies a manual connection and enable intent without a model probe", async t => {
+  const f = await fixture(t);
+  const paths = { configDir: f.binary + "-claude", credentialsPath: f.binary + "-claude/.credentials.json",
+    settingsPath: f.binary + "-claude/settings.json", sourceCredentialsPath: f.binary + "-native-auth",
+    sourceSettingsPath: f.binary + "-native-settings" };
+  const runtime = new ProviderRuntimeSettings({
+    path: () => f.binary + "-sources.json",
+    adapters: createProviderCredentialAdapters({
+      codexPaths: { codexHome: f.binary + "-codex", authPath: f.binary + "-codex/auth.json" },
+      claudePaths: paths, openClackyPaths: { runtimeRoot: f.binary + "-clacky" },
+      readCodexSource: async () => null
+    }),
+    onChanged: id => f.service.invalidateConnectionTest(id)
+  });
+  await runtime.initialize();
+  f.service.runtimeSettings = runtime;
+  const result = await f.service.saveSettings({ providers: [{
+    providerId: "claude-sdk", path: f.binary, enabled: true,
+    connection: { endpoint: "https://gateway.invalid", model: "fixture-model", authType: "apiKey", credential: "fixture-api-key" }
+  }] });
+  const row = result.providers.find(provider => provider.id === "claude-sdk");
+  assert.equal(row.enabled, true);
+  assert.equal(row.runtime.connection.current.model, "fixture-model");
+  assert.equal(runtime.executionEnvironment("claude-sdk", {}).ANTHROPIC_API_KEY, "fixture-api-key");
+  assert.ok(!JSON.stringify(result).includes("fixture-api-key"));
+  assert.equal(f.probes.length, 0);
+});
+
+
+test("adding inventory discovery preserves a previously configured CLI without a selection mode", async t => {
+  const f = await fixture(t);
+  for (const provider of f.options.providers) {
+    provider.programDiscovery = new ProviderExecutableDiscovery({
+      preserveLegacySelection: true,
+      candidates: () => [{ path: f.binary, source: "cli" }],
+      probeVersion: async () => ({ version: "2.0.0", state: "discovered" })
+    });
+    await provider.programDiscovery.scan();
+    f.service.state.providers[provider.id] = { configuredPath: f.binary, enabled: true };
+    assert.equal(f.service.command(provider.id, () => "wrong"), f.binary);
+    assert.equal((await f.service.row(provider)).program.mode, "manual");
+  }
+});
+
+
+test("unknown CLI version does not turn a discovered executable into an empty setup path", async t => {
+  const f = await fixture(t), provider = f.options.providers[1];
+  provider.programDiscovery = new ProviderExecutableDiscovery({
+    candidates: () => [{ path: f.binary, source: "cli" }],
+    probeVersion: async () => ({ version: null, state: "unavailable" })
+  });
+  await provider.programDiscovery.scan();
+  const row = await f.service.row(provider);
+  assert.equal(row.path, f.binary);
+  assert.equal(row.executable, true);
+  assert.equal(f.probes.length, 0);
 });

@@ -45,7 +45,8 @@ export class FirstRunSetupService {
   command(id, fallback) {
     const saved = this.state.providers?.[id];
     const discovery = this.providers.find(p => p.id === id)?.programDiscovery;
-    return discovery?.controlledPath() || (discovery && saved?.selectionMode !== "manual"
+    const pinned = saved?.selectionMode === "manual" || discovery?.describe(saved).mode === "manual";
+    return discovery?.controlledPath() || (discovery && !pinned
       ? discovery.describe().recommendedPath : null) || saved?.configuredPath || (saved?.confirmed ? saved.path : null)
       || discovery?.describe().recommendedPath || fallback();
   }
@@ -258,23 +259,27 @@ export class FirstRunSetupService {
           if (this.checks.has(provider.id)) throw new Error("请等待连接检测结束后再切换账号。");
           await provider.accounts.validateSelection(value.accountId);
         }
+        const connection = value.connection == null ? null : this.runtimeSettings?.validateConnection(provider.id, value.connection);
+        if (value.connection != null && !connection) throw new Error("此执行引擎不支持手动模型来源。");
+        if (connection && provider.accounts) throw new Error("此执行引擎使用账号列表。");
         const oldSource = before.runtime?.source ?? null;
         const source = value.source ?? null;
         const sourceChanged = JSON.stringify(source && { kind: source.kind, path: source.path })
           !== JSON.stringify(oldSource && { kind: oldSource.kind, path: oldSource.path });
-        const applySource = sourceChanged || value.confirmSource === true;
+        const applySource = !connection && (sourceChanged || value.confirmSource === true);
         if (applySource) {
           if (provider.accounts) throw new Error("此执行引擎使用账号列表：请在账号列表中指定账号，无需导入凭证来源。");
           if (!this.runtimeSettings || !source || !isAbsolute(source.path ?? "")) throw new Error(`${provider.name}：请选择有效的凭证来源路径。`);
           await this.runtimeSettings.validateSource(provider.id, source);
         }
-        if ((programChanged || applySource) && (this.checks.has(provider.id) || this.runtimeSettings?.isBusy(provider.id))) {
+        if ((programChanged || applySource || connection) && (this.checks.has(provider.id) || this.runtimeSettings?.isBusy(provider.id))) {
           throw new Error(`${provider.name} 正在执行，请结束当前请求后再保存程序或凭证来源。`);
         }
-        changes.push({ provider, value, before, path, programChanged, source, applySource, accountChanged });
+        changes.push({ provider, value, before, path, programChanged, source, applySource, accountChanged, connection });
       }
       for (const change of changes) {
         const { provider, value, before, path, programChanged, source, applySource, accountChanged } = change;
+        if (change.connection) await this.runtimeSettings.saveConnection(provider.id, change.connection);
         if (applySource) await this.saveCredentialSource({ providerId: provider.id, ...source });
         if (programChanged) await this.setProgram({ providerId: provider.id, path });
         if (accountChanged) await provider.accounts.select(value.accountId);
@@ -312,6 +317,7 @@ export class FirstRunSetupService {
       if (input.enabled && !row.executable) throw new Error("请选择可执行的程序。");
       if (input.enabled) await provider.configure(row.path, this.state.providers[provider.id]?.probe);
       await this.saveRow(provider.id, { ...this.state.providers[provider.id], enabled: input.enabled, userDisabled: !input.enabled,
+        ...(row.program ? { selectionMode: row.program.mode } : {}),
         configuredPath: input.enabled ? row.path : this.state.providers[provider.id]?.configuredPath,
         programFingerprint: input.enabled ? await executableFingerprint(row.path) : this.state.providers[provider.id]?.programFingerprint });
       return this.row(provider);

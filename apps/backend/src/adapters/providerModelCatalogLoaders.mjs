@@ -6,7 +6,8 @@ export function createProviderModelCatalogLoaders({
   store, codexAppServerCommand, corptieCodexRuntimePaths, environmentForCommand,
   execFileAsync, readCodexDefaultConfig, defaultWorkspacePath, claudeCommand,
   startup = startClaudeRuntime,
-  codexHome = () => corptieCodexRuntimePaths.codexHome
+  codexHome = () => corptieCodexRuntimePaths.codexHome,
+  claudeConnection = () => null, claudeEnvironment = () => process.env
 }) {
   let codexModelsCache = null;
   let claudeModelsCache = null;
@@ -60,6 +61,15 @@ export function createProviderModelCatalogLoaders({
   }
 
   async function loadClaudeModels(options = {}) {
+    const configured = claudeConnection();
+    if (configured?.model) {
+      claudeModelsCache = null;
+      // A custom gateway model is authoritative; SDK discovery may list unrelated official aliases.
+      return { currentModel: configured.model, currentReasoningLevel: null, models: [{
+        id: configured.model, name: configured.model, description: "",
+        defaultReasoningLevel: null, reasoningLevels: [], serviceTiers: []
+      }] };
+    }
     const nowMs = Date.now();
     const refresh = options.refresh === true;
     if (!refresh && claudeModelsCache && nowMs - claudeModelsCache.loadedAt < 5 * 60 * 1000) {
@@ -69,7 +79,9 @@ export function createProviderModelCatalogLoaders({
     const warm = await startup({
       options: {
         cwd: defaultWorkspacePath(),
-        pathToClaudeCodeExecutable: claudeCommand()
+        pathToClaudeCodeExecutable: claudeCommand(),
+        env: claudeEnvironment(), settingSources: ["user"],
+        tools: [], mcpServers: {}, strictMcpConfig: true, plugins: []
       },
       initializeTimeoutMs: 15_000
     });
@@ -101,5 +113,10 @@ export function createProviderModelCatalogLoaders({
     }
   }
 
-  return { loadCodexModels, loadClaudeModels };
+  return { loadCodexModels, loadClaudeModels,
+    invalidateProviderModels: id => {
+      if (id === "claude-sdk") claudeModelsCache = null;
+      if (id === "codex-app-server") codexModelsCache = null;
+    }
+  };
 }

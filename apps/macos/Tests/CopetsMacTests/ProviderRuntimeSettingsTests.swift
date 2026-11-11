@@ -45,4 +45,32 @@ struct ProviderRuntimeSettingsTests {
         #expect(!provider.isExecutionEnabled)
         #expect([provider].sessionProviderAlternatives(to: "other").isEmpty)
     }
+    @Test @MainActor
+    func editorStateSurvivesNaturalToScrollablePresentationChanges() async throws {
+        let runtime = try projection()
+        let editor = ProviderRuntimeEditorState(runtime: runtime, source: runtime.source, connection: nil)
+        func root(_ natural: Bool) -> some View {
+            FirstRunProviderConfigurationViewport(allowsNaturalHeight: natural) {
+                ProviderRuntimeSettingsView(providerId: "example", runtime: runtime, busy: false,
+                    editorState: editor, updated: { _ in })
+            }
+        }
+        let host = NSHostingView(rootView: root(true))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 300),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(30))
+        editor.showAdvanced = true
+        editor.endpoint = "https://gateway.invalid"
+        editor.model = "fixture-model"
+        host.rootView = root(false)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(editor.showAdvanced)
+        #expect(editor.endpoint == "https://gateway.invalid")
+        #expect(editor.model == "fixture-model")
+    }
+
 }

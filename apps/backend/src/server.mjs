@@ -32,7 +32,7 @@ import { createCodexEnvironmentRuntime } from "./agent-provider/bootstrap/codexE
 import { createCodexEnvironmentSetup } from "./adapters/codexEnvironmentSetup.mjs";
 import { ensureFirstRunAssistantGreeting } from "./application/firstRunAssistantGreeting.mjs";
 import { FirstRunSetupService } from "./application/firstRunSetupService.mjs";
-import { resolveExternalCommand } from "./utils/externalCommand.mjs";
+import { resolveExternalCommand, externalCommandCandidates } from "./utils/externalCommand.mjs";
 import { createMockSessionFixtures } from "./application/mockSessionFixtures.mjs";
 import { createBackendShutdown } from "./application/backendShutdown.mjs";
 import { createWorkspaceTransitionContextReader } from "./application/workspaceTransitionContextReader.mjs";
@@ -859,11 +859,14 @@ function codexEnvironmentHasActiveSession(profile) {
     && (session.external?.activeTurnId || session.activeTurnId || session.rawStatus?.activeTurnId)
     && codexEnvironmentRegistry.forThread(session.external?.threadId ?? session.id).profileId === profile.profileId);
 }
-const { loadCodexModels, loadClaudeModels } = createProviderModelCatalogLoaders({
+const { loadCodexModels, loadClaudeModels, invalidateProviderModels } = createProviderModelCatalogLoaders({
   store, codexAppServerCommand, corptieCodexRuntimePaths, environmentForCommand,
   codexHome: () => codexEnvironmentRegistry.current.home,
   execFileAsync, readCodexDefaultConfig: () => readCodexDefaultConfig(codexEnvironmentRegistry.current.home), defaultWorkspacePath,
-  claudeCommand: () => firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude"))
+  claudeCommand: () => firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude")),
+  claudeConnection: () => providerRuntimeSettings?.connectionMetadata("claude-sdk"),
+  claudeEnvironment: () => providerRuntimeSettings?.executionEnvironment("claude-sdk",
+    selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings?.sources["claude-sdk"])) ?? process.env
 });
 const { ensureCodexSessionPermissions, resolvedNewCodexRuntimeConfig } = createCodexSessionConfiguration({
   store, upsertManagedCodexSession, loadCodexModels,
@@ -992,7 +995,7 @@ const providerSessionLifecycle = new ProviderSessionLifecycle({
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
-  environment: () => selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings?.sources["claude-sdk"]),
+  environment: () => providerRuntimeSettings.executionEnvironment("claude-sdk", selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings.sources["claude-sdk"])),
   prepareSessionInput: prepareClaudeProviderSessionInput,
   onProviderEvent: handleClaudeProviderEventSafely,
   listModels: loadClaudeModels,
@@ -1157,7 +1160,10 @@ providerRuntimeSettings = new ProviderRuntimeSettings({
   isBusy: (providerId) => (agentProviderRegistry.activeExecutions.get(providerId) ?? 0) > 0
     || store.listSessions().some(session => session.external?.provider === providerId
       && (session.external?.activeTurnId || session.activeTurnId || session.rawStatus?.activeTurnId)),
-  onChanged: (providerId) => firstRunSetup.invalidateConnectionTest(providerId)
+  onChanged: (providerId) => {
+    invalidateProviderModels(providerId);
+    return firstRunSetup.invalidateConnectionTest(providerId);
+  }
 });
 const codexCredentialReader = providerRuntimeSettings.adapters["codex-app-server"];
 const codexAccounts = new CodexAccountManager({
@@ -1258,10 +1264,13 @@ const firstRunSetup = new FirstRunSetupService({
         await codexRuntime.close();
       } },
     { id: "claude-sdk", name: "Claude Code", discover: () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] }),
+      programDiscovery: new ProviderExecutableDiscovery({ budgetMs: 3000, perCandidateMs: 1000, maxCandidates: 8, preserveLegacySelection: true, candidates: () => [
+        process.env.CORPTIE_CLAUDE_PATH, ...externalCommandCandidates("claude")
+      ].filter(Boolean).map(path => ({ path, source: "cli" })) }),
       probe: createClaudeReplyProbe({ environment: async () => {
         await ensureCorptieClaudeRuntime({ environmentName, corptieHome: store.dataRoot, importAuthentication: false, bundledMemoryPath: bundledAgentMemoryPath,
           bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath });
-        return selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings?.sources["claude-sdk"]);
+        return providerRuntimeSettings.executionEnvironment("claude-sdk", selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings.sources["claude-sdk"]));
       } }),
       prepare: async () => {
         await ensureCorptieClaudeRuntime({ environmentName, corptieHome: store.dataRoot, importAuthentication: false, bundledMemoryPath: bundledAgentMemoryPath,
@@ -1270,6 +1279,9 @@ const firstRunSetup = new FirstRunSetupService({
       },
       configure: async (path) => { assertSetupPathChangeAllowed("claude-sdk", path); } },
     { id: "openclacky", name: "OpenClacky",
+      programDiscovery: new ProviderExecutableDiscovery({ budgetMs: 3000, perCandidateMs: 1000, maxCandidates: 8, preserveLegacySelection: true, candidates: () => [
+        process.env.OPENCLACKY_COMMAND, resolveOpenClackyCommand(), ...externalCommandCandidates("openclacky")
+      ].filter(Boolean).map(path => ({ path, source: "cli" })) }),
       probe: createOpenClackyReplyProbe({ environment: async () => {
         await ensureCorptieOpenClackyRuntime({ environmentName });
         return { ...process.env, HOME: corptieOpenClackyRuntimePaths.providerHome };

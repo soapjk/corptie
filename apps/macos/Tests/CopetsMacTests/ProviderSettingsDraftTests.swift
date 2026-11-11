@@ -92,4 +92,38 @@ import Testing
         shared.discard()
         #expect(!shared.canSave)
     }
+    @Test func manualModelSourceUsesTheSharedDraftAndFailureKeepsTheCredential() async throws {
+        let data = Data("""
+        {"completed":false,"hasWorks":false,"providers":[
+         {"id":"example","name":"Example","path":"/fixture/engine","executable":true,"enabled":true,"checkState":"unknown",
+          "runtime":{"runtimeDirectory":"/fixture/runtime","reuseMethod":"synchronize","sourceKinds":["file","settings","connection"],
+           "candidates":[],"source":null,"state":"unselected","message":"","sourceChanged":false,
+           "connection":{"managedSource":{"kind":"connection","path":"/fixture/runtime/settings.json"},"importKind":"settings","current":null}}}]}
+        """.utf8)
+        let status = try JSONDecoder().decode(FirstRunStatus.self, from: data)
+        let draft = ProviderSettingsDraft()
+        draft.receive(status)
+        #expect(!draft.canEnterFirstRun)
+        let connection = ProviderConnectionDraft(endpoint: "https://gateway.invalid", model: "custom-model",
+            authType: "authToken", credential: "fixture-credential")
+        draft.editConnection("example", connection: connection)
+        #expect(draft.values["example"]?.source?.kind == "connection")
+        #expect(draft.canEnterFirstRun)
+        var submitted: [[String: Any]] = []
+        do {
+            try await draft.save { body in
+                submitted = body
+                throw BackendError.message("fixture failure")
+            }
+            Issue.record("Expected save failure")
+        } catch { }
+        let payload = submitted.first?["connection"] as? [String: Any]
+        #expect(payload?["model"] as? String == "custom-model")
+        #expect(payload?["credential"] as? String == "fixture-credential")
+        #expect(draft.values["example"]?.connection == connection)
+        // Selecting a different account must not silently submit the previous gateway.
+        draft.edit("example", source: .init(kind: "file", path: "/fixture/account.json"))
+        #expect(draft.values["example"]?.connection == nil)
+    }
+
 }

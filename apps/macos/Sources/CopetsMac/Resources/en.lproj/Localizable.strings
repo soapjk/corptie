@@ -2129,3 +2129,75 @@
 "已自动识别本机配置，点击卡片即可调整。" = "Local settings detected. Click a card to make changes.";
 
 "corptie需至少配置一个agent引擎" = "Corptie requires at least one agent engine.";
+
+"进入客户端" = "Enter Corptie";
+
+"正在进入…" = "Entering…";
+
+"账号与模型来源" = "Accounts and model sources";
+
+"添加账号或模型来源" = "Add account or model source";
+
+"选择账号凭证文件…" = "Choose account credentials…";
+
+"选择账号配置目录…" = "Choose account configuration folder…";
+
+"导入本机模型配置…" = "Import local model configuration…";
+
+"手动添加模型来源…" = "Add model source manually…";
+
+"高级信息" = "Advanced information";
+
+"添加模型来源" = "Add model source";
+
+"服务地址" = "Service URL";
+
+"认证方式" = "Authentication";
+
+"留空保留当前密钥" = "Leave blank to keep the saved credential";
+
+"密钥" = "Credential";
+
+"模型名称" = "Model name";
+
+"添加到列表" = "Add to list";
+
+"自定义模型来源" = "Custom model source";
+
+"本机模型配置" = "Local model configuration";
+
+"模型来源" = "Model source";
+
+"本机账号" = "Local account";
+
+"配置目录" = "Configuration folder";
+
+"支持本机账号，以及含 API Key 或 Bearer Token 的模型连接配置。" = "Supports local accounts and model connections using an API key or bearer token.";
+
+"此执行引擎不支持手动模型来源。" = "This engine does not support manual model sources.";
+
+"请填写此模型来源的密钥。" = "Enter the credential for this model source.";
+
+"请输入有效的服务地址。" = "Enter a valid service URL.";
+
+"服务地址仅支持 HTTP 或 HTTPS，且不能包含凭证、查询参数或片段。" = "Use an HTTP or HTTPS service URL without credentials, query parameters, or fragments.";
+
+"请输入有效的模型名称。" = "Enter a valid model name.";
+
+"请选择 API Key 或 Bearer Token 认证。" = "Choose API key or bearer token authentication.";
+
+"请输入有效的密钥。" = "Enter a valid credential.";
+
+"模型来源配置无效。" = "Invalid model source configuration.";
+
+"此引擎正在执行，请结束后再修改模型来源。" = "Wait for this engine to finish before changing its model source.";
+
+"连接配置文件过大或格式无效。" = "The connection configuration file is too large or invalid.";
+
+"无法读取连接配置，请检查 JSON 格式。" = "Cannot read the connection configuration. Check its JSON format.";
+
+"独立运行配置格式无效。" = "The isolated runtime configuration is invalid.";
+
+"此引擎暂不支持在此管理账号或模型来源。" = "This engine does not yet support managing accounts or model sources here.";
+
+"推荐" = "Recommended";
