@@ -77,3 +77,46 @@ test("credential source and local program adoption dispatch without invoking rep
     assert.deepEqual(f.calls.at(-1), [method, input]);
   }
 });
+
+test("first-run failures retain stack and SQLite metadata in redacted logs with correlation", async () => {
+  const f = fixture(), messages = [];
+  const original = console.error;
+  console.error = (...parts) => messages.push(parts);
+  try {
+    const failure = Object.assign(new Error("database is locked"), {
+      code: "ERR_SQLITE_ERROR", errcode: 5, errstr: "database is locked",
+      databasePath: "/fixture/development/database/corptie.sqlite"
+    });
+    f.dependencies.firstRunSetup.checkAndComplete = async () => { throw failure; };
+    const response = await f.dispatch("/first-run/check-and-complete", "POST",
+      { token: "never-log-fixture-credential" }).result;
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, "database is locked");
+    const record = JSON.parse(messages.at(-1)[1]);
+    assert.equal(record.context.requestId, response.body.requestId);
+    assert.equal(record.context.operation, "/first-run/check-and-complete");
+    assert.equal(record.error.errcode, 5);
+    assert.equal(record.error.databasePath, failure.databasePath);
+    assert.match(record.error.stack, /providerSetupHttpApi.test/);
+    assert.ok(!JSON.stringify(messages).includes("never-log-fixture-credential"));
+  } finally { console.error = original; }
+});
+
+
+test("account import failures are logged without credential request fields", async () => {
+  const f = fixture(), messages = [], original = console.error;
+  console.error = (...parts) => messages.push(parts);
+  try {
+    f.dependencies.firstRunSetup.accountOperation = async () => {
+      throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+    };
+    const result = await f.dispatch("/providers/codex-app-server/accounts", "POST",
+      { action: "import", token: "private-account-request-fixture" }).result;
+    const record = JSON.parse(messages.at(-1)[1]);
+    assert.equal(result.status, 400);
+    assert.equal(record.context.stage, "import");
+    assert.equal(record.context.requestId, result.body.requestId);
+    assert.equal(record.error.errcode, 5);
+    assert.ok(!JSON.stringify(messages).includes("private-account-request-fixture"));
+  } finally { console.error = original; }
+});

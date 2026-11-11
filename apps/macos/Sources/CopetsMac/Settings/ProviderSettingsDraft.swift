@@ -115,6 +115,34 @@ final class ProviderSettingsDraft {
         return true
     }
 
+    /// Called once by first-run preparation, never by ordinary draft refreshes.
+    /// This stages enable intent from local configuration, not reply-test proof.
+    func stageReadyFirstRunProviders() {
+        for provider in providers {
+            stageDefaultAccount(for: provider)
+            let path = values[provider.id]?.path ?? provider.path
+            guard provider.executable, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let ready: Bool
+            if provider.accounts != nil {
+                ready = hasSpecifiedAccount(provider.id)
+            } else if let runtime = provider.runtime {
+                if runtime.sourceChanged { continue }
+                if ["found", "legacy"].contains(runtime.state) {
+                    ready = true
+                } else if let candidate = runtime.candidates.first(where: { candidate in
+                    candidate.state == "found" && (values[provider.id]?.source == nil
+                        || (values[provider.id]?.source?.kind == candidate.kind && values[provider.id]?.source?.path == candidate.path))
+                }) {
+                    edit(provider.id, source: candidate)
+                    ready = true
+                } else { ready = false }
+            } else {
+                ready = provider.checkState == "available"
+            }
+            if ready { edit(provider.id, enabled: true) }
+        }
+    }
+
     func load() async {
         guard !isLoading else { return }
         isLoading = true

@@ -46,21 +46,23 @@ enum MainWindowForegrounding {
 
 enum MainWindowInitialLayout {
     static let idealContentSize = NSSize(width: 1_480, height: 900)
+    static let firstRunContentSize = NSSize(width: 952, height: 695)
     /// Only a floor for the *initial* window size. The resizable minimum is
     /// derived from the visible columns by `MainWindowMinimumSizePolicy`, so
     /// collapsing a sidebar can make the window smaller than this.
     static let minimumContentSize = NSSize(width: 900, height: 560)
     static let maximumVisibleFraction: CGFloat = 0.92
 
-    static func contentSize(for visibleFrame: NSRect) -> NSSize {
-        NSSize(
+    static func contentSize(for visibleFrame: NSRect, firstRun: Bool = false) -> NSSize {
+        let ideal = firstRun ? firstRunContentSize : idealContentSize
+        return NSSize(
             width: max(
                 minimumContentSize.width,
-                min(idealContentSize.width, floor(visibleFrame.width * maximumVisibleFraction))
+                min(ideal.width, floor(visibleFrame.width * maximumVisibleFraction))
             ),
             height: max(
                 minimumContentSize.height,
-                min(idealContentSize.height, floor(visibleFrame.height * maximumVisibleFraction))
+                min(ideal.height, floor(visibleFrame.height * maximumVisibleFraction))
             )
         )
     }

@@ -1,9 +1,11 @@
 import AppKit
 import Combine
+import os
 import SwiftUI
 import CorptieConversation
 
-private struct FirstRunFailure: Decodable { let error: String }
+private struct FirstRunFailure: Decodable { let error: String; var requestId: String? }
+private let firstRunLogger = Logger(subsystem: "com.corptie.mac", category: "FirstRunSetup")
 
 private enum FirstRunBrandAssets {
     // Copied SwiftPM resources are loaded by URL, rather than asset-catalog
@@ -99,6 +101,30 @@ enum FirstRunAccountImport {
     }
 }
 
+struct ProviderProgramChoice: Identifiable {
+    let path: String
+    let version: String?
+    let sources: [String]
+    let recommended: Bool
+    let prerelease: Bool
+    var id: String { path }
+
+    static func rows(program: ProviderProgramInventory?, selectedPath: String,
+                     addedPaths: [String] = []) -> [Self] {
+        var rows: [Self] = []
+        for candidate in program?.candidates ?? [] where !rows.contains(where: { $0.path == candidate.path }) {
+            rows.append(Self(path: candidate.path, version: candidate.version, sources: candidate.sources,
+                recommended: candidate.path == program?.recommendedPath, prerelease: candidate.prerelease))
+        }
+        for path in [program?.recommendedPath ?? "", program?.adoptedPath ?? "", selectedPath] + addedPaths
+            where !path.isEmpty && !rows.contains(where: { $0.path == path }) {
+            rows.append(Self(path: path, version: nil, sources: [], recommended: path == program?.recommendedPath, prerelease: false))
+        }
+        // Recommendation comes from backend discovery/version ordering, never path sorting.
+        return rows.filter(\.recommended) + rows.filter { !$0.recommended }
+    }
+}
+
 // Only startup/reconnect and explicit actions refresh this small projection.
 // The main tab tree is not mounted behind the first-run page.
 @MainActor
@@ -106,6 +132,7 @@ struct FirstRunSetupRoot<Content: View>: View {
     @ViewBuilder let content: () -> Content
     private let storeReadiness: AnyPublisher<Bool, Never>
     private let loadStatus: @MainActor () async throws -> FirstRunStatus
+    private let onSetupRequired: @MainActor () -> Void
     @State private var storeReady = false
     @State private var status: FirstRunStatus?
     @State private var error: String?
@@ -113,14 +140,16 @@ struct FirstRunSetupRoot<Content: View>: View {
     /// Onboarding owns the same draft-backed form as Settings. Every card edit
     /// is staged here and submitted through one `/first-run/settings` save.
     @State private var providerDraft = ProviderSettingsDraft()
-    @State private var scanGeneration = 0
     @State private var didAutoPrepare = false
+    @State private var expandedProviderID: String?
 
     init(initialStatus: FirstRunStatus? = nil,
          storeReadiness: AnyPublisher<Bool, Never>? = nil,
          loadStatus: (@MainActor () async throws -> FirstRunStatus)? = nil,
+         onSetupRequired: @escaping @MainActor () -> Void = {},
          @ViewBuilder content: @escaping () -> Content) {
         self.content = content
+        self.onSetupRequired = onSetupRequired
         self.storeReadiness = storeReadiness ?? AppStateStore.shared.$isReachable.eraseToAnyPublisher()
         self.loadStatus = loadStatus ?? { try await FirstRunSetupAPI.request("first-run") }
         _status = State(initialValue: initialStatus)
@@ -151,6 +180,9 @@ struct FirstRunSetupRoot<Content: View>: View {
                 setupPage
             }
         }
+        .onChange(of: status?.completed, initial: true) { _, completed in
+            if completed == false { onSetupRequired() }
+        }
         .onReceive(storeReadiness.removeDuplicates()) { ready in
             // SSE/health connectivity precedes SQLite initialization. The
             // existing snapshot-backed readiness signal crosses that boundary
@@ -176,130 +208,68 @@ struct FirstRunSetupRoot<Content: View>: View {
 
     private var setupPage: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    welcomeHeader
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text(L10n("本机执行引擎")).font(.headline)
-                            Spacer()
-                            Button {
-                                scanGeneration += 1
-                            } label: {
-                                Label(L10n("重新扫描"), systemImage: "arrow.clockwise")
-                            }
-                            .disabled(busy)
+            VStack(spacing: 10) {
+                HStack(spacing: 14) {
+                    if let icon = FirstRunBrandAssets.appIcon {
+                        Image(nsImage: icon).resizable().frame(width: 48, height: 48).accessibilityHidden(true)
+                    }
+                    Text(L10n("连接执行引擎")).font(.system(size: 30, weight: .semibold))
+                }
+                Text(L10n("corptie需至少配置一个agent引擎"))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 20)
+            if let status {
+                FirstRunProviderGallery(draft: providerDraft, busy: busy,
+                    defaultProviderID: status.defaultProviderId,
+                    expandedProviderID: $expandedProviderID,
+                    updated: { _ in Task { try? await refresh() } },
+                    save: {
+                        perform {
+                            try await providerDraft.save()
+                            try await refresh()
+                            expandedProviderID = nil
                         }
-                        if let status {
-                            ForEach(providerDraft.providers) { provider in
-                                FirstRunProviderCard(provider: provider, busy: busy || providerDraft.isSaving,
-                                    scanGeneration: provider.program != nil ? scanGeneration : 0,
-                                    isDefault: status.defaultProviderId == provider.id,
-                                    updated: { _ in
-                                        // A check or account refresh returns the authoritative
-                                        // server row; re-sync both the page and the shared draft.
-                                        Task { try? await refresh() }
-                                    }, settingsDraft: providerDraft,
-                                    automaticallyChecksChanges: false)
-                            }
-                        } else {
-                            VStack(alignment: .leading, spacing: 12) {
-                                if busy || !storeReady {
-                                    ProgressView(L10n("正在准备本地数据…"))
-                                } else {
-                                    Text(L10n("正在等待本地服务启动。"))
-                                        .foregroundStyle(.secondary)
-                                    Button(L10n("重试")) { perform { try await refresh() } }
-                                }
-                            }
-                            .padding(20)
-                        }
-                    }
-                    if let error {
-                        Label(error, systemImage: "exclamationmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                            .accessibilityLabel(L10nFormat("设置失败：%@", error))
-                    }
-                }
-                .frame(maxWidth: 780, alignment: .leading)
-                .padding(32)
-                .frame(maxWidth: .infinity)
-            }
-            Divider()
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 24) {
-                    completionHint
-                    Spacer(minLength: 16)
-                    saveSettingsButton
-                    enterButton
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    completionHint
-                    HStack(spacing: 12) {
-                        saveSettingsButton
-                        enterButton
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    })
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                VStack(spacing: 10) {
+                    ProgressView(L10n("正在准备本地数据…"))
+                    if !busy && storeReady { Button(L10n("重试")) { perform { try await refresh() } } }
                 }
             }
-            .frame(maxWidth: 780)
-            .padding(.horizontal, 32)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity)
-            .background(Color(nsColor: .controlBackgroundColor))
+            Spacer(minLength: 28)
+            if let error {
+                Label(error, systemImage: "exclamationmark.circle.fill")
+                    .font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    .accessibilityLabel(L10nFormat("设置失败：%@", error))
+            }
+            VStack(spacing: 12) {
+                completionHint
+                enterButton
+            }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private var welcomeHeader: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                if let icon = FirstRunBrandAssets.appIcon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 52, height: 52)
-                        .accessibilityHidden(true)
+        .frame(maxWidth: 840, maxHeight: .infinity)
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .background {
+            Color(nsColor: .windowBackgroundColor)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard !busy, !providerDraft.isSaving else { return }
+                    expandedProviderID = nil
                 }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Corptie").font(.title3.weight(.semibold))
-                    Text(L10n("欢迎开始")).font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            Text(L10n("让你的执行引擎准备就绪"))
-                .font(.system(size: 30, weight: .semibold))
-                .accessibilityAddTraits(.isHeader)
-            Text(L10n("连接本机的执行引擎，开始在 Corptie 中工作。完成一个配置即可开始，其他配置可以稍后添加。"))
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
+        .accessibilityIdentifier("first-run.configuration")
     }
 
     private var completionHint: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label(L10n(canEnter ? "执行引擎配置已就绪"
-                        : needsAccount ? "请先为 Codex 指定账号" : "至少完成一个执行引擎配置才能继续"),
-                  systemImage: canEnter ? "checkmark.circle.fill" : "info.circle")
-                .font(.callout)
-                .foregroundStyle(canEnter ? Color.accentColor : (needsAccount ? Color.orange : Color.secondary))
-            Text(L10n(canEnter ? "配置已准备，点击下一步检测已开启的执行引擎。"
-                      : needsAccount ? "请选择列表中的账号，或点击“添加账号”使用本机已有登录。"
-                      : "完成配置后，Corptie 助理会陪你开始使用。"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var saveSettingsButton: some View {
-        Button(L10n("Save Settings")) {
-            perform {
-                try await providerDraft.save()
-                try await refresh()
-            }
-        }
-        .disabled(busy || !providerDraft.isDirty || providerDraft.isSaving)
+        Label(L10n(canEnter ? "执行引擎配置已就绪"
+                    : needsAccount ? "请先为 Codex 指定账号" : "至少完成一个执行引擎配置才能继续"),
+              systemImage: canEnter ? "checkmark.circle.fill" : "info.circle")
+            .font(.caption)
+            .foregroundStyle(canEnter ? Color.green : (needsAccount ? Color.orange : Color.secondary))
+            .multilineTextAlignment(.center)
     }
 
     private var enterButton: some View {
@@ -346,7 +316,10 @@ struct FirstRunSetupRoot<Content: View>: View {
         guard !didAutoPrepare, FirstRunStatus.requiresSetup(status) else { return }
         didAutoPrepare = true
         let accountProviders = providerDraft.providers.filter { $0.accounts != nil }
-        guard !accountProviders.isEmpty else { return }
+        guard !accountProviders.isEmpty else {
+            providerDraft.stageReadyFirstRunProviders()
+            return
+        }
         var failures = 0
         for provider in accountProviders {
             let endpoint = "providers/\(provider.id)/accounts"
@@ -363,9 +336,7 @@ struct FirstRunSetupRoot<Content: View>: View {
             let next = try await loadStatus()
             status = next
             providerDraft.receive(next)
-            for provider in providerDraft.providers where provider.accounts != nil {
-                providerDraft.stageDefaultAccount(for: provider)
-            }
+            providerDraft.stageReadyFirstRunProviders()
         } catch { self.error = error.localizedDescription }
         if failures > 0 {
             self.error = L10n("部分本机登录来源未能导入，其他账号已保留，可通过添加账号重试。")
@@ -379,10 +350,74 @@ struct FirstRunSetupRoot<Content: View>: View {
         Task { @MainActor in
             defer { busy = false }
             do { try await operation() }
-            catch { self.error = error.localizedDescription }
+            catch {
+                let failure = error as NSError
+                firstRunLogger.error("Setup action failed domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+                self.error = error.localizedDescription
+            }
         }
     }
 
+}
+
+/// Only the selected card mounts its editor. The shared card's state and draft
+/// survive summary/editor changes; no timers or geometry feedback drive the animation.
+struct FirstRunProviderGallery: View {
+    let draft: ProviderSettingsDraft
+    let busy: Bool
+    let defaultProviderID: String?
+    @Binding var expandedProviderID: String?
+    let updated: (FirstRunProvider) -> Void
+    let save: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(draft.providers) { provider in
+                FirstRunProviderCard(provider: provider, busy: busy || draft.isSaving,
+                    scanGeneration: 0,
+                    isDefault: defaultProviderID == provider.id, updated: updated,
+                    settingsDraft: draft, automaticallyChecksChanges: false, compact: true,
+                    presentation: .init(expanded: expandedProviderID == provider.id,
+                        expand: { expandedProviderID = provider.id }, save: save))
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: expandedProviderID)
+    }
+}
+
+/// Summary values come from the current draft, rather than a previous reply test.
+@MainActor
+struct FirstRunProviderSummary {
+    let version: String
+    let account: String
+    let ready: Bool
+
+    init(provider: FirstRunProvider, draft: ProviderSettingsDraft) {
+        let value = draft.values[provider.id]
+        let path = value?.path ?? provider.path
+        let candidate = provider.program?.candidates.first { $0.path == path }
+        version = path.isEmpty ? L10n("未找到程序")
+            : candidate?.version.map { L10nFormat("版本号：%@", $0) } ?? L10n("版本号：未知")
+        let hasProgram = !path.isEmpty && (path == provider.path
+            ? provider.executable : candidate?.state == "discovered")
+        let hasAccount: Bool
+        if let accounts = provider.accounts {
+            let selected = accounts.accounts.first { $0.id == value?.accountId }
+            account = selected?.name ?? L10n("尚未指定账号")
+            hasAccount = draft.hasSpecifiedAccount(provider.id)
+        } else if let runtime = provider.runtime {
+            let source = value?.source ?? runtime.source
+            hasAccount = !runtime.sourceChanged && (["found", "legacy"].contains(runtime.state)
+                || runtime.candidates.contains { $0.state == "found" && $0.kind == source?.kind && $0.path == source?.path })
+            // Some adapters expose a credential source, not an account identity.
+            account = L10n(hasAccount ? "本机登录" : "尚未指定账号")
+        } else {
+            hasAccount = provider.checkState == "available"
+            account = L10n(hasAccount ? "本机登录" : "尚未指定账号")
+        }
+        ready = (value?.enabled ?? provider.enabled) && hasProgram && hasAccount
+    }
 }
 
 @MainActor
@@ -395,17 +430,35 @@ enum FirstRunSetupAPI {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await URLSession.shared.data(for: request) }
+        catch {
+            let failure = error as NSError
+            firstRunLogger.error("Transport failure operation=\(path, privacy: .public) domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+            throw error
+        }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let message = (try? JSONDecoder().decode(FirstRunFailure.self, from: data).error)
-                ?? L10n("无法连接本地服务，请重试。")
+            let failure = try? JSONDecoder().decode(FirstRunFailure.self, from: data)
+            let message = failure?.error ?? L10n("无法连接本地服务，请重试。")
+            firstRunLogger.error("HTTP failure operation=\(path, privacy: .public) status=\((response as? HTTPURLResponse)?.statusCode ?? 0) requestId=\(failure?.requestId ?? "unavailable", privacy: .public)")
             throw NSError(domain: "FirstRunSetup", code: 1, userInfo: [NSLocalizedDescriptionKey: L10n(message)])
         }
-        return try JSONDecoder().decode(T.self, from: data)
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch {
+            firstRunLogger.error("Response decoding failed operation=\(path, privacy: .public)")
+            throw error
+        }
     }
 }
 
 struct FirstRunProviderCard: View {
+    struct Presentation {
+        let expanded: Bool
+        let expand: () -> Void
+        let save: () -> Void
+    }
+    let presentation: Presentation?
     /// Settings and onboarding share this one draft-backed form. There is no
     /// onboarding-only immediate-submit path anymore: every edit is staged here
     /// and reaches `/first-run/settings` through the shared save action.
@@ -417,9 +470,11 @@ struct FirstRunProviderCard: View {
     /// uses its explicit check-and-complete action instead.
     let autoCheckGeneration: Int
     let automaticallyChecksChanges: Bool
+    let compact: Bool
     let isDefault: Bool
     let updated: (FirstRunProvider) -> Void
     @State private var path: String
+    @State private var addedProgramPaths: [String] = []
     @State private var result: FirstRunProvider
     @State private var testing = false
     @State private var error: String?
@@ -431,21 +486,27 @@ struct FirstRunProviderCard: View {
     @State private var checkModel: String
     @State private var scanning = false
     @State private var activeCheckID: String?
+    @State private var summaryHovered = false
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
          updated: @escaping (FirstRunProvider) -> Void, settingsDraft: ProviderSettingsDraft,
-         autoCheckGeneration: Int = 0, automaticallyChecksChanges: Bool = true) {
+         autoCheckGeneration: Int = 0, automaticallyChecksChanges: Bool = true, compact: Bool = false,
+         presentation: Presentation? = nil) {
         self.settingsDraft = settingsDraft
         self.provider = provider
         self.busy = busy
         self.scanGeneration = scanGeneration
         self.autoCheckGeneration = autoCheckGeneration
         self.automaticallyChecksChanges = automaticallyChecksChanges
+        self.compact = compact
+        self.presentation = presentation
         self.isDefault = isDefault
         self.updated = updated
         let automatic = provider.program.map { !["manual", "controlled"].contains($0.mode) } ?? false
-        _path = State(initialValue: settingsDraft.values[provider.id]?.path
-            ?? (automatic ? (provider.program?.recommendedPath ?? provider.path) : provider.path))
+        let initialPath = automatic && !settingsDraft.dirtyIDs.contains(provider.id)
+            ? (provider.program?.recommendedPath ?? provider.path)
+            : (settingsDraft.values[provider.id]?.path ?? provider.path)
+        _path = State(initialValue: initialPath)
         _result = State(initialValue: provider)
         _environmentMode = State(initialValue: provider.environment?.mode ?? "native")
         _environmentHome = State(initialValue: provider.environment?.home ?? "")
@@ -499,102 +560,63 @@ struct FirstRunProviderCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 14) {
-                providerIcon
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Text(provider.name).font(WorkbenchTypography.font(for: .cardTitle))
-                        if isDefault && displayEnabled && available {
-                            Text(L10n("默认"))
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(Color.accentColor)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.accentColor.opacity(0.1), in: Capsule())
+        Group {
+            if let presentation {
+                VStack(alignment: .leading, spacing: 10) {
+                    if presentation.expanded {
+                        cardHeader
+                        ScrollView(.vertical) {
+                            configurationFields
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                    }
-                    HStack(spacing: 6) {
-                        if testing {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: available ? "checkmark.circle.fill" : "info.circle")
-                                .accessibilityHidden(true)
+                        .accessibilityIdentifier("provider.editor." + provider.id)
+                    } else {
+                        Button(action: presentation.expand) {
+                            summary.padding(12)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                                .contentShape(Rectangle())
                         }
-                        Text(statusLabel)
-                    }
-                    .font(WorkbenchTypography.font(for: .help))
-                    .foregroundStyle(available && displayEnabled ? Color.accentColor : Color.secondary)
-                }
-                Spacer(minLength: 8)
-                Toggle(L10n("启用"), isOn: Binding(
-                    get: { displayEnabled },
-                    set: { enabled in settingsDraft.edit(provider.id, enabled: enabled) }
-                ))
-                .toggleStyle(.switch)
-                .accessibilityLabel(L10nFormat("启用 %@", provider.name))
-                .disabled(controlsBusy || testing || (!displayEnabled && path.isEmpty))
-            }
-            Text(L10n("程序路径")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            VStack(alignment: .leading, spacing: 8) {
-                if let program = result.program { programSelection(program) }
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        pathField.frame(minWidth: 180)
-                        pathActions
-                    }
-                    VStack(alignment: .leading, spacing: 8) {
-                        pathField
-                        pathActions
+                            .buttonStyle(.plain)
+                            .onHover { summaryHovered = $0 }
+                            .disabled(controlsBusy)
+                            .accessibilityIdentifier("provider.summary." + provider.id)
+                            .help(L10nFormat("配置 %@", provider.name))
+                            .accessibilityLabel(L10nFormat("配置 %@", provider.name))
                     }
                 }
-                if path.isEmpty {
-                    Text(L10n("未找到程序，请选择已安装的执行引擎可执行文件。"))
-                        .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
+                .padding(presentation.expanded ? 12 : 0)
+                .frame(width: presentation.expanded ? 440 : 164,
+                       height: presentation.expanded ? 420 : 164, alignment: .topLeading)
+                .background {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                        // Card padding belongs to the editor, not the page's dismissal area.
+                        .onTapGesture { }
                 }
-            }
-            if isDefault && !displayEnabled {
-                Text(L10n("当前默认执行引擎已关闭；请启用或手动更改默认设置，不会自动改用其他引擎。"))
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if result.accounts != nil || result.runtime != nil {
-                Divider()
-                Text(L10n("账号")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            }
-            if let accounts = result.accounts {
-                ProviderAccountsView(provider: result, projection: accounts, draft: settingsDraft,
-                    disabled: controlsBusy || testing,
-                    accountChanged: { scheduleAutoCheck() }) { row in
-                    result = row
-                    updated(row)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(summaryHovered && !presentation.expanded
+                            ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.12), lineWidth: 1)
                 }
-            } else if let runtime = result.runtime {
-                ProviderRuntimeSettingsView(providerId: provider.id, runtime: runtime, busy: controlsBusy || testing,
-                    sourceDraft: settingsDraft.values[provider.id]?.source,
-                    sourceEdited: { source in settingsDraft.edit(provider.id, source: source) }) { row in
-                    result = row
-                    environmentMode = row.environment?.mode ?? environmentMode
-                    environmentHome = row.environment?.home ?? environmentHome
-                    updated(row)
+                .clipped()
+            } else {
+                VStack(alignment: .leading, spacing: compact ? 8 : 16) {
+                    cardHeader
+                    configurationFields
                 }
-            }
-            if let message = error ?? (resultMatchesSelection ? result.message : nil) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
-                    Text(verbatim: L10n(message))
-                        .fixedSize(horizontal: false, vertical: true)
+                .padding(compact ? 10 : 20)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: compact ? 10 : 16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: compact ? 10 : 16)
+                        .strokeBorder(available && displayEnabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
                 }
-                .font(WorkbenchTypography.font(for: .help))
-                .foregroundStyle(.red)
-                .textSelection(.disabled)
-                .accessibilityElement(children: .combine)
             }
         }
-        .padding(20)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(available && displayEnabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
+        .font(compact ? .system(size: 12) : .body)
+        .onAppear {
+            if selectionMode == "auto", settingsDraft.values[provider.id]?.path != path {
+                settingsDraft.edit(provider.id, path: path)
+            }
         }
         .onChange(of: provider.lastCheckedAt) { _, _ in result = provider }
         .onChange(of: provider.accounts?.accounts.map(\.id)) { _, _ in result = provider }
@@ -618,6 +640,122 @@ struct FirstRunProviderCard: View {
 
     }
 
+    private var summary: some View {
+        let values = FirstRunProviderSummary(provider: result, draft: settingsDraft)
+        return VStack(spacing: 10) {
+            providerIcon(size: 40)
+            Text(provider.name).font(.callout.weight(.semibold)).lineLimit(1)
+            VStack(spacing: 4) {
+                Text(values.version).font(.caption).lineLimit(1).truncationMode(.middle)
+                Text(values.account).font(.caption).lineLimit(1).truncationMode(.middle)
+            }
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .overlay(alignment: .topTrailing) {
+            Circle().fill(values.ready ? Color.green : Color.secondary.opacity(0.4))
+                .frame(width: 8, height: 8)
+                .accessibilityLabel(L10n(values.ready ? "执行引擎配置已就绪" : "配置未就绪"))
+        }
+    }
+
+    private func saveButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "checkmark").font(.system(size: 13, weight: .semibold))
+                .frame(width: 30, height: 30).contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .modifier(FloatingCreationButtonGlassModifier())
+        .disabled(controlsBusy || testing)
+        .help(L10n("保存并收起"))
+        .accessibilityLabel(L10n("保存并收起"))
+        .accessibilityIdentifier("provider.save." + provider.id)
+    }
+
+    private var cardHeader: some View {
+        HStack(spacing: compact ? 8 : 14) {
+            providerIcon
+            VStack(alignment: .leading, spacing: compact ? 2 : 5) {
+                HStack(spacing: 8) {
+                    Text(provider.name).font(WorkbenchTypography.font(for: .cardTitle)).lineLimit(1)
+                    if isDefault && displayEnabled && available {
+                        Text(L10n("默认"))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.1), in: Capsule())
+                    }
+                }
+                HStack(spacing: 6) {
+                    if testing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: available ? "checkmark.circle.fill" : "info.circle")
+                            .accessibilityHidden(true)
+                    }
+                    Text(statusLabel).lineLimit(2)
+                }
+                .font(WorkbenchTypography.font(for: .help))
+                .foregroundStyle(available && displayEnabled ? Color.accentColor : Color.secondary)
+            }
+            Spacer(minLength: 8)
+            Toggle(L10n("启用"), isOn: Binding(
+                get: { displayEnabled },
+                set: { enabled in settingsDraft.edit(provider.id, enabled: enabled) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(compact ? .small : .regular)
+            .accessibilityLabel(L10nFormat("启用 %@", provider.name))
+            .disabled(controlsBusy || testing || (!displayEnabled && path.isEmpty))
+            if let presentation { saveButton(presentation.save) }
+
+        }
+    }
+
+    private var configurationFields: some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 16) {
+            Text(L10n("执行程序")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            programList
+            if isDefault && !displayEnabled {
+                Text(L10n("当前默认执行引擎已关闭；请启用或手动更改默认设置，不会自动改用其他引擎。"))
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if result.accounts != nil || result.runtime != nil {
+                Divider()
+                Text(L10n("账号")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            }
+            if let accounts = result.accounts {
+                ProviderAccountsView(provider: result, projection: accounts, draft: settingsDraft,
+                    disabled: controlsBusy || testing,
+                    accountChanged: { scheduleAutoCheck() }, updated: { row in
+                        result = row
+                        updated(row)
+                    }, compact: compact)
+            } else if let runtime = result.runtime {
+                ProviderRuntimeSettingsView(providerId: provider.id, runtime: runtime, busy: controlsBusy || testing,
+                    sourceDraft: settingsDraft.values[provider.id]?.source,
+                    sourceEdited: { source in settingsDraft.edit(provider.id, source: source) }) { row in
+                    result = row
+                    environmentMode = row.environment?.mode ?? environmentMode
+                    environmentHome = row.environment?.home ?? environmentHome
+                    updated(row)
+                }
+            }
+            if let message = error ?? (resultMatchesSelection ? result.message : nil) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.circle").accessibilityHidden(true)
+                    Text(verbatim: L10n(message))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(WorkbenchTypography.font(for: .help))
+                .foregroundStyle(.red)
+                .textSelection(.disabled)
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
     /// Settings may debounce checks after edits; first-run only stages edits.
     private func scheduleAutoCheck() {
         guard automaticallyChecksChanges else { return }
@@ -637,35 +775,73 @@ struct FirstRunProviderCard: View {
         await check()
     }
 
-    private func programSelection(_ program: ProviderProgramInventory) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if program.candidates.contains(where: { $0.path != path }) {
-            Text(L10n("本机发现有其他版本的 Codex"))
-                .font(.caption).foregroundStyle(.secondary)
-            Picker(L10n("其他本机版本"), selection: Binding(
-                get: { selectionMode == "auto" ? "__auto__" : path },
-                set: { value in
-                    if value == "__auto__" {
-                        selectionMode = "auto"
-                        path = program.recommendedPath
-                    } else { selectionMode = "manual"; path = value }
-                }
-            )) {
-                Text(L10n("自动选择最新版本")) .tag("__auto__")
-                ForEach(program.candidates) { candidate in
-                    Text("\(candidate.sources.map { L10n($0) }.joined(separator: "/")) · \(candidate.version ?? L10n("版本未知"))\(candidate.prerelease ? " · " + L10n("预发布") : "")")
-                        .tag(candidate.path)
-                }
-                if !path.isEmpty && !program.candidates.contains(where: { $0.path == path }) {
-                    Text(path).tag(path)
-                }
-            }
-            .disabled(controlsBusy || testing || program.mode == "controlled")
-            }
-            if program.mode == "controlled" {
-                Text(L10n("程序路径由运行环境指定。")) .font(.caption).foregroundStyle(.secondary)
+    @ViewBuilder
+    private var programList: some View {
+        Group {
+            if compact {
+                LazyVStack(alignment: .leading, spacing: 0) { programRows }
+            } else {
+                VStack(alignment: .leading, spacing: 0) { programRows }
             }
         }
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.10)))
+        .accessibilityIdentifier("provider.program.list")
+
+        if result.program?.mode == "controlled" {
+            Text(L10n("程序路径由运行环境指定。")).font(.caption).foregroundStyle(.secondary)
+        } else if path.isEmpty {
+            Text(L10n("未找到程序，请添加已安装的执行引擎可执行文件。")).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var programRows: some View {
+            ForEach(ProviderProgramChoice.rows(program: result.program, selectedPath: path, addedPaths: addedProgramPaths)) { choice in
+                Button {
+                    selectionMode = choice.recommended ? "auto" : "manual"
+                    path = choice.path
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: path == choice.path ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(path == choice.path ? Color.accentColor : Color.secondary)
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: compact ? 2 : 4) {
+                            HStack(spacing: 6) {
+                                Text(choice.version ?? URL(fileURLWithPath: choice.path).lastPathComponent)
+                                    .font(.callout.weight(.medium)).lineLimit(1)
+                                if choice.prerelease { Text(L10n("预发布")).font(.caption).foregroundStyle(.secondary) }
+                                if choice.recommended { Text(L10n("推荐 · 最新版本")).font(.caption).foregroundStyle(Color.accentColor).lineLimit(1) }
+                            }
+                            let displaySources = choice.sources.filter { $0 != "saved" }
+                            if !displaySources.isEmpty {
+                                Text(displaySources.map { L10n($0) }.joined(separator: " / "))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            } else {
+                                Text(choice.path).font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(compact ? 6 : 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(choice.path)
+                .accessibilityLabel(choice.path)
+                .accessibilityValue(L10n(path == choice.path ? "已选择" : "未选择"))
+                .disabled(controlsBusy || testing || result.program?.mode == "controlled")
+                Divider()
+            }
+            Button { chooseBinary() } label: {
+                Label(L10n("添加指定二进制文件路径"), systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(compact ? 6 : 10).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(controlsBusy || testing || result.program?.mode == "controlled")
+            .accessibilityIdentifier("provider.program.add")
     }
 
     private func scanPrograms() async {
@@ -684,7 +860,9 @@ struct FirstRunProviderCard: View {
 
     private var environmentBody: [String: String] { ["mode": environmentMode, "home": environmentHome] }
 
-    private var providerIcon: some View {
+    private var providerIcon: some View { providerIcon(size: compact ? 26 : 40) }
+
+    private func providerIcon(size: CGFloat) -> some View {
         Group {
             if let icon = ProviderBrandIcon.image(for: provider.id, providers: []) {
                 Image(nsImage: icon).resizable().scaledToFit()
@@ -692,26 +870,8 @@ struct FirstRunProviderCard: View {
                 Image(systemName: "terminal").font(.title2)
             }
         }
-        .frame(width: 40, height: 40)
+        .frame(width: size, height: size)
         .accessibilityHidden(true)
-    }
-
-    private var pathField: some View {
-        TextField(L10n("二进制路径"), text: Binding(get: { path }, set: {
-            path = $0
-            if result.program != nil { selectionMode = "manual" }
-        }))
-            .font(.system(.body, design: .monospaced))
-            .textFieldStyle(.roundedBorder)
-            .accessibilityLabel(L10nFormat("%@ 二进制路径", provider.name))
-            .disabled(controlsBusy || result.program?.mode == "controlled")
-    }
-
-    private var pathActions: some View {
-        HStack {
-            Button(L10n("选择…")) { chooseBinary() }
-                .disabled(controlsBusy || result.program?.mode == "controlled")
-        }
     }
 
     private func check() async {
@@ -756,8 +916,9 @@ struct FirstRunProviderCard: View {
         panel.allowsMultipleSelection = false
         panel.message = L10nFormat("选择 %@ 的二进制文件", provider.name)
         if panel.runModal() == .OK, let url = panel.url {
+            if !addedProgramPaths.contains(url.path) { addedProgramPaths.append(url.path) }
+            selectionMode = "manual"
             path = url.path
-            if result.program != nil { selectionMode = "manual" }
         }
     }
 }

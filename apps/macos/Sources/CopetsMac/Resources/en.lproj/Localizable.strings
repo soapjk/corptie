@@ -2103,3 +2103,29 @@
 "部分本机登录来源未能导入，其他账号已保留，可通过添加账号重试。" = "Some local sign-ins could not be imported. Other accounts are available; use Add Account to retry.";
 
 "配置待检测 · 点击底部按钮统一检测" = "Not tested · Use the button below to test enabled engines";
+
+"执行程序" = "Executable";
+
+"推荐 · 最新版本" = "Recommended · Latest version";
+
+"添加指定二进制文件路径" = "Add executable path";
+
+"未找到程序，请添加已安装的执行引擎可执行文件。" = "No executable found. Add an installed engine executable.";
+
+"本机登录" = "Local sign-in";
+
+"配置未就绪" = "Configuration not ready";
+
+"保存并收起" = "Save and collapse";
+
+"配置 %@" = "Configure %@";
+
+"版本号：%@" = "Version: %@";
+
+"版本号：未知" = "Version: Unknown";
+
+"连接执行引擎" = "Connect your engines";
+
+"已自动识别本机配置，点击卡片即可调整。" = "Local settings detected. Click a card to make changes.";
+
+"corptie需至少配置一个agent引擎" = "Corptie requires at least one agent engine.";

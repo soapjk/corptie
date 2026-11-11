@@ -73,6 +73,7 @@ struct ProviderAccountsView: View {
     /// background connection check. There is no manual "check" button.
     let accountChanged: () -> Void
     let updated: (FirstRunProvider) -> Void
+    var compact = false
 
     private enum AddPage { case hidden, method, local }
     @State private var addPage = AddPage.hidden
@@ -135,7 +136,18 @@ struct ProviderAccountsView: View {
     }
 
     private var accountList: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Group {
+            if compact {
+                LazyVStack(alignment: .leading, spacing: 0) { accountRows }
+            } else {
+                VStack(alignment: .leading, spacing: 0) { accountRows }
+            }
+        }
+        .disabled(disabled || busy)
+    }
+
+    @ViewBuilder
+    private var accountRows: some View {
             ForEach(projection.accounts) { account in
                 accountRow(account)
                 Divider()
@@ -154,10 +166,8 @@ struct ProviderAccountsView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.vertical, 7)
+            .padding(.vertical, compact ? 4 : 7)
             .disabled(projection.activeLogin != nil)
-        }
-        .disabled(disabled || busy)
     }
 
     private func accountRow(_ account: ProviderAccount) -> some View {
@@ -212,7 +222,7 @@ struct ProviderAccountsView: View {
                 .fixedSize()
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, compact ? 3 : 6)
     }
 
     private func localSourceRow(_ source: DiscoveredAccountSource) -> some View {
@@ -235,7 +245,7 @@ struct ProviderAccountsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 6)
+        .padding(.vertical, compact ? 3 : 6)
     }
 
     @ViewBuilder private var addFlow: some View {

@@ -41,7 +41,9 @@ struct FirstRunSetupTests {
         #expect(source.contains("first-run/check-and-complete"))
         #expect(source.contains("检测已开启provider并进入corptie"))
         #expect(source.contains("请指定账号"))
-        #expect(source.contains("本机发现有其他版本的 Codex"))
+        #expect(source.contains("添加指定二进制文件路径"))
+        #expect(!source.contains("private var pathField:"))
+        #expect(!source.contains("private func programSelection("))
         #expect(!source.contains("private func chooseHome()"))
         #expect(!source.contains("Picker(L10n(\"运行环境\")"))
         #expect(!source.contains("Text(L10n(\"检测模型\"))"))
@@ -95,6 +97,22 @@ struct FirstRunSetupTests {
         // orange warning underneath the list a second time.
         #expect(!source.contains("请指定账号："))
         #expect(accounts.contains("尚未指定账号"))
+    }
+
+    @Test
+    func programListUsesDiscoveryRecommendationAndRetainsManualChoices() {
+        let program = ProviderProgramInventory(mode: "auto", recommendedPath: "/new/codex",
+            adoptedPath: "/old/codex", model: "", candidates: [
+                .init(id: "old", path: "/old/codex", resolvedPath: "/old/codex", sources: ["cli"], version: "1.0", state: "discovered", prerelease: false),
+                .init(id: "new", path: "/new/codex", resolvedPath: "/new/codex", sources: ["App"], version: "2.0", state: "discovered", prerelease: false)
+            ], running: [])
+        let rows = ProviderProgramChoice.rows(program: program, selectedPath: "/custom/codex",
+            addedPaths: ["/custom/codex", "/other/codex", "/old/codex"])
+        #expect(rows.map(\.path) == ["/new/codex", "/old/codex", "/custom/codex", "/other/codex"])
+        #expect(rows.first?.recommended == true)
+        #expect(rows.filter(\.recommended).count == 1)
+        #expect(ProviderProgramChoice.rows(program: nil, selectedPath: "").isEmpty)
+        #expect(ProviderProgramChoice.rows(program: nil, selectedPath: "/local/claude").count == 1)
     }
 
     @Test @MainActor
@@ -157,6 +175,35 @@ struct FirstRunSetupTests {
         #expect(!empty.stageDefaultAccount(for: nativeOnly))
         #expect(!empty.hasSpecifiedAccount(nativeOnly.id))
     }
+    @Test @MainActor
+    func firstRunAutoEnablesOnlyLocallyReadyProvidersAndRefreshKeepsManualDisable() throws {
+        func provider(_ id: String, executable: Bool, accountReady: Bool) throws -> FirstRunProvider {
+            try JSONDecoder().decode(FirstRunProvider.self, from: Data("""
+            {"id":"\(id)","name":"Engine","path":"/fixture/engine","executable":\(executable),
+             "enabled":false,"checkState":"unknown","accounts":{"selectedAccountId":null,
+             "accounts":[{"id":"account","name":"Account","accountLabel":"","state":"ready",
+              "runtimeDirectory":"/fixture","credentialPath":"/fixture/auth.json",
+              "sessionCount":0,"canSelect":\(accountReady),"canDelete":false,"canReauthorize":true}],
+             "sourceKinds":["file"],"candidates":[],"activeLogin":null}}
+            """.utf8))
+        }
+        let ready = try provider("ready", executable: true, accountReady: true)
+        let missingBinary = try provider("missing-binary", executable: false, accountReady: true)
+        let missingAccount = try provider("missing-account", executable: true, accountReady: false)
+        let form = draft(for: [ready, missingBinary, missingAccount])
+        form.stageReadyFirstRunProviders()
+        #expect(form.values[ready.id]?.enabled == true)
+        #expect(form.values[ready.id]?.accountId == "account")
+        #expect(form.values[missingBinary.id]?.enabled == false)
+        #expect(form.values[missingAccount.id]?.enabled == false)
+        #expect(form.canEnterFirstRun)
+        form.edit(ready.id, enabled: false)
+        form.receive(FirstRunStatus(providers: [ready, missingBinary, missingAccount], completed: false,
+            hasWorks: false, defaultProviderId: nil, assistantSessionId: nil, workSessionId: nil))
+        #expect(form.values[ready.id]?.enabled == false)
+        #expect(!form.canEnterFirstRun)
+    }
+
     @Test
     func providerEnvironmentProjectionDecodesWithoutCredentials() throws {
         let provider = try JSONDecoder().decode(FirstRunProvider.self, from: Data("""
@@ -243,6 +290,134 @@ struct FirstRunSetupTests {
         let completed = try JSONDecoder().decode(FirstRunStatus.self, from: Data(
             "{\"providers\":[],\"completed\":true,\"hasWorks\":false}".utf8))
         #expect(!FirstRunStatus.requiresSetup(completed))
+    }
+
+    @Test @MainActor
+    func setupWindowSizingOnlyRunsForKnownIncompleteSetupAndNotOnResize() async throws {
+        for completed in [false, true] {
+            var sizingRequests = 0
+            let status = FirstRunStatus(providers: [], completed: completed, hasWorks: false,
+                defaultProviderId: nil, assistantSessionId: nil, workSessionId: nil)
+            let host = NSHostingView(rootView: FirstRunSetupRoot(initialStatus: status,
+                storeReadiness: Empty<Bool, Never>().eraseToAnyPublisher(),
+                onSetupRequired: { sizingRequests += 1 }) { EmptyView() })
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 952, height: 695),
+                styleMask: .borderless, backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(40))
+            #expect(sizingRequests == (completed ? 0 : 1))
+            window.setContentSize(NSSize(width: 1000, height: 720))
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(40))
+            #expect(sizingRequests == (completed ? 0 : 1))
+            window.contentView = nil
+        }
+    }
+
+    @Test @MainActor
+    func firstRunKeepsActionsAndCardsInsideStandardWindowWithoutPageScrolling() async throws {
+        let providers = ["Codex", "Claude Code", "OpenClacky"].map { name in
+            FirstRunProvider(id: name, name: name, path: "/fixture/engine",
+                executable: true, enabled: true, checkState: "unknown", message: nil)
+        }
+        let status = FirstRunStatus(providers: providers, completed: false, hasWorks: false,
+            defaultProviderId: nil, assistantSessionId: nil, workSessionId: nil)
+        let host = NSHostingView(rootView: FirstRunSetupRoot(initialStatus: status,
+            storeReadiness: Empty<Bool, Never>().eraseToAnyPublisher()) { EmptyView() })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        for size in [NSSize(width: 1100, height: 720), NSSize(width: 960, height: 640)] {
+            window.setContentSize(size)
+            try await Task.sleep(for: .milliseconds(50))
+            host.layoutSubtreeIfNeeded()
+            // fittingSize asks for the unconstrained ideal; inspect presented geometry instead.
+            #expect(abs(host.bounds.width - size.width) < 2)
+            #expect(abs(host.bounds.height - size.height) < 2)
+            func scrollers(_ view: NSView) -> [NSScrollView] {
+                (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollers($0) }
+            }
+            let cards = scrollers(host)
+            // Collapsed summaries do not mount any account/program scroll views.
+            #expect(cards.isEmpty)
+            #expect(host.fittingSize.width <= size.width + 2)
+        }
+    }
+
+    @Test @MainActor
+    func providerSummariesFollowDraftVersionAccountAndLocalReadiness() throws {
+        let provider = try JSONDecoder().decode(FirstRunProvider.self, from: Data("""
+        {"id":"fixture","name":"Engine","path":"/old/engine","executable":true,
+         "enabled":true,"checkState":"unknown","program":{"mode":"auto",
+          "recommendedPath":"/new/engine","adoptedPath":"/old/engine","model":"","running":[],
+          "candidates":[
+           {"id":"old","path":"/old/engine","resolvedPath":"/old/engine","sources":["cli"],
+            "version":"1.0","state":"discovered","prerelease":false},
+           {"id":"new","path":"/new/engine","resolvedPath":"/new/engine","sources":["cli"],
+            "version":"2.0","state":"discovered","prerelease":false}]},
+         "accounts":{"selectedAccountId":"a","accounts":[
+          {"id":"a","name":"Account A","accountLabel":"","state":"ready","runtimeDirectory":"/fixture/a",
+           "credentialPath":"/fixture/a/auth","sessionCount":0,"canSelect":true,"canDelete":false,"canReauthorize":true},
+          {"id":"b","name":"Account B","accountLabel":"","state":"ready","runtimeDirectory":"/fixture/b",
+           "credentialPath":"/fixture/b/auth","sessionCount":0,"canSelect":true,"canDelete":false,"canReauthorize":true}],
+          "sourceKinds":[],"candidates":[],"activeLogin":null}}
+        """.utf8))
+        let form = draft(for: [provider])
+        #expect(FirstRunProviderSummary(provider: provider, draft: form).version == L10nFormat("版本号：%@", "1.0"))
+        #expect(FirstRunProviderSummary(provider: provider, draft: form).account == "Account A")
+        // Local readiness is independent of a potentially slow model reply test.
+        #expect(FirstRunProviderSummary(provider: provider, draft: form).ready)
+        form.edit(provider.id, path: "/new/engine", accountId: "b")
+        let changed = FirstRunProviderSummary(provider: provider, draft: form)
+        #expect(changed.version == L10nFormat("版本号：%@", "2.0"))
+        #expect(changed.account == "Account B")
+        #expect(changed.ready)
+        form.edit(provider.id, enabled: false)
+        #expect(!FirstRunProviderSummary(provider: provider, draft: form).ready)
+        form.edit(provider.id, path: "/custom/engine", enabled: true)
+        #expect(!FirstRunProviderSummary(provider: provider, draft: form).ready)
+        #expect(FirstRunProviderSummary(provider: provider, draft: form).version == L10n("版本号：未知"))
+    }
+
+    @Test @MainActor
+    func galleryOnlyMountsOneEditorAndKeepsOtherSummariesCompact() async throws {
+        let providers = ["Codex", "Claude Code", "OpenClacky"].map { name in
+            FirstRunProvider(id: name, name: name, path: "/fixture/engine",
+                executable: true, enabled: true, checkState: "available", message: nil)
+        }
+        let form = draft(for: providers)
+        func gallery(_ selected: String?) -> some View {
+            FirstRunProviderGallery(draft: form, busy: false,
+                defaultProviderID: nil, expandedProviderID: .constant(selected), updated: { _ in }, save: {})
+                .transaction { $0.disablesAnimations = true }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        let host = NSHostingView(rootView: gallery(nil))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 510),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        func scrollers(_ view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollers($0) }
+        }
+        for selected in [nil] + providers.map({ Optional($0.id) }) + [nil] {
+            host.rootView = gallery(selected)
+            try await Task.sleep(for: .milliseconds(40))
+            host.layoutSubtreeIfNeeded()
+            let editors = scrollers(host)
+            #expect(editors.count == (selected == nil ? 0 : 1))
+            #expect(host.fittingSize.width <= host.bounds.width + 2)
+            #expect(host.fittingSize.height <= host.bounds.height + 2)
+            for editor in editors {
+                let frame = editor.convert(editor.bounds, to: host)
+                #expect(frame.minX >= -2 && frame.maxX <= host.bounds.maxX + 2)
+                #expect(frame.minY >= -2 && frame.maxY <= host.bounds.maxY + 2)
+                #expect(editor.documentView?.bounds.width ?? 0 <= editor.contentView.bounds.width + 2)
+                #expect(!editor.hasHorizontalScroller)
+            }
+        }
     }
 
     @MainActor

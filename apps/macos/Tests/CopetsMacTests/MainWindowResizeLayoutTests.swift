@@ -236,6 +236,17 @@ struct MainWindowResizeLayoutTests {
     }
 
     @Test
+    func firstRunUsesCompactWindowWithoutChangingWorkbenchDefault() {
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 860)
+        #expect(MainWindowInitialLayout.contentSize(for: screen, firstRun: true)
+            == NSSize(width: 952, height: 695))
+        #expect(MainWindowInitialLayout.contentSize(for: screen) == NSSize(width: 1324, height: 791))
+        let smallerScreen = NSRect(x: 0, y: 0, width: 1000, height: 650)
+        #expect(MainWindowInitialLayout.contentSize(for: smallerScreen, firstRun: true)
+            == NSSize(width: 920, height: 598))
+    }
+
+    @Test
     func windowMinimumSizeIsSumOfVisibleColumnMinimums() {
         // Navigation rail 64 + Work column 284 + transcript 360 + 12 padding.
         #expect(MainWindowMinimumSizePolicy.contentMinSize(
