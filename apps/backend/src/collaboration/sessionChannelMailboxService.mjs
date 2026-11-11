@@ -206,11 +206,58 @@ export class SessionChannelMailboxService {
     return batch;
   }
 
+  mixedReports(batch) {
+    const operation = this.store.getAgentTask(batch.operation_id);
+    return (operation?.source?.mixedMailboxMessageIds ?? []).map(id =>
+      this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[id])).filter(Boolean);
+  }
+
+  prepareMixedReports(batch, text) {
+    if (!this.sessionMailbox) return text;
+    const operation = this.store.getAgentTask(batch.operation_id);
+    let reports = this.mixedReports(batch);
+    if (!Object.hasOwn(operation.source,"mixedMailboxMessageIds")) {
+      reports = this.store.selectAll(`SELECT mm.* FROM session_mailbox_messages mm
+        JOIN agent_operations op ON op.task_id=mm.operation_id
+        WHERE mm.recipient_session_id=? AND mm.disposition='pending' AND op.status='queued'
+        AND json_extract(mm.authorization_json,'$.purpose')='parent_report'
+        AND NOT EXISTS(SELECT 1 FROM agent_operations user_op WHERE user_op.session_id=op.session_id
+          AND user_op.status='queued' AND user_op.kind='user'
+          AND COALESCE(json_extract(user_op.source_json,'$.type'),'') NOT IN ('mailbox_event','scheduled_session_task'))
+        ORDER BY mm.sequence LIMIT ?`,[batch.recipient_session_id,Math.max(0,this.maxMessages-this.getItems(batch.batch_id).length)])
+        .filter(row => {try {this.sessionMailbox.validate(row);return true;}catch{return false;}});
+      if(this.sessionMailbox.settings(batch.recipient_session_id).paused)reports=[];
+      const selected=[];
+      for(const row of reports){if(Buffer.byteLength(text+selected.map(r=>r.body).join("")+row.body)>this.maxBytes-2048)break;selected.push(row);}
+      reports=selected;
+      this.store.runInTransaction(()=>{
+        this.store.updateAgentTask(operation.taskId,{source:{...operation.source,mixedMailboxMessageIds:reports.map(row=>row.message_id)}});
+        for(const row of reports){const old=this.store.getAgentTask(row.operation_id);
+          this.store.updateAgentTask(old.taskId,{status:"cancelled",cancellation:{actor:"mailbox_batch",reason:"BATCHED_INTO_EXISTING_TURN"},source:{...old.source,batchedInto:batch.batch_id}});}
+      });
+    }
+    for(const row of reports){
+      if(row.disposition!=="pending")throw new Error("Mixed mailbox result is no longer pending.");
+      this.sessionMailbox.validate(row);
+    }
+    const combined = text + reports.map(row=>`\n\n系统生成的子会话结果汇总（不是直接用户指令）\n邮箱消息：${row.message_id}\n来源：${row.source_type}/${row.source_id}\n${row.body}`).join("");
+    if(Buffer.byteLength(combined)>this.maxBytes)throw new Error("Mixed mailbox batch exceeds input budget.");
+    return combined;
+  }
+
   mark(batchId, status, { turnId = null, error = null } = {}) {
     const timestamp = new Date(this.clock()).toISOString();
     this.store.runInTransaction(() => {
       this.store.db.run(`UPDATE session_collaboration_batches SET status=?,target_turn_id=?,last_error=?,updated_at=?
         WHERE batch_id=?`, [status, turnId, error, timestamp, batchId]);
+      const batch=this.store.selectOne("SELECT * FROM session_collaboration_batches WHERE batch_id=?",[batchId]);
+      const route=this.store.getLogicalSession(batch.recipient_session_id);
+      for(const row of this.mixedReports(batch)) {
+        if(status==="accepted")this.store.db.run(`UPDATE session_mailbox_messages SET disposition='adopted',adopted_turn_id=?,adopted_binding_id=?,adopted_provider_session_id=?,read_at=?,updated_at=? WHERE message_id=?`,
+          [turnId,route.activeBinding?.bindingId??null,route.legacySessionId,timestamp,timestamp,row.message_id]);
+        if(status==="failed" && row.disposition==="pending") {const old=this.store.getAgentTask(row.operation_id);const source={...old.source};delete source.batchedInto;
+          this.store.updateAgentTask(old.taskId,{status:"queued",source});}
+      }
       for (const item of this.getItems(batchId)) {
         this.service.updateDelivery(item.delivery.deliveryId, {
           status: status === "accepted" ? "delivered" : status === "prepared" ? "queued" : "delivering",
