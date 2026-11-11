@@ -1,3 +1,4 @@
+import { DEVELOPMENT_WORKFLOW_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
 import { SessionApplicationService } from "../agent-provider/sessionApplicationService.mjs";
 import { persistProviderSessionProjection, persistSessionModelSelection } from "./providerSessionProjection.mjs";
 import { buildWorkSessionContext, mergeWorkerSessionContexts } from "./workSessionContext.mjs";
@@ -136,7 +137,10 @@ export function createSessionApplicationComposition({
             children: store.selectAll("SELECT id,substr(title,1,120) AS title,current_session_id AS sessionId,lifecycle_state AS state,execution_status AS executionStatus FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY updated_at DESC LIMIT 20", [task.id]),
             dispatches: store.selectAll("SELECT dispatch_id AS dispatchId,target_task_id AS taskId,status,error_code AS errorCode FROM task_coordination_dispatches WHERE parent_task_id=? ORDER BY created_at DESC LIMIT 20", [task.id])
           } : null,
-          artifactIndex: artifactService.indexForSession(session),
+          artifactReferences: [...(store.listArtifactReferences?.({ taskId: task.id, requiredOnly: true }) ?? []),
+            ...(store.listArtifactReferences?.({ sessionId: session.id, requiredOnly: true }) ?? [])]
+            .filter((ref, index, all) => ref.required && ref.workId === task.work_id && all.findIndex(item => item.referenceId === ref.referenceId) === index)
+            .map(ref => ({ artifactId: ref.artifactId, pinnedVersion: ref.pinnedVersion, contentHash: ref.pinnedHash, relation: ref.relation })),
           startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null,
           toolDomains: appliedToolDomainIds(toolMaterialization),
           toolCatalogVersion: toolMaterialization?.appliedCatalogVersion ?? null
@@ -204,8 +208,9 @@ export function createSessionApplicationComposition({
       const presentationContext = { contextKey: "presentation", contextReusable: true,
         prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>\n\nRole is reusable user configuration; Provider is the execution engine; Session is the only executor and authorization/collaboration actor. Historical Agent resource labels mean Role. Selecting a Role never grants permissions.` };
       if (globalPreferenceContext) globalPreferenceContext.contextKey = "global-preferences";
-      const contexts = [baseContext, globalPreferenceContext, discoveryContext, skillRoutingContext,
-        presentationContext, mentionContext, directUserIntentContext, memoryContext]
+      const workflowContext = { prompt: DEVELOPMENT_WORKFLOW_INSTRUCTIONS };
+      const contexts = [workflowContext, directUserIntentContext, globalPreferenceContext, baseContext, discoveryContext, skillRoutingContext,
+        presentationContext, mentionContext, memoryContext]
         .filter((item) => item?.prompt);
       const recordInjection = (globalIncluded, recallIncluded) => {
         if (globalPreferences && globalIncluded) memoryRecallService.markInjection?.(globalPreferences, "context_included");
@@ -237,13 +242,14 @@ export function createSessionApplicationComposition({
         ...baseContext,
         prompt: contexts.map((item) => item.prompt).join("\n\n"),
         contextSections: [
-          ...(baseContext?.contextSections ?? [{ id: "base-context", prompt: baseContext?.prompt ?? "", reusable: true }]),
+          { id: "execution-workflow", prompt: DEVELOPMENT_WORKFLOW_INSTRUCTIONS, reusable: false },
+          { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
           { id: "global-preferences", prompt: globalPreferenceContext?.prompt ?? "", reusable: false },
+          ...(baseContext?.contextSections ?? [{ id: "base-context", prompt: baseContext?.prompt ?? "", reusable: true }]),
           { id: "tool-discovery", prompt: discoveryContext?.prompt ?? "", reusable: true },
           { id: "skill-routing", prompt: skillRoutingContext.prompt, reusable: true },
           { id: "presentation", prompt: presentationContext.prompt, reusable: true },
           { id: "mentions", prompt: mentionContext?.prompt ?? "", reusable: false },
-          { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
           { id: "memory-recall", prompt: memoryContext?.prompt ?? "", reusable: false }
         ],
         memoryRecall: memoryContext?.memoryRecall ?? null,

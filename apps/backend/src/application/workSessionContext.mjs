@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { ARTIFACT_DOCUMENT_LOCATION_INSTRUCTIONS } from "./artifactRuntimePolicy.mjs";
-import { EXECUTION_CHECKLIST_INSTRUCTIONS, EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
+import { EXECUTION_CHECKLIST_INSTRUCTIONS, EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS, DEVELOPMENT_WORKFLOW_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
 
 export const TASK_WORKSPACE_INSTRUCTIONS = "Corptie programmatically binds the Task Worktree. Stay in it; manually create or switch Worktrees only when the direct user explicitly requests it. Scoped child Task tools may automatically allocate child Worktrees during autonomous decomposition, without a separate user creation request. This does not authorize manual Worktree changes; shell cd or command workdir never changes the logical Workspace.";
 
 export function buildWorkSessionContext({
-  session, task, work, artifactIndex = null, startupReceipt = null, coordination = null,
+  session, task, work, artifactIndex = null, artifactReferences = null, startupReceipt = null, coordination = null,
   toolDomains = [],
   toolCatalogVersion = null
 } = {}) {
@@ -37,7 +37,7 @@ export function buildWorkSessionContext({
   }
 
   const taskDefinition = canonicalTaskDefinition(task);
-  const requiredArtifacts = (artifactIndex?.items ?? []).filter((item) => item.required === true);
+  const requiredArtifacts = artifactReferences ?? (artifactIndex?.items ?? []).filter((item) => item.required === true);
   if ((artifactIndex?.requiredOmittedCount ?? 0) > 0) {
     throw contextError(
       "WORK_SESSION_CONTEXT_INCOMPLETE",
@@ -72,7 +72,7 @@ export function buildWorkSessionContext({
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
     "Use corptie_artifact_create for durable documents. Choose scope=work for shared Work resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
     "Every Work Session in this Work may read and manage Work-scoped Artifacts. Artifacts owned by another Task are not exposed here; this Task's Artifacts remain manageable.",
-    "An Artifact's contextRelation identifies why its metadata is present. Work membership and read permission alone do not make an Artifact part of this Task.",
+    "Discover relevant Artifacts with corptie_artifact_search and read fixed versions with corptie_artifact_get. No Artifact directory is preloaded. Explicit required references below identify dependencies, not their contents.",
     "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Work Artifact index and full-text search.",
     projectCodeInstructions(toolDomains, toolCatalogVersion),
     "",
@@ -88,14 +88,12 @@ export function buildWorkSessionContext({
   const suffix = "\n</corptie_work_session_binding>";
   const corePrompt = prefixLines.join("\n") + suffix;
   assertComplete(corePrompt, taskDefinition, requiredArtifacts);
-  const optionalArtifacts = (artifactIndex?.items ?? []).filter(item => item.required !== true);
-  const omittedCount = artifactIndex?.omittedCount ?? artifactIndex?.omittedArtifactCount ?? 0;
-  const omissionReasons = artifactIndex?.omissionReasons ?? {};
-  const prompt = optionalArtifactPrompt(corePrompt, optionalArtifacts, omittedCount, omissionReasons);
-  assertComplete(prompt, taskDefinition, requiredArtifacts);
+  const prompt = corePrompt;
   return {
     prompt, corePrompt,
-    contextArtifacts: { omittedCount, omissionReasons },
+    contextArtifacts: { omittedCount: 0, omissionReasons: {} },
+    taskPrompt: `Authoritative bound Task definition (complete JSON; no fields in this object are truncated):\n${JSON.stringify(taskDefinition)}`,
+    coordinationPrompt: buildTaskCoordinationContext(task, coordination),
     contextIntegrity: Object.freeze({
       taskId: task.id,
       taskRevision: taskDefinition.revision,
@@ -108,7 +106,7 @@ export function buildWorkSessionContext({
 }
 
 export function buildTaskCoordinationContext(task, coordination) {
-  if (task.parent_task_id) return "You are the Session executing an independently deliverable child module. Follow the latest authorized mailbox instruction; older Task text is historical scope, not a veto of later authorized amendments. Independently investigate, implement, handle ordinary failures and verify within scope. Send no acknowledgements, busy/running/cancelled notices or incremental status reports. Ask through the mailbox only for missing authority, essential information or a cross-module decision you cannot resolve; batch related questions, include impact and a recommendation, and continue independent work. Save a concrete final result with evidence and remaining limitations; the host returns it through the mailbox. A model turn ending or registering a background wake is not target completion or user acceptance.";
+  if (task.parent_task_id) return "You are the Session executing an independently deliverable child module. Follow the latest authorized mailbox instruction; older Task text is historical scope, not a veto of later authorized amendments. Independently investigate, implement and handle ordinary failures within scope. Follow the batch development workflow; coordinate final verification with the parent instead of running intermediate or duplicate tests. Send no acknowledgements, busy/running/cancelled notices or incremental status reports. Ask through the mailbox only for missing authority, essential information or a cross-module decision you cannot resolve; batch related questions, include impact and a recommendation, and continue independent work. Save a concrete final result with evidence and remaining limitations; the host returns it through the mailbox. A model turn ending or registering a background wake is not target completion or user acceptance.";
   const policy = task.coordination_enabled === 1
     ? "Prefer independently deliverable modules with minimal shared dependencies; supply objective, completion conditions, ownership boundaries and dependencies once. Coordination mode is ON. Discuss, clarify, query child history/status and summarize results yourself using the host read tools. Delegate actual implementation or mutation work; do not delegate ordinary questions, reports or status lookups merely because context is missing. Mailbox source alone does not prohibit follow-up actions within existing authority. For execution instructions, promptly decide whether to reuse an existing direct child or create one, then use corptie_task_dispatch (1-10 items). As soon as accepted, briefly acknowledge and END this turn so the user can continue. Do not wait, poll, repeatedly query status, or perform the delegated implementation in the parent. You may reuse children and send additional instructions. Queued/preparing/waiting-input is not stuck; never duplicate a dispatch merely because no reply arrived. Use stable idempotency keys."
     : "Coordination mode is OFF. Work normally; child delegation remains available when useful, not mandatory.";
@@ -122,13 +120,16 @@ export function mergeWorkerSessionContexts({ baseContext, directUserIntentContex
   memoryContext = null, requiredContexts = [], mentionContext = null, referenceContext = null } = {}) {
   if (!baseContext?.prompt) return null;
   const corePrompt = baseContext.corePrompt ?? baseContext.prompt;
+  const stablePrompt = corePrompt.replace(EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS + "\n", "")
+    .replace(baseContext.taskPrompt ?? "\0", "").replace(baseContext.coordinationPrompt ?? "\0", "");
   const contextSections = [
-    { id: "session-binding", prompt: corePrompt, reusable: true },
-    { id: "artifact-index", prompt: baseContext.prompt.startsWith(corePrompt)
-      ? baseContext.prompt.slice(corePrompt.length).trim() : "", reusable: true },
+    { id: "execution-workflow", prompt: EXECUTION_CHECKLIST_ENTRY_INSTRUCTIONS + "\n" + DEVELOPMENT_WORKFLOW_INSTRUCTIONS, reusable: false },
+    { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
+    { id: "task-definition", prompt: baseContext.taskPrompt ?? "", reusable: true },
     ...requiredContexts.map((item, index) => ({ id: item.contextKey ?? `required-${index}`,
       prompt: item.prompt ?? "", reusable: item.contextReusable === true })),
-    { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
+    { id: "session-binding", prompt: stablePrompt, reusable: true },
+    { id: "coordination", prompt: baseContext.coordinationPrompt ?? "", reusable: true },
     { id: "mentions", prompt: mentionContext?.prompt ?? "", reusable: false },
     { id: "context-references", prompt: referenceContext?.prompt ?? "", reusable: true },
     { id: "memory-recall", prompt: memoryContext?.prompt ?? "", reusable: false }
@@ -159,11 +160,6 @@ function canonicalTaskDefinition(task) {
     throw contextError("WORK_SESSION_CONTEXT_INCOMPLETE", "The authoritative Task definition is incomplete.", { missingFields });
   }
   return Object.freeze(definition);
-}
-
-function optionalArtifactPrompt(corePrompt, artifacts, omittedCount, omissionReasons) {
-  if (!artifacts.length && !omittedCount) return corePrompt;
-  return `${corePrompt}\n\nOptional Artifact index (metadata only; bodies load on demand; never defines the bound Task):\n${JSON.stringify({ artifacts, omittedCount, omissionReasons })}\nUse the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions.`;
 }
 
 function assertComplete(prompt, taskDefinition, requiredArtifacts) {

@@ -1,3 +1,5 @@
+import { DatabaseSync } from "node:sqlite";
+import { ArtifactRepository } from "../src/store/repositories/artifactRepository.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -43,4 +45,19 @@ test("Artifact read reservations retain limits and roll back with the owning Sto
   } finally {
     await store.close();
   }
+});
+
+test("required context references exclude optional and revoked rows before projection", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("CREATE TABLE artifact_references(reference_id TEXT, task_id TEXT, required INTEGER, authorized_at TEXT, revoked_at TEXT)");
+    const add = db.prepare("INSERT INTO artifact_references VALUES (?,?,?,?,?)");
+    add.run("needed", "task:one", 1, "now", null);
+    add.run("optional", "task:one", 0, "now", null);
+    add.run("revoked", "task:one", 1, "now", "then");
+    add.run("foreign", "task:other", 1, "now", null);
+    const repo = new ArtifactRepository({ selectAll: (sql, args) => db.prepare(sql).all(...args) });
+    assert.deepEqual(repo.listArtifactReferences({ taskId: "task:one", requiredOnly: true }).map(r => r.referenceId), ["needed"]);
+    assert.equal(repo.listArtifactReferences({ taskId: "task:one" }).length, 2);
+  } finally { db.close(); }
 });
