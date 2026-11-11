@@ -65,7 +65,7 @@ final class SessionTimelineState: ObservableObject {
         // content. Bumping the presentation version for those background
         // polls made every open page rebuild its display cache, rebind its
         // AppKit rows and dirty the whole window while the user was idle.
-        let contentChanged = (self.detail?.items ?? []) != detail.items
+        let contentChanged = self.detail == nil || (self.detail?.items ?? []) != detail.items
             || retainedTurnContext != previousContext
         guard contentChanged || self.timelineRevision != nextRevision else { return }
         self.timelineRevision = nextRevision
@@ -73,10 +73,14 @@ final class SessionTimelineState: ObservableObject {
         let context = retainedTurnContext.filter { !ids.contains($0.id) }
         presentationDetail = context.isEmpty ? detail
             : ResidentTimelineWindow.replacingItems(in: detail, with: context + detail.items)
+        // Publish only after every scalar used to invalidate the display cache
+        // describes this snapshot. Synchronous subscribers must never see new
+        // items paired with the previous presentation version.
+        if contentChanged {
+            presentationRevision &+= 1
+            tailContentRevision = timelineTailContentRevision(for: detail.items)
+        }
         self.detail = detail
-        guard contentChanged else { return }
-        presentationRevision &+= 1
-        tailContentRevision = timelineTailContentRevision(for: detail.items)
     }
 }
 

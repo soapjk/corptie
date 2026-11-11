@@ -387,6 +387,7 @@ struct SessionConversationSurface: View {
         .onAppear {
             guard acceptsPresentationUpdates else { return }
             restoreCachedProjectionDisplayCacheIfNeeded()
+            if let detail = displayedDetail { updateCachedDisplayEntries(for: detail) }
             restoreMissingHistoryAnchorIfNeeded()
         }
         .onChange(of: replyIdentity) { _, _ in
@@ -432,10 +433,15 @@ struct SessionConversationSurface: View {
             restoreMissingHistoryAnchorIfNeeded()
         }
         .onChange(of: renderInputs?.activity.isActive ?? true) { _, active in
-            guard !active else { return }
-            displayProjectionTask?.cancel(); displayProjectionTask = nil
-            historyAnchorRestoreTask?.cancel(); historyAnchorRestoreTask = nil
-            displayProjectionGeneration &+= 1
+            if active {
+                if let detail = displayedDetail { updateCachedDisplayEntries(for: detail) }
+                restoreMissingHistoryAnchorIfNeeded()
+            } else {
+                displayProjectionTask?.cancel(); displayProjectionTask = nil
+                pendingProjectionSourceSignature = nil
+                historyAnchorRestoreTask?.cancel(); historyAnchorRestoreTask = nil
+                displayProjectionGeneration &+= 1
+            }
         }
         .onDisappear {
             navigationEpoch &+= 1
@@ -443,6 +449,8 @@ struct SessionConversationSurface: View {
             pendingNavigationMessageID = nil
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
+            pendingProjectionSourceSignature = nil
+            displayProjectionGeneration &+= 1
             historyAnchorRestoreTask?.cancel()
             historyAnchorRestoreTask = nil
         }
@@ -1289,7 +1297,9 @@ struct SessionConversationSurface: View {
         for detail: CodexThreadDetail,
         sourceSignature: String
     ) {
-        guard pendingProjectionSourceSignature != sourceSignature else { return }
+        // A canceled/finished task cannot own a pending version. Allow the same
+        // source to restart after the retained page becomes visible again.
+        guard displayProjectionTask == nil || pendingProjectionSourceSignature != sourceSignature else { return }
         if displayProjectionTask != nil {
             ChatPerformanceRecorder.shared.increment(.displayProjectionCancellations)
         }
