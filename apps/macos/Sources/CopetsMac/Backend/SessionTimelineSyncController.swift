@@ -158,7 +158,15 @@ final class SessionTimelineSyncController {
                 await warmPresentationCache(for: session.id)
                 return true
             case .duplicate:
-                return true
+                // The delta described no applicable change, but the server may
+                // already be ahead. Fall through to the stored snapshot in that
+                // case; otherwise the final model reply would never arrive and
+                // the scheduler would keep retrying the same empty delta.
+                if !SessionTimelineDuplicateRecovery.requiresSnapshot(
+                    serverRevision: envelope.currentRevision,
+                    localRevision: localRevision
+                ) { return true }
+                break
             case .requiresSnapshot:
                 break
             }

@@ -16,6 +16,26 @@ enum SessionTimelineBackgroundSyncPolicy {
     }
 }
 
+/// A duplicate delta is not proof that the resident Timeline is current. A
+/// terminal reply can be replayed under an unchanged item ID, or the change
+/// log can fail to describe the gap. Reporting success without advancing the
+/// resident authority makes the scheduler retry the same empty delta forever.
+enum SessionTimelineDuplicateRecovery {
+    static func requiresSnapshot(serverRevision: Int, localRevision: Int) -> Bool {
+        serverRevision > localRevision
+    }
+}
+
+/// The state stream is unconditional and durable; a Timeline wake is
+/// conditional (`getRowsModified() > 0`), coalesced and has no replay. A
+/// running Session reaching a terminal state is the reliable moment to
+/// reconcile the selected Timeline once, independently of that wake.
+enum SessionTerminalTimelineReconciliation {
+    static func shouldReconcile(wasRunning: Bool, isRunning: Bool, isSelected: Bool) -> Bool {
+        isSelected && wasRunning && !isRunning
+    }
+}
+
 struct SessionTimelineChangeEnvelope: Decodable, Sendable {
     let snapshotRequired: Bool
     let baseRevision: Int?

@@ -108,6 +108,45 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         )
     }
 
+    func testDuplicateDeltaRecoversFromSnapshotOnlyWhenServerIsAhead() {
+        // A terminal reply can be replayed under an unchanged item ID: the
+        // delta is a duplicate, yet the server already owns content we lack.
+        XCTAssertTrue(SessionTimelineDuplicateRecovery.requiresSnapshot(
+            serverRevision: 41, localRevision: 40))
+        XCTAssertFalse(SessionTimelineDuplicateRecovery.requiresSnapshot(
+            serverRevision: 40, localRevision: 40))
+        XCTAssertFalse(SessionTimelineDuplicateRecovery.requiresSnapshot(
+            serverRevision: 39, localRevision: 40))
+    }
+
+    func testTerminalSelectedSessionReconcilesWithoutATimelineWake() {
+        XCTAssertTrue(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: true, isRunning: false, isSelected: true))
+        XCTAssertFalse(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: true, isRunning: true, isSelected: true))
+        XCTAssertFalse(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: false, isRunning: false, isSelected: true))
+        XCTAssertFalse(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: true, isRunning: false, isSelected: false))
+    }
+
+    func testDuplicateRecoveryAndTerminalReconciliationStayWiredIntoProductionPaths() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sources = packageRoot.appendingPathComponent("Sources/CopetsMac")
+        let sync = try String(contentsOf: sources.appendingPathComponent(
+            "Backend/SessionTimelineSyncController.swift"), encoding: .utf8)
+        let client = try String(contentsOf: sources.appendingPathComponent(
+            "BackendClient.swift"), encoding: .utf8)
+        XCTAssertTrue(sync.contains("SessionTimelineDuplicateRecovery.requiresSnapshot("))
+        XCTAssertFalse(sync.contains("case .duplicate:\n                return true"),
+            "A duplicate delta must not report success while the server is ahead")
+        XCTAssertTrue(client.contains("SessionTerminalTimelineReconciliation.shouldReconcile("))
+        XCTAssertTrue(client.contains("forceSnapshot: true"))
+    }
+
     func testDistinctStableMessageIDsRemainDistinctWithoutContentBasedCorrection() throws {
         let messages = [
             item("item-47", turnID: "turn-a", type: "userMessage", text: "Sent only once"),

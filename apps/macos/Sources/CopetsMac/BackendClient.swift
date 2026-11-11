@@ -767,6 +767,31 @@ final class BackendClient: ObservableObject {
             ) {
                 scheduleBackgroundTimelineSync(for: session, desiredRevision: desiredRevision)
             }
+            // The state patch is unconditional, but the Timeline wake is not.
+            // Reconcile the selected Session once when execution terminates so
+            // a coalesced or missing wake cannot hide the final model reply.
+            if SessionTerminalTimelineReconciliation.shouldReconcile(
+                wasRunning: previousSessions == nil
+                    ? false
+                    : previousByID[session.id]?.executionTaskStatus == .running,
+                isRunning: session.executionTaskStatus == .running,
+                isSelected: session.id == selectedID
+            ) {
+                reconcileTerminalSessionTimeline(session)
+            }
+        }
+    }
+
+    private func reconcileTerminalSessionTimeline(_ session: TaskSession) {
+        let localRevision = SessionTimelineRepository.shared.timelineRevision(for: session.id)
+        Task { [weak self] in
+            guard let self else { return }
+            // A full snapshot is the only authority that also recovers the
+            // case where the resident revision already equals the server's but
+            // the stored items contain a newer terminal reply.
+            _ = await self.synchronizeStoredTimeline(
+                for: session, localRevision: localRevision, forceSnapshot: true
+            )
         }
     }
 
