@@ -9,7 +9,7 @@ extension UnifiedConsoleView {
                 selectedSessionID: selectionController.presentationSessionID,
                 isActive: sidebarState.isSelected,
                 showsAllChats: showsAllChatSessions,
-                showMoreChats: { showsAllChatSessions = true },
+                toggleChats: { showsAllChatSessions.toggle() },
                 chatHeader: AnyView(outlineChatHeader(
                     hasUnread: sessionIndexStore.workUnreadSummary.hasUnreadAssistantSessions,
                     isProcessing: sessionIndexStore.hasProcessingAssistantSessions))) {
@@ -34,7 +34,7 @@ struct ConsoleFlatSessionList: View {
     let selectedSessionID: String?
     let isActive: Bool
     let showsAllChats: Bool
-    let showMoreChats: () -> Void
+    let toggleChats: () -> Void
     let chatHeader: AnyView
     let select: (TaskSession) -> Void
 
@@ -45,6 +45,7 @@ struct ConsoleFlatSessionList: View {
         let chatCount = ConsoleChatPreviewPolicy.visibleCount(total: sections.chats.count, showsAll: showsAllChats)
         List {
             chatHeader
+                .background(ConsoleOverlayScroller(usesWorkStyle: true))
                 .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
                 .listRowSeparator(.hidden)
             Group {
@@ -60,8 +61,8 @@ struct ConsoleFlatSessionList: View {
                         .listRowSeparator(.hidden)
                 }
             }
-            if chatCount < sections.chats.count {
-                Button(L10n("展示更多"), action: showMoreChats)
+            if sections.chats.count > 5 {
+                Button(L10n(showsAllChats ? "收起" : "展示更多"), action: toggleChats)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
@@ -71,10 +72,7 @@ struct ConsoleFlatSessionList: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 Divider()
-                Text(L10n("Projects"))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 3)
+                ConsolePrimarySectionHeading(title: L10n("Projects"))
             }
             .padding(.top, 6)
             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
@@ -86,7 +84,7 @@ struct ConsoleFlatSessionList: View {
                     selectionRequested: select)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .consoleHoverFeedback(isSelected: selectedSessionID == row.id, horizontalInset: 0)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                     .listRowSeparator(.hidden)
             }
         }

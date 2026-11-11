@@ -160,9 +160,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 }
                                 if isLoading { ProgressView().controlSize(.small) }
                                }.padding(10)
-                                .background(ConsoleOverlayScroller(placeOnLeadingEdge: true))
+                                .background(ConsoleOverlayScroller(usesWorkStyle: true))
                               }
-                              .contentMargins(.leading, ConsoleOverlayScroller.leadingContentInset, for: .scrollContent)
                             } else {
                               InfiniteWorkCanvasViewport(origin: canvasOrigin, isActive: isActive,
                                                          cardDragging: canvasDrag.activeID != nil,

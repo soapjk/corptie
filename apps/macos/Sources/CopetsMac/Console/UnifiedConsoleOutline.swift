@@ -58,7 +58,7 @@ extension UnifiedConsoleView {
             case .more(let workID, let count):
                 outlineShowAllTasksButton(workID: workID, hiddenCount: count)
             case .moreChats:
-                showMoreChatSessionsButton
+                chatPreviewToggleButton
             }
         }
     }
@@ -72,19 +72,21 @@ extension UnifiedConsoleView {
             showsAll: showsAllChatSessions || queryIsActive)
         var chatEntries = assistantRows.prefix(chatCount).map { ConsoleNativeOutlineEntry.session($0) }
         if chatEntries.isEmpty { chatEntries = [.empty("assistant-empty", L10n("No Assistant Sessions"))] }
-        if chatCount < assistantRows.count { chatEntries.append(.moreChats) }
+        if !queryIsActive, assistantRows.count > 5 { chatEntries.append(.moreChats) }
         var groups = [ConsoleNativeOutlineGroup(
             id: "assistant",
             header: AnyView(outlineChatHeader(hasUnread: unreadSummary.hasUnreadAssistantSessions,
                 isProcessing: sessionIndexStore.hasProcessingAssistantSessions)),
             rows: chatEntries,
             isExpanded: true,
+            usesSectionStyle: true,
             allowsCollapse: false,
             showsDisclosureIndicator: false,
             structureRevision: chatEntries.count
         )]
-        groups.append(.init(id: "projects-heading", header: AnyView(Text(L10n("Projects"))
-            .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)), isSection: true))
+        groups.append(.init(id: "projects-heading",
+            header: AnyView(ConsolePrimarySectionHeading(title: L10n("Projects"))),
+            isSection: true, showsDisclosureIndicator: false))
         for work in orderedOutlineWorks {
             let workRows = outlineProjection.workRowsByWorkID[work.id] ?? .empty
             let showsAll = outlineFullyExpandedWorkIDs.contains(work.id)
@@ -136,20 +138,12 @@ extension UnifiedConsoleView {
     }
 
     func outlineChatHeader(hasUnread: Bool, isProcessing: Bool) -> some View {
-        HStack(spacing: 7) {
-            ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing,
-                isActive: sidebarState.isSelected, fontSize: 12, weight: .medium)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            ConsoleGroupStatusIndicators(isExpanded: true, isProcessing: isProcessing, hasUnread: hasUnread)
-        }
-        .padding(.vertical, 3)
-        .accessibilityLabel(L10n("Chat"))
+        ConsolePrimarySectionHeading(title: L10n("Chat"),
+            isProcessing: isProcessing, hasUnread: hasUnread, isActive: sidebarState.isSelected)
     }
 
-    var showMoreChatSessionsButton: some View {
-        Button(L10n("展示更多")) { showsAllChatSessions = true }
+    var chatPreviewToggleButton: some View {
+        Button(L10n(showsAllChatSessions ? "收起" : "展示更多")) { showsAllChatSessions.toggle() }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.secondary)
             .buttonStyle(.plain)

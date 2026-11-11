@@ -50,6 +50,33 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
     private struct RefreshProbeRow: Identifiable { let id: String }
     private final class RefreshProbe { var configurations = 0 }
 
+    func testPeerChatAndProjectHeadingsHaveTheSameNativeLeadingEdge() throws {
+        _ = NSApplication.shared
+        let groups: [ConsoleNativeOutlineGroup<RefreshProbeRow>] = [
+            .init(id: "assistant", header: AnyView(ConsolePrimarySectionHeading(title: "聊天")),
+                rows: [.init(id: "chat-row")], isExpanded: true, usesSectionStyle: true,
+                allowsCollapse: false, showsDisclosureIndicator: false),
+            .init(id: "projects-heading", header: AnyView(ConsolePrimarySectionHeading(title: "项目")),
+                isSection: true, showsDisclosureIndicator: false)
+        ]
+        let host = NSHostingView(rootView: ConsoleNativeOutline(groups: { groups }) { Text($0.id) })
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 300),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; window.orderOut(nil) }
+        settle(0.1)
+        let outline = try XCTUnwrap(findTable(in: host) as? NSOutlineView)
+        XCTAssertEqual(outline.numberOfRows, 3, "Section styling must keep the chat child visible")
+        XCTAssertTrue(outline.frameOfOutlineCell(atRow: 0).isEmpty)
+        XCTAssertTrue(outline.frameOfOutlineCell(atRow: 2).isEmpty)
+        let chat = try XCTUnwrap(outline.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        let projects = try XCTUnwrap(outline.view(atColumn: 0, row: 2, makeIfNecessary: true))
+        outline.layoutSubtreeIfNeeded()
+        XCTAssertEqual(outline.convert(chat.bounds, from: chat).minX,
+            outline.convert(projects.bounds, from: projects).minX, accuracy: 0.5)
+    }
+
     func testLayoutOnlyPresentationDoesNotReconfigureWorkRows() throws {
         _ = NSApplication.shared
         let probe = RefreshProbe()

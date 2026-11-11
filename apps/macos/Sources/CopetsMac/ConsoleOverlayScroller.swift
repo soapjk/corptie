@@ -20,18 +20,24 @@ struct ConsoleOverlayScroller: NSViewRepresentable {
     // Native small scroller starts at x=8; reserve its system lane plus a gap.
     static let leadingContentInset: CGFloat = NSScroller.scrollerWidth(for: .small, scrollerStyle: .overlay) + 12
     var placeOnLeadingEdge = false
+    var usesWorkStyle = false
 
-    func makeNSView(context: Context) -> Probe { Probe(placeOnLeadingEdge: placeOnLeadingEdge) }
+    func makeNSView(context: Context) -> Probe {
+        Probe(placeOnLeadingEdge: placeOnLeadingEdge, usesWorkStyle: usesWorkStyle)
+    }
     func updateNSView(_ view: Probe, context: Context) {
         view.placeOnLeadingEdge = placeOnLeadingEdge
+        view.usesWorkStyle = usesWorkStyle
         view.configure()
     }
 
     final class Probe: NSView {
         var placeOnLeadingEdge: Bool
+        var usesWorkStyle: Bool
 
-        init(placeOnLeadingEdge: Bool = false) {
+        init(placeOnLeadingEdge: Bool = false, usesWorkStyle: Bool = false) {
             self.placeOnLeadingEdge = placeOnLeadingEdge
+            self.usesWorkStyle = usesWorkStyle
             super.init(frame: .zero)
         }
 
@@ -51,6 +57,10 @@ struct ConsoleOverlayScroller: NSViewRepresentable {
         }
         func configure() {
             guard let scrollView = enclosingScrollView else { return }
+            if usesWorkStyle {
+                WorkNavigationScrollStyle.configure(scrollView)
+                return
+            }
             if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
             if scrollView.hasVerticalScroller, !(scrollView.verticalScroller is ConsoleThinScroller) {
                 scrollView.verticalScroller = ConsoleThinScroller()
