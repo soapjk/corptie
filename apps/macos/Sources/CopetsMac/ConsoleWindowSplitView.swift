@@ -93,12 +93,14 @@ struct DetailToggleClickTarget: NSViewRepresentable {
     }
 }
 
-/// Detail stays docked only while the text lane keeps its full reading width.
-/// The gutters on either side of the lane may narrow freely as the window
-/// shrinks; the moment the text itself would start getting narrower, Detail
-/// gives up its docked position and hides automatically. An AppKit-driven
-/// horizontal slide carries the handover: the rail slides out to the right
-/// (and back in from the right) instead of vanishing in a single frame.
+/// A docked Detail rail owns its full width at the trailing edge, so the
+/// transcript ends where the rail begins and `WorkbenchStyle.lane` centres the
+/// reading lane in the space that is left: equal blank gutters on both sides.
+/// Docking is kept only while that remaining space still holds the full lane
+/// plus both gutters; below it the rail gives up its column and floats above
+/// the messages instead. An AppKit-driven horizontal slide carries the
+/// handover: the rail slides out to the right (and back in from the right)
+/// instead of vanishing in a single frame.
 struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
     @State private var canDock = false
@@ -125,24 +127,18 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
         self.header = header
     }
 
-    /// The rail may reach into the trailing gutter, but must always stop this
-    /// far from the first glyph. Deriving the overlap keeps that clearance
-    /// intact when the reading inset is tuned.
-    static var railGlyphClearance: CGFloat { 14 }
-    static var railGutterOverlap: CGFloat {
-        WorkbenchStyle.readingInset + MainWindowPageLayoutMetrics.columnSpacing
-            - railGlyphClearance
-    }
-
-    /// Space the HStack keeps for the rail when docked. The rail itself is
-    /// drawn in the trailing ZStack layer, so this is shorter than the rail.
+    /// Space the HStack keeps for the rail when docked: exactly the rail's
+    /// width, no overlap into the transcript. `WorkbenchStyle.lane` then centres
+    /// the reading lane in `[0, width - railWidth]`, so the blank gutter on the
+    /// leading edge equals the one before the rail. Reserving less would tilt
+    /// the lane to the left and let the rail eat the trailing gutter.
     static var dockedReservedWidth: CGFloat {
-        ConversationDetailWidgetMetrics.railWidth + MainWindowPageLayoutMetrics.columnSpacing
-            - railGutterOverlap
+        ConversationDetailWidgetMetrics.railWidth
     }
 
-    /// Hide as soon as the text lane can no longer keep its full width. The
-    /// two gutters are allowed to shrink; the text is not.
+    /// Dock only while the space left after subtracting the rail still holds
+    /// the full reading lane with a complete gutter on each side. Below this
+    /// the rail becomes an overlay above the messages instead of a column.
     static var minimumDockedWidth: CGFloat {
         WorkbenchStyle.readingWidth + 2 * WorkbenchStyle.readingInset + dockedReservedWidth
     }
@@ -178,9 +174,10 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                     transcript()
                         .environment(\.detailColumnVisibility, visibility)
                         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                    // Stable transcript identity; only native stack space changes.
-                    // The reserved slice is shorter than the rail on purpose:
-                    // the rail overlaps the trailing reading gutter, not text.
+                    // Stable transcript identity; only native stack space
+                    // changes. Docked: the full rail width is reserved so the
+                    // reading lane centres with equal gutters. Overlay: no
+                    // slice is reserved and the rail floats above the text.
                     Color.clear
                         .frame(width: docked ? Self.dockedReservedWidth : 0)
                         .allowsHitTesting(false)

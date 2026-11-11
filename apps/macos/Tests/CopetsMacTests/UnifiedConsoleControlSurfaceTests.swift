@@ -509,7 +509,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestFloatsCenteredAboveQuickMessagesInBaseLiquidGlass() throws {
+    func jumpToLatestFloatsInFixedSlotAboveChecklistInBaseLiquidGlass() throws {
         let conversation = try source(named: "Conversation/SessionConversationContent.swift")
         let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
         let styles = try source(named: "Floating/Chrome/ConversationButtonStyles.swift")
@@ -531,9 +531,18 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(conversation.contains("quickMessagePresentation: quickMessagePresentation"))
         #expect(conversation.contains("appKitScrollToBottomRevision &+= 1"))
 
-        // Centred above, touching, floating over the transcript.
+        // The control owns a fixed slot ABOVE the pinned checklist, not a row
+        // between the checklist and the quick messages.
+        #expect(conversation.contains("if usesJumpControlSlot { jumpControlSlot }"))
+        #expect(conversation.contains(".frame(height: ComposerQuickMessagesBar.jumpControlSize)"))
+        #expect(conversation.contains("onJumpToLatest: nil"))
+        let slot = try #require(conversation.range(of: "if usesJumpControlSlot { jumpControlSlot }"))
+        let checklist = try #require(conversation.range(of: "PinnedExecutionChecklistCard(plan: plan)"))
+        #expect(slot.lowerBound < checklist.lowerBound,
+            "The jump slot must render before the checklist card")
+        // Centred, touching the checklist, floating over the transcript.
         #expect(composer.contains("VStack(spacing: 0)"))
-        #expect(composer.contains(".frame(maxWidth: .infinity, alignment: .center)"))
+        #expect(conversation.contains(".frame(maxWidth: .infinity, alignment: .center)"))
         #expect(composer.contains("static let jumpControlSize: CGFloat = 30"))
         #expect(conversation.contains("ComposerQuickMessagesBar.jumpControlSize"))
         // Untinted system liquid glass only: no opaque plate, stroke or brand fill.
@@ -542,6 +551,20 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!styles.contains(".background(background, in: Circle())"))
         #expect(!styles.contains("strokeBorder(border"))
         #expect(!styles.contains(".tint("))
+    }
+
+    @Test
+    func jumpControlVisibilityNeverChangesDockHeightOrTranscriptInset() throws {
+        let conversation = try source(named: "Conversation/SessionConversationContent.swift")
+        // Neither the dock overlap nor the timeline's bottom clearance may
+        // depend on whether the button is currently visible.
+        #expect(!conversation.contains("let jumpControlHeight"))
+        #expect(!conversation.contains("quickMessagePresentation.showsMessages || composerJumpToLatestAction"))
+        #expect(conversation.contains("private var usesJumpControlSlot"))
+        #expect(conversation.contains("let floatingQuickMessages = showsDockQuickMessages && !hasPinnedChecklist"))
+        #expect(conversation.contains("return ComposerQuickMessagesBar.jumpControlSize + floatingQuickMessages"))
+        #expect(conversation.contains("ConversationRegionStack(accessoryOverlap: quickMessageOverlap)"))
+        #expect(conversation.contains("bottomClearance: quickMessageOverlap"))
     }
 
     @Test

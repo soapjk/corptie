@@ -63,12 +63,17 @@ struct AdaptiveConversationColumnsTests {
                     #expect(abs(railFrame.height - transcriptFrame.height) < 2)
                     #expect(abs(railFrame.width - ConversationDetailWidgetMetrics.railWidth) < 2)
                     #expect(docked)
-                    // The rail reaches into the trailing reading gutter but
-                    // must never cover the text lane itself.
-                    let overlap = transcriptFrame.maxX - railFrame.minX
-                    #expect(overlap <= WorkbenchStyle.readingInset
-                        - AdaptiveConversationColumns<Color, Color, EmptyView>.railGlyphClearance + 2,
-                        "The rail may consume the gutter but must keep the glyph clearance")
+                    // A docked rail owns its whole width: it never reaches into
+                    // the transcript, so the reading lane has equal blank
+                    // gutters on the leading edge and before the rail.
+                    #expect(railFrame.minX >= transcriptFrame.maxX - 2,
+                        "The rail must not consume the trailing reading gutter")
+                    let lane = WorkbenchStyle.lane(viewportWidth: transcriptFrame.width)
+                    let leadingGutter = lane.minX
+                    let trailingGutter = railFrame.minX
+                        - (transcriptFrame.minX + lane.maxX)
+                    #expect(abs(leadingGutter - trailingGutter) < 2,
+                        "Messages stay centred between the window edge and the rail")
                     #expect(abs(railFrame.maxX - width) < 2)
                 }
                 #expect(transcript.window === window)
@@ -234,19 +239,14 @@ struct AdaptiveConversationColumnsTests {
     @MainActor @Test
     func railHidesAsSoonAsTheTextLaneWouldStartShrinking() {
         typealias Columns = AdaptiveConversationColumns<Color, Color, EmptyView>
-        // 760 (text) + 40 (two gutters) + 318 (reserved) = 1118. The gutters
-        // may narrow freely, but docking must never narrow the text itself.
+        // 760 (text) + 40 (two gutters) + 324 (full rail) = 1124. The rail
+        // owns its whole width, so the lane centres in the space left over.
         #expect(WorkbenchStyle.readingInset == 20,
             "Narrowest gutter on either side of the text lane")
-        #expect(Columns.dockedReservedWidth == ConversationDetailWidgetMetrics.railWidth
-            + MainWindowPageLayoutMetrics.columnSpacing - Columns.railGutterOverlap)
+        #expect(Columns.dockedReservedWidth == ConversationDetailWidgetMetrics.railWidth,
+            "Docking reserves the entire card width, not a partial overlap")
         #expect(Columns.minimumDockedWidth == WorkbenchStyle.readingWidth
             + 2 * WorkbenchStyle.readingInset + Columns.dockedReservedWidth)
-        // Tuning the inset must never eat into the glyph clearance: the rail's
-        // overlap is derived from the inset, not a second independent constant.
-        #expect(WorkbenchStyle.readingInset + MainWindowPageLayoutMetrics.columnSpacing
-            - Columns.railGutterOverlap == Columns.railGlyphClearance)
-        #expect(Columns.railGlyphClearance == 14)
         let threshold = Columns.minimumDockedWidth
         let laneAtThreshold = WorkbenchStyle.lane(viewportWidth: threshold - Columns.dockedReservedWidth)
         #expect(laneAtThreshold.width == WorkbenchStyle.readingWidth)
@@ -255,12 +255,20 @@ struct AdaptiveConversationColumnsTests {
         #expect(onePointNarrower.width < WorkbenchStyle.readingWidth,
             "One point past the threshold the text starts shrinking, so Detail must hide here")
         let railLeading = threshold - ConversationDetailWidgetMetrics.railWidth
-        #expect(abs((railLeading - laneAtThreshold.maxX) - Columns.railGlyphClearance) < 1,
-            "The rail keeps a small fixed clearance, not a full gutter")
+        #expect(railLeading >= laneAtThreshold.maxX,
+            "The rail starts outside the transcript, never over the text")
+        #expect(abs(laneAtThreshold.minX - WorkbenchStyle.readingInset) < 1,
+            "Leading gutter keeps its full width")
+        #expect(abs((railLeading - laneAtThreshold.maxX) - WorkbenchStyle.readingInset) < 1,
+            "Trailing gutter equals the leading one: messages are symmetric")
         for width: CGFloat in [threshold, 1200, 1400] {
             let lane = WorkbenchStyle.lane(viewportWidth: width - Columns.dockedReservedWidth)
             #expect(lane.width == WorkbenchStyle.readingWidth,
                 "Docking must never shrink the text lane")
+            let leading = lane.minX
+            let trailing = (width - Columns.dockedReservedWidth) - lane.maxX
+            #expect(abs(leading - trailing) < 1,
+                "Both gutters grow symmetrically as the window widens")
         }
     }
 
@@ -448,7 +456,8 @@ struct AdaptiveConversationColumnsTests {
         #expect(inspector.window == nil, "Crossing into narrow hides decisively")
 
         // Jittering on the boundary used to re-dock on every point of change,
-        // restarting the slide and jumping the transcript column by 318pt.
+        // restarting the slide and jumping the transcript column by a full
+        // rail width.
         for width: CGFloat in [threshold + 2, threshold + 11, threshold + 3,
                                Columns.redockWidth - 1, threshold + 1] {
             try await resize(width)

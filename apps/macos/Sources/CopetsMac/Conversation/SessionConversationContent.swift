@@ -107,18 +107,25 @@ struct SessionConversationSurface: View {
     private var hasPinnedChecklist: Bool {
         !showsWelcome && currentChecklist != nil && currentChecklist?.closed != true
     }
-    private var showsDockQuickMessages: Bool {
+    /// The jump control owns a fixed slot above every other dock element. The
+    /// slot stays while the standard dock is active, so scrolling past the jump
+    /// threshold never changes the dock height or pushes the checklist.
+    private var usesJumpControlSlot: Bool {
         usesComposerJumpToLatest && !showsWelcome
-            && (quickMessagePresentation.showsMessages || composerJumpToLatestAction != nil)
+    }
+    private var showsDockQuickMessages: Bool {
+        usesJumpControlSlot && quickMessagePresentation.showsMessages
     }
     private var quickMessageOverlap: CGFloat {
-        guard showsDockQuickMessages, !hasPinnedChecklist else { return 0 }
-        // The centred jump control now occupies one extra row above the chips.
-        // Grow the accessory overlap by exactly that height so the chips keep
-        // their position and the glass circle lands over the transcript.
-        let jumpControlHeight: CGFloat = composerJumpToLatestAction != nil
-            ? ComposerQuickMessagesBar.jumpControlSize : 0
-        return ConversationQuickMessages.rowHeight + 4 + jumpControlHeight
+        guard usesJumpControlSlot else { return 0 }
+        // Keep the overlap independent of the button's visibility: the dock
+        // height and the transcript's bottom inset must stay put when the
+        // control appears or disappears. With a pinned checklist the quick
+        // messages sit below the checklist, outside the transcript, so only
+        // the jump slot floats over message text.
+        let floatingQuickMessages = showsDockQuickMessages && !hasPinnedChecklist
+            ? ConversationQuickMessages.rowHeight + 4 : 0
+        return ComposerQuickMessagesBar.jumpControlSize + floatingQuickMessages
     }
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
@@ -623,6 +630,7 @@ struct SessionConversationSurface: View {
 
     private var inputDock: some View {
         VStack(spacing: 0) {
+            if usesJumpControlSlot { jumpControlSlot }
             // One editor at one structural position: placement changes must
             // not recreate the native text view, attachments or draft owner.
             if hasPinnedChecklist, let plan = currentChecklist {
@@ -671,6 +679,28 @@ struct SessionConversationSurface: View {
         }
     }
 
+    /// Fixed-height, centred slot at the top of the dock, above the checklist.
+    /// Only its contents change; the dock frame, the checklist and the quick
+    /// messages never move when the button appears or disappears.
+    private var jumpControlSlot: some View {
+        ZStack {
+            if viewportState.showsJumpToLatest {
+                Button(action: jumpToLatest) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: ComposerQuickMessagesBar.jumpControlSize,
+                            height: ComposerQuickMessagesBar.jumpControlSize)
+                }
+                .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: viewportState.hasNewMessagesBelow))
+                .help(L10n("Jump to latest message"))
+                .accessibilityLabel(L10n("Jump to latest message"))
+                .accessibilityIdentifier("conversation-jump-to-latest")
+            }
+        }
+        .frame(height: ComposerQuickMessagesBar.jumpControlSize)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
     private var dockQuickMessages: some View {
         ComposerQuickMessagesBar(backendClient: backendClient, sessionId: sessionId,
             taskID: selectedSession?.taskId, online: displayedOnline,
@@ -679,7 +709,7 @@ struct SessionConversationSurface: View {
                 backendClient: backendClient, renderInputs: renderInputs)
                 && !(renderInputs?.sendingMessage ?? backendClient.isSendingMessage) && selectedSession?.archived != true,
             activity: renderInputs?.activity, showsMessages: quickMessagePresentation.showsMessages,
-            onJumpToLatest: composerJumpToLatestAction, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow) { text in
+            onJumpToLatest: nil, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow) { text in
             guard ComposerSendPolicy.canSend(session: selectedSession, sessionId: sessionId,
                 backendClient: backendClient, renderInputs: renderInputs),
                 !(renderInputs?.sendingMessage ?? backendClient.isSendingMessage),
