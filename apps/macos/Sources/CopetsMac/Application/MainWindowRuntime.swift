@@ -46,7 +46,10 @@ enum MainWindowForegrounding {
 
 enum MainWindowInitialLayout {
     static let idealContentSize = NSSize(width: 1_480, height: 900)
-    static let minimumContentSize = NSSize(width: 1000, height: 620)
+    /// Only a floor for the *initial* window size. The resizable minimum is
+    /// derived from the visible columns by `MainWindowMinimumSizePolicy`, so
+    /// collapsing a sidebar can make the window smaller than this.
+    static let minimumContentSize = NSSize(width: 900, height: 560)
     static let maximumVisibleFraction: CGFloat = 0.92
 
     static func contentSize(for visibleFrame: NSRect) -> NSSize {
@@ -60,6 +63,39 @@ enum MainWindowInitialLayout {
                 min(idealContentSize.height, floor(visibleFrame.height * maximumVisibleFraction))
             )
         )
+    }
+}
+
+/// The window minimum is the sum of the minimum thicknesses of the parts that
+/// are currently visible, not a fixed size for the whole window. AppKit's
+/// `NSSplitViewItem.minimumThickness` only constrains panes *inside* the split
+/// view; on its own it lets the window shrink further and clip the transcript.
+/// Keep one derived window floor and refresh it whenever a column collapses.
+enum MainWindowMinimumSizePolicy {
+    /// Work/Task outline column. Also used as the split item's minimumThickness.
+    static let workColumnMinimumWidth: CGFloat = 284
+    /// Conversation transcript plus composer. The optional 324pt detail rail
+    /// is an overlay that hides itself in narrow viewports, so it is not part
+    /// of the floor: with only messages showing the window can get much smaller.
+    static let transcriptMinimumWidth: CGFloat = 360
+    static let minimumContentHeight: CGFloat = 480
+    /// Keep in sync with `MainWindowContentView`'s labelled rail width.
+    static let labelledNavigationRailWidth: CGFloat = 168
+
+    static func contentMinSize(workColumnCollapsed: Bool, navigationShowsLabels: Bool) -> NSSize {
+        let navigationWidth = navigationShowsLabels
+            ? labelledNavigationRailWidth
+            : MainNavigationRailLayout.width
+        let columns = (workColumnCollapsed ? 0 : workColumnMinimumWidth) + transcriptMinimumWidth
+        return NSSize(
+            width: navigationWidth + columns + MainWindowPageLayoutMetrics.outerPadding * 2,
+            height: minimumContentHeight
+        )
+    }
+
+    /// Startup state: the Work column is visible and the rail is compact.
+    static var defaultContentMinSize: NSSize {
+        contentMinSize(workColumnCollapsed: false, navigationShowsLabels: false)
     }
 }
 

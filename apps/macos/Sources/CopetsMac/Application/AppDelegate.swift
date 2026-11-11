@@ -457,7 +457,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             origin: .zero,
             size: window.contentRect(forFrameRect: window.frame).size
         )
-        window.contentMinSize = MainWindowInitialLayout.minimumContentSize
+        // The floor tracks the visible columns; ConsoleSplitController refreshes
+        // it when the Work outline collapses or expands.
+        window.contentMinSize = MainWindowMinimumSizePolicy.defaultContentMinSize
         window.preservesContentDuringLiveResize = true
         window.contentView = hostingView
         applyMainWindowLevel(to: window)

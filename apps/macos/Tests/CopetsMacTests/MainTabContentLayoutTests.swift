@@ -241,7 +241,7 @@ struct MainTabContentLayoutTests {
         #expect(!contents.contains("pendingContentSize"))
         #expect(!contents.contains("bitmapImageRepForCachingDisplay"))
         #expect(contents.contains("window.preservesContentDuringLiveResize = true"))
-        #expect(contents.contains("window.contentMinSize = MainWindowInitialLayout.minimumContentSize"))
+        #expect(contents.contains("window.contentMinSize = MainWindowMinimumSizePolicy.defaultContentMinSize"))
     }
 
     @Test

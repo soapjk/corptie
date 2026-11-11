@@ -105,7 +105,7 @@ struct ConsoleWindowSplitViewTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/ConsoleWindowSplitView.swift"),
             encoding: .utf8)
-        #expect(source.contains("mode == .taskCards ? 540 : 284"))
+        #expect(source.contains("mode == .taskCards ? 540 : minimum"))
         #expect(source.contains("console.nativeSidebar.listWidth.v2"))
     }
 

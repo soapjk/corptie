@@ -229,7 +229,30 @@ struct MainWindowResizeLayoutTests {
         ) == NSSize(width: 1_324, height: 791))
         #expect(MainWindowInitialLayout.contentSize(
             for: NSRect(x: 0, y: 0, width: 1_000, height: 650)
-        ) == NSSize(width: 1000, height: 620))
+        ) == NSSize(width: 920, height: 598))
+        #expect(MainWindowInitialLayout.contentSize(
+            for: NSRect(x: 0, y: 0, width: 900, height: 600)
+        ) == NSSize(width: 900, height: 560))
+    }
+
+    @Test
+    func windowMinimumSizeIsSumOfVisibleColumnMinimums() {
+        // Navigation rail 64 + Work column 284 + transcript 360 + 12 padding.
+        #expect(MainWindowMinimumSizePolicy.contentMinSize(
+            workColumnCollapsed: false, navigationShowsLabels: false
+        ) == NSSize(width: 720, height: 480))
+        // Collapsing the Work column gives its 284pt back to the user.
+        #expect(MainWindowMinimumSizePolicy.contentMinSize(
+            workColumnCollapsed: true, navigationShowsLabels: false
+        ) == NSSize(width: 436, height: 480))
+        #expect(MainWindowMinimumSizePolicy.contentMinSize(
+            workColumnCollapsed: true, navigationShowsLabels: true
+        ) == NSSize(width: 540, height: 480))
+        #expect(MainWindowMinimumSizePolicy.defaultContentMinSize
+                == NSSize(width: 720, height: 480))
+        // The startup floor is deliberately larger than the resizable floor.
+        #expect(MainWindowInitialLayout.minimumContentSize.width
+                > MainWindowMinimumSizePolicy.defaultContentMinSize.width)
     }
 
     @MainActor
@@ -351,7 +374,7 @@ struct MainWindowResizeLayoutTests {
         #expect(legacyBoard.contains("max: TwoPaneLayoutMetrics.sidebarMaximumWidth"))
         let nativeSplit = try String(contentsOf: sourceRoot.appendingPathComponent("ConsoleWindowSplitView.swift"), encoding: .utf8)
         #expect(unifiedConsole.contains("ConsoleWindowSplitView(mode: navigationMode"))
-        #expect(nativeSplit.contains("sidebar.minimumThickness = 284"))
+        #expect(nativeSplit.contains("sidebar.minimumThickness = MainWindowMinimumSizePolicy.workColumnMinimumWidth"))
         #expect(nativeSplit.contains("sidebar.maximumThickness = 900"))
         #expect(!unifiedConsole.contains("navigationResizeHandle"))
         #expect(!legacyBoard.contains("w * 0.34"))

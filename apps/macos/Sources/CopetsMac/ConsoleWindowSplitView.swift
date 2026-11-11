@@ -643,7 +643,7 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         let sidebar = NSSplitViewItem(viewController: sidebarController)
         sidebar.allowsFullHeightLayout = true
         sidebar.canCollapse = true
-        sidebar.minimumThickness = 284
+        sidebar.minimumThickness = MainWindowMinimumSizePolicy.workColumnMinimumWidth
         sidebar.maximumThickness = 900
         // Window resizing belongs to the transcript. AppKit still lets the
         // user change this held width by dragging the native divider.
@@ -651,8 +651,10 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         addSplitViewItem(sidebar)
         let detail = NSSplitViewItem(viewController: detailController)
         detail.holdingPriority = .defaultLow
-        // Reserve the transcript column beside the two-cell widget rail.
-        detail.minimumThickness = ConversationDetailWidgetMetrics.railWidth + 264
+        // Only the transcript/composer floor. The two-cell widget rail is an
+        // overlay that slides away in narrow viewports, so it must not keep the
+        // whole window wide when only messages are visible.
+        detail.minimumThickness = MainWindowMinimumSizePolicy.transcriptMinimumWidth
         addSplitViewItem(detail)
         workRestoreHandle.translatesAutoresizingMaskIntoConstraints = false
         workRestoreHandle.expand = { [weak self] in self?.setWorkColumnCollapsed(false) }
@@ -668,6 +670,7 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
             MainActor.assumeIsolated {
                 self?.workRestoreHandle.isHidden = !collapsed
                 self?.workRestoreHandle.resetHover()
+                self?.updateWindowMinimumSize()
             }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(dividerTrackingDidEnd(_:)),
@@ -681,6 +684,29 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
         super.viewDidLoad()
     }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // `viewDidLoad` sees no window yet, so the initial KVO callback cannot
+        // apply the floor. Do it once the controller is on screen.
+        updateWindowMinimumSize()
+    }
+
+    /// Keep the window floor equal to the sum of the visible column minimums.
+    /// Collapsing the Work outline frees its 284pt; expanding it asks for the
+    /// space back. Comparing before assigning avoids touching AppKit layout on
+    /// the many update passes that happen during a live resize.
+    private func updateWindowMinimumSize() {
+        guard let window = view.window else { return }
+        let showsLabels = widthDefaults.bool(forKey: "ui.navigation.showLabels")
+        let collapsed = splitViewItems.first?.isCollapsed ?? false
+        let minimum = MainWindowMinimumSizePolicy.contentMinSize(
+            workColumnCollapsed: collapsed,
+            navigationShowsLabels: showsLabels
+        )
+        guard window.contentMinSize != minimum else { return }
+        window.contentMinSize = minimum
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
         if !restoredWidth, splitView.bounds.width > 0 {
@@ -692,6 +718,9 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     func update(mode: ConsoleNavigationMode, isActive: Bool, sidebar: Sidebar, detail: Detail) {
         let trace = SessionSwitchTrace.shared.start(.splitUpdate)
         defer { SessionSwitchTrace.shared.finish(trace) }
+        // Also picks up a navigation-rail label toggle, which SwiftUI commits
+        // through an update pass rather than through the split item's KVO.
+        if isActive { updateWindowMinimumSize() }
         // Commit the transition to inactive once, then leave retained hidden
         // hosts alone. Reactivation always receives the latest root values.
         if isActive || self.isActive {
@@ -781,10 +810,12 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
               splitViewItems.first?.isCollapsed == false else { return }
         isRestoring = true
         let stored = widthDefaults.double(forKey: widthKey)
-        let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : 284)
-        let maximum = max(284, splitView.bounds.width - 581)
+        let minimum = MainWindowMinimumSizePolicy.workColumnMinimumWidth
+        let preferred = stored > 0 ? stored : (mode == .taskCards ? 540 : minimum)
+        let maximum = max(minimum,
+                          splitView.bounds.width - MainWindowMinimumSizePolicy.transcriptMinimumWidth)
         splitViewItems[0].holdingPriority = .defaultLow
-        splitView.setPosition(min(max(284, preferred), maximum), ofDividerAt: 0)
+        splitView.setPosition(min(max(minimum, preferred), maximum), ofDividerAt: 0)
         splitViewItems[0].holdingPriority = .defaultHigh
         isRestoring = false
     }
