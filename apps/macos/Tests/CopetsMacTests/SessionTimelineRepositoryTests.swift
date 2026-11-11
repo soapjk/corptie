@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import CorptieMac
 
 @MainActor
@@ -64,6 +65,24 @@ final class SessionTimelineRepositoryTests: XCTestCase {
 
         XCTAssertEqual(repository.timelineRevision(for: "session"), 12)
         XCTAssertEqual(repository.state(for: "session").timelineRevision, 12)
+    }
+
+    func testSnapshotPublicationCarriesCurrentPresentationVersion() {
+        let state = SessionTimelineState(sessionID: "session")
+        var versions: [UInt64] = []
+        var itemCounts: [Int] = []
+        let observation = state.$detail.dropFirst().sink { value in
+            versions.append(state.presentationRevision)
+            itemCounts.append(state.presentationDetail?.items.count ?? -1)
+            XCTAssertEqual(state.presentationDetail?.items, value?.items)
+        }
+        state.apply(detail(id: "empty"), timelineRevision: 1)
+        let fixture = ChatPerformanceFixture.make(configuration: .init(
+            turnCount: 1, rawItemCount: 3, longMessageCharacters: 8))
+        state.apply(fixture.detail, timelineRevision: 2)
+        XCTAssertEqual(versions, [1, 2], "New contents must not be published under the old display version")
+        XCTAssertEqual(itemCounts, [0, fixture.detail.items.count])
+        withExtendedLifetime(observation) {}
     }
 
     private func detail(id: String) -> CodexThreadDetail {
