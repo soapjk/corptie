@@ -1511,6 +1511,17 @@ struct SessionConversationSurface: View {
             return
         }
         if hasPreparedDisplayCacheForCurrentSession {
+            if cachedDisplayProjection.refreshesPreparedDisplay(
+                currentSourceSignature: appKitDetailRevision,
+                displayedSourceSignature: cachedDetailSourceSignature,
+                displayedSignature: cachedItemsSignature
+            ) {
+                displayProjectionTask?.cancel(); displayProjectionTask = nil
+                pendingProjectionSourceSignature = nil
+                displayProjectionGeneration &+= 1
+                commitDisplayCache(cachedDisplayProjection)
+                return
+            }
             // DetailView is intentionally recreated when switching Sessions.
             // Its immutable display entries survive in presentationCache, but
             // native rows are renderer state. Materialize them once on mount

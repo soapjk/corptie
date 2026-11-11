@@ -210,3 +210,27 @@ struct ConversationExecutionProjectionTests {
         #expect(ConversationExecutionProjection.plainText(for: [step]).contains("• App.swift"))
     }
 }
+
+extension ConversationExecutionProjectionTests {
+    @Test func connectionProgressIsAProcessStepOnDesktopAndMobile() throws {
+        for (status, turnStatus, expected) in [("running", "inProgress", ConversationExecutionStep.State.running),
+                                             ("completed", "inProgress", .completed),
+                                             ("failed", "failed", .failed),
+                                             ("cancelled", "cancelled", .cancelled)] {
+            let data: [[String: Any]] = [
+                ["id": "user", "turnId": "turn", "type": "userMessage", "text": "hello", "turnStatus": turnStatus],
+                ["id": "connection-status:binding:turn", "turnId": "turn", "turnStatus": turnStatus,
+                 "type": "warning", "title": "模型连接中断，正在重连", "text": "模型响应传输连接已中断。\n正在进行第 2/5 次重连。", "status": status]
+            ]
+            let items = try JSONDecoder().decode([ClientMessage].self, from: JSONSerialization.data(withJSONObject: data))
+            let entries = ConversationTimeline.makeEntries(from: items)
+            guard case let .process(_, processItems) = entries.last?.kind else {
+                Issue.record("Connection notice was not included in process disclosure"); continue
+            }
+            let step = try #require(ConversationExecutionProjection.steps(for: processItems).first)
+            #expect(step.title == "模型连接中断，正在重连")
+            #expect(step.detail?.contains("2/5") == true)
+            #expect(step.state == expected)
+        }
+    }
+}

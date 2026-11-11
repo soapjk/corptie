@@ -1103,3 +1103,100 @@ test("usage events persist a provider-neutral local snapshot without changing ex
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("model disconnects appear immediately as one sanitized process item and settle on resumed output", async () => {
+  for (const providerId of ["codex-app-server", "claude-agent-sdk", "openclacky"]) {
+    const { directory, store, projector } = await fixture();
+    const route = { ...binding, providerId };
+    const send = (type, payload = {}) => projector.project({ event: event(type, { providerId, payload }), binding: route });
+    try {
+      send("turn.started");
+      send("provider.error", { willRetry: true, failureScope: "turn", error: {
+        message: "Reconnecting... 2/5", additionalDetails: "Broken pipe token=secret-canary /private/user" } });
+      let rows = store.getItems(binding.sessionId).filter(x => x.id.startsWith("connection-status:"));
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].type, "warning");
+      assert.equal(rows[0].status, "running");
+      assert.match(rows[0].text, /2\/5/);
+      assert.doesNotMatch(JSON.stringify(rows), /secret-canary|private\/user|Broken pipe/);
+      assert.equal(store.getSession(binding.sessionId).status, "running");
+      send("provider.error", { willRetry: true, failureScope: "turn", error: {
+        message: "Reconnecting... 3/5", additionalDetails: "tls handshake eof" } });
+      rows = store.getItems(binding.sessionId).filter(x => x.id.startsWith("connection-status:"));
+      assert.equal(rows.length, 1);
+      assert.match(rows[0].text, /3\/5/);
+      assert.match(rows[0].text, /安全握手/);
+      send("assistant.message.delta", { item: { id: "reply", turnId: "turn:one", type: "agentMessage", text: "resumed", status: "streaming" } });
+      const restored = store.getItems(binding.sessionId).find(x => x.id === rows[0].id);
+      assert.equal(restored.status, "completed");
+      assert.equal(restored.title, "模型连接已恢复");
+      assert.equal(restored.createdAt, rows[0].createdAt);
+      send("turn.completed", { items: [{ id: "native-retry", turnId: "turn:one", type: "error", text: "secret native diagnostic",
+        rawMetadataJSON: JSON.stringify({ connectionRetry: { attempt: 3 } }) }] });
+      assert.equal(store.getItems(binding.sessionId).some(x => x.id === "native-retry"), false);
+    } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test("model wait watchdog is visible without inventing a retry and terminal failure remains visible", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ event: event("turn.started"), binding });
+    projector.project({ event: event("provider.error", { payload: { willRetry: true, failureScope: "turn",
+      error: { code: "PROVIDER_RESPONSE_DELAYED", message: "private diagnostics" } } }), binding });
+    let row = store.getItems(binding.sessionId).find(x => x.id.startsWith("connection-status:"));
+    assert.equal(row.status, "running");
+    assert.equal(JSON.parse(row.rawMetadataJSON).connectionRetry.attempt, 0);
+    assert.doesNotMatch(row.text, /private diagnostics|次重连/);
+    projector.project({ event: event("turn.failed", { payload: { error: { code: "NETWORK_ERROR", message: "secret diagnostics" } } }), binding });
+    row = store.getItems(binding.sessionId).find(x => x.id === row.id);
+    assert.equal(row.status, "failed");
+    assert.equal(row.title, "模型连接恢复失败");
+    assert.doesNotMatch(row.text, /secret diagnostics/);
+    projector.project({ event: event("turn.completed"), binding });
+    projector.project({ event: event("provider.error", { payload: { willRetry: true, error: { message: "Reconnecting... 5/5" } } }), binding });
+    assert.equal(store.getItems(binding.sessionId).find(x => x.id === row.id).status, "failed");
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("connection projection adds no reads for unrelated events and never rewrites recovered cards", async () => {
+  const { directory, store, projector } = await fixture();
+  const send = (type, payload = {}) => projector.project({ event: event(type, { payload }), binding });
+  let connectionReads = 0, turnReads = 0, connectionWrites = 0;
+  const readItem = store.getSessionItem.bind(store);
+  const readTurn = store.getSessionTurn.bind(store);
+  const writeItem = store.upsertTimelineItemProjection.bind(store);
+  store.getSessionItem = (sessionId, id) => {
+    if (id.startsWith("connection-status:")) connectionReads++;
+    return readItem(sessionId, id);
+  };
+  store.getSessionTurn = (...args) => { turnReads++; return readTurn(...args); };
+  store.upsertTimelineItemProjection = (sessionId, item) => {
+    if (item.id.startsWith("connection-status:")) connectionWrites++;
+    return writeItem(sessionId, item);
+  };
+  try {
+    for (const type of ["usage.updated", "tool.completed", "assistant.message.started"]) {
+      connectionReads = turnReads = 0;
+      send(type);
+      assert.equal(connectionReads, 0, type);
+      assert.equal(turnReads, 1, `${type}: only the existing terminal-outcome read`);
+    }
+    send("turn.started");
+    send("provider.error", { willRetry: true, failureScope: "turn", error: { message: "Reconnecting... 1/5" } });
+    assert.equal(connectionWrites, 1);
+    send("assistant.message.delta");
+    assert.equal(connectionWrites, 2);
+    for (let i = 0; i < 100; i++) {
+      turnReads = 0;
+      send(i % 2 ? "tool.started" : "assistant.message.delta");
+      assert.equal(turnReads, 1);
+    }
+    assert.equal(connectionWrites, 2, "no repeated recovery upsert");
+    send("provider.error", { willRetry: true, failureScope: "turn", error: { message: "Reconnecting... 2/5" } });
+    assert.equal(connectionWrites, 3, "another disconnect remains observable");
+    send("turn.cancelled");
+    assert.equal(readItem(binding.sessionId, `connection-status:${binding.bindingId}:turn:one`)?.status, "cancelled");
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});

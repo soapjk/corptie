@@ -7,6 +7,10 @@ const TERMINAL_EVENT_STATUS = new Map([
   ["turn.cancelled", "cancelled"]
 ]);
 
+const CONNECTION_ACTIVITY_EVENT_TYPES = new Set([
+  "assistant.message.delta", "assistant.message.completed", "tool.started", "tool.progress"
+]);
+
 const ITEM_EVENT_TYPES = new Set([
   "execution.notice",
   "user.message.accepted",
@@ -81,6 +85,23 @@ export class ProviderEventProjector {
         correlatedWork
       ) || timelineChanged;
     }
+    // This Turn read is also needed below for terminal outcome projection.
+    // Reuse it; unrelated events must not query connection-status items.
+    const existingTurn = event.turnId
+      ? this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId) ?? null
+      : null;
+    if (event.turnId && binding.isCurrentRoute !== false
+      && (event.type === "provider.error" || TERMINAL_EVENT_STATUS.has(event.type)
+        || CONNECTION_ACTIVITY_EVENT_TYPES.has(event.type))) {
+      const id = `connection-status:${event.bindingId}:${event.turnId}`;
+      const existing = this.store.getSessionItem?.(sessionId, id);
+      const settled = existingTurn?.execution_status;
+      // Late retries or completions cannot reopen/overwrite an already settled turn.
+      if (!["completed", "failed", "cancelled"].includes(settled)) {
+        const connection = connectionStatusProjection(event, existing, id);
+        if (connection) timelineChanged = this.persistItem(sessionId, connection, event.bindingId) || timelineChanged;
+      }
+    }
     if (event.type === "plan.updated" && event.turnId) {
       const settledTurnStatus = this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId)?.execution_status;
       const isSessionTaskList = event.payload?.plan?.planKey === "claude-tasks";
@@ -130,6 +151,13 @@ export class ProviderEventProjector {
     }
     if (TERMINAL_EVENT_STATUS.has(event.type)) {
       for (const item of event.payload?.items ?? []) {
+        // The adapter may attach its original retry diagnostic when settling.
+        // Keep that native record in the inbox; the sanitized shared process
+        // item already represents it and must not be duplicated in chat.
+        let retryDiagnostic = false;
+        try { retryDiagnostic = item?.type === "error" && Boolean(JSON.parse(item.rawMetadataJSON ?? "{}").connectionRetry); } catch {}
+        if (retryDiagnostic && event.turnId && this.store.getSessionItem?.(sessionId,
+          `connection-status:${event.bindingId}:${event.turnId}`)) continue;
         if (!event.turnId || item?.turnId === event.turnId) {
           timelineChanged = this.persistItem(
             sessionId,
@@ -188,9 +216,6 @@ export class ProviderEventProjector {
     }
     const finalAgentMessage = event.type === "turn.completed"
       ? finalItemForTurn({ items: projectedTurnItems }, event.turnId)
-      : null;
-    const existingTurn = event.turnId
-      ? this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId) ?? null
       : null;
     const terminalOutcome = providerTerminalOutcome(event, existingTurn);
 
@@ -505,6 +530,46 @@ function parsedProviderFailure(value) {
   } catch {
     return normalizeProviderFailure(value);
   }
+}
+
+// A provider-neutral, sanitized execution notice. Reuse a single item so
+// repeated disconnects update the running process rather than flooding chat.
+function connectionStatusProjection(event, existing, id) {
+  const terminal = TERMINAL_EVENT_STATUS.get(event.type);
+  const error = event.payload?.error ?? {};
+  const isFailure = event.type === "provider.error";
+  const isActivity = CONNECTION_ACTIVITY_EVENT_TYPES.has(event.type);
+  if (!isFailure && !terminal && !isActivity) return null;
+  if (!isFailure && (!existing || existing.status !== "running")) return null;
+  let previous = {};
+  try { previous = JSON.parse(existing?.rawMetadataJSON ?? "{}").connectionRetry ?? {}; } catch {}
+  const delayed = error.code === "PROVIDER_RESPONSE_DELAYED";
+  const match = String(error.message ?? "").match(/reconnecting[^\d]*(\d+)\s*\/\s*(\d+)/i);
+  const attempt = match ? Math.min(1000, Number(match[1]))
+    : isFailure && !delayed && event.payload?.willRetry === true ? (previous.attempt ?? 0) + 1 : previous.attempt ?? 0;
+  const maximum = match ? Math.min(1000, Number(match[2])) : previous.maximum;
+  const retrying = isFailure && event.payload?.willRetry === true;
+  let status, title, text;
+  if (isFailure) {
+    status = retrying ? "running" : "failed";
+    title = delayed ? "等待模型响应" : retrying ? "模型连接中断，正在重连" : "模型连接失败";
+    const diagnostic = `${error.message ?? ""} ${error.additionalDetails ?? ""}`;
+    text = delayed ? "尚未收到模型响应，正在等待连接或重连结果。"
+      : /tls|handshake/i.test(diagnostic) ? "模型连接的安全握手未完成。"
+      : /broken pipe|stream disconnected|connection reset/i.test(diagnostic) ? "模型响应传输连接已中断。"
+      : publicTurnFailureMessage(error);
+    if (attempt) text += `\n正在进行第 ${attempt}${maximum ? `/${maximum}` : ""} 次重连。`;
+    if (retrying) text += "\nProvider 正在自动重试，您可以手动停止。";
+  } else {
+    status = terminal === "failed" ? "failed" : terminal === "cancelled" ? "cancelled" : "completed";
+    title = status === "failed" ? "模型连接恢复失败" : status === "cancelled" ? "模型连接等待已停止" : "模型连接已恢复";
+    text = status === "completed" ? "已重新收到模型执行信息。" : status === "cancelled" ? "本轮执行已停止。" : publicTurnFailureMessage(error);
+    if (attempt) text += `\n本轮记录 ${attempt} 次重连。`;
+  }
+  return { id, turnId: event.turnId, turnStatus: terminal ?? (status === "failed" ? "failed" : "inProgress"),
+    type: "warning", title, text, status,
+    createdAt: existing?.createdAt ?? event.occurredAt ?? event.receivedAt,
+    rawMetadataJSON: JSON.stringify({ connectionRetry: { schemaVersion: 1, attempt, ...(maximum ? { maximum } : {}) } }) };
 }
 
 function normalizeProviderFailure(error) {
