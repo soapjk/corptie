@@ -1027,3 +1027,36 @@ test("one idle mailbox batch accepts multiple authorized senders and preserves e
     assert.ok(items.every(item=>f.service.getDelivery(item.delivery.deliveryId).targetTurnId==="turn:multi-source"));
   } finally {await f.close();}
 });
+
+test("Channel question and pending dispatch report share one adopted turn",async()=>{
+ const f=await mailboxFixture();
+ try{
+  const {SessionMailboxService}=await import('../src/application/sessionMailboxService.mjs');
+  const unified=new SessionMailboxService({store:f.store,channelService:f.service});f.mailbox.sessionMailbox=unified;
+  const report=unified.receiveEvent({recipientSessionId:'session:b',sourceType:'background',sourceId:'dispatch:test',body:'child delivered result',intent:'response_required',idempotencyKey:'mixed:test',authorization:{ownerLogicalSessionId:'session:b',sourceId:'dispatch:test',purpose:'parent_report'}});
+  const work=f.enqueue();const batch=f.mailbox.prepareBatch(f.head.deliveryId,work.taskId);
+  const text=f.mailbox.prepareMixedReports(batch,'Channel question');
+  assert.match(text,/child delivered result/);
+  assert.equal(f.mailbox.mixedReports(batch).length,1);
+  assert.equal(f.mailbox.prepareMixedReports(batch,'Channel question'),text);
+  f.mailbox.mark(batch.batch_id,'accepted',{turnId:'turn:mixed'});
+  assert.equal(unified.raw('session:b',report.messageId).adopted_turn_id,'turn:mixed');
+ }finally{await f.close();}
+});
+
+test("mixed reports return to their queue only before submission, while uncertain batches stay frozen",async()=>{
+ const f=await mailboxFixture();
+ try{
+  const {SessionMailboxService}=await import('../src/application/sessionMailboxService.mjs');
+  const inbox=new SessionMailboxService({store:f.store,channelService:f.service});f.mailbox.sessionMailbox=inbox;
+  const report=inbox.receiveEvent({recipientSessionId:'session:b',sourceType:'background',sourceId:'dispatch:recovery',body:'result',intent:'response_required',idempotencyKey:'recovery',authorization:{ownerLogicalSessionId:'session:b',sourceId:'dispatch:recovery',purpose:'parent_report'}});
+  const reportOp=inbox.raw('session:b',report.messageId).operation_id;
+  const work=f.enqueue(),batch=f.mailbox.prepareBatch(f.head.deliveryId,work.taskId);
+  f.mailbox.prepareMixedReports(batch,'question');
+  f.mailbox.mark(batch.batch_id,'unknown',{error:'no receipt'});
+  assert.equal(f.store.getAgentTask(reportOp).status,'cancelled');
+  assert.equal(inbox.raw('session:b',report.messageId).disposition,'pending');
+  f.mailbox.mark(batch.batch_id,'accepted',{turnId:'late:receipt'});
+  assert.equal(inbox.raw('session:b',report.messageId).adopted_turn_id,'late:receipt');
+ }finally{await f.close();}
+});

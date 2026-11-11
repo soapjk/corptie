@@ -65,6 +65,7 @@ read_task: read authoritative lifecycle/execution state and definition of this p
 list_sessions: list current/historical Sessions of a Task, then use their IDs for history queries.
 read_messages: search one Session by a literal keyword/phrase in query, or read recent messages with query=null; use nextCursor for older pages.
 read_message: read one message by messageId, optionally continuing at nextOffset. Message text may be truncated; do not claim to have read all of it.
+read_execution: inspect a child Session execution in one query: current operation/turn, dispatch, cancellation evidence, queue and final-result reference. Prefer this over separate status queries. Turn completion is not target completion.
 read_dispatches: read current or historical dispatch receipts for this parent, optionally filtered to one child.
 read_mailbox: inspect a Session's inbox without acknowledging or consuming it; use beforeCursor as cursor for older pages or messageId/offset for details.
 Only this parent and its own descendants and their historical Sessions are readable. Do not use arbitrary sibling or other-Work IDs.

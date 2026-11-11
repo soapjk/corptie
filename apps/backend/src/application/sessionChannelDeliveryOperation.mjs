@@ -94,10 +94,11 @@ export function createSessionChannelDeliveryOperation({
           throw error;
         }
       }
+      const batchText = channelMailbox.prepareMixedReports(batch,formatTrustedChannelBatch(items,batch.batch_id));
       channelMailbox.mark(batch.batch_id, "dispatching");
       submitted = true;
       const result = await startCollaborationTurn(route.providerSessionId,
-        formatTrustedChannelBatch(items, batch.batch_id), {
+        batchText, {
           deliveryId, batchId: batch.batch_id, messageId: items[0].message.messageId,
           channelId: items[0].channel.channelId, messageIds: items.map(item => item.message.messageId)
         });

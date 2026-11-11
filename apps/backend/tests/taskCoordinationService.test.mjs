@@ -1528,3 +1528,14 @@ test("an identical final already sent through Channel is linked instead of repor
   assert.ok(receipt?.channel_message_id);
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
 });
+
+test('current execution view reports live operation instead of stale Task completion',async t=>{
+ const f=await restrictedFixture(t),child=f.child('统一执行'),meta=f.open('execution-view',child.id);
+ f.store.updateTask(child.id,{executionStatus:'completed'});
+ f.store.enqueueAgentTask({taskId:'operation:view',agentId:f.role.agentId,sessionId:meta.sessionId,kind:'user',priority:1,text:'new instruction'});
+ f.store.updateAgentTask('operation:view',{status:'running',targetTurnId:'turn:current'});
+ const read=new CoordinationReadService({store:f.store,mailbox:f.mailbox});
+ const view=read.execute(f.reference(),f.parent.id,readQuery('read_execution',{taskId:child.id}));
+ assert.equal(view.status,'running');assert.equal(view.turnId,'turn:current');assert.equal(view.targetOutcome,'not_assessed');
+ assert.equal(view.operationId,'operation:view');
+});

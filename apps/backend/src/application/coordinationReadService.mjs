@@ -1,4 +1,4 @@
-const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_mailbox","read_resource","search_resources"];
+const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_execution","read_mailbox","read_resource","search_resources"];
 export const COORDINATION_READ_QUERY_SCHEMA={type:"object",additionalProperties:false,
   required:["tool","taskId","sessionId","query","cursor","messageId","offset","limit"],properties:{
     tool:{enum:tools},taskId:{type:["string","null"],maxLength:512},sessionId:{type:["string","null"],maxLength:512},
@@ -59,6 +59,26 @@ export class CoordinationReadService {
         state:task.lifecycle_state,executionStatus:task.execution_status,creationState:task.creation_state,
         archived:Boolean(task.archived),deletionStatus:task.deletion_status,sessionId:task.current_session_id},
         truncated:String(task.description??"").length>1000 || String(task.acceptance_criteria??"").length>1000};
+    }else if(input.tool==="read_execution"){
+      const session=this.session(root,task,input.sessionId);
+      const operation=this.store.getRunningAgentTaskForSession(session.id)
+        ?? this.store.listAgentTasksForSession(session.id).at(-1) ?? null;
+      const dispatch=operation && this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?",[operation.taskId]);
+      const adopted=operation && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE operation_id=? AND disposition='adopted' AND adopted_turn_id IS NOT NULL",[operation.taskId]);
+      const logical=this.store.getLogicalSessionByLegacySessionId(session.id);
+      const turnId=adopted?.adopted_turn_id ?? operation?.targetTurnId ?? session.external?.activeTurnId ?? null;
+      const bindingId=adopted?.adopted_binding_id ?? logical?.activeBinding?.bindingId;
+      const turn=turnId && this.store.getSessionTurn(session.id,bindingId,turnId);
+      const status=turn?.executionStatus ?? turn?.execution_status ?? (adopted ? "unknown" : operation?.status) ?? session.status;
+      const final=turnId && this.store.selectOne(`SELECT id,substr(text,1,1200) AS text FROM session_items WHERE session_id=? AND turn_id=?
+        AND type='agentMessage' AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY created_at DESC,id DESC LIMIT 1`,[session.id,turnId]);
+      result={taskId:task.id,sessionId:session.id,operationId:operation?.taskId??null,dispatchId:dispatch?.dispatch_id??null,
+        turnId,status,targetOutcome:"not_assessed",acceptanceState:task.lifecycle_state,
+        cancellation:operation?.executionEvidence?.cancellation??null,
+        latestResult:final?{messageId:final.id,excerpt:final.text}:null,
+        queueDepth:this.store.listQueuedAgentTasksForSession(session.id,100).length,
+        dispatchBlock:operation?.source?.dispatchBlock??null,
+        instruction:"执行轮次结束不代表目标完成；取消记录仅描述原执行。结果全文按messageId读取。"};
     }else if(input.tool==="list_sessions"){
       result=page(this.store.selectAll(`SELECT id,title,status,archived,created_at AS createdAt FROM sessions
         WHERE task_id=? AND work_id=? AND deleted_at IS NULL
