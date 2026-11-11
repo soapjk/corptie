@@ -1,6 +1,6 @@
 import { assistantText } from "./claudeMessageProjection.mjs";
 import {
-  claudeRuntimeEnvironment, claudeSdkResultError, normalizeClaudeProviderError
+  claudeSecretValues, claudeRuntimeEnvironment, claudeSdkResultError, normalizeClaudeProviderError
 } from "../agent-provider/providers/claudeProviderConfiguration.mjs";
 
 export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, environment }) {
@@ -48,7 +48,7 @@ export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, envi
         }
         if (message?.type === "result") {
           const failure = claudeSdkResultError(message, {
-            secretValues: [environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+            secretValues: claudeSecretValues(environment())
           });
           if (failure) throw failure;
           latestText = (typeof message.result === "string" ? message.result.trim() : "") || latestText;
@@ -60,7 +60,7 @@ export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, envi
       // Keep cancellation and the shared timeout contract distinct from upstream model errors.
       if (abortController.signal.aborted) throw abortController.signal.reason;
       throw normalizeClaudeProviderError(error, {
-        secretValues: [environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+        secretValues: claudeSecretValues(environment())
       });
     } finally {
       clearTimeout(timeout);

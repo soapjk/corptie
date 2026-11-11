@@ -145,3 +145,12 @@ test("Claude gateway availability failures keep an actionable safe classificatio
   });
   assert.equal(noAccount.code, "UPSTREAM_ACCOUNT_UNAVAILABLE");
 });
+
+
+test("gateway bearer tokens are included in connection-test diagnostic redaction", () => {
+  const token = "fixture-bearer-secret";
+  const options = claudeConnectionTestOptions({}, { environment: { ANTHROPIC_AUTH_TOKEN: token } });
+  assert.ok(options.secretValues.includes(token));
+  const diagnostic = claudeProviderErrorDiagnostic(new Error("request failed: " + token), options);
+  assert.ok(!JSON.stringify(diagnostic).includes(token));
+});

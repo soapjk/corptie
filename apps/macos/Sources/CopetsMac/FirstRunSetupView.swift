@@ -209,12 +209,10 @@ struct FirstRunSetupRoot<Content: View>: View {
     private var setupPage: some View {
         VStack(spacing: 0) {
             VStack(spacing: 10) {
-                HStack(spacing: 14) {
-                    if let icon = FirstRunBrandAssets.appIcon {
-                        Image(nsImage: icon).resizable().frame(width: 48, height: 48).accessibilityHidden(true)
-                    }
-                    Text(L10n("连接执行引擎")).font(.system(size: 30, weight: .semibold))
+                if let icon = FirstRunBrandAssets.appIcon {
+                    Image(nsImage: icon).resizable().frame(width: 64, height: 64).accessibilityHidden(true)
                 }
+                Text(L10n("连接执行引擎")).font(.system(size: 28, weight: .semibold))
                 Text(L10n("corptie需至少配置一个agent引擎"))
                     .font(.callout).foregroundStyle(.secondary)
             }
@@ -248,6 +246,7 @@ struct FirstRunSetupRoot<Content: View>: View {
                 completionHint
                 enterButton
             }
+            .padding(.bottom, 32)
         }
         .frame(maxWidth: 840, maxHeight: .infinity)
         .padding(16)
@@ -293,12 +292,13 @@ struct FirstRunSetupRoot<Content: View>: View {
         } label: {
             HStack(spacing: 8) {
                 if busy { ProgressView().controlSize(.small) }
-                Text(L10n(busy ? "正在准备配置或检测执行引擎…" : "检测已开启provider并进入corptie"))
+                Text(L10n(busy ? "正在进入…" : "进入客户端"))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
         }
         .buttonStyle(.borderedProminent)
+        .tint(.green)
         .controlSize(.large)
         .keyboardShortcut(.defaultAction)
         .disabled(busy || !canEnter)
@@ -408,10 +408,17 @@ struct FirstRunProviderSummary {
             hasAccount = draft.hasSpecifiedAccount(provider.id)
         } else if let runtime = provider.runtime {
             let source = value?.source ?? runtime.source
-            hasAccount = !runtime.sourceChanged && (["found", "legacy"].contains(runtime.state)
-                || runtime.candidates.contains { $0.state == "found" && $0.kind == source?.kind && $0.path == source?.path })
-            // Some adapters expose a credential source, not an account identity.
-            account = L10n(hasAccount ? "本机登录" : "尚未指定账号")
+            hasAccount = value?.connection != nil || (!runtime.sourceChanged && (["found", "legacy"].contains(runtime.state)
+                || runtime.candidates.contains { $0.state == "found" && $0.kind == source?.kind && $0.path == source?.path }))
+            if let draft = value?.connection {
+                account = URL(string: draft.endpoint)?.host ?? L10n("自定义模型来源")
+            } else if let connection = runtime.connection,
+                        source?.kind == connection.importKind || source?.id == connection.managedSource.id {
+                account = L10n("模型来源")
+            } else {
+                // Some adapters expose a credential source, not an account identity.
+                account = L10n(hasAccount ? "本机登录" : "尚未指定账号")
+            }
         } else {
             hasAccount = provider.checkState == "available"
             account = L10n(hasAccount ? "本机登录" : "尚未指定账号")
@@ -452,6 +459,27 @@ enum FirstRunSetupAPI {
     }
 }
 
+/// Use the system's intrinsic sizing for short configuration content. Only the
+/// overflowing presentation scrolls; no measured height is written into state.
+struct FirstRunProviderConfigurationViewport<Content: View>: View {
+    var allowsNaturalHeight = true
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            if allowsNaturalHeight {
+                content().frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView(.vertical) {
+                content().frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 300)
+        }
+        .frame(maxHeight: 300, alignment: .top)
+    }
+}
+
 struct FirstRunProviderCard: View {
     struct Presentation {
         let expanded: Bool
@@ -487,6 +515,7 @@ struct FirstRunProviderCard: View {
     @State private var scanning = false
     @State private var activeCheckID: String?
     @State private var summaryHovered = false
+    @State private var runtimeEditor: ProviderRuntimeEditorState?
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
          updated: @escaping (FirstRunProvider) -> Void, settingsDraft: ProviderSettingsDraft,
@@ -508,6 +537,10 @@ struct FirstRunProviderCard: View {
             : (settingsDraft.values[provider.id]?.path ?? provider.path)
         _path = State(initialValue: initialPath)
         _result = State(initialValue: provider)
+        _runtimeEditor = State(initialValue: provider.runtime.map {
+            ProviderRuntimeEditorState(runtime: $0, source: settingsDraft.values[provider.id]?.source,
+                connection: settingsDraft.values[provider.id]?.connection)
+        })
         _environmentMode = State(initialValue: provider.environment?.mode ?? "native")
         _environmentHome = State(initialValue: provider.environment?.home ?? "")
         _selectionMode = State(initialValue: automatic ? "auto" : (provider.program?.mode ?? "manual"))
@@ -565,9 +598,12 @@ struct FirstRunProviderCard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if presentation.expanded {
                         cardHeader
-                        ScrollView(.vertical) {
+                        // Avoid laying out a whole inventory just to test whether it fits.
+                        FirstRunProviderConfigurationViewport(allowsNaturalHeight:
+                            (result.program?.candidates.count ?? 0) <= 6
+                            && (result.accounts?.accounts.count ?? 0) <= 6
+                            && addedProgramPaths.count <= 6) {
                             configurationFields
-                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .accessibilityIdentifier("provider.editor." + provider.id)
                     } else {
@@ -586,7 +622,7 @@ struct FirstRunProviderCard: View {
                 }
                 .padding(presentation.expanded ? 12 : 0)
                 .frame(width: presentation.expanded ? 440 : 164,
-                       height: presentation.expanded ? 420 : 164, alignment: .topLeading)
+                       height: presentation.expanded ? nil : 164, alignment: .topLeading)
                 .background {
                     RoundedRectangle(cornerRadius: 14)
                         .fill(Color(nsColor: .controlBackgroundColor))
@@ -619,6 +655,8 @@ struct FirstRunProviderCard: View {
             }
         }
         .onChange(of: provider.lastCheckedAt) { _, _ in result = provider }
+        .onChange(of: provider.runtime) { _, _ in result = provider }
+        .onChange(of: provider.checkState) { _, _ in result = provider }
         .onChange(of: provider.accounts?.accounts.map(\.id)) { _, _ in result = provider }
         .onChange(of: provider.accounts?.selectedAccountId) { _, _ in result = provider }
         .onChange(of: selectionKey) { _, _ in
@@ -723,7 +761,8 @@ struct FirstRunProviderCard: View {
             }
             if result.accounts != nil || result.runtime != nil {
                 Divider()
-                Text(L10n("账号")).font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                Text(L10n(result.runtime?.connection == nil ? "账号" : "账号与模型来源"))
+                    .font(.callout.weight(.semibold)).accessibilityAddTraits(.isHeader)
             }
             if let accounts = result.accounts {
                 ProviderAccountsView(provider: result, projection: accounts, draft: settingsDraft,
@@ -735,7 +774,10 @@ struct FirstRunProviderCard: View {
             } else if let runtime = result.runtime {
                 ProviderRuntimeSettingsView(providerId: provider.id, runtime: runtime, busy: controlsBusy || testing,
                     sourceDraft: settingsDraft.values[provider.id]?.source,
-                    sourceEdited: { source in settingsDraft.edit(provider.id, source: source) }) { row in
+                    sourceEdited: { source in settingsDraft.edit(provider.id, source: source) },
+                    connectionDraft: settingsDraft.values[provider.id]?.connection,
+                    connectionEdited: { value in settingsDraft.editConnection(provider.id, connection: value) },
+                    editorState: runtimeEditor) { row in
                     result = row
                     environmentMode = row.environment?.mode ?? environmentMode
                     environmentHome = row.environment?.home ?? environmentHome
@@ -808,13 +850,13 @@ struct FirstRunProviderCard: View {
                             .padding(.top, 2)
                         VStack(alignment: .leading, spacing: compact ? 2 : 4) {
                             HStack(spacing: 6) {
-                                Text(choice.version ?? URL(fileURLWithPath: choice.path).lastPathComponent)
+                                Text(choice.version ?? L10n("版本未知"))
                                     .font(.callout.weight(.medium)).lineLimit(1)
                                 if choice.prerelease { Text(L10n("预发布")).font(.caption).foregroundStyle(.secondary) }
-                                if choice.recommended { Text(L10n("推荐 · 最新版本")).font(.caption).foregroundStyle(Color.accentColor).lineLimit(1) }
+                                if choice.recommended { Text(L10n(choice.version == nil ? "推荐" : "推荐 · 最新版本")).font(.caption).foregroundStyle(Color.accentColor).lineLimit(1) }
                             }
                             let displaySources = choice.sources.filter { $0 != "saved" }
-                            if !displaySources.isEmpty {
+                            if !displaySources.isEmpty && choice.version != nil {
                                 Text(displaySources.map { L10n($0) }.joined(separator: " / "))
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             } else {

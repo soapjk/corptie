@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename, stat, realpath } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, stat, realpath, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -11,6 +11,7 @@ export class ProviderRuntimeSettings {
     Object.assign(this, { path, adapters, externalBusy: isBusy, onChanged });
     this.leases = new Map();
     this.sources = {};
+    this.preparedConnections = new Map();
     this.pending = Promise.resolve();
   }
 
@@ -25,7 +26,13 @@ export class ProviderRuntimeSettings {
     catch (error) { if (error.code !== "ENOENT") throw error; }
     for (const [id, adapter] of Object.entries(this.adapters)) {
       await mkdir(adapter.runtimeDirectory, { recursive: true, mode: 0o700 });
-      if (this.sources[id] && adapter.target) await writeFile(join(dirname(adapter.target), ".corptie-source-managed"), "", { mode: 0o600 });
+      if (this.sources[id] && adapter.target) {
+        await this.markManagedSource(adapter, this.sources[id]);
+        if (adapter.executionEnvironment) {
+          const check = await this.inspect(id);
+          if (check.value && this.sources[id].revision === digest(check.value.content)) this.prepareEnvironment(id, check.value);
+        }
+      }
     }
   }
 
@@ -87,7 +94,8 @@ export class ProviderRuntimeSettings {
       source: source ? { kind: source.kind, path: source.path } : null,
       state: changed ? "account_changed" : check.state,
       message: changed ? "来源中的账号或凭证内容已变更，请点击“保存设置”确认。" : check.message,
-      sourceChanged: Boolean(check.value && source?.revision !== digest(check.value.content)) };
+      sourceChanged: Boolean(check.value && source?.revision !== digest(check.value.content)),
+      ...(adapter.describeConnection ? { connection: adapter.describeConnection(check.value) } : {}) };
   }
 
   async validateSource(id, input) {
@@ -99,7 +107,9 @@ export class ProviderRuntimeSettings {
     const source = { kind: input.kind, path: resolve(input.path) };
     const canonicalSource = await realpath(source.path).catch(() => source.path);
     const canonicalRuntime = await realpath(adapter.runtimeDirectory).catch(() => resolve(adapter.runtimeDirectory));
-    if (canonicalSource === canonicalRuntime || canonicalSource.startsWith(`${canonicalRuntime}/`)) {
+    const managedConnection = source.kind === "connection" && adapter.managedConnectionPath
+      && source.path === resolve(adapter.managedConnectionPath);
+    if (!managedConnection && (canonicalSource === canonicalRuntime || canonicalSource.startsWith(`${canonicalRuntime}/`))) {
       throw failure("PROVIDER_SOURCE_INVALID", "凭证来源必须是官方工具的登录环境，不能是 Corptie 的目标目录。");
     }
     if (this.isBusy(id)) throw failure("PROVIDER_BUSY", "此引擎有正在执行的请求，请结束后再更改凭证来源。");
@@ -108,20 +118,88 @@ export class ProviderRuntimeSettings {
     return { adapter, source, check };
   }
 
-  saveSource(id, input) {
-    return this.serialize(async () => {
-      const { adapter, source, check } = await this.validateSource(id, input);
-      const previous = this.sources;
-      this.sources = { ...previous, [id]: { ...source, identity: check.value.identity ?? null,
-        revision: digest(check.value.content) } };
-      try { await this.persist(); }
-      catch (error) { this.sources = previous; throw error; }
-      try { await adapter.onSourceApplied?.(); }
-      catch (error) { this.sources = previous; await this.persist(); throw error; }
-      if (adapter.target) await writeFile(join(dirname(adapter.target), ".corptie-source-managed"), "", { mode: 0o600 });
-      await this.onChanged(id);
-      return this.describe(id);
+  prepareEnvironment(id, value) {
+    const adapter = this.adapter(id);
+    if (!adapter.executionEnvironment) return;
+    this.preparedConnections.set(id, {
+      env: adapter.executionEnvironment(value),
+      metadata: adapter.describeConnection?.(value)?.current ?? null
     });
+  }
+
+  executionEnvironment(id, environment) {
+    return { ...environment, ...(this.preparedConnections.get(id)?.env ?? {}) };
+  }
+
+  connectionMetadata(id) {
+    return this.preparedConnections.get(id)?.metadata ?? null;
+  }
+
+  async markManagedSource(adapter, source) {
+    if (!adapter.target) return;
+    const marker = join(dirname(adapter.target), ".corptie-source-managed");
+    if (!source) return unlink(marker).catch(error => { if (error.code !== "ENOENT") throw error; });
+    await writeFile(marker,
+      adapter.sourceManagesConnection?.(source) ? "connection" : "", { mode: 0o600 });
+  }
+
+  validateConnection(id, input) {
+    const adapter = this.adapter(id);
+    if (!adapter.validateConnection || !adapter.stageConnection) throw failure("PROVIDER_CONNECTION_UNSUPPORTED", "此执行引擎不支持手动模型来源。");
+    if (this.isBusy(id)) throw failure("PROVIDER_BUSY", "此引擎正在执行，请结束后再修改模型来源。");
+    const normalized = adapter.validateConnection(input);
+    if (normalized.credential == null) {
+      const current = this.connectionMetadata(id);
+      if (this.sources[id]?.kind !== "connection" || !current?.credentialConfigured || current.authType !== normalized.authType) {
+        throw failure("PROVIDER_CONNECTION_INVALID", "请填写此模型来源的密钥。");
+      }
+    }
+    return normalized;
+  }
+
+  saveConnection(id, input) {
+    return this.serialize(async () => {
+      const normalized = this.validateConnection(id, input);
+      const adapter = this.adapter(id);
+      const previous = this.sources;
+      const staged = await adapter.stageConnection(normalized, previous[id]);
+      try {
+        await staged.write();
+        return await this.commitSource(id, await this.validateSource(id, staged.source));
+      } catch (error) {
+        await staged.restore();
+        if (this.sources !== previous) {
+          this.sources = previous;
+          await this.persist();
+          await this.markManagedSource(adapter, previous[id]);
+          this.preparedConnections.delete(id);
+          if (previous[id]) {
+            const restored = await this.inspect(id);
+            if (restored.value) this.prepareEnvironment(id, restored.value);
+          }
+        }
+        throw error;
+      }
+    });
+  }
+
+  saveSource(id, input) {
+    return this.serialize(async () => this.commitSource(id, await this.validateSource(id, input)));
+  }
+
+  async commitSource(id, { adapter, source, check }) {
+    const previous = this.sources;
+    this.sources = { ...previous, [id]: { ...source, identity: check.value.identity ?? null,
+      revision: digest(check.value.content) } };
+    try { await this.persist(); }
+    catch (error) { this.sources = previous; throw error; }
+    try { await adapter.onSourceApplied?.(); }
+    catch (error) { this.sources = previous; await this.persist(); throw error; }
+    await this.markManagedSource(adapter, source);
+    this.preparedConnections.delete(id);
+    this.prepareEnvironment(id, check.value);
+    await this.onChanged(id);
+    return this.describe(id);
   }
 
   async prepareExecution(id, args) {
@@ -148,22 +226,25 @@ export class ProviderRuntimeSettings {
         await this.onChanged(id);
         throw failure("PROVIDER_ACCOUNT_CHANGED", "账号或无法识别账号的凭证内容已变更，请在执行引擎设置中确认来源并保存设置。");
       }
-      const content = check.value.content;
-      const previous = await readFile(adapter.target, "utf8").catch(error => {
+      this.prepareEnvironment(id, check.value);
+      const sourceContent = check.value.content;
+      const target = adapter.targetForSource?.(source) ?? adapter.target;
+      const previous = await readFile(target, "utf8").catch(error => {
         if (error.code === "ENOENT") return null;
         throw failure("PROVIDER_CREDENTIAL_UNAVAILABLE", "无法访问独立运行目录中的凭证。");
       });
-      const revision = digest(content);
+      const content = adapter.targetContent?.(source, sourceContent, previous) ?? sourceContent;
+      const revision = digest(sourceContent);
       // Preserve tokens refreshed by the Provider while the official source is unchanged.
       if (previous !== null && source.revision === revision && source.syncedRevision === revision) return;
       if (this.isBusy(id)) throw failure("PROVIDER_BUSY", "凭证来源已更新，请等待当前请求结束后重试。");
-      await mkdir(dirname(adapter.target), { recursive: true, mode: 0o700 });
-      const temporary = `${adapter.target}.source-${process.pid}`;
+      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      const temporary = `${target}.source-${process.pid}`;
       await writeFile(temporary, content, { mode: 0o600 });
-      await rename(temporary, adapter.target);
+      await rename(temporary, target);
       this.sources[id] = { ...source, revision, syncedRevision: revision };
       await this.persist();
-      await adapter.afterSync?.();
+      await adapter.afterSync?.(source);
       await this.onChanged(id);
     });
   }

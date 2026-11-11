@@ -91,7 +91,7 @@ test("credential adapters advertise supported sources for every provider without
     openClackyPaths: { runtimeRoot: "/runtime/openclacky" }, nativeCodexHome: "/official/codex",
     readCodexSource: async (_path, options) => { reads++; assert.equal(options.allowKeychainRead, true); return null; }
   });
-  assert.deepEqual(adapters["claude-sdk"].sourceKinds, ["directory", "file"]);
+  assert.deepEqual(adapters["claude-sdk"].sourceKinds, ["directory", "file", "settings", "connection"]);
   assert.equal(adapters.openclacky.sourceKinds.length, 0);
   assert.match(adapters.openclacky.unsupportedReason, /不支持/);
   await adapters["codex-app-server"].read({ kind: "keychain", path: "/official/codex" });

@@ -1,3 +1,4 @@
+import { CLAUDE_CONNECTION_CONFLICT_ENV } from "../adapters/claudeConnectionSource.mjs";
 import { constants as fsConstants } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -102,6 +103,20 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
 // Native provider connection settings remain authoritative. Do not import
 // hooks, permissions, plugins or MCP configuration into Corptie Sessions.
 async function syncConnectionSettings(paths) {
+  const marker = join(paths.configDir, ".corptie-source-managed");
+  if (await isFile(marker)) {
+    // An explicitly selected connection owns routing. Native settings must not overwrite it.
+    if ((await readFile(marker, "utf8")).trim() === "connection") return false;
+    let current = {};
+    try { current = JSON.parse(await readFile(paths.settingsPath, "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return false; throw new Error("独立运行配置格式无效。"); }
+    delete current.apiKeyHelper;
+    delete current.model;
+    if (current.env && typeof current.env === "object") {
+      for (const key of [...CLAUDE_CONNECTION_CONFLICT_ENV, "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"]) delete current.env[key];
+    }
+    return syncManagedContent(`${JSON.stringify(current, null, 2)}\n`, paths.settingsPath, 0o600);
+  }
   let source;
   try { source = JSON.parse(await readFile(paths.sourceSettingsPath, "utf8")); }
   catch (error) {
@@ -117,12 +132,6 @@ async function syncConnectionSettings(paths) {
   for (const key of ["env", "model", "apiKeyHelper"]) {
     if (Object.hasOwn(source, key)) current[key] = source[key];
     else delete current[key];
-  }
-  if (await isFile(join(paths.configDir, ".corptie-source-managed"))) {
-    delete current.apiKeyHelper;
-    if (current.env && typeof current.env === "object") {
-      for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"]) delete current.env[key];
-    }
   }
   return syncManagedContent(`${JSON.stringify(current, null, 2)}\n`, paths.settingsPath, 0o600);
 }

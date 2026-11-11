@@ -7,6 +7,7 @@ struct ProviderConfigurationDraft: Equatable {
     var source: ProviderCredentialSource?
     var accountId: String?
     var confirmSource = false
+    var connection: ProviderConnectionDraft?
 
     init(_ provider: FirstRunProvider) {
         path = provider.program?.adoptedPath.nonEmpty ?? provider.path
@@ -72,9 +73,24 @@ final class ProviderSettingsDraft {
         if let accountId { value.accountId = accountId }
         if let path { value.path = path }
         if let enabled { value.enabled = enabled }
-        if let source { value.source = .init(kind: source.kind, path: source.path); value.confirmSource = true }
+        if let source {
+            value.source = .init(kind: source.kind, path: source.path)
+            value.confirmSource = true
+            if source.kind != providers.first(where: { $0.id == id })?.runtime?.connection?.managedSource.kind {
+                value.connection = nil
+            }
+        }
         values[id] = value
         if enabled == true, let provider = providers.first(where: { $0.id == id }) { stageDiscoveredSource(provider) }
+    }
+
+    func editConnection(_ id: String, connection: ProviderConnectionDraft) {
+        guard var value = values[id],
+              let source = providers.first(where: { $0.id == id })?.runtime?.connection?.managedSource else { return }
+        value.connection = connection
+        value.source = source
+        value.confirmSource = true
+        values[id] = value
     }
 
     func discard() {
@@ -100,8 +116,13 @@ final class ProviderSettingsDraft {
         let enabled = providers.filter { values[$0.id]?.enabled ?? $0.enabled }
         return !enabled.isEmpty && enabled.allSatisfy { provider in
             let path = values[provider.id]?.path ?? provider.path
-            return !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && (provider.accounts == nil || hasSpecifiedAccount(provider.id))
+            guard !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            if provider.accounts != nil { return hasSpecifiedAccount(provider.id) }
+            if let runtime = provider.runtime, runtime.reuseMethod == "synchronize" {
+                return values[provider.id]?.source != nil || values[provider.id]?.connection != nil
+                    || ["found", "legacy"].contains(runtime.state)
+            }
+            return true
         }
     }
 
@@ -158,9 +179,14 @@ final class ProviderSettingsDraft {
         let body: [[String: Any]] = dirtyIDs.sorted().compactMap { id in
             guard let value = submitted[id] else { return nil }
             let source: Any = value.source.map { ["kind": $0.kind, "path": $0.path] as Any } ?? NSNull()
-            return ["providerId": id, "path": value.path, "enabled": value.enabled,
+            var row: [String: Any] = ["providerId": id, "path": value.path, "enabled": value.enabled,
                     "source": source, "accountId": value.accountId as Any? ?? NSNull(),
                     "confirmSource": value.confirmSource]
+            if let connection = value.connection {
+                row["connection"] = ["endpoint": connection.endpoint, "model": connection.model,
+                    "authType": connection.authType, "credential": connection.credential as Any? ?? NSNull()]
+            }
+            return row
         }
         isSaving = true
         defer { isSaving = false }

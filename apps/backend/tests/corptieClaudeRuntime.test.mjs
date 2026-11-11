@@ -72,3 +72,28 @@ test("Claude shares native gateway settings without importing native hooks or pe
     assert.equal((await ensureCorptieClaudeRuntime(options)).connectionSettingsChanged, false);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+
+test("explicit gateway selection survives runtime preparation and OAuth selection removes gateway overrides", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-managed-connection-"));
+  try {
+    const bundled = join(directory, "bundled.md"), source = join(directory, "native-settings.json");
+    await writeFile(bundled, "# Fixture {{CORPTIE_ENVIRONMENT}}");
+    await writeFile(source, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://native.invalid" } }));
+    const options = { homeDir: directory, environmentName: "development", sourceSettingsPath: source,
+      bundledMemoryPath: bundled, bundledSkillPath: bundled, bundledProjectToolsReferencePath: bundled };
+    const runtime = await ensureCorptieClaudeRuntime(options);
+    const marker = join(runtime.configDir, ".corptie-source-managed");
+    const owned = { env: { ANTHROPIC_BASE_URL: "https://chosen.invalid", ANTHROPIC_AUTH_TOKEN: "fixture-token", CORPTIE_KEEP: "yes" },
+      model: "chosen-model", permissions: { deny: ["Bash(rm *)"] } };
+    await writeFile(runtime.settingsPath, JSON.stringify(owned));
+    await writeFile(marker, "connection");
+    await ensureCorptieClaudeRuntime(options);
+    assert.deepEqual(JSON.parse(await readFile(runtime.settingsPath, "utf8")), owned);
+    await writeFile(marker, "");
+    await ensureCorptieClaudeRuntime(options);
+    assert.deepEqual(JSON.parse(await readFile(runtime.settingsPath, "utf8")), {
+      env: { CORPTIE_KEEP: "yes" }, permissions: owned.permissions });
+    assert.deepEqual(JSON.parse(await readFile(source, "utf8")), { env: { ANTHROPIC_BASE_URL: "https://native.invalid" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

@@ -54,3 +54,19 @@ test("controlled missing path remains authoritative and actual probes are bounde
   assert.equal((await bounded.scan()).candidates[0].state, "timeout");
   assert.ok(Date.now() - started < 1000);
 });
+
+
+test("unknown version keeps a discovered executable selectable without claiming a version", async t => {
+  const root = await mkdtemp(join(tmpdir(), "corptie-unknown-version-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binary = join(root, "provider");
+  await writeFile(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const discovery = new ProviderExecutableDiscovery({
+    candidates: () => [{ path: binary, source: "cli" }],
+    probeVersion: async () => ({ version: null, state: "timeout" })
+  });
+  const result = await discovery.scan();
+  assert.equal(result.recommendedPath, binary);
+  assert.equal(result.candidates[0].version, null);
+  assert.equal(result.candidates[0].state, "timeout");
+});

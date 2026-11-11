@@ -1,3 +1,4 @@
+import { readClaudeConnection, describeClaudeConnection, validateClaudeConnection, stageClaudeConnection, mergeClaudeConnectionContent, CLAUDE_CONNECTION_CONFLICT_ENV } from "./claudeConnectionSource.mjs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { jsonCredentialReader } from "../application/providerRuntimeSettings.mjs";
@@ -20,6 +21,7 @@ function accountIdentity(value) {
 
 export function createProviderCredentialAdapters({ codexPaths, claudePaths, openClackyPaths, nativeCodexHome,
   readCodexSource = readCodexAuthenticationSource }) {
+  const claudeSettingsPath = claudePaths.settingsPath ?? join(claudePaths.configDir, "settings.json");
   const codexFile = jsonCredentialReader({ fileName: "auth.json", identity: accountIdentity,
     validate: value => [value.OPENAI_API_KEY, value.personal_access_token, value.tokens?.access_token,
       value.tokens?.refresh_token, value.agent_identity?.agent_private_key, value.agent_identity].some(hasText) });
@@ -40,10 +42,34 @@ export function createProviderCredentialAdapters({ codexPaths, claudePaths, open
     },
     "claude-sdk": {
       runtimeDirectory: claudePaths.configDir, target: claudePaths.credentialsPath,
-      formatDescription: "支持 Claude Code 官方 OAuth .credentials.json 文件。此处不支持以 API 密钥环境变量作为凭证来源。",
-      sourceKinds: ["directory", "file"], candidates: [{ kind: "file", path: claudePaths.sourceCredentialsPath }],
-      read: jsonCredentialReader({ fileName: ".credentials.json", identity: accountIdentity,
-        validate: value => hasText(value.claudeAiOauth?.accessToken) })
+      formatDescription: "支持本机账号，以及含 API Key 或 Bearer Token 的模型连接配置。",
+      sourceKinds: ["directory", "file", "settings", "connection"],
+      candidates: [
+        ...(claudePaths.sourceSettingsPath ? [{ kind: "settings", path: claudePaths.sourceSettingsPath, label: "本机模型配置" }] : []),
+        { kind: "file", path: claudePaths.sourceCredentialsPath, label: "本机账号" }
+      ],
+      managedConnectionPath: claudeSettingsPath,
+      sourceManagesConnection: source => ["settings", "connection"].includes(source?.kind),
+      targetForSource: source => ["settings", "connection"].includes(source?.kind)
+        ? claudeSettingsPath : claudePaths.credentialsPath,
+      targetContent: (source, content, previous) => ["settings", "connection"].includes(source?.kind)
+        ? mergeClaudeConnectionContent(content, previous) : content,
+      validateConnection: validateClaudeConnection,
+      stageConnection: (input, selected) => stageClaudeConnection(claudeSettingsPath, input, selected),
+      executionEnvironment: value => {
+        const current = describeClaudeConnection(value);
+        if (!current) return {};
+        const settings = JSON.parse(value.content);
+        return { ...settings.env, ...(settings.model && !settings.env.ANTHROPIC_MODEL ? { ANTHROPIC_MODEL: settings.model } : {}) };
+      },
+      describeConnection: value => ({
+        managedSource: { kind: "connection", path: claudeSettingsPath },
+        importKind: "settings",
+        current: describeClaudeConnection(value)
+      }),
+      read: source => ["settings", "connection"].includes(source.kind) ? readClaudeConnection(source)
+        : jsonCredentialReader({ fileName: ".credentials.json", identity: accountIdentity,
+            validate: value => hasText(value.claudeAiOauth?.accessToken) })(source)
     },
     openclacky: {
       runtimeDirectory: openClackyPaths.runtimeRoot, sourceKinds: [], candidates: [],
@@ -57,7 +83,7 @@ export function selectedCredentialEnvironment(environment, providerId, selected)
   if (!selected) return environment;
   const result = { ...environment };
   const keys = providerId === "claude-sdk"
-    ? ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"]
+    ? [...CLAUDE_CONNECTION_CONFLICT_ENV, "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"]
     : ["OPENAI_API_KEY", "CODEX_API_KEY"];
   for (const key of keys) delete result[key];
   return result;
