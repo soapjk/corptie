@@ -67,8 +67,9 @@ export function handleProviderSetupHttpRequest({
       .catch((error) => sendJson(response, 400, { error: error.message }));
     return true;
   }
-  if (request.method === "POST" && ["/first-run/settings", "/first-run/provider", "/first-run/credentials", "/first-run/program", "/first-run/check", "/first-run/check/cancel", "/first-run/programs", "/first-run/authentication", "/first-run/assistant", "/first-run/complete"].includes(url.pathname)) {
+  if (request.method === "POST" && ["/first-run/settings", "/first-run/provider", "/first-run/credentials", "/first-run/program", "/first-run/check", "/first-run/check/cancel", "/first-run/programs", "/first-run/authentication", "/first-run/assistant", "/first-run/complete", "/first-run/check-and-complete"].includes(url.pathname)) {
     readJson(request).then(async (input) => {
+      if (url.pathname === "/first-run/check-and-complete") return firstRunSetup.checkAndComplete(input);
       if (url.pathname === "/first-run/settings") return firstRunSetup.saveSettings(input);
       if (url.pathname === "/first-run/program") return firstRunSetup.setProgram(input);
       if (url.pathname === "/first-run/credentials") return firstRunSetup.saveCredentialSource(input);

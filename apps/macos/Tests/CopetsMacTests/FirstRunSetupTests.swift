@@ -35,7 +35,11 @@ struct FirstRunSetupTests {
         #expect(source.contains("private func commitAndCheck()"))
         #expect(source.contains("autoCheckGeneration"))
         #expect(source.contains("private func autoPrepareIfNeeded()"))
-        #expect(source.contains("importDefaultLocalAccount"))
+        #expect(source.contains("FirstRunAccountImport.importAll"))
+        #expect(source.contains("automaticallyChecksChanges: false"))
+        #expect(source.contains("guard automaticallyChecksChanges else { return }"))
+        #expect(source.contains("first-run/check-and-complete"))
+        #expect(source.contains("检测已开启provider并进入corptie"))
         #expect(source.contains("请指定账号"))
         #expect(source.contains("本机发现有其他版本的 Codex"))
         #expect(!source.contains("private func chooseHome()"))
@@ -94,6 +98,35 @@ struct FirstRunSetupTests {
     }
 
     @Test @MainActor
+    func importsAllSourcesAndContinuesAfterOneFailure() async {
+        let sources = (0..<4).map { DiscoveredAccountSource(kind: "file", path: "/fixture/\($0)", label: "Account \($0)") }
+        var attempted: [String] = []
+        let failures = await FirstRunAccountImport.importAll(sources) { source in
+            attempted.append(source.path)
+            if source.path == "/fixture/1" { throw NSError(domain: "fixture", code: 1) }
+        }
+        #expect(attempted == sources.map(\.path))
+        #expect(failures == 1)
+    }
+
+    @Test @MainActor
+    func explicitEntryRequiresEveryEnabledConfigurationButNotPriorReplyProof() {
+        let codex = FirstRunProvider(id: "codex", name: "Codex", path: "/fixture/codex",
+            executable: true, enabled: true, checkState: "unknown", message: nil)
+        let missing = FirstRunProvider(id: "other", name: "Other", path: "",
+            executable: false, enabled: false, checkState: "missing", message: nil)
+        let form = draft(for: [codex, missing])
+        #expect(form.canEnterFirstRun)
+        form.edit("other", enabled: true)
+        #expect(!form.canEnterFirstRun)
+        form.edit("other", path: "/fixture/other")
+        #expect(form.canEnterFirstRun)
+        form.edit("codex", enabled: false)
+        form.edit("other", enabled: false)
+        #expect(!form.canEnterFirstRun)
+    }
+
+    @Test @MainActor
     func firstRunStagesASelectableDefaultAccountAndReportsWhenNoneExists() throws {
         let json = """
         {"id":"codex-app-server","name":"Codex","path":"/tmp/codex","executable":true,
@@ -110,9 +143,13 @@ struct FirstRunSetupTests {
         let selectable = try provider(true)
         let form = draft(for: [selectable])
         #expect(!form.hasSpecifiedAccount(selectable.id))
+        #expect(!form.canEnterFirstRun)
         #expect(form.stageDefaultAccount(for: selectable))
         #expect(form.values[selectable.id]?.accountId == "isolated")
         #expect(form.hasSpecifiedAccount(selectable.id))
+        #expect(form.canEnterFirstRun)
+        #expect(!form.stageDefaultAccount(for: selectable))
+        #expect(form.values[selectable.id]?.accountId == "isolated")
         // A native-only machine has no selectable account: onboarding must
         // import a discovered local login rather than silently continue.
         let nativeOnly = try provider(false)

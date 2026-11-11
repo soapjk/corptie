@@ -381,10 +381,41 @@ export class FirstRunSetupService {
     return { sessionId: session.id };
   }
 
-  complete(input = {}) {
+  checkAndComplete(input = {}) {
+    if (this.entryCheck) return this.entryCheck;
+    const operation = async () => {
+      if (this.state.completed) return this.status();
+      const enabled = (await this.status()).providers.filter(p => p.enabled);
+      if (!enabled.length) throw new Error("请先启用至少一个可用 Provider。");
+      const results = await Promise.allSettled(enabled.map(p => this.check({
+        providerId: p.id, path: p.path,
+        selectionMode: p.program?.mode ?? "manual", model: p.program?.model ?? ""
+      })));
+      const failures = results.flatMap((result, index) => {
+        const row = result.status === "fulfilled" ? result.value : null;
+        return row?.checkState === "available" ? []
+          : [enabled[index].name + "：" + (row?.message ?? result.reason?.message ?? "检测失败，请重试。")];
+      });
+      if (failures.length) throw new Error(failures.join("\n"));
+      return this.complete(input, { checkedProviderIds: enabled.map(p => p.id) });
+    };
+    this.entryCheck = operation().finally(() => { this.entryCheck = null; });
+    return this.entryCheck;
+  }
+
+  async assertEntryChecks(checkedProviderIds) {
+    if (!checkedProviderIds) return;
+    const enabled = (await this.status()).providers.filter(p => p.enabled);
+    if (!enabled.length || enabled.some(p => !checkedProviderIds.includes(p.id) || p.checkState !== "available")) {
+      throw new Error("执行引擎配置已变化，请重新检测后进入。");
+    }
+  }
+
+  complete(input = {}, { checkedProviderIds } = {}) {
     return this.serialize(async () => {
       // Replaying a completed request must not recreate a deleted assistant.
       if (this.state.completed) return this.status();
+      await this.assertEntryChecks(checkedProviderIds);
       await this.prepareAssistantWithinOperation(typeof input.language === "string" ? input.language : undefined);
       // Revalidate after initialization: the binary or enabled choice may have
       // changed while the Provider was preparing its Session.
@@ -392,6 +423,7 @@ export class FirstRunSetupService {
       if (!status.providers.some((p) => p.enabled && p.executable)) {
         throw new Error("请先启用至少一个可用 Provider。");
       }
+      await this.assertEntryChecks(checkedProviderIds);
       await this.save({ ...this.state, completed: true });
       return this.status();
     });
