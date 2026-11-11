@@ -20,6 +20,16 @@ struct DetailDisplayCache: Sendable {
     /// in this bounded projection window.
     let restorationAnchorRowID: String?
 
+    func refreshesPreparedDisplay(currentSourceSignature: String,
+                                  displayedSourceSignature: String,
+                                  displayedSignature: String) -> Bool {
+        // The source key includes Session, content revision, display limit and
+        // viewport anchor. A different window must not restore an older source
+        // or replace this window's reading range.
+        sourceSignature == currentSourceSignature
+            && (sourceSignature != displayedSourceSignature || signature != displayedSignature)
+    }
+
     init(
         sessionId: String,
         displayItems: [CodexThreadItem],

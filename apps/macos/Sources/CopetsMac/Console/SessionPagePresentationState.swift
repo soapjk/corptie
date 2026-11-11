@@ -277,7 +277,14 @@ final class SessionPageRenderInputs {
             if session.external?.provider != value.external?.provider { changes.insert(.catalog) }
             session = value
         }
-        if changes.contains(.timeline), detailPresentationRevision != timeline.presentationRevision || detail != timeline.presentationDetail {
+        // A shared projection may be published while this page is resuming or
+        // from another window. Reconcile the source before exposing that cache
+        // so its revision gate never compares against stale page inputs.
+        let timelineChanged = changes.contains(.timeline)
+            && (detailPresentationRevision != timeline.presentationRevision || detail != timeline.presentationDetail)
+        let projectionSourceAdvanced = changes.contains(.projection)
+            && detailPresentationRevision != timeline.presentationRevision
+        if timelineChanged || projectionSourceAdvanced {
             detail = timeline.presentationDetail
             detailPresentationRevision = timeline.presentationRevision
             detailTailContentRevision = timeline.tailContentRevision

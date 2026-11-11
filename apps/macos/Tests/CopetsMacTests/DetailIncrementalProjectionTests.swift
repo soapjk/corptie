@@ -3,6 +3,23 @@ import SwiftUI
 @testable import CorptieMac
 
 final class DetailIncrementalProjectionTests: XCTestCase {
+    func testPreparedMainWindowAcceptsCurrentSharedProjectionAndRejectsStaleOrDifferentWindows() {
+        let source = [item("user", "turn", "userMessage"), item("final", "turn", "agentMessage")]
+        let currentKey = "session|2|100|latest"
+        let current = makeDetailDisplayCache(for: detail(source), sessionId: "session",
+            visibleMessageLimit: 100, preparedSourceSignature: currentKey)
+        XCTAssertTrue(current.refreshesPreparedDisplay(currentSourceSignature: currentKey,
+            displayedSourceSignature: "session|1|100|latest", displayedSignature: "old-progress"))
+        XCTAssertFalse(current.refreshesPreparedDisplay(currentSourceSignature: currentKey,
+            displayedSourceSignature: current.sourceSignature, displayedSignature: current.signature),
+            "Duplicate cache notifications must not rebind native rows")
+        for incompatible in ["session|3|100|latest", "session|2|200|latest", "session|2|100|process:old", "other|2|100|latest"] {
+            XCTAssertFalse(current.refreshesPreparedDisplay(currentSourceSignature: incompatible,
+                displayedSourceSignature: "old", displayedSignature: "old"),
+                "A stale revision or another window's range must not replace this page")
+        }
+    }
+
     func testPreparedDisplayCacheRemainsNormalizedAcrossCommitBoundary() {
         let source = [item("user", "turn", "userMessage"),
                       item("commentary", "turn", "agentMessage"),
