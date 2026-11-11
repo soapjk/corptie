@@ -77,6 +77,8 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     priority: 3,
     lifecycleState: "in_progress",
     autoTitleEnabled: true,
+    coordinationEnabled: false,
+    coordinationDispatches: [],
     archived: false,
     mainAgentId: "agent:1",
     currentSessionId: "session:1",

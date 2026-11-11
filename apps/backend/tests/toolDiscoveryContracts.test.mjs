@@ -68,7 +68,7 @@ test("batch Task creation intent recommends the real batch contract", () => {
     assert.equal(rankDiscoveryCandidates(candidates, { intent })[0].name, "corptie_collaboration_tasks_create_batch");
   }
   const definition = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create_batch");
-  assert.equal(definition.inputSchema.properties.items.maxItems, 10);
+  assert.equal(definition.inputSchema.properties.items.maxItems, 100);
   assert.equal(definition.inputSchema.properties.items.minItems, 1);
 });
 

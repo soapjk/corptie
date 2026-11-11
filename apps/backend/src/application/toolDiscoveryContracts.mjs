@@ -36,7 +36,7 @@ const DOMAIN_PROFILES = Object.freeze({
     ["skill", "skills", "agent skill", "技能", "能力包"],
     "corptie_skill_search"
   ),
-  "execution-checklist": profile(["execution checklist", "todo", "清单", "执行清单", "待办"], "corptie_execution_checklist_manage"),
+  "execution-checklist": profile(["execution checklist", "checklist", "checklist mode", "todo", "清单", "清单模式", "任务清单", "执行清单", "待办"], "corptie_execution_checklist_manage"),
   "scheduled-tasks": profile(
     [
       "scheduled-tasks", "scheduled task", "scheduled tasks", "automation", "automations",
@@ -142,6 +142,7 @@ function profile(aliases, recommendedTool) {
 const CAPABILITY_SUMMARIES = Object.freeze({
   collaboration: "普通 Task/子任务与伴随 Worker Session；会话 Channel 通信。不是 Automation。",
   "task-acceptance": "读取、修订和验收绑定 Task；不创建新 Task。",
+  "execution-checklist": "保存执行清单、更新事项进度；Markdown 勾选列表不会创建清单卡片。",
   "scheduled-tasks": "Automation：定时、提醒、监控进程退出；不是普通 Task。",
   artifacts: "管理文档 Artifact 与安全物化；不等于 Git 追踪授权。",
   workspace: "仓库、Workspace、Worktree；不改变 Task 绑定。"
@@ -159,11 +160,12 @@ export function parseDiscoveryIntent(intent) {
   const automation = !excludesAutomation && /automation|scheduled|remind|schedule|process exit|进程.*(?:退出|结束)|提醒|定时|计划任务|自动化/u.test(positive);
   const create = /\b(?:create|new)\b|创建|新建/u.test(text);
   const task = /tasks?|任务/u.test(text);
+  const checklist = /\b(?:checklists?|todo|to do)\b|清单|待办/u.test(text);
   const channel = /channel|send message|发消息|发送.*消息|会话.*消息/u.test(text);
   const role = /\broles?\b|角色|agent management|管理.*agent|agent.*(?:管理|配置)/u.test(text);
   const stopwords = new Set(["the", "for", "with", "and", "current", "call", "tool", "in", "to", "a", "an", "of"]);
   return { text, terms: [...new Set(positive.split(/\s+/u).filter((term) => term.length > 1 && !stopwords.has(term)))],
-    excludesAutomation, operation: channel ? "channel" : automation ? "automation" : create && task ? "task-create" : role ? "role-management" : null };
+    excludesAutomation, operation: channel ? "channel" : automation ? "automation" : checklist ? "checklist" : create && task ? "task-create" : role ? "role-management" : null };
 }
 
 export function rankDiscoveryCandidates(candidates, { intent = "", domainHint = "" } = {}) {
@@ -184,6 +186,7 @@ export function rankDiscoveryCandidates(candidates, { intent = "", domainHint = 
       return text && query.text.includes(text);
     })) score += 1;
     if (!exact && !aliasExact) {
+      if (query.operation === "checklist" && name === "corptie_execution_checklist_manage") score += 100;
       if (query.operation === "task-create" && name === "corptie_collaboration_tasks_create") score += 100;
       if (query.operation === "task-create" && name === "corptie_collaboration_tasks_create_batch"
         && /(?:batch|bulk|批量|多个|[2-9二三四五六七八九十]\s*个)/iu.test(String(intent))) score += 120;
