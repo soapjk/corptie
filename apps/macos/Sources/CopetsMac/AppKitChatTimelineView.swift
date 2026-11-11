@@ -122,7 +122,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         tableView.headerView = nil
         tableView.backgroundColor = .clear
         tableView.gridStyleMask = []
-        tableView.intercellSpacing = NSSize(width: 0, height: 6)
+        tableView.intercellSpacing = NSSize(width: 0, height: 2)
         tableView.rowHeight = 100 // SDK estimate for unmounted rows.
         tableView.usesAutomaticRowHeights = true
         tableView.selectionHighlightStyle = .none

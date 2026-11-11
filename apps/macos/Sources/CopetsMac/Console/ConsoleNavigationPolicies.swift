@@ -74,6 +74,7 @@ enum ConsoleNavigationCardWidthPolicy {
 
 enum ConsoleNavigationMode: String, CaseIterable {
     case workOutline
+    case sessionList
     case taskCards
 
     static func resolved(_ rawValue: String) -> Self {
@@ -84,6 +85,7 @@ enum ConsoleNavigationMode: String, CaseIterable {
     var accessibilityValue: String {
         switch self {
         case .workOutline: L10n("Expanded Work list")
+        case .sessionList: L10n("列表")
         case .taskCards: "卡片 · 实验"
         }
     }
@@ -417,5 +419,12 @@ struct WorkOutlineFolderIcon: Shape {
         path.closeSubpath()
         return path.applying(CGAffineTransform(a: rect.width / 18, b: 0, c: 0,
             d: rect.height / 14, tx: rect.minX, ty: rect.minY))
+    }
+}
+
+/// Chat always exposes a recent preview; explicit expansion only reveals more.
+enum ConsoleChatPreviewPolicy {
+    static func visibleCount(total: Int, showsAll: Bool) -> Int {
+        showsAll ? max(0, total) : min(5, max(0, total))
     }
 }

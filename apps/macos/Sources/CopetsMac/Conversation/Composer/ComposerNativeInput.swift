@@ -346,7 +346,7 @@ struct ComposerInputTextView: NSViewRepresentable {
 
         func submit() {
             guard controller.isPresentationEnabled else { return }
-            guard let submission = controller.submission() else {
+            guard let submission = controller.submission(allowingImageOnly: true) else {
                 return
             }
             onSubmit(submission)

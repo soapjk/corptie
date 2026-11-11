@@ -438,15 +438,7 @@ struct SessionMessageComposerSurface: View {
 
     private func sendCurrentDraft() {
         guard allowsActions else { return }
-        guard let submission = editorController.submission()
-                ?? (!attachedImages.isEmpty
-                    ? ComposerDraftBuffer.Submission(
-                        text: editorController.draft.text,
-                        revision: editorController.draft.revision
-                    )
-                    : nil) else {
-            return
-        }
+        guard let submission = editorController.submission(allowingImageOnly: true) else { return }
         send(submission)
     }
 
