@@ -128,6 +128,7 @@ struct UnifiedConsoleView: View {
     }
     @State var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
     @State var outlineFullyExpandedWorkIDs = Set<String>()
+    @State var showsAllChatSessions = false
     @State var cardAttentionCount = 0
     @State var cardSelectionExplicitlyCleared = false
     @State private var didResolveInitialSession = false
@@ -387,6 +388,10 @@ struct UnifiedConsoleView: View {
                 unifiedWorkOutlineSidebar
                     .frame(maxWidth: .infinity)
             }
+            if navigationMode == .sessionList {
+                flatSessionSidebar
+                    .frame(maxWidth: .infinity)
+            }
             cardWorkspaceSidebar
                 .frame(maxWidth: .infinity)
                 .frame(width: navigationMode == .taskCards ? nil : 0)
@@ -435,33 +440,22 @@ struct UnifiedConsoleView: View {
     }
 
     var outlineSortMenu: some View {
-        Menu {
-            Picker("排序方式", selection: Binding(get: { outlineSortRaw }, set: { outlineSortRaw = $0 })) {
-                ForEach(WorkOutlineSort.allCases, id: \.rawValue) { mode in
-                    Text(mode.title).tag(mode.rawValue)
-                }
+        Picker("排序方式", selection: Binding(get: { outlineSortRaw }, set: { outlineSortRaw = $0 })) {
+            ForEach(WorkOutlineSort.allCases, id: \.rawValue) { mode in
+                Text(mode.title).tag(mode.rawValue)
             }
-        } label: {
-            PlatformWorkOutlineToolbarGlyph(symbol: "line.3.horizontal.decrease")
         }
-        .platformWorkOutlineToolbarControl()
-        .menuIndicator(.hidden)
         .accessibilityLabel("排序方式").accessibilityValue(outlineSort.title)
         .accessibilityIdentifier("work-outline-sort")
         .help("排序方式")
     }
 
     var navigationModeToggle: some View {
-        Menu {
+        Menu("视图") {
             navigationModeOption(.workOutline, title: "分组")
+            navigationModeOption(.sessionList, title: "列表")
             navigationModeOption(.taskCards, title: "卡片 · 实验")
-        } label: {
-            PlatformWorkOutlineToolbarGlyph(
-                symbol: navigationMode == .taskCards ? "square.grid.2x2" : "list.bullet"
-            )
         }
-        .platformWorkOutlineToolbarControl()
-        .menuIndicator(.hidden)
         .accessibilityLabel("视图")
         .accessibilityValue(navigationMode.accessibilityValue)
         .accessibilityIdentifier("work-outline-view")
@@ -471,6 +465,7 @@ struct UnifiedConsoleView: View {
     private var navigationModeTitle: String {
         switch navigationMode {
         case .workOutline: "分组"
+        case .sessionList: "列表"
         case .taskCards: "卡片 · 实验"
         }
     }
@@ -1014,13 +1009,9 @@ struct UnifiedConsoleView: View {
         Button {
             setWorkerArchiveVisible(!isShowingWorkerArchive)
         } label: {
-            PlatformWorkOutlineToolbarGlyph(
-                symbol: isShowingWorkerArchive ? "archivebox.fill" : "archivebox",
-                color: isShowingWorkerArchive ? .accentColor : .primary,
-                selected: isShowingWorkerArchive
-            )
+            Label(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"),
+                  systemImage: isShowingWorkerArchive ? "archivebox.fill" : "archivebox")
         }
-        .platformWorkOutlineToolbarControl()
         .help(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
         .accessibilityLabel(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
         .accessibilityIdentifier("work-outline-archive")

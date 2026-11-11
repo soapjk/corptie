@@ -79,6 +79,7 @@ struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
 /// so switching between the two groups does not change navigation density. It
 /// observes the stable row model directly so content-only patches stay local.
 struct ConsoleSessionRow: View {
+    var projectName: String? = nil
     var showsHoverFeedback = true
     var isActive = true
     @ObservedObject var row: SessionRowModel
@@ -92,10 +93,16 @@ struct ConsoleSessionRow: View {
             selectionRequested(session)
         } label: {
             HStack(spacing: 9) {
-                HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(row.listTitle)
                         .font(WorkbenchTypography.font(for: .navigation))
                         .lineLimit(1)
+                    if let projectName {
+                        Text(projectName)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 0)
                 if (session.mailboxPendingCount ?? 0) > 0 {

@@ -55,6 +55,7 @@ struct ConsoleOutlinePresentationStamp: Equatable {
     var expandedTaskIDs: Set<String> = []
     var showingArchive = false
     var sidebarActive = true
+    var showsAllChats = false
 }
 
 struct ConsoleNativeOutline<Row: Identifiable, Content: View>: View where Row.ID == String {

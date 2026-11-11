@@ -42,7 +42,8 @@ extension UnifiedConsoleView {
             selectedWorkID: selectedWorkId, online: backendClient.isOnline,
             language: AppLanguageController.shared.languageCode, search: searchText,
             fullyExpandedWorkIDs: outlineFullyExpandedWorkIDs, expandedTaskIDs: expandedParentTaskIDs,
-            showingArchive: isShowingWorkerArchive, sidebarActive: sidebarState.isSelected)) { entry in
+            showingArchive: isShowingWorkerArchive, sidebarActive: sidebarState.isSelected,
+            showsAllChats: showsAllChatSessions)) { entry in
             switch entry {
             case .session(let row):
                 sessionRow(row, showsHoverFeedback: false)
@@ -56,6 +57,8 @@ extension UnifiedConsoleView {
                 outlineGroupEmptyRow(title)
             case .more(let workID, let count):
                 outlineShowAllTasksButton(workID: workID, hiddenCount: count)
+            case .moreChats:
+                showMoreChatSessionsButton
             }
         }
     }
@@ -65,17 +68,20 @@ extension UnifiedConsoleView {
         let processingWorkIDs = sessionIndexStore.processingWorkIDs
         let assistantRows = assistantSessionRows
         let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let chatCount = ConsoleChatPreviewPolicy.visibleCount(total: assistantRows.count,
+            showsAll: showsAllChatSessions || queryIsActive)
+        var chatEntries = assistantRows.prefix(chatCount).map { ConsoleNativeOutlineEntry.session($0) }
+        if chatEntries.isEmpty { chatEntries = [.empty("assistant-empty", L10n("No Assistant Sessions"))] }
+        if chatCount < assistantRows.count { chatEntries.append(.moreChats) }
         var groups = [ConsoleNativeOutlineGroup(
             id: "assistant",
             header: AnyView(outlineChatHeader(hasUnread: unreadSummary.hasUnreadAssistantSessions,
                 isProcessing: sessionIndexStore.hasProcessingAssistantSessions)),
-            rows: assistantRows.isEmpty
-                ? [ConsoleNativeOutlineEntry.empty("assistant-empty", L10n("No Assistant Sessions"))]
-                : assistantRows.map { .session($0) },
-            isExpanded: outlineAssistantExpandedBinding.wrappedValue,
-            allowsCollapse: !queryIsActive,
+            rows: chatEntries,
+            isExpanded: true,
+            allowsCollapse: false,
             showsDisclosureIndicator: false,
-            expansionChanged: { outlineAssistantExpandedBinding.wrappedValue = $0 }
+            structureRevision: chatEntries.count
         )]
         groups.append(.init(id: "projects-heading", header: AnyView(Text(L10n("Projects"))
             .font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)), isSection: true))
@@ -130,34 +136,24 @@ extension UnifiedConsoleView {
     }
 
     func outlineChatHeader(hasUnread: Bool, isProcessing: Bool) -> some View {
-        ConsoleAssistantExpansionScope(preferences: outlineExpansionPreferences,
-            forceExpanded: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { isExpanded in
-            Button {
-                let expanded = outlineAssistantExpandedBinding
-                expanded.wrappedValue = !expanded.wrappedValue
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: isExpanded ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18)
-                    ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing,
-                        isActive: sidebarState.isSelected,
-                        fontSize: 12, weight: .medium)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    ConsoleGroupStatusIndicators(isExpanded: isExpanded, isProcessing: isProcessing,
-                        hasUnread: hasUnread)
-                }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(SessionSelectionPressStyle())
-            .accessibilityLabel(L10n("Chat"))
-            .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
+        HStack(spacing: 7) {
+            ConsoleWorkTitle(title: L10n("Chat"), isWorking: isProcessing,
+                isActive: sidebarState.isSelected, fontSize: 12, weight: .medium)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            ConsoleGroupStatusIndicators(isExpanded: true, isProcessing: isProcessing, hasUnread: hasUnread)
         }
+        .padding(.vertical, 3)
+        .accessibilityLabel(L10n("Chat"))
+    }
+
+    var showMoreChatSessionsButton: some View {
+        Button(L10n("展示更多")) { showsAllChatSessions = true }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("console.chat.show-more")
     }
 
     func outlineGroupEmptyRow(_ title: String) -> some View {
@@ -365,7 +361,7 @@ extension UnifiedConsoleView {
 
     var assistantSessionRows: [SessionRowModel] {
         let rows = searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
-        return outlineSort.ordered(rows, id: { $0.session.id }, title: { $0.session.title },
+        return WorkOutlineSort.updated.ordered(rows, id: { $0.session.id }, title: { $0.session.title },
                                    updatedAt: { $0.session.updatedAt },
                                    activityAt: { $0.session.lastMessageAt })
     }
@@ -403,6 +399,7 @@ enum ConsoleNativeOutlineEntry: Identifiable {
     case workChat(Work)
     case empty(String, String)
     case more(String, Int)
+    case moreChats
 
     var id: String {
         switch self {
@@ -411,6 +408,7 @@ enum ConsoleNativeOutlineEntry: Identifiable {
         case .workChat(let work): "work-chat:" + work.id
         case .empty(let id, _): "empty:" + id
         case .more(let workID, _): "more:" + workID
+        case .moreChats: "more-chats"
         }
     }
 }

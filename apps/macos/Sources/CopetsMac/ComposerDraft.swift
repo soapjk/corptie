@@ -211,13 +211,15 @@ final class ComposerEditorController {
         return true
     }
 
-    func submission() -> ComposerDraftBuffer.Submission? {
+    func submission(allowingImageOnly: Bool = false) -> ComposerDraftBuffer.Submission? {
         if let textView {
             guard !textView.hasMarkedText() else { return nil }
             draft.updateFromEditor(textView.string)
             presentedDraftRevision = draft.revision
         }
-        return draft.submission()
+        if let submission = draft.submission() { return submission }
+        guard allowingImageOnly, !draft.images.isEmpty else { return nil }
+        return ComposerDraftBuffer.Submission(text: draft.text, revision: draft.revision)
     }
 
     @discardableResult

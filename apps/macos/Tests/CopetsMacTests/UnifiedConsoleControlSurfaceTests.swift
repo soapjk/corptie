@@ -326,8 +326,14 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("consoleSidebarCreationRow"))
         #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)"))
         #expect(MainWindowPageLayoutMetrics.headerRowHeight == 48)
-        #expect(source.contains("Menu {\n            navigationModeOption(.workOutline, title: \"分组\")"))
-        #expect(source.contains(".platformWorkOutlineToolbarControl()\n        .menuIndicator(.hidden)"))
+        #expect(source.contains("Menu(\"视图\") {\n            navigationModeOption(.workOutline, title: \"分组\")"))
+        #expect(source.contains("Picker(\"排序方式\", selection:"))
+        #expect(!source.contains("Menu(\"排序方式\")"))
+        let menuStart = try #require(source.range(of: "var outlineSortMenu:"))
+        let menuEnd = try #require(source.range(of: "var cardWorkspaceSidebar:", range: menuStart.upperBound..<source.endIndex))
+        let menuContent = source[menuStart.lowerBound..<menuEnd.lowerBound]
+        #expect(!menuContent.contains("PlatformWorkOutlineToolbarGlyph"))
+        #expect(!menuContent.contains("platformWorkOutlineToolbarControl"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
         #expect(controls.contains(".platformWorkOutlineToolbarDensity(.titlebar)"))
         #expect(controls.contains(".padding(.top, 2)"))
@@ -818,7 +824,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func navigationRemovesClassicAndMigratesItsSavedPreference() throws {
-        #expect(ConsoleNavigationMode.allCases == [.workOutline, .taskCards])
+        #expect(ConsoleNavigationMode.allCases == [.workOutline, .sessionList, .taskCards])
         #expect(ConsoleNavigationMode.resolved("workRail") == .workOutline)
         #expect(ConsoleNavigationMode.resolved("workOutline") == .workOutline)
         #expect(ConsoleNavigationMode.resolved("unknown") == .workOutline)
@@ -831,13 +837,13 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("outlineChatHeader"))
         #expect(source.contains("ForEach(assistantSessionRows)"))
         #expect(source.contains("ConsoleOutlineExpansionPreferences"))
-        #expect(source.contains("outlineExpansionPreferences.expandedWorkIDs"))
+        #expect(source.contains("outlineExpansionPreferences.isWorkExpanded"))
         #expect(source.contains("workChatRow(row)"))
-        #expect(source.contains("taskRow(task)"))
+        #expect(source.contains("hierarchyTaskRow(task"))
         #expect(!source.contains("navigationModeOption(.workRail"))
         #expect(source.contains("navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains("navigationModeOption(.taskCards, title: \"卡片 · 实验\")"))
-        #expect(source.contains(".menuStyle(.button)"))
+        #expect(source.contains(".menuStyle(.borderlessButton)"))
         #expect(!source.contains(".overlay(alignment: .bottomLeading)"))
         #expect(source.contains(".accessibilityValue(navigationMode.accessibilityValue)"))
     }
