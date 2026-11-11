@@ -2091,3 +2091,15 @@
 "默认程序与账号已自动检测完成，可直接进入。" = "The default program and account were checked automatically. You can continue.";
 "请选择列表中的账号，或点击“添加账号”使用本机已有登录。" = "Pick an account above, or use Add Account to add a local sign-in.";
 "添加账号" = "Add Account";
+
+"执行引擎配置已就绪" = "Engine configuration is ready";
+
+"配置已准备，点击下一步检测已开启的执行引擎。" = "Configuration is ready. Continue to test enabled engines.";
+
+"正在准备配置或检测执行引擎…" = "Preparing configuration or testing engines…";
+
+"检测已开启provider并进入corptie" = "Test enabled providers and enter Corptie";
+
+"部分本机登录来源未能导入，其他账号已保留，可通过添加账号重试。" = "Some local sign-ins could not be imported. Other accounts are available; use Add Account to retry.";
+
+"配置待检测 · 点击底部按钮统一检测" = "Not tested · Use the button below to test enabled engines";

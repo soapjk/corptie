@@ -95,6 +95,16 @@ final class ProviderSettingsDraft {
         return projection.accounts.contains { $0.id == accountId && $0.canSelect }
     }
 
+    /// Configured input unlocks the explicit check action; reply proof is obtained afterwards.
+    var canEnterFirstRun: Bool {
+        let enabled = providers.filter { values[$0.id]?.enabled ?? $0.enabled }
+        return !enabled.isEmpty && enabled.allSatisfy { provider in
+            let path = values[provider.id]?.path ?? provider.path
+            return !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && (provider.accounts == nil || hasSpecifiedAccount(provider.id))
+        }
+    }
+
     /// First run picks an account without asking. Never overwrites a choice
     /// that is already usable.
     @discardableResult

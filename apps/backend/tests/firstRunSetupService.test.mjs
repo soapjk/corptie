@@ -464,3 +464,39 @@ test("account management is advertised only by providers that implement it, and 
   ] });
   assert.equal(saved.providers.find(value => value.id === provider.id).accounts.selectedAccountId, "new");
 });
+
+test("explicit entry checks every enabled provider and skips disabled engines", async t => {
+  const f = await fixture(t);
+  for (const providerId of ["codex-app-server", "claude-sdk"]) {
+    await f.service.setProgram({ providerId, path: f.binary });
+    await f.service.setEnabled({ providerId, path: f.binary, enabled: true });
+  }
+  assert.equal(f.probes.length, 0);
+  const [one, two] = await Promise.all([f.service.checkAndComplete(), f.service.checkAndComplete()]);
+  assert.equal(one.completed, true);
+  assert.equal(two.completed, true);
+  assert.deepEqual(f.probes.map(p => p.id).sort(), ["claude-sdk", "codex-app-server"]);
+  assert.equal(f.launches(), 1);
+  await f.service.checkAndComplete();
+  assert.equal(f.probes.length, 2);
+});
+
+test("explicit entry waits for all enabled checks and does not enter on failure", async t => {
+  const f = await fixture(t);
+  for (const p of f.options.providers) {
+    await f.service.setProgram({ providerId: p.id, path: f.binary });
+    await f.service.setEnabled({ providerId: p.id, path: f.binary, enabled: true });
+  }
+  f.options.providers[0].probe = async () => { f.probes.push({ id: "failed" }); throw new Error("fixture connection failed"); };
+  await assert.rejects(f.service.checkAndComplete(), /codex-app-server.*fixture connection failed/);
+  assert.equal(f.probes.length, 3);
+  assert.equal(f.service.state.completed, false);
+  assert.equal(f.launches(), 0);
+});
+
+test("explicit entry rejects an empty enabled set without probing", async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.service.checkAndComplete(), /Provider/);
+  assert.equal(f.probes.length, 0);
+  assert.equal(f.launches(), 0);
+});

@@ -85,6 +85,20 @@ struct FirstRunStatus: Decodable {
     }
 }
 
+/// Import every discovered source even if another source fails.
+@MainActor
+enum FirstRunAccountImport {
+    static func importAll(_ sources: [DiscoveredAccountSource],
+                          using operation: (DiscoveredAccountSource) async throws -> Void) async -> Int {
+        var failures = 0
+        for source in sources {
+            do { try await operation(source) }
+            catch { failures += 1 }
+        }
+        return failures
+    }
+}
+
 // Only startup/reconnect and explicit actions refresh this small projection.
 // The main tab tree is not mounted behind the first-run page.
 @MainActor
@@ -100,8 +114,6 @@ struct FirstRunSetupRoot<Content: View>: View {
     /// is staged here and submitted through one `/first-run/settings` save.
     @State private var providerDraft = ProviderSettingsDraft()
     @State private var scanGeneration = 0
-    /// Bumped exactly once after first-run picked the default binary + account.
-    @State private var autoCheckGeneration = 0
     @State private var didAutoPrepare = false
 
     init(initialStatus: FirstRunStatus? = nil,
@@ -118,16 +130,15 @@ struct FirstRunSetupRoot<Content: View>: View {
     }
 
     private var canEnter: Bool {
-        guard let status, !providerDraft.isSaving else { return false }
-        return status.providers.contains { provider in
-            let enabled = providerDraft.values[provider.id]?.enabled ?? provider.enabled
-            let accountReady = provider.accounts == nil || providerDraft.hasSpecifiedAccount(provider.id)
-            return enabled && provider.executable && accountReady
-        }
+        guard status != nil, !providerDraft.isSaving, !busy else { return false }
+        return providerDraft.canEnterFirstRun
     }
 
     private var needsAccount: Bool {
-        status?.providers.contains { $0.accounts != nil && !providerDraft.hasSpecifiedAccount($0.id) } == true
+        providerDraft.providers.contains {
+            (providerDraft.values[$0.id]?.enabled ?? $0.enabled)
+                && $0.accounts != nil && !providerDraft.hasSpecifiedAccount($0.id)
+        }
     }
 
     var body: some View {
@@ -189,7 +200,7 @@ struct FirstRunSetupRoot<Content: View>: View {
                                         // server row; re-sync both the page and the shared draft.
                                         Task { try? await refresh() }
                                     }, settingsDraft: providerDraft,
-                                    autoCheckGeneration: autoCheckGeneration)
+                                    automaticallyChecksChanges: false)
                             }
                         } else {
                             VStack(alignment: .leading, spacing: 12) {
@@ -268,12 +279,12 @@ struct FirstRunSetupRoot<Content: View>: View {
 
     private var completionHint: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Label(L10n(canEnter ? "执行引擎已准备就绪"
+            Label(L10n(canEnter ? "执行引擎配置已就绪"
                         : needsAccount ? "请先为 Codex 指定账号" : "至少完成一个执行引擎配置才能继续"),
                   systemImage: canEnter ? "checkmark.circle.fill" : "info.circle")
                 .font(.callout)
                 .foregroundStyle(canEnter ? Color.accentColor : (needsAccount ? Color.orange : Color.secondary))
-            Text(L10n(canEnter ? "默认程序与账号已自动检测完成，可直接进入。"
+            Text(L10n(canEnter ? "配置已准备，点击下一步检测已开启的执行引擎。"
                       : needsAccount ? "请选择列表中的账号，或点击“添加账号”使用本机已有登录。"
                       : "完成配置后，Corptie 助理会陪你开始使用。"))
                 .font(.caption)
@@ -294,11 +305,17 @@ struct FirstRunSetupRoot<Content: View>: View {
     private var enterButton: some View {
         Button {
             perform {
-                // Entering commits the same shared draft as Settings, then the
-                // one-time completion action initializes Chat and saves the marker.
+                // Save once, explicitly check enabled engines, then initialize Chat.
                 try await providerDraft.save()
                 try await refresh()
-                self.status = try await FirstRunSetupAPI.request("first-run/complete", body: ["language": AppLanguageController.shared.languageCode])
+                do {
+                    self.status = try await FirstRunSetupAPI.request("first-run/check-and-complete",
+                        body: ["language": AppLanguageController.shared.languageCode])
+                } catch {
+                    let failure = error
+                    try? await refresh()
+                    throw failure
+                }
                 if let sessionId = self.status?.assistantSessionId {
                     AppTabRouter.shared.openSession(sessionId, source: .userSelection)
                 }
@@ -306,7 +323,7 @@ struct FirstRunSetupRoot<Content: View>: View {
         } label: {
             HStack(spacing: 8) {
                 if busy { ProgressView().controlSize(.small) }
-                Text(L10n(busy ? "正在准备助理…" : "进入 Corptie"))
+                Text(L10n(busy ? "正在准备配置或检测执行引擎…" : "检测已开启provider并进入corptie"))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
@@ -324,35 +341,35 @@ struct FirstRunSetupRoot<Content: View>: View {
         await autoPrepareIfNeeded()
     }
 
-    /// First launch is zero-touch: use the discovered Codex binary, pick a
-    /// usable local account and let the card run one background check. The user
-    /// only has to read the result and press "进入 Corptie".
+    /// Account discovery/import is local preparation, never a model probe.
     private func autoPrepareIfNeeded() async {
-        guard !didAutoPrepare, FirstRunStatus.requiresSetup(status),
-              let codex = providerDraft.providers.first(where: { $0.accounts != nil }) else { return }
+        guard !didAutoPrepare, FirstRunStatus.requiresSetup(status) else { return }
         didAutoPrepare = true
-        if !providerDraft.hasSpecifiedAccount(codex.id), !providerDraft.stageDefaultAccount(for: codex) {
-            await importDefaultLocalAccount(for: codex)
+        let accountProviders = providerDraft.providers.filter { $0.accounts != nil }
+        guard !accountProviders.isEmpty else { return }
+        var failures = 0
+        for provider in accountProviders {
+            let endpoint = "providers/\(provider.id)/accounts"
+            do {
+                let detected: ProviderAccountResponse = try await FirstRunSetupAPI.request(
+                    endpoint, body: ["action": "discover"])
+                failures += await FirstRunAccountImport.importAll(detected.discovered ?? []) { source in
+                    let _: ProviderAccountResponse = try await FirstRunSetupAPI.request(endpoint,
+                        body: ["action": "import", "source": ["kind": source.kind, "path": source.path]])
+                }
+            } catch { failures += 1 }
         }
-        autoCheckGeneration += 1
-    }
-
-    /// A machine that only has a native Codex sign-in has no selectable account
-    /// yet. Import the first discovered local credential and select it, so the
-    /// default path never stalls on "请指定账号". Read-only preview backends
-    /// reject account operations; that failure stays silent and falls back to
-    /// the inline "添加账号" entry point.
-    private func importDefaultLocalAccount(for provider: FirstRunProvider) async {
-        let endpoint = "providers/\(provider.id)/accounts"
-        guard let detected: ProviderAccountResponse = try? await FirstRunSetupAPI.request(
-                endpoint, body: ["action": "discover"]),
-              let source = detected.discovered?.first else { return }
-        let imported: ProviderAccountResponse? = try? await FirstRunSetupAPI.request(endpoint,
-            body: ["action": "import", "source": ["kind": source.kind, "path": source.path]])
-        guard let id = imported?.accountId else { return }
-        providerDraft.edit(provider.id, accountId: id)
-        // Refresh the projection so the card can display the new account name.
-        try? await refresh()
+        do {
+            let next = try await loadStatus()
+            status = next
+            providerDraft.receive(next)
+            for provider in providerDraft.providers where provider.accounts != nil {
+                providerDraft.stageDefaultAccount(for: provider)
+            }
+        } catch { self.error = error.localizedDescription }
+        if failures > 0 {
+            self.error = L10n("部分本机登录来源未能导入，其他账号已保留，可通过添加账号重试。")
+        }
     }
 
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
@@ -372,7 +389,7 @@ struct FirstRunSetupRoot<Content: View>: View {
 enum FirstRunSetupAPI {
     static func request<T: Decodable>(_ path: String, body: [String: Any]? = nil) async throws -> T {
         var request = URLRequest(url: CorptieAppEnvironment.backendBaseURL.appending(path: path))
-        request.timeoutInterval = 60
+        request.timeoutInterval = path == "first-run/check-and-complete" ? 180 : 60
         if let body {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -396,9 +413,10 @@ struct FirstRunProviderCard: View {
     let provider: FirstRunProvider
     let busy: Bool
     let scanGeneration: Int
-    /// Bumped once by onboarding after it picked a default account. Settings
-    /// leaves it at zero: there, only an explicit edit starts a check.
+    /// Optional shared-form trigger. First-run disables automatic checks and
+    /// uses its explicit check-and-complete action instead.
     let autoCheckGeneration: Int
+    let automaticallyChecksChanges: Bool
     let isDefault: Bool
     let updated: (FirstRunProvider) -> Void
     @State private var path: String
@@ -416,12 +434,13 @@ struct FirstRunProviderCard: View {
 
     init(provider: FirstRunProvider, busy: Bool, scanGeneration: Int, isDefault: Bool,
          updated: @escaping (FirstRunProvider) -> Void, settingsDraft: ProviderSettingsDraft,
-         autoCheckGeneration: Int = 0) {
+         autoCheckGeneration: Int = 0, automaticallyChecksChanges: Bool = true) {
         self.settingsDraft = settingsDraft
         self.provider = provider
         self.busy = busy
         self.scanGeneration = scanGeneration
         self.autoCheckGeneration = autoCheckGeneration
+        self.automaticallyChecksChanges = automaticallyChecksChanges
         self.isDefault = isDefault
         self.updated = updated
         let automatic = provider.program.map { !["manual", "controlled"].contains($0.mode) } ?? false
@@ -463,6 +482,9 @@ struct FirstRunProviderCard: View {
     private var statusLabel: String {
         if testing { return L10n("正在后台自动检测…") }
         if !hasAccount { return L10n("请指定账号") }
+        if !automaticallyChecksChanges && (hasPendingSettings || !resultMatchesSelection || !available) {
+            return L10n("配置待检测 · 点击底部按钮统一检测")
+        }
         if hasPendingSettings { return L10n("正在应用配置…") }
         if !resultMatchesSelection { return L10n("配置已更改 · 即将自动检测") }
         if available {
@@ -574,6 +596,9 @@ struct FirstRunProviderCard: View {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(available && displayEnabled ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.1), lineWidth: 1)
         }
+        .onChange(of: provider.lastCheckedAt) { _, _ in result = provider }
+        .onChange(of: provider.accounts?.accounts.map(\.id)) { _, _ in result = provider }
+        .onChange(of: provider.accounts?.selectedAccountId) { _, _ in result = provider }
         .onChange(of: selectionKey) { _, _ in
             if testing { cancelCheck() }
             testing = false
@@ -586,17 +611,16 @@ struct FirstRunProviderCard: View {
             await scanPrograms()
         }
         .task(id: autoCheckTrigger) {
-            guard autoCheckTrigger > 0 else { return }
+            guard automaticallyChecksChanges, autoCheckTrigger > 0 else { return }
             await commitAndCheck()
         }
         .onDisappear { autoCheckDebounce?.cancel(); cancelCheck() }
 
     }
 
-    /// Edits are debounced so typing a path does not fire one model request
-    /// per keystroke. Root's first-run preparation uses `autoCheckGeneration`
-    /// to skip the wait entirely.
+    /// Settings may debounce checks after edits; first-run only stages edits.
     private func scheduleAutoCheck() {
+        guard automaticallyChecksChanges else { return }
         autoCheckDebounce?.cancel()
         autoCheckDebounce = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(700))
