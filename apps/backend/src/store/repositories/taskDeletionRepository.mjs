@@ -29,7 +29,7 @@ export class TaskDeletionRepository {
     this.scheduleSave();
   }
 
-  beginTaskDeletionOperation(id, input = {}, idempotencyKey) {
+  beginTaskDeletionOperation(id, input = {}, idempotencyKey, { retryFailed = false } = {}) {
     const key = String(idempotencyKey ?? "").trim();
     if (!key) throw new TypeError("Task deletion idempotencyKey is required.");
     let operation;
@@ -38,7 +38,7 @@ export class TaskDeletionRepository {
         "SELECT * FROM task_deletion_operations WHERE task_id=? AND idempotency_key=?",
         [id, key]
       );
-      if (existing) {
+      if (existing && !(retryFailed && existing.state === "failed" && existing.retryable)) {
         operation = existing;
         return;
       }
@@ -71,6 +71,16 @@ export class TaskDeletionRepository {
         error.code = "TASK_DELETE_STATE_CONFLICT";
         error.statusCode = 409;
         throw error;
+      }
+      if (existing) {
+        this.db.run(
+          `UPDATE task_deletion_operations SET state='queued', stage='freezing',
+           error_code=NULL, error_message=NULL, retryable=0, attempt=attempt+1,
+           completed_at=NULL, updated_at=? WHERE operation_id=?`,
+          [timestamp, existing.operation_id]
+        );
+        operation = this.selectOne("SELECT * FROM task_deletion_operations WHERE operation_id=?", [existing.operation_id]);
+        return;
       }
       this.db.run(
         `INSERT INTO task_deletion_operations (

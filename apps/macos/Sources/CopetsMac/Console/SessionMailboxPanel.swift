@@ -84,6 +84,7 @@ final class SessionMailboxModel: ObservableObject {
 
     func toggle(_ message: SessionMailboxMessage) async {
         if expanded.removeValue(forKey: message.id) != nil { return }
+        expanded = [:]
         let token = generation
         do {
             let full: SessionMailboxMessage = try await request(sessionID: sessionID, suffix: "/messages/\(message.id)")
@@ -148,6 +149,8 @@ struct SessionMailboxPanel: View {
     let sessionID: String
     let pendingRevision: String
     var activity: ConversationDetailPresentationActivity? = nil
+    var onClose: (() -> Void)? = nil
+    var showsTitle = true
     private var isActive: Bool { activity?.isActive ?? true }
     @StateObject private var model = SessionMailboxModel()
     @State private var filter = "pending"
@@ -156,27 +159,49 @@ struct SessionMailboxPanel: View {
     private var loadKey: String { "\(sessionID):\(filter):\(source):\(pendingRevision):\(isActive)" }
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("信箱", systemImage: "tray").font(.headline)
+                if showsTitle { Label("会话信箱", systemImage: "tray").font(.headline) }
                 Spacer()
-                Text("待处理 \(model.pendingCount)").font(.caption).foregroundStyle(.secondary)
+                Text("待处理 \(model.pendingCount)").monospacedDigit().font(.caption).foregroundStyle(.secondary)
                 Button { Task { await model.load(sessionID: sessionID, filter: filter, source: source) } }
                     label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain).help("刷新信箱").accessibilityLabel("刷新信箱")
+                    .disabled(model.loading)
+                if let onClose {
+                    Button(action: onClose) { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).help("关闭信箱").accessibilityLabel("关闭信箱")
+                }
             }
-            Toggle("暂停自动处理", isOn: Binding(get: { model.paused }, set: { value in Task { await model.setPaused(value) } }))
-                .toggleStyle(.switch).disabled(model.loading || !model.canWrite)
-            Picker("消息范围", selection: $filter) {
-                Text("待处理").tag("pending"); Text("全部").tag("all"); Text("异常").tag("abnormal")
-            }.pickerStyle(.segmented)
-            Picker("来源", selection: $source) {
-                Text("全部来源").tag(""); Text("会话协作").tag("channel"); Text("自动化").tag("automation")
-                Text("后台作业").tag("background"); Text("系统").tag("system")
+            HStack(spacing: 8) {
+                Label(model.paused ? "自动处理已暂停" : "自动处理", systemImage: model.paused ? "pause.circle" : "tray.and.arrow.down")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Toggle("暂停自动处理", isOn: Binding(get: { model.paused }, set: { value in Task { await model.setPaused(value) } }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .disabled(model.loading || !model.canWrite)
+                    .accessibilityLabel("暂停自动处理")
             }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { scopePicker; sourcePicker }
+                VStack(alignment: .leading, spacing: 6) { scopePicker; sourcePicker }
+            }
+            Divider()
             if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-            if model.loading && model.messages.isEmpty { ProgressView().frame(maxWidth: .infinity) }
-            if model.messages.isEmpty && !model.loading { Text("暂无消息").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical) }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+            if model.loading && model.messages.isEmpty { ProgressView().frame(maxWidth: .infinity).padding(.vertical, 24) }
+            if model.messages.isEmpty && !model.loading {
+                VStack(spacing: 8) {
+                    Image(systemName: "tray").font(.title2)
+                    Text("暂无消息").font(.callout.weight(.medium))
+                    Text(filter == "pending" ? "新的待处理消息会显示在这里" : "当前筛选下没有消息")
+                        .font(.caption).multilineTextAlignment(.center)
+                    if filter != "all" || !source.isEmpty {
+                        Button("查看全部消息") { filter = "all"; source = "" }.font(.caption)
+                    }
+                }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 24)
+            }
             ForEach(model.messages) { message in
                 VStack(alignment: .leading, spacing: 8) {
                     Button { Task { await model.toggle(message) } } label: {
@@ -215,7 +240,11 @@ struct SessionMailboxPanel: View {
                 }.padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
             }
             if model.hasMore { Button("加载更早消息") { Task { await model.load(sessionID: sessionID, filter: filter, source: source, older: true) } }.disabled(model.loading) }
+                }.padding(.bottom, 8)
+            }
         }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .disabled(!isActive)
         .task(id: loadKey) {
             guard isActive else { return }
@@ -227,6 +256,18 @@ struct SessionMailboxPanel: View {
             if let message = ignoreMessage { Button("忽略消息", role: .destructive) { ignoreMessage = nil; Task { await model.perform("ignore", messageID: message.id) } } }
             Button("取消", role: .cancel) { ignoreMessage = nil }
         }
+    }
+
+    private var scopePicker: some View {
+        Picker("消息范围", selection: $filter) {
+            Text("待处理").tag("pending"); Text("全部").tag("all"); Text("异常").tag("abnormal")
+        }.pickerStyle(.segmented).labelsHidden().controlSize(.small)
+    }
+    private var sourcePicker: some View {
+        Picker("来源", selection: $source) {
+            Text("全部来源").tag(""); Text("会话协作").tag("channel"); Text("自动化").tag("automation")
+            Text("后台作业").tag("background"); Text("系统").tag("system")
+        }.labelsHidden().controlSize(.small).fixedSize()
     }
 
     private func sourceName(_ value: String) -> String {

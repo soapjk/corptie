@@ -148,7 +148,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.verticalScroller = TimelineIntentScroller()
-        scrollView.scrollerStyle = .overlay
+        WorkNavigationScrollStyle.configure(scrollView)
         scrollView.contentView.drawsBackground = false
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true

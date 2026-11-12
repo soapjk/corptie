@@ -51,7 +51,25 @@ export class TaskDeletionService {
     const requestedKey = String(input.idempotencyKey ?? "").trim();
     if (requestedKey) {
       const replay = this.store.getTaskDeletionOperationByKey(taskId, requestedKey);
-      if (replay) return { accepted: true, operation: replay, idempotentReplay: true };
+      if (replay) {
+        if (replay.state !== "failed" || !replay.retryable) return { accepted: true, operation: replay, idempotentReplay: true };
+        const original = replay.input;
+        if (original.actor?.type !== actor?.type || original.actor?.id !== actor?.id) {
+          throw coded("TASK_DELETE_FORBIDDEN", "Only the original actor may resume this deletion.", 403);
+        }
+        // Resume the saved intent, never adopt new disposal options under an old key.
+        for (const field of ["deleteWorktree", "artifactDisposition", "acknowledgeDataLoss", "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration"]) {
+          if (input[field] !== undefined && input[field] !== original[field]) {
+            throw coded("TASK_DELETE_IDEMPOTENCY_CONFLICT", "Deletion options changed; use a new request key.", 409);
+          }
+        }
+        await this.inFlight.get(replay.operationId);
+        const plan = await this.inspect(taskId, actor, replay.operationId);
+        this.#assertDeletionAllowed(plan, original, true);
+        const operation = this.store.beginTaskDeletionOperation(taskId, original, requestedKey, { retryFailed: true });
+        if (["queued", "running"].includes(operation.state)) this.#schedule(operation.operationId);
+        return { accepted: true, operation, idempotentReplay: true };
+      }
     }
     const plan = await this.inspect(taskId, actor);
     this.#assertDeletionAllowed(plan, input, true);

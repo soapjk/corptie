@@ -1345,7 +1345,7 @@ export class ArtifactService {
           };
       if (disposition === "work") await this.transferOwnership(contextInput, artifact.artifactId, {
         scope: "work", expectedResourceVersion: artifact.resourceVersion,
-        idempotencyKey: `task-deletion:${taskId}:${artifact.resourceVersion}`
+        idempotencyKey: `task-deletion:${taskId}:${artifact.artifactId}:${artifact.resourceVersion}`
       });
       const next = disposition === "work" ? this.store.getArtifact(artifact.artifactId)
         : this.store.updateArtifact(artifact.artifactId, patch);

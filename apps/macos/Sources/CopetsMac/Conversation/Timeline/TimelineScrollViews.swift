@@ -32,10 +32,6 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
         guard trailingScrollerExtension > 0 else { return }
         let contentWidth = max(0, bounds.width - trailingScrollerExtension)
         contentView.setFrameSize(NSSize(width: contentWidth, height: contentView.frame.height))
-        if let scroller = verticalScroller {
-            scroller.frame = NSRect(x: bounds.maxX - 12, y: scroller.frame.minY,
-                width: 12, height: scroller.frame.height)
-        }
     }
 
     // Read already-laid-out native bounds; no SwiftUI state or measurement feedback.
@@ -101,7 +97,7 @@ final class IntrinsicHeightTableView: NSTableView {
 }
 
 /// Preserve reader intent while AppKit owns painting, hit testing and fading.
-class TimelineIntentScroller: ConsoleThinScroller {
+class TimelineIntentScroller: WorkOutlineThinScroller {
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
     func beginScrollInteraction() { enclosingScrollView?.flashScrollers() }

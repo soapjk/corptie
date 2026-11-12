@@ -275,3 +275,42 @@ test("root deletion cascades real child records and preserves unrelated Tasks ac
     assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"),[]);
   } finally {await f.store.close();await rm(f.directory,{recursive:true,force:true});}
 });
+
+
+test("same-key failed cleanup resumes once, preserves intent and skips removed Worktree", async () => {
+  const f = await fixture();
+  try {
+    let removals = 0;
+    let transfers = 0;
+    f.deletion.inspectWorktree = async () => ({ status: "available", worktree: { worktreeId: "tree:one", path: f.directory, mergedIntoMain: true } });
+    f.deletion.removeWorktree = async () => { removals++; return { worktreeRemoved: true }; };
+    f.deletion.handleArtifacts = async () => {
+      if (++transfers === 1) throw Object.assign(new Error("transfer interrupted"), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
+      return { disposition: "work", artifactIds: [] };
+    };
+    const input = { idempotencyKey: "resume:one", artifactDisposition: "work" };
+    const first = await f.deletion.request("task:delete", input, localUser);
+    await f.deletion.inFlight.get(first.operation.operationId);
+    const failed = f.deletion.getOperation(first.operation.operationId);
+    assert.equal(failed.state, "failed");
+    assert.equal(removals, 1);
+    await assert.rejects(f.deletion.request("task:delete", input, { type: "user", id: "someone-else" }), { code: "TASK_DELETE_FORBIDDEN" });
+    await assert.rejects(f.deletion.request("task:delete", { ...input, artifactDisposition: "delete" }, localUser), { code: "TASK_DELETE_IDEMPOTENCY_CONFLICT" });
+    f.deletion.authorize = () => false;
+    await assert.rejects(f.deletion.request("task:delete", input, localUser), { code: "TASK_DELETE_FORBIDDEN" });
+    f.deletion.authorize = () => true;
+    const retries = await Promise.all([f.deletion.request("task:delete", input, localUser), f.deletion.request("task:delete", input, localUser)]);
+    assert.ok(retries.every(r => r.operation.operationId === first.operation.operationId));
+    await f.deletion.inFlight.get(first.operation.operationId);
+    const done = f.deletion.getOperation(first.operation.operationId);
+    assert.equal(done.state, "succeeded");
+    assert.equal(done.attempt, failed.attempt + 1);
+    assert.equal(removals, 1);
+    assert.equal(transfers, 2);
+    assert.equal(done.input.artifactDisposition, "work");
+    assert.equal(f.store.getTask("task:delete"), null);
+    const replay = await f.deletion.request("task:delete", input, localUser);
+    assert.equal(replay.operation.state, "succeeded");
+    assert.equal(transfers, 2);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});

@@ -195,12 +195,10 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                     Group {
                         if railPhase != .hidden {
                             detail()
+                                .environment(\.detailColumnVisibility, visibility)
                                 .frame(width: ConversationDetailWidgetMetrics.railWidth)
                                 .frame(maxHeight: .infinity)
-                                // The rail paints no canvas of its own. Module
-                                // cards own their material, so they float over
-                                // the window background instead of sitting on
-                                // an opaque white column.
+                                .background(DetailRailBackdrop())
                                 .background(DetailOutsideClickDismissal(enabled: !canDock) {
                                     temporaryVisible = false
                                 })

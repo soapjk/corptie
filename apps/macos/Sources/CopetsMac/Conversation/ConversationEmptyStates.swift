@@ -17,6 +17,7 @@ struct ConversationWelcomeView: View {
             Text(L10n(isAssistant ? "Hello, I'm your Corptie assistant" : "Start with an idea"))
                 .font(.system(size: 26, weight: .semibold))
                 .foregroundStyle(CorptiePalette.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             Text(L10n(isAssistant
                 ? "Ask me about Corptie, or tell me what you'd like to work on."

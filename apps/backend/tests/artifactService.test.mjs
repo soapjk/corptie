@@ -570,6 +570,45 @@ test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", 
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+for (const partial of ["none", "legacy", "interrupted"]) test(`Task disposal isolates same-version Artifact operations (${partial})`, async () => {
+  const f = await fixture();
+  try {
+    const artifacts = [];
+    for (let i = 0; i < 3; i++) artifacts.push(await f.service.create(workerContext(f), {
+      title: `Report ${i}`, content: `evidence ${i}`, boundTaskId: "task:one",
+      visibility: "task_private", idempotencyKey: `disposal-report-${i}`
+    }));
+    const ids = artifacts.map(a => a.artifactId);
+    const version = f.store.getArtifact(ids[0]).resourceVersion;
+    assert.ok(ids.every(id => f.store.getArtifact(id).resourceVersion === version));
+    if (partial === "legacy") {
+      // Reproduce the already-committed first transfer from the old colliding key.
+      await f.service.transferOwnership(localUserContext, ids[0], {
+        scope: "work", expectedResourceVersion: version,
+        idempotencyKey: `task-deletion:task:one:${version}`
+      });
+    }
+    if (partial === "interrupted") {
+      const transfer = f.service.transferOwnership.bind(f.service);
+      let calls = 0;
+      f.service.transferOwnership = (...args) => {
+        if (++calls === 2) throw Object.assign(new Error("temporary failure"), { code: "TEST_INTERRUPTED" });
+        return transfer(...args);
+      };
+      await assert.rejects(f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "work"), { code: "TEST_INTERRUPTED" });
+      f.service.transferOwnership = transfer;
+    }
+    await f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "work");
+    assert.deepEqual(await f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "work"), { disposition: "work", artifactIds: [] });
+    for (const id of ids) {
+      assert.equal(f.store.getArtifact(id).scope, "work");
+      assert.equal(f.store.getArtifact(id).boundTaskId, null);
+      assert.equal(f.store.listArtifactAudit("work:one", id).filter(a => a.action === "artifact.ownership_changed").length, 1);
+      assert.equal((await f.service.verifyIntegrity(id)).ok, true);
+    }
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("Work private content is hashed, atomically stored outside repositories, paged, and usage-audited", async () => {
   const f = await fixture();
   try {
