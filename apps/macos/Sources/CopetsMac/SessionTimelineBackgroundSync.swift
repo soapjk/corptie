@@ -31,8 +31,19 @@ enum SessionTimelineDuplicateRecovery {
 /// running Session reaching a terminal state is the reliable moment to
 /// reconcile the selected Timeline once, independently of that wake.
 enum SessionTerminalTimelineReconciliation {
-    static func shouldReconcile(wasRunning: Bool, isRunning: Bool, isSelected: Bool) -> Bool {
-        isSelected && wasRunning && !isRunning
+    static func shouldReconcile(wasRunning: Bool, isRunning: Bool, isSelected: Bool,
+                                messageCursorAdvanced: Bool = false) -> Bool {
+        isSelected && !isRunning && (wasRunning || messageCursorAdvanced)
+    }
+}
+
+/// Timeline revisions and message delivery cursors are independent. A warm
+/// cache can have consumed a revision without containing the final reply.
+/// Compare only cursors from snapshots, never a read receipt or Session rebind.
+enum SessionMessageCursorReconciliation {
+    static func requiresSnapshot(serverSequence: Int?, cachedSequence: Int?) -> Bool {
+        guard let serverSequence, serverSequence > 0 else { return false }
+        return serverSequence > (cachedSequence ?? 0)
     }
 }
 

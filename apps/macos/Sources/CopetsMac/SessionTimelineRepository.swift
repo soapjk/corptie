@@ -65,9 +65,14 @@ final class SessionTimelineState: ObservableObject {
         // content. Bumping the presentation version for those background
         // polls made every open page rebuild its display cache, rebind its
         // AppKit rows and dirty the whole window while the user was idle.
-        let contentChanged = self.detail == nil || (self.detail?.items ?? []) != detail.items
+        // A route rebind also changes presentation context (file links and
+        // provider identity), even when it retains exactly the same messages.
+        let bindingChanged = self.detail?.id != detail.id || self.detail?.cwd != detail.cwd
+            || self.detail?.source != detail.source
+        let contentChanged = bindingChanged || (self.detail?.items ?? []) != detail.items
             || retainedTurnContext != previousContext
-        guard contentChanged || self.timelineRevision != nextRevision else { return }
+        let messageCursorChanged = self.detail?.lastAgentMessageSequence != detail.lastAgentMessageSequence
+        guard contentChanged || messageCursorChanged || self.timelineRevision != nextRevision else { return }
         self.timelineRevision = nextRevision
         let ids = Set(detail.items.map(\.id))
         let context = retainedTurnContext.filter { !ids.contains($0.id) }
@@ -188,10 +193,7 @@ enum SessionTimelineBindingReconciler {
             capabilities: session.capabilities ?? detail.capabilities,
             turnCount: detail.turnCount,
             items: detail.items,
-            lastAgentMessageSequence: max(
-                detail.lastAgentMessageSequence ?? 0,
-                session.lastAgentMessageSequence ?? 0
-            ),
+            lastAgentMessageSequence: detail.lastAgentMessageSequence,
             hasMoreHistory: detail.hasMoreHistory,
             historyItemsCount: detail.historyItemsCount,
             actions: session.actions ?? detail.actions

@@ -2,6 +2,24 @@ import XCTest
 @testable import CorptieMac
 
 final class SessionTimelineBackgroundSyncTests: XCTestCase {
+    func testWarmCacheReconcilesWhenMessageCursorIsAheadDespiteEqualTimelineRevision() {
+        XCTAssertTrue(SessionMessageCursorReconciliation.requiresSnapshot(serverSequence: 120, cachedSequence: 119))
+        XCTAssertTrue(SessionMessageCursorReconciliation.requiresSnapshot(serverSequence: 120, cachedSequence: nil))
+        XCTAssertFalse(SessionMessageCursorReconciliation.requiresSnapshot(serverSequence: 120, cachedSequence: 120))
+        XCTAssertFalse(SessionMessageCursorReconciliation.requiresSnapshot(serverSequence: 119, cachedSequence: 120))
+        XCTAssertFalse(SessionMessageCursorReconciliation.requiresSnapshot(serverSequence: nil, cachedSequence: 120))
+        XCTAssertFalse(SessionMessageCursorReconciliation.requiresSnapshot(serverSequence: 0, cachedSequence: nil))
+    }
+
+    func testFinalMessageCursorRecoversWhenRunningTransitionWasMissed() {
+        XCTAssertTrue(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: false, isRunning: false, isSelected: true, messageCursorAdvanced: true))
+        XCTAssertFalse(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: false, isRunning: true, isSelected: true, messageCursorAdvanced: true))
+        XCTAssertFalse(SessionTerminalTimelineReconciliation.shouldReconcile(
+            wasRunning: false, isRunning: false, isSelected: false, messageCursorAdvanced: true))
+    }
+
     func testUnopenedSessionTimelineAdvanceSchedulesWithoutFinalUnreadCursor() {
         XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: 7,
