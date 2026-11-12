@@ -528,8 +528,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(composer.contains("struct ComposerQuickMessagesBar: View"))
         #expect(composer.contains("Button(action: onJumpToLatest)"))
         #expect(composer.contains("JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow)"))
-        #expect(conversation.contains("bottomClearance: quickMessageOverlap"))
-        #expect(conversation.contains("ConversationRegionStack(accessoryOverlap: quickMessageOverlap)"))
+        #expect(conversation.contains("bottomClearance: 0"))
+        #expect(conversation.contains("ConversationRegionStack(floating: AnyView(floatingDock))"))
         #expect(!conversation.contains(".onPreferenceChange(ConversationChromeFramePreferenceKey.self)"))
         #expect(!conversation.contains("conversationChromeFrame(.composer)"))
         #expect(conversation.contains("ConversationComposerDock"))
@@ -567,10 +567,10 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!conversation.contains("let jumpControlHeight"))
         #expect(!conversation.contains("quickMessagePresentation.showsMessages || composerJumpToLatestAction"))
         #expect(conversation.contains("private var usesJumpControlSlot"))
-        #expect(conversation.contains("let floatingQuickMessages = showsDockQuickMessages && !hasPinnedChecklist"))
-        #expect(conversation.contains("return ComposerQuickMessagesBar.jumpControlSize + floatingQuickMessages"))
-        #expect(conversation.contains("ConversationRegionStack(accessoryOverlap: quickMessageOverlap)"))
-        #expect(conversation.contains("bottomClearance: quickMessageOverlap"))
+        #expect(conversation.contains("private var floatingDock: some View"))
+        #expect(!conversation.contains("private var quickMessageOverlap"))
+        #expect(conversation.contains("ConversationRegionStack(floating: AnyView(floatingDock))"))
+        #expect(conversation.contains("bottomClearance: 0"))
     }
 
     @Test

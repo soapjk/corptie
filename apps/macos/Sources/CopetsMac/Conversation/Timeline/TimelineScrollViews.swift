@@ -38,6 +38,19 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
         }
     }
 
+    // Read already-laid-out native bounds; no SwiftUI state or measurement feedback.
+    var onFloatingClearance: ((CGFloat) -> Void)?
+    var currentFloatingClearance: CGFloat? {
+        var parent = superview
+        while let view = parent {
+            if let region = view as? ConversationFloatingRegion {
+                region.floatingClearanceDidLayout = onFloatingClearance
+                return region.floatingRegionClearance
+            }
+            parent = view.superview
+        }
+        return nil
+    }
     var onLayout: (() -> Void)?
     var onUserScrollWillBegin: (() -> Void)?
     var onUserScrollDidEnd: (() -> Void)?
@@ -51,6 +64,7 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
     override func layout() {
         super.layout()
         onLayout?()
+        if let height = currentFloatingClearance { onFloatingClearance?(height) }
     }
 }
 

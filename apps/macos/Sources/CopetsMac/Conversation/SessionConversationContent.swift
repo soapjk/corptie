@@ -116,17 +116,6 @@ struct SessionConversationSurface: View {
     private var showsDockQuickMessages: Bool {
         usesJumpControlSlot && quickMessagePresentation.showsMessages
     }
-    private var quickMessageOverlap: CGFloat {
-        guard usesJumpControlSlot else { return 0 }
-        // Keep the overlap independent of the button's visibility: the dock
-        // height and the transcript's bottom inset must stay put when the
-        // control appears or disappears. With a pinned checklist the quick
-        // messages sit below the checklist, outside the transcript, so only
-        // the jump slot floats over message text.
-        let floatingQuickMessages = showsDockQuickMessages && !hasPinnedChecklist
-            ? ConversationQuickMessages.rowHeight + 4 : 0
-        return ComposerQuickMessagesBar.jumpControlSize + floatingQuickMessages
-    }
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
@@ -524,7 +513,7 @@ struct SessionConversationSurface: View {
     }
 
     private var conversationLayout: some View {
-        ConversationRegionStack(accessoryOverlap: quickMessageOverlap) {
+        ConversationRegionStack(floating: AnyView(floatingDock)) {
             messageViewport
         } accessory: {
             inputDock
@@ -546,8 +535,8 @@ struct SessionConversationSurface: View {
     }
 
     private var messageViewportBody: some View {
-            // The input dock owns both the editor and quick actions.
-            // Neither floats over the message viewport.
+            // The viewport ends at the input region; quick actions have their
+            // own native floating host above this viewport.
             Group {
                 switch contentPhase {
                 case .live:
@@ -628,17 +617,27 @@ struct SessionConversationSurface: View {
 
     }
 
-    private var inputDock: some View {
+    private var floatingDock: some View {
         VStack(spacing: 0) {
             if usesJumpControlSlot { jumpControlSlot }
-            // One editor at one structural position: placement changes must
-            // not recreate the native text view, attachments or draft owner.
             if hasPinnedChecklist, let plan = currentChecklist {
                 PinnedExecutionChecklistCard(plan: plan)
                     .id(sessionId + ":" + plan.planId)
                     .modifier(WorkbenchReadingLane(compact: compactComposer))
                     .padding(.bottom, 6)
             }
+            if showsDockQuickMessages {
+                dockQuickMessages
+                    .modifier(WorkbenchReadingLane(compact: compactComposer))
+                    .padding(.bottom, 4)
+            }
+        }
+    }
+
+    private var inputDock: some View {
+        VStack(spacing: 0) {
+            // One editor at one structural position: placement changes must
+            // not recreate the native text view, attachments or draft owner.
             VStack(spacing: 24) {
                 if showsWelcome {
                     ConversationWelcomeView(
@@ -646,7 +645,7 @@ struct SessionConversationSurface: View {
                     )
                 }
                 ConversationComposerDock {
-                    if showsDockQuickMessages { dockQuickMessages }
+                    EmptyView()
                 } composer: {
                     VStack(spacing: 6) {
                         if let session = selectedSession {
@@ -784,7 +783,7 @@ struct SessionConversationSurface: View {
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch,
                 topClearance: topChromeClearance,
-                bottomClearance: quickMessageOverlap,
+                bottomClearance: 0,
                 reservesVerticalScrollerGutter: !compactComposer,
                 trailingScrollerExtension: 0,
                 centersReadingLane: !compactComposer

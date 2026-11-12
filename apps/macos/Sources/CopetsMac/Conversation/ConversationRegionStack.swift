@@ -8,6 +8,7 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
     var accessoryAtTop = false
     var accessoryHeight: CGFloat? = nil
     var accessoryOverlap: CGFloat = 0
+    var floating: AnyView? = nil
     @ViewBuilder var content: () -> Content
     @ViewBuilder var accessory: () -> Accessory
 
@@ -19,7 +20,8 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
 
     func makeNSView(context: Context) -> ConversationRegionContainer<AnyView, AnyView> {
         ConversationRegionContainer(content: AnyView(content().environment(\.self, environment)), accessory: accessoryRoot(),
-            atTop: accessoryAtTop, height: accessoryHeight, overlap: accessoryOverlap)
+            atTop: accessoryAtTop, height: accessoryHeight, overlap: accessoryOverlap,
+            floating: floating.map { AnyView($0.environment(\.self, environment)) })
     }
     func updateNSView(_ view: ConversationRegionContainer<AnyView, AnyView>, context: Context) {
         // `AnyView` erases structure, so replacing either root rebuilds the
@@ -28,7 +30,7 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
         // constraints, so hold the newest roots until the gesture ends.
         view.applyRoots(content: AnyView(content().environment(\.self, environment)),
                         accessory: accessoryRoot(),
-                        overlap: accessoryOverlap)
+                        overlap: accessoryOverlap, floating: floating.map { AnyView($0.environment(\.self, environment)) })
     }
     static func dismantleNSView(_ view: ConversationRegionContainer<AnyView, AnyView>, coordinator: ()) {
         view.discardPendingRoots()
@@ -38,9 +40,19 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
     }
 }
 
-final class ConversationRegionContainer<Content: View, Accessory: View>: NSView {
+@MainActor protocol ConversationFloatingRegion: AnyObject {
+    var floatingRegionClearance: CGFloat? { get }
+    var floatingClearanceDidLayout: ((CGFloat) -> Void)? { get set }
+}
+
+final class ConversationRegionContainer<Content: View, Accessory: View>: NSView, ConversationFloatingRegion {
     let content: NSHostingView<Content>
     let accessory: NSHostingView<Accessory>
+    let floatingHost: NSHostingView<AnyView>
+    private var pendingFloating: AnyView?
+    private var hasFloating = false
+    var floatingRegionClearance: CGFloat? { hasFloating ? floatingHost.frame.height : nil }
+    var floatingClearanceDidLayout: ((CGFloat) -> Void)?
     private var contentBottom: NSLayoutConstraint?
     /// `NSWindow.inLiveResize` is not settable outside AppKit; tests drive the
     /// same branch through this seam.
@@ -51,13 +63,16 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView 
     private var observesLiveResizeEnd = false
     private(set) var rootCommitCount = 0
     var hasPendingRoots: Bool { pendingContent != nil || pendingAccessory != nil }
-    init(content: Content, accessory: Accessory, atTop: Bool, height: CGFloat?, overlap: CGFloat = 0) {
+    init(content: Content, accessory: Accessory, atTop: Bool, height: CGFloat?, overlap: CGFloat = 0, floating: AnyView? = nil) {
         self.content = NSHostingView(rootView: content)
         self.accessory = NSHostingView(rootView: accessory)
+        floatingHost = NSHostingView(rootView: floating ?? AnyView(EmptyView().frame(height: 0)))
+        hasFloating = floating != nil
+        floatingHost.isHidden = floating == nil
         super.init(frame: .zero)
         self.content.sizingOptions = []
         self.accessory.sizingOptions = height == nil ? [.intrinsicContentSize] : []
-        for host in [self.content as NSView, self.accessory as NSView] {
+        for host in [self.content as NSView, self.accessory as NSView, floatingHost as NSView] {
             host.translatesAutoresizingMaskIntoConstraints = false
             addSubview(host)
             NSLayoutConstraint.activate([
@@ -65,6 +80,11 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView 
                 host.trailingAnchor.constraint(equalTo: trailingAnchor)
             ])
         }
+        floatingHost.safeAreaRegions = []
+        floatingHost.sizingOptions = [.intrinsicContentSize]
+        floatingHost.setContentHuggingPriority(.required, for: .vertical)
+        floatingHost.setContentCompressionResistancePriority(.required, for: .vertical)
+        floatingHost.bottomAnchor.constraint(equalTo: self.accessory.topAnchor).isActive = true
         self.content.safeAreaRegions = []
         self.accessory.safeAreaRegions = []
         self.accessory.setContentHuggingPriority(.required, for: .vertical)
@@ -97,15 +117,16 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView 
     /// hosted SwiftUI trees still reflow on every frame. Only the *content*
     /// roots are held, so text keeps wrapping live while no view hierarchy is
     /// rebuilt until the gesture ends.
-    func applyRoots(content: Content, accessory: Accessory, overlap: CGFloat) {
+    func applyRoots(content: Content, accessory: Accessory, overlap: CGFloat, floating: AnyView? = nil) {
         setAccessoryOverlap(overlap)
         guard holdsRootUpdates else {
             discardPendingRoots()
-            commitRoots(content: content, accessory: accessory)
+            commitRoots(content: content, accessory: accessory, floating: floating)
             return
         }
         pendingContent = content
         pendingAccessory = accessory
+        pendingFloating = floating
         guard !observesLiveResizeEnd, let window else { return }
         NotificationCenter.default.addObserver(self, selector: #selector(liveResizeDidEnd),
             name: NSWindow.didEndLiveResizeNotification, object: window)
@@ -121,8 +142,9 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView 
             discardPendingRoots()
             return
         }
+        let floating = pendingFloating
         discardPendingRoots()
-        commitRoots(content: content, accessory: accessory)
+        commitRoots(content: content, accessory: accessory, floating: floating)
     }
 
     func discardPendingRoots() {
@@ -132,13 +154,23 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView 
         }
         pendingContent = nil
         pendingAccessory = nil
+        pendingFloating = nil
     }
 
-    private func commitRoots(content: Content, accessory: Accessory) {
+    private func commitRoots(content: Content, accessory: Accessory, floating: AnyView? = nil) {
+        hasFloating = floating != nil
+        floatingHost.isHidden = floating == nil
+        floatingHost.rootView = floating ?? AnyView(EmptyView().frame(height: 0))
         self.content.rootView = content
         self.accessory.rootView = accessory
         rootCommitCount += 1
     }
     required init?(coder: NSCoder) { fatalError() }
+    override func layout() {
+        super.layout()
+        // Floating controls can change height without resizing the viewport.
+        // Publish only the native frame, after sibling constraints have settled.
+        if let height = floatingRegionClearance { floatingClearanceDidLayout?(height) }
+    }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 }
