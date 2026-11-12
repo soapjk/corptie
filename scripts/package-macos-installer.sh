@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 PRODUCT_NAME="Corptie"
 APP_NAME="${PRODUCT_NAME}.app"
 BUILD_CFG="release"
-ARCHIVE_DIR="${ROOT}/dist"
+ARCHIVE_DIR="${CORPTIE_PACKAGE_OUTPUT_DIR:-${ROOT}/.corptie/artifacts/macos-package}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKEND_BUILD_ID="${TIMESTAMP}"
 VERSION_LOCK="${ROOT}/.corptie/release-version.lock"
@@ -251,6 +251,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+node "${ROOT}/scripts/macos-update.mjs" configure "${APP_DIR}"
+
 BACKEND_SOURCE="${ROOT}/apps/backend"
 BACKEND_DEST="${APP_DIR}/Contents/Resources/backend"
 (
@@ -418,6 +420,18 @@ fi
 /usr/bin/env -i HOME="${HOME}" PATH=/usr/bin:/bin \
   "${APP_DIR}/Contents/Helpers/node" "${ROOT}/scripts/verify-bundled-node.mjs" "${APP_DIR}"
 echo "Bundled Node binary size (bytes): $(stat -f %z "${APP_DIR}/Contents/Helpers/node")"
+
+if [[ -n "${CORPTIE_UPDATE_FEED_URL:-}" ]]; then
+  node "${ROOT}/scripts/macos-update.mjs" archive "${APP_DIR}" "${ARCHIVE_DIR}"
+fi
+
+# Local update verification needs a complete bundle without installer side effects.
+# Do not advance release metadata for this preparatory build.
+if [[ "${CORPTIE_PACKAGE_APP_ONLY:-0}" == "1" ]]; then
+  ditto "${APP_DIR}" "${ARCHIVE_DIR}/${APP_NAME}"
+  echo "Built app bundle: ${ARCHIVE_DIR}/${APP_NAME}"
+  exit 0
+fi
 
 PKG_FILE="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
 PKGBUILD_STDERR="$(mktemp "${PKG_TEMP_ROOT}/corptie-pkgbuild-stderr-XXXXXX")"

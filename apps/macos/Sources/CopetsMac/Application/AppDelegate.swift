@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var completionSoundManager: SessionCompletionSoundManager?
     private var automationNotificationManager: AutomationNotificationManager?
     private var resetNotificationManager: CodexResetSystemNotificationManager?
+    private let softwareUpdater = SoftwareUpdater()
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var collaborationWindow: NSWindow?
@@ -34,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
+        softwareUpdater.start()
 
         // The main window is a first-class macOS app window. A regular
         // activation policy keeps Corptie in the Dock and Command-Tab switcher;
@@ -340,6 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(NSMenuItem(title: "助手", action: #selector(openAssistant), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Workbench"), action: #selector(openWarRoom), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Settings..."), action: #selector(openSettings), keyEquivalent: ","))
+        let updateItem = NSMenuItem(title: L10n("Check for Updates…"), action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(updateItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: L10n("Quit Corptie"), action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
@@ -531,6 +535,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentView = NSHostingView(rootView: AssistantConversationView())
         window.makeKeyAndOrderFront(nil)
         assistantWindow = window
+    }
+
+    @objc private func checkForUpdates() {
+        softwareUpdater.checkForUpdates()
     }
 
     @objc private func quit() {

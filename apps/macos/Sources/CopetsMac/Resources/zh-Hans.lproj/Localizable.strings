@@ -2560,3 +2560,6 @@
 "此引擎暂不支持在此管理账号或模型来源。" = "此引擎暂不支持在此管理账号或模型来源。";
 
 "推荐" = "推荐";
+
+"Check for Updates…" = "检查更新…";
+"Automatic updates are not configured for this build." = "此版本尚未配置自动更新。";
