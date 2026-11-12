@@ -152,3 +152,33 @@ test("import preserves native effective model and bearer credential precedence",
   assert.equal(env.ANTHROPIC_AUTH_TOKEN, "selected-fixture-token");
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
 });
+
+
+test("native apiKeyHelper imports without execution or disclosure and survives restart and source switches", async t => {
+  const f = await fixture(t);
+  const marker = join(f.root, "helper-must-not-run");
+  const helper = `touch '${marker}'; printf fixture-helper-key`;
+  const native = { apiKeyHelper: helper, env: { ANTHROPIC_BASE_URL: manual.endpoint,
+    ANTHROPIC_MODEL: manual.model }, hooks: { Stop: ["untrusted-hook"] } };
+  await writeFile(f.paths.sourceSettingsPath, JSON.stringify(native));
+  const before = await readFile(f.paths.sourceSettingsPath, "utf8");
+  assert.equal((await f.service.describe("claude-sdk")).candidates[0].state, "found");
+  const projection = await f.service.saveSource("claude-sdk", { kind: "settings", path: f.paths.sourceSettingsPath });
+  assert.equal(projection.connection.current.authType, "helper");
+  assert.equal(projection.connection.current.credentialConfigured, true);
+  assert.ok(!JSON.stringify(projection).includes(helper));
+  await f.service.sync("claude-sdk");
+  const imported = JSON.parse(await readFile(f.paths.settingsPath, "utf8"));
+  assert.equal(imported.apiKeyHelper, helper);
+  assert.equal(imported.hooks, undefined);
+  assert.equal(await readFile(f.paths.sourceSettingsPath, "utf8"), before);
+  await assert.rejects(stat(marker), { code: "ENOENT" });
+  const restarted = new ProviderRuntimeSettings(f.options);
+  await restarted.initialize();
+  assert.deepEqual(restarted.executionOptions("claude-sdk"), { settings: { apiKeyHelper: helper } });
+  assert.equal(restarted.executionEnvironment("claude-sdk", {}).ANTHROPIC_MODEL, manual.model);
+  await assert.rejects(stat(marker), { code: "ENOENT" });
+  await restarted.saveConnection("claude-sdk", manual);
+  assert.deepEqual(restarted.executionOptions("claude-sdk"), {});
+  assert.equal(JSON.parse(await readFile(f.paths.settingsPath, "utf8")).apiKeyHelper, undefined);
+});

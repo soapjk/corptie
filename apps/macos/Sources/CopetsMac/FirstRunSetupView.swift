@@ -608,7 +608,7 @@ struct FirstRunProviderCard: View {
                         .accessibilityIdentifier("provider.editor." + provider.id)
                     } else {
                         Button(action: presentation.expand) {
-                            summary.padding(12)
+                            summary.padding(10)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                                 .contentShape(Rectangle())
                         }
@@ -621,8 +621,8 @@ struct FirstRunProviderCard: View {
                     }
                 }
                 .padding(presentation.expanded ? 12 : 0)
-                .frame(width: presentation.expanded ? 440 : 164,
-                       height: presentation.expanded ? nil : 164, alignment: .topLeading)
+                .frame(width: presentation.expanded ? 440 : 136,
+                       height: presentation.expanded ? nil : 136, alignment: .topLeading)
                 .background {
                     RoundedRectangle(cornerRadius: 14)
                         .fill(Color(nsColor: .controlBackgroundColor))
@@ -680,7 +680,7 @@ struct FirstRunProviderCard: View {
 
     private var summary: some View {
         let values = FirstRunProviderSummary(provider: result, draft: settingsDraft)
-        return VStack(spacing: 10) {
+        return VStack(spacing: 8) {
             providerIcon(size: 40)
             Text(provider.name).font(.callout.weight(.semibold)).lineLimit(1)
             VStack(spacing: 4) {

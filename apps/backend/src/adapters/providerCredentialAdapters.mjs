@@ -42,7 +42,7 @@ export function createProviderCredentialAdapters({ codexPaths, claudePaths, open
     },
     "claude-sdk": {
       runtimeDirectory: claudePaths.configDir, target: claudePaths.credentialsPath,
-      formatDescription: "支持本机账号，以及含 API Key 或 Bearer Token 的模型连接配置。",
+      formatDescription: "支持本机账号，以及含 API Key、Bearer Token 或 apiKeyHelper 的模型连接配置。",
       sourceKinds: ["directory", "file", "settings", "connection"],
       candidates: [
         ...(claudePaths.sourceSettingsPath ? [{ kind: "settings", path: claudePaths.sourceSettingsPath, label: "本机模型配置" }] : []),
@@ -61,6 +61,13 @@ export function createProviderCredentialAdapters({ codexPaths, claudePaths, open
         if (!current) return {};
         const settings = JSON.parse(value.content);
         return { ...settings.env, ...(settings.model && !settings.env.ANTHROPIC_MODEL ? { ANTHROPIC_MODEL: settings.model } : {}) };
+      },
+      // Explicit SDK settings keep helper authentication available even for
+      // no-tools operations with settingSources: []. Never import hooks/MCP.
+      executionOptions: value => {
+        if (!describeClaudeConnection(value)) return {};
+        const settings = JSON.parse(value.content);
+        return settings?.apiKeyHelper ? { settings: { apiKeyHelper: settings.apiKeyHelper } } : {};
       },
       describeConnection: value => ({
         managedSource: { kind: "connection", path: claudeSettingsPath },

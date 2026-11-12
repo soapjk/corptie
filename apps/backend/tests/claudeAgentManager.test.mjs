@@ -1571,3 +1571,32 @@ test("Claude fails an active Turn when the SDK query ends without a result", asy
   assert.equal(settled[0].error.retryable, true);
   assert.equal(manager.detail("claude-query-ended").status, "failed");
 });
+
+
+test("selected connection helper reaches foreground, test and isolated background SDK queries", async () => {
+  const requests = [];
+  let helper = "printf fixture-private-helper-key";
+  const manager = new ClaudeAgentManager({
+    connectionOptions: () => helper ? { settings: { apiKeyHelper: helper } } : {},
+    environment: () => ({}),
+    query: request => {
+      requests.push(request);
+      return { async *[Symbol.asyncIterator]() {
+        yield { type: "result", subtype: "success", result: "OK" };
+      }, close() {} };
+    }
+  });
+  manager.start({ id: "helper-test", runtimeOptions: { tools: [], settingSources: [] } });
+  await manager.ensureQueryStarted(manager.get("helper-test"));
+  assert.deepEqual(requests.at(-1).options.settings, { apiKeyHelper: helper });
+  await manager.testConnection();
+  assert.deepEqual(requests.at(-1).options.settings, { apiKeyHelper: helper });
+  await manager.runBackgroundPrompt({ prompt: "test", executionPolicy: "no-tools" });
+  assert.deepEqual(requests.at(-1).options.settings, { apiKeyHelper: helper });
+  assert.deepEqual(requests.at(-1).options.settingSources, []);
+  assert.deepEqual(requests.at(-1).options.tools, []);
+  assert.deepEqual(requests.at(-1).options.hooks, {});
+  helper = null;
+  await manager.runBackgroundPrompt({ prompt: "test", executionPolicy: "no-tools" });
+  assert.equal(requests.at(-1).options.settings, undefined);
+});

@@ -70,3 +70,18 @@ test("unknown version keeps a discovered executable selectable without claiming 
   assert.equal(result.candidates[0].version, null);
   assert.equal(result.candidates[0].state, "timeout");
 });
+
+
+test("a bounded cold-start budget discovers Claude versions without caching an earlier timeout", async t => {
+  const root = await mkdtemp(join(tmpdir(), "corptie-cold-version-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binary = join(root, "claude");
+  await writeFile(binary, "#!/bin/sh\nsleep 1.1\necho '2.1.236 (Claude Code)'\n", { mode: 0o700 });
+  const discovery = new ProviderExecutableDiscovery({ candidates: () => [{ path: binary, source: "cli" }],
+    perCandidateMs: 25, budgetMs: 12000 });
+  assert.equal((await discovery.scan()).candidates[0].state, "timeout");
+  discovery.perCandidateMs = 5000;
+  const result = await discovery.scan();
+  assert.equal(result.candidates[0].state, "discovered");
+  assert.equal(result.candidates[0].version, "2.1.236");
+});

@@ -995,6 +995,7 @@ const providerSessionLifecycle = new ProviderSessionLifecycle({
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
+  connectionOptions: () => providerRuntimeSettings.executionOptions("claude-sdk"),
   environment: () => providerRuntimeSettings.executionEnvironment("claude-sdk", selectedCredentialEnvironment(process.env, "claude-sdk", providerRuntimeSettings.sources["claude-sdk"])),
   prepareSessionInput: prepareClaudeProviderSessionInput,
   onProviderEvent: handleClaudeProviderEventSafely,
@@ -1264,7 +1265,7 @@ const firstRunSetup = new FirstRunSetupService({
         await codexRuntime.close();
       } },
     { id: "claude-sdk", name: "Claude Code", discover: () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] }),
-      programDiscovery: new ProviderExecutableDiscovery({ budgetMs: 3000, perCandidateMs: 1000, maxCandidates: 8, preserveLegacySelection: true, candidates: () => [
+      programDiscovery: new ProviderExecutableDiscovery({ budgetMs: 12000, perCandidateMs: 5000, maxCandidates: 8, preserveLegacySelection: true, candidates: () => [
         process.env.CORPTIE_CLAUDE_PATH, ...externalCommandCandidates("claude")
       ].filter(Boolean).map(path => ({ path, source: "cli" })) }),
       probe: createClaudeReplyProbe({ environment: async () => {

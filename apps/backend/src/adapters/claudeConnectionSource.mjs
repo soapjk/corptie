@@ -36,12 +36,14 @@ async function jsonFile(path) {
 export function connectionSettings(value) {
   const env = Object.fromEntries(CLAUDE_CONNECTION_ENV.flatMap(key => text(value?.env?.[key])
     ? [[key, text(value.env[key])]] : []));
-  if (!env.ANTHROPIC_API_KEY && !env.ANTHROPIC_AUTH_TOKEN) return null;
+  const apiKeyHelper = text(value?.apiKeyHelper);
+  if (apiKeyHelper.length > 8192 || apiKeyHelper.includes("\0")) throw invalid("密钥获取配置无效。");
+  if (!env.ANTHROPIC_API_KEY && !env.ANTHROPIC_AUTH_TOKEN && !apiKeyHelper) return null;
   if (env.ANTHROPIC_AUTH_TOKEN) delete env.ANTHROPIC_API_KEY;
   const model = text(value?.model);
   if (env.ANTHROPIC_BASE_URL) env.ANTHROPIC_BASE_URL = endpointValue(env.ANTHROPIC_BASE_URL);
   if (model.length > 200 || /[\r\n\0]/.test(model)) throw invalid("请输入有效的模型名称。");
-  return { env, ...(model ? { model } : {}) };
+  return { env, ...(model ? { model } : {}), ...(apiKeyHelper ? { apiKeyHelper } : {}) };
 }
 
 export async function readClaudeConnection(source) {
