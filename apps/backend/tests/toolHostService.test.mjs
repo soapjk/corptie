@@ -962,3 +962,13 @@ test("Session creation requires an existing Agent actorId (no silent actor gener
     (error) => error.code === "AGENT_REQUIRED"
   );
 });
+
+test('catalog change signal exposes pending desired generation rather than hiding it behind applied version', () => {
+  const record = { desiredVersion: 'new', appliedVersion: 'old', status: 'refreshing' };
+  const service = new ToolHostService({ registry: {}, catalog: {}, coordinator: {
+    store: { getSessionToolCatalogMaterialization: () => record }
+  } });
+  assert.equal(service.catalogRevision({ metadata: {
+    logicalSessionId: 'logical:one', providerBindingId: 'binding:one'
+  } }), 'new:none');
+});

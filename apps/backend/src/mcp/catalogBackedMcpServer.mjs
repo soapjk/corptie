@@ -8,6 +8,21 @@ export function createCatalogBackedMcpServer(options = {}) {
   const client = options.client;
   let observedRevision = null;
   let revisionCheckRunning = false;
+  let notifiedRevision = null;
+  let notificationAttempts = 0;
+  let lastNotificationAt = 0;
+  const clock = options.clock ?? Date.now;
+  const notifyRevision = async (revision) => {
+    if (revision !== notifiedRevision) {
+      notifiedRevision = revision;
+      notificationAttempts = 0;
+    }
+    if (notificationAttempts >= 3
+      || (notificationAttempts > 0 && clock() - lastNotificationAt < 5_000)) return;
+    notificationAttempts += 1;
+    lastNotificationAt = clock();
+    await server.sendToolListChanged();
+  };
   const server = new Server(
     { name: "corptie-tool-host", version: "0.6.0" },
     {
@@ -46,7 +61,7 @@ export function createCatalogBackedMcpServer(options = {}) {
       });
       if (request.params.name === "corptie_tool_domain_load"
         && ["applying", "applied"].includes(result?.status)) {
-        await server.sendToolListChanged();
+        await checkRevision();
       }
       return normalizeToolResult(result);
     } catch (error) {
@@ -64,8 +79,7 @@ export function createCatalogBackedMcpServer(options = {}) {
       const result = await client.get("/internal/session/tool/catalog/revision");
       const next = result.revision ?? null;
       if (observedRevision != null && next != null && next !== observedRevision) {
-        observedRevision = next;
-        await server.sendToolListChanged();
+        await notifyRevision(next);
       } else if (observedRevision == null) {
         observedRevision = next;
       }

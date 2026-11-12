@@ -15,6 +15,9 @@ struct ConversationComposerDock<QuickMessages: View, Composer: View>: View {
             quickMessages
             composer
         }
+        // Only the transcript absorbs spare window height. Keep the dock at
+        // its content height regardless of checklist, usage or model content.
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.bottom, 4)
     }
 }
