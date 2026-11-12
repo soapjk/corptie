@@ -88,6 +88,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.setReservesVerticalScrollerGutter(reservesVerticalScrollerGutter)
         context.coordinator.setCentersReadingLane(centersReadingLane)
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
+        (scrollView as? FirstLayoutRestoringScrollView)?.onFloatingClearance = { [weak coordinator = context.coordinator] height in
+            coordinator?.setBottomClearance(height)
+        }
         context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
             context.coordinator.prepareInitialPosition(initialPosition)
@@ -96,7 +99,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
         context.coordinator.apply(rows: rows, contentRevision: contentRevision, animated: false)
         context.coordinator.setTopClearance(topClearance)
-        context.coordinator.setBottomClearance(bottomClearance)
+        context.coordinator.setBottomClearance((scrollView as? FirstLayoutRestoringScrollView)?.currentFloatingClearance ?? bottomClearance)
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
         context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
         context.coordinator.lastHistoryRequestEpoch = historyRequestEpoch
@@ -186,7 +189,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         // Decide whether to follow new rows against the previous stable
         // viewport before changing the document's chrome clearances.
         context.coordinator.setTopClearance(topClearance)
-        context.coordinator.setBottomClearance(bottomClearance)
+        context.coordinator.setBottomClearance((scrollView as? FirstLayoutRestoringScrollView)?.currentFloatingClearance ?? bottomClearance)
         if let initialPosition {
             context.coordinator.restoreIfNeeded(position: initialPosition)
         }

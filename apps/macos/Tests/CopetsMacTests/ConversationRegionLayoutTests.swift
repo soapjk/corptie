@@ -1,9 +1,66 @@
 import AppKit
 import SwiftUI
+import CorptieConversation
 import XCTest
 @testable import CorptieMac
 
 @MainActor final class ConversationRegionLayoutTests: XCTestCase {
+    private struct ScrollProbe: NSViewRepresentable {
+        let scroll: FirstLayoutRestoringScrollView
+        func makeNSView(context: Context) -> FirstLayoutRestoringScrollView { scroll }
+        func updateNSView(_ view: FirstLayoutRestoringScrollView, context: Context) { }
+    }
+    func testFloatingHeightChangeUpdatesClearanceWithoutResizingViewport() {
+        let scroll = FirstLayoutRestoringScrollView(frame: .zero)
+        let view = ConversationRegionContainer(content: ScrollProbe(scroll: scroll), accessory: Color.clear.frame(height: 100),
+            atTop: false, height: nil, floating: AnyView(Color.clear.frame(height: 34)))
+        view.frame.size = CGSize(width: 700, height: 600)
+        view.layoutSubtreeIfNeeded()
+        let viewport = view.content.frame
+        var clearance: CGFloat?
+        scroll.onFloatingClearance = { clearance = $0 }
+        XCTAssertEqual(scroll.currentFloatingClearance, 34)
+        view.applyRoots(content: ScrollProbe(scroll: scroll), accessory: Color.clear.frame(height: 100), overlap: 0,
+            floating: AnyView(Color.clear.frame(height: 154)))
+        view.floatingHost.invalidateIntrinsicContentSize()
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.content.frame, viewport)
+        XCTAssertEqual(clearance ?? -1, 154, accuracy: 0.5)
+    }
+
+    func testRealQuickActionsFloatAboveEditorWithoutMovingTheViewportBoundary() {
+        for width in [540.0, 920.0] {
+            for height in [80.0, 160.0] {
+                let editor = ConversationComposerDock(quickMessages: { EmptyView() }) {
+                    ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
+                        HStack { Text("Model"); Spacer(); Button("Send") {} }
+                    } content: {
+                        TextEditor(text: .constant("Draft")).frame(height: height)
+                    }
+                }
+                let floating = VStack(spacing: 0) {
+                    Image(systemName: "arrow.down").frame(height: 30)
+                    Text("Checklist").frame(height: height == 160 ? 120 : 0)
+                    ConversationQuickMessages(items: [], enabled: true) { _ in }
+                        .padding(.bottom, 4)
+                }
+                let view = ConversationRegionContainer(content: Color.clear, accessory: editor,
+                    atTop: false, height: nil, floating: AnyView(floating))
+                let window = NSWindow(contentRect: .init(x: 0, y: 0, width: width, height: 700),
+                    styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.contentView = view
+                defer { window.contentView = nil }
+                view.layoutSubtreeIfNeeded()
+                XCTAssertEqual(view.content.frame.minY, view.accessory.frame.maxY, accuracy: 0.5)
+                XCTAssertEqual(view.floatingHost.frame.minY, view.accessory.frame.maxY, accuracy: 0.5)
+                XCTAssertGreaterThan(view.floatingHost.frame.height, 30)
+                XCTAssertTrue(view.content.frame.contains(view.floatingHost.frame))
+            }
+        }
+    }
+
     func testEmptyHeaderDoesNotReserveTitleHeight() throws {
         let host = NSHostingView(rootView: AdaptiveConversationColumns(isVisible: .constant(false),
             transcript: { Color.clear }, detail: { Color.clear }))
@@ -48,7 +105,7 @@ import XCTest
             XCTAssertEqual(view.accessory.frame.height, 100, accuracy: 0.5)
             XCTAssertEqual(view.content.frame.minY, view.accessory.frame.maxY - 34, accuracy: 0.5)
             XCTAssertEqual(view.content.frame.intersection(view.accessory.frame).height, 34, accuracy: 0.5)
-            XCTAssertTrue(view.subviews.last === view.accessory, "Quick actions receive clicks above messages")
+            XCTAssertGreaterThan(view.subviews.firstIndex(of: view.accessory)!, view.subviews.firstIndex(of: view.content)!, "Input controls remain above messages; the independent floating host is topmost")
         }
         // A pinned checklist uses normal stacking, with the same two hosts.
         view.setAccessoryOverlap(0)
