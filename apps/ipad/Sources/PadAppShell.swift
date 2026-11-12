@@ -866,15 +866,15 @@ private struct PadDeviceSettingsView: View {
         }
         .alert("移除 Cloud 设备？", isPresented: Binding(
             get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
-        )) {
+        ), presenting: cloudRevocation) { device in
             Button("取消", role: .cancel) { cloudRevocation = nil }
             Button("移除设备", role: .destructive) {
-                if let device = cloudRevocation { Task { await connection.revokeCloudDevice(device) } }
                 cloudRevocation = nil
+                Task { await connection.revokeCloudDevice(device) }
             }
-        } message: {
-            CloudDeviceRemovalMessage(device: cloudRevocation,
-                disconnectsCurrentMac: cloudRevocation?.id == connection.connectedCloudMacID)
+        } message: { device in
+            CloudDeviceRemovalMessage(device: device,
+                disconnectsCurrentMac: device.id == connection.connectedCloudMacID)
         }
     }
 }
