@@ -178,6 +178,7 @@ private struct NativeBusinessCard: View {
             }
             if card.kind == "contextReferences", let references {
                 Menu {
+                    if let importFile = references.importFile { Button("导入本机文件…", action: importFile) }
                     ForEach(references.addKinds) { kind in
                         Button(kind.title) { references.add(kind) }
                     }

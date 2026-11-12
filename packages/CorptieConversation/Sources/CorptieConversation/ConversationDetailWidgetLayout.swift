@@ -65,7 +65,7 @@ enum DetailWidgetSizing {
             let definition = blockHeight(value.description) + blockHeight(value.acceptanceCriteria) + blockHeight(value.verificationCriteria)
             let height = base + textHeight(value.title, lines: 2) + 24 + definition + summaryHeight(value.summary)
             return .fitted(height: height)
-        case .provider: return .small
+        case .provider: return .medium
         case .worktree(let value):
             let detailed = value.tree?.dirty == true || (!value.blockedReason.isEmpty && value.blockedReason != "MAIN_WORKTREE") || value.job != nil
             return .fitted(height: detailed ? 216 : 144)
