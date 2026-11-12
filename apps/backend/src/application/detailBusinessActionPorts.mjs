@@ -47,7 +47,7 @@ export function createDetailBusinessActionPorts({ inspector, schedules }) {
       capability: () => typeof inspector.perform === "function" && typeof inspector.updateTask === "function",
       resource: (scope, target) => { const value = bound(scope); return value.task?.id === target.id ? value.task : null; },
       revision: row => String(row.resource_version),
-      authorize: (scope, target, row) => !row.parent_task_id && !row.archived && !row.deletion_status && bound(scope).task?.id === target.id,
+      authorize: (scope, target, row) => !row.archived && !row.deletion_status && bound(scope).task?.id === target.id,
       validateFields: (_scope, _target, fields, resource) => {
         if (fields.coordinationEnabled === true) inspector.assertCoordinationCanEnable?.(resource);
         return typeof fields.coordinationEnabled === "boolean";
@@ -56,6 +56,7 @@ export function createDetailBusinessActionPorts({ inspector, schedules }) {
         scope.revalidateSync?.(); scope.readGuard?.();
         const value = bound(scope);
         if (value.task?.id !== target.id || value.task.resource_version !== resource.resource_version) deny("DETAIL_REVISION_CONFLICT");
+        if (value.task.archived || value.task.deletion_status) deny("DETAIL_SCOPE_FORBIDDEN", 403);
         return inspector.perform(value, "task.update", fields, fingerprint);
       }
     },

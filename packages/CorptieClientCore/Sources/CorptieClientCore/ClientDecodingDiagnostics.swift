@@ -53,7 +53,14 @@ public enum ClientFailureDiagnostics {
                 && failure.code.utf8.allSatisfy { (65...90).contains($0) || (48...57).contains($0) || $0 == 95 }
             detail += " serviceStatus=\(failure.statusCode) serviceCode=\(valid ? failure.code : "unclassified")"
         }
+        if let failure = error as? ClientDetailFailure { detail += " detailFailure=\(failure)" }
         return detail
+    }
+
+    public static func logDetailValidation(_ error: any Error, cardID: String, sessionID: String) {
+        log(error, operation: "detail.validateCard", sessionID: sessionID)
+        guard gate.allows("detail.card:" + sessionID + ":" + String(cardID.prefix(128))) else { return }
+        logger.error("operation=detail.validateCard card=\(String(cardID.prefix(128)), privacy: .private)")
     }
 
     public static func log(_ error: any Error, operation: String, sessionID: String? = nil) {

@@ -21,7 +21,13 @@ public struct ClientDetailBusinessDocument: Decodable, Equatable, Sendable {
               Set(document.order) == Set(document.cards.map(\.id)), document.order.count == document.cards.count else {
             throw ClientDetailFailure.invalidGraph
         }
-        for card in document.cards { try card.validate() }
+        for card in document.cards {
+            do { try card.validate() }
+            catch {
+                ClientFailureDiagnostics.logDetailValidation(error, cardID: card.id, sessionID: document.sessionId)
+                throw error
+            }
+        }
         return document
     }
 }
@@ -140,7 +146,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
             let dispatches = task.coordinationDispatches ?? []
             guard dispatches.count <= 5, Set(dispatches.map(\.id)).count == dispatches.count,
                 actions.filter({ $0.operation == "task.coordination.update" }).allSatisfy({
-                    task.parentTaskId == nil && $0.target?.resourceType == "task" && $0.target?.id == task.taskId
+                    $0.target?.resourceType == "task" && $0.target?.id == task.taskId
                 }) else { throw ClientDetailFailure.invalidGraph }
             guard !task.taskId.isEmpty, [task.title, task.status, task.description, task.acceptanceCriteria,
                 task.verificationCriteria, task.resourceRevision].allSatisfy({ validText($0) }),
