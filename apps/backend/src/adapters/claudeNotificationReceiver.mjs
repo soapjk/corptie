@@ -119,15 +119,18 @@ async function handleClaudeTurnSettled(event) {
   }
   settleEntityTaskFromSession(store.getSession(sessionId));
   const agent = collaborationCore.getAgentForSession(sessionId);
+  // Cancellation and failure also release an explicitly queued Provider switch.
+  const providerSwitch = continuePendingProviderSwitch(logical);
+  if (providerSwitch) {
+    await providerSwitch;
+    scheduleAgentWorkDrain(sessionId);
+    return;
+  }
   if (event.status === "completed") {
     const continuation = continuePendingWorkspaceTransition(logical, event.turnId);
-    const providerSwitch = continuePendingProviderSwitch(logical);
     resumeWorkAfterTransition(continuation, () => {
       scheduleAgentWorkDrain(sessionId);
     });
-    if (providerSwitch) {
-      providerSwitch.then(() => scheduleAgentWorkDrain(sessionId));
-    }
   } else if (agent) {
     scheduleAgentWorkDrain(sessionId);
   }
