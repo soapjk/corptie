@@ -88,13 +88,95 @@ import XCTest
         view.frame.size = CGSize(width: 700, height: 500)
         view.layoutSubtreeIfNeeded()
         let old = view.content.frame.height
-        view.accessory.rootView = Color.clear.frame(height: 90)
+        view.accessory.contentRoot = Color.clear.frame(height: 90)
         view.accessory.invalidateIntrinsicContentSize()
         view.layoutSubtreeIfNeeded()
         XCTAssertEqual(view.accessory.frame.minY, view.bounds.minY, accuracy: 0.5)
         XCTAssertEqual(view.content.frame.maxY, view.bounds.maxY, accuracy: 0.5)
         XCTAssertEqual(old - view.content.frame.height, 50, accuracy: 0.5)
     }
+
+    private struct ResponsiveToolbarFixture: View {
+        var editorHeight: CGFloat = 44
+        var body: some View {
+            ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
+                ComposerEditorRowLayout(minimumEditorWidth: 100, preservesLeadingContentWidth: true) {
+                    DockMarker(name: "leading").frame(width: 280, height: 32)
+                    DockMarker(name: "actions").frame(width: 400, height: 30)
+                }
+            } content: {
+                DockMarker(name: "responsive-editor").frame(height: editorHeight).padding(.horizontal, 10)
+            }
+            .modifier(WorkbenchReadingLane(compact: false))
+        }
+    }
+
+    func testAccessoryIdealHeightUsesNativeWidthAcrossToolbarWrapAndEditorGrowth() throws {
+        let view = ConversationRegionContainer(content: Color.clear, accessory: ResponsiveToolbarFixture(), atTop: false, height: nil)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1233, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view
+        defer { window.contentView = nil; window.close() }
+        func find(_ id: String, in view: NSView) -> NSView? {
+            if view.identifier?.rawValue == id { return view }
+            return view.subviews.lazy.compactMap { find(id, in: $0) }.first
+        }
+        var editor: NSView?
+        for editorHeight: CGFloat in [44, 96] {
+            view.applyRoots(content: Color.clear, accessory: ResponsiveToolbarFixture(editorHeight: editorHeight), overlap: 0)
+            for width: CGFloat in [1233, 340, 1233] {
+                window.setContentSize(.init(width: width, height: 700)); view.layoutSubtreeIfNeeded()
+                let current = try XCTUnwrap(find("responsive-editor", in: view))
+                if let editor { XCTAssertTrue(current === editor) } else { editor = current }
+                let frame = current.convert(current.bounds, to: view.accessory)
+                let topGap = view.accessory.isFlipped ? frame.minY : view.accessory.bounds.maxY - frame.maxY
+                XCTAssertEqual(topGap, 10, accuracy: 0.5)
+                XCTAssertEqual(view.accessory.frame.height, editorHeight + (width == 1233 ? 60 : 98), accuracy: 0.5)
+                XCTAssertEqual(view.accessory.rootView.width ?? -1, width, accuracy: 0.5)
+                XCTAssertEqual(view.content.frame.minY, view.accessory.frame.maxY, accuracy: 0.5)
+                XCTAssertEqual(view.accessory.frame.minY, 0, accuracy: 0.5)
+                print("WIDTH_BOUND window=\(width) editorHeight=\(editorHeight) accessory=\(view.accessory.frame) editorLocal=\(frame) topGap=\(topGap)")
+            }
+        }
+    }
+    func testAccessoryWidthBindingSettlesAfterFirstProposalAndHiddenResize() async throws {
+        let view = ConversationRegionContainer(content: Color.clear, accessory: ResponsiveToolbarFixture(), atTop: false, height: nil)
+        XCTAssertNil(view.accessory.rootView.width, "Before native constraints there is no invented viewport width")
+        XCTAssertTrue(view.accessory.intrinsicContentSize.height.isFinite)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1233, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view
+        defer { window.contentView = nil; window.close() }
+        func editor(in view: NSView) -> NSView? {
+            if view.identifier?.rawValue == "responsive-editor" { return view }
+            return view.subviews.lazy.compactMap { editor(in: $0) }.first
+        }
+        view.layoutSubtreeIfNeeded()
+        let original = try XCTUnwrap(editor(in: view))
+        let commits = view.rootCommitCount
+        for width: CGFloat in [340, 1233, 340, 1233] {
+            view.isHidden = true
+            window.setContentSize(.init(width: width, height: 700))
+            view.layoutSubtreeIfNeeded()
+            view.isHidden = false
+            try await Task.sleep(for: .milliseconds(40))
+            view.layoutSubtreeIfNeeded()
+            let settledAccessory = view.accessory.frame, settledViewport = view.content.frame
+            for _ in 0..<16 {
+                view.layoutSubtreeIfNeeded()
+                XCTAssertEqual(view.accessory.frame, settledAccessory)
+                XCTAssertEqual(view.content.frame, settledViewport)
+            }
+            XCTAssertFalse(view.needsLayout)
+            XCTAssertFalse(view.accessory.needsLayout)
+            XCTAssertFalse(view.needsUpdateConstraints)
+            XCTAssertEqual(view.accessory.rootView.width ?? -1, width, accuracy: 0.5)
+            XCTAssertEqual(view.accessory.frame.height, width == 1233 ? 104 : 142, accuracy: 0.5)
+            XCTAssertEqual(view.rootCommitCount, commits)
+            XCTAssertTrue(editor(in: view) === original)
+        }
+    }
+
     func testQuickMessagesOverlapViewportWhileRemainingInInputHost() {
         // 34pt quick actions + 66pt editor share the same accessory host.
         let view = ConversationRegionContainer(content: Color.clear,
@@ -161,7 +243,7 @@ import XCTest
         }
     }
 
-    func testQuickMessagesAndEditorShareFixedBottomLayout() throws {
+    func testQuickMessagesAndEditorStayJoinedAtBottomWithoutExtraInsets() throws {
         let host = NSHostingView(rootView: DockFixture(showsQuickMessages: true, editorHeight: 80))
         func marker(_ name: String, in view: NSView) -> NSView? {
             if view.identifier?.rawValue == name { return view }
@@ -179,12 +261,13 @@ import XCTest
             else { editor = current }
             let frame = current.convert(current.bounds, to: host)
             let bottom = host.isFlipped ? host.bounds.maxY - frame.maxY : frame.minY
-            XCTAssertEqual(bottom, 4, accuracy: 0.5)
+            XCTAssertEqual(bottom, 0, accuracy: 0.5, "The dock must not add its own bottom inset")
             if showsQuick {
                 let quick = try XCTUnwrap(marker("quick", in: host))
                 let quickFrame = quick.convert(quick.bounds, to: host)
                 let gap = host.isFlipped ? frame.minY - quickFrame.maxY : quickFrame.minY - frame.maxY
-                XCTAssertEqual(gap, 4, accuracy: 0.5)
+                XCTAssertEqual(gap, 0, accuracy: 0.5,
+                    "Quick messages must follow the editor edge during resizing and editor growth")
             } else { XCTAssertNil(marker("quick", in: host)) }
         }
     }
@@ -217,7 +300,7 @@ import XCTest
         }
     }
 
-    func testAbsentNoticesDoNotAddGapAcrossProviderContentAndWindowSizes() throws {
+    func testOnlyNonemptyNoticesSeparateQuickMessagesFromEditorAcrossContentAndWindowSizes() throws {
         func marker(_ name: String, in view: NSView) -> NSView? {
             if view.identifier?.rawValue == name { return view }
             return view.subviews.lazy.compactMap { marker(name, in: $0) }.first
@@ -239,8 +322,13 @@ import XCTest
                         let ef = editor.convert(editor.bounds, to: host)
                         let qf = quick.convert(quick.bounds, to: host)
                         let gap = host.isFlipped ? ef.minY - qf.maxY : qf.minY - ef.maxY
-                        if message == "发送失败" { XCTAssertGreaterThan(gap, 4) }
-                        else { XCTAssertEqual(gap, 4, accuracy: 0.5) }
+                        if message == "发送失败" {
+                            XCTAssertGreaterThan(gap, 6,
+                                "A visible notice contributes its text height plus its existing 6pt bottom padding")
+                        } else {
+                            XCTAssertEqual(gap, 0, accuracy: 0.5,
+                                "Absent and whitespace-only notices must not reserve an empty strip")
+                        }
                         let send = try XCTUnwrap(marker("send", in: host))
                         XCTAssertEqual(send.convert(send.bounds, to: host).maxX, width, accuracy: 0.5)
                     }

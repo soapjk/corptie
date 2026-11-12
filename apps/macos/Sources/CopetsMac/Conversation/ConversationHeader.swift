@@ -6,6 +6,17 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+// Page-local presentation only; retained pages do not share mailbox state.
+private struct SessionMailboxVisibilityKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool>? = nil
+}
+extension EnvironmentValues {
+    var sessionMailboxVisibility: Binding<Bool>? {
+        get { self[SessionMailboxVisibilityKey.self] }
+        set { self[SessionMailboxVisibilityKey.self] = newValue }
+    }
+}
+
 /// Legacy observation stays outside the value-only header used by retained pages.
 struct DetailHeaderView: View {
     let session: TaskSession?
@@ -42,7 +53,7 @@ struct SessionConversationHeaderSurface: View {
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showsMailbox = false
+    @Environment(\.sessionMailboxVisibility) private var mailboxVisibility
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
@@ -98,24 +109,7 @@ struct SessionConversationHeaderSurface: View {
                     GitHubPushConfirmationWindowManager.shared.close()
                 }
             }
-            .sheet(isPresented: $showsMailbox) {
-                if let session {
-                    VStack(spacing: 12) {
-                        HStack {
-                            Text("会话信箱").font(.headline)
-                            Spacer()
-                            Button("关闭") { showsMailbox = false }
-                        }
-                        SessionMailboxPanel(sessionID: session.id,
-                            pendingRevision: "\(session.mailboxPendingCount ?? 0):\(session.executionStatus ?? session.status.rawValue)",
-                            activity: activity)
-                    }
-                    .padding(16)
-                    .frame(minWidth: 520, idealWidth: 620, minHeight: 400, idealHeight: 560)
-                }
-            }
             .onChange(of: session?.id) { _, _ in
-                showsMailbox = false
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
                 didCopySessionTitle = false
@@ -124,13 +118,11 @@ struct SessionConversationHeaderSurface: View {
             }
             .onChange(of: isPresentationActive) { _, active in
                 guard !active else { return }
-                showsMailbox = false
                 sessionTitleCopyFeedbackTask?.cancel(); sessionTitleCopyFeedbackTask = nil
                 workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
                 didCopySessionTitle = false; didCopyWorkspacePath = false
             }
             .onDisappear {
-                showsMailbox = false
                 sessionTitleCopyFeedbackTask?.cancel()
                 sessionTitleCopyFeedbackTask = nil
                 workspacePathCopyFeedbackTask?.cancel(); workspacePathCopyFeedbackTask = nil
@@ -177,13 +169,14 @@ struct SessionConversationHeaderSurface: View {
                     if let visibility = detailColumnVisibility {
                         Button {
                             guard canAct else { return }
-                            showsMailbox = true
+                            mailboxVisibility?.wrappedValue = true
+                            if mailboxVisibility?.wrappedValue == true { visibility.wrappedValue = true }
                         } label: {
                             HStack(spacing: 2) {
                                 Image(systemName: "envelope")
                                 if let count = session?.mailboxPendingCount, count > 0 { Text(count > 99 ? "99+" : "\(count)").font(.caption2) }
                             }.frame(minWidth: 28, minHeight: 28)
-                        }.buttonStyle(.plain).help("打开会话信箱").accessibilityLabel("打开会话信箱")
+                        }.buttonStyle(.plain).disabled(mailboxVisibility == nil).help("打开会话信箱").accessibilityLabel("打开会话信箱")
                         Button {
                             visibility.wrappedValue.toggle()
                         } label: {

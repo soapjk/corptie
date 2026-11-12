@@ -49,9 +49,37 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
     var floatingClearanceDidLayout: ((CGFloat) -> Void)? { get set }
 }
 
+/// AppKit asks for an ideal height with an unspecified SwiftUI proposal. Bind
+/// that measurement to the same native width used to place the accessory.
+/// Only the frame wrapper changes on resize; the content and editor stay put.
+struct ConversationWidthBoundRoot<Content: View>: View {
+    var content: Content
+    var width: CGFloat?
+    var body: some View { content.frame(width: width, alignment: .topLeading) }
+}
+
+final class ConversationWidthBoundHost<Content: View>: NSHostingView<ConversationWidthBoundRoot<Content>> {
+    var contentRoot: Content {
+        get { rootView.content }
+        set { rootView = .init(content: newValue, width: rootView.width) }
+    }
+
+    init(content: Content) { super.init(rootView: .init(content: content, width: nil)) }
+    required init(rootView: ConversationWidthBoundRoot<Content>) { super.init(rootView: rootView) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard newSize.width.isFinite else { return }
+        let width = max(0, newSize.width)
+        guard rootView.width != width else { return }
+        rootView = .init(content: rootView.content, width: width)
+    }
+}
+
 final class ConversationRegionContainer<Content: View, Accessory: View>: NSView, ConversationFloatingRegion {
     let content: NSHostingView<Content>
-    let accessory: NSHostingView<Accessory>
+    let accessory: ConversationWidthBoundHost<Accessory>
     let floatingHost: NSHostingView<AnyView>
     private var pendingFloating: AnyView?
     private var hasFloating = false
@@ -77,7 +105,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
          floatingClearanceInset: CGFloat = 0, floating: AnyView? = nil) {
         self.floatingClearanceInset = floatingClearanceInset
         self.content = NSHostingView(rootView: content)
-        self.accessory = NSHostingView(rootView: accessory)
+        self.accessory = ConversationWidthBoundHost(content: accessory)
         floatingHost = NSHostingView(rootView: floating ?? AnyView(EmptyView().frame(height: 0)))
         hasFloating = floating != nil
         floatingHost.isHidden = floating == nil
@@ -174,7 +202,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
         floatingHost.isHidden = floating == nil
         floatingHost.rootView = floating ?? AnyView(EmptyView().frame(height: 0))
         self.content.rootView = content
-        self.accessory.rootView = accessory
+        self.accessory.contentRoot = accessory
         rootCommitCount += 1
     }
     required init?(coder: NSCoder) { fatalError() }

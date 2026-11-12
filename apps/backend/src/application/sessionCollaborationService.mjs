@@ -590,7 +590,9 @@ export class SessionCollaborationService {
     if (replay) {
       if (replay.input?.actor?.type !== "parent_session" || replay.input.actor.id !== scope.logicalSessionId
         || replay.input.target?.parentTaskId !== scope.parent.id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Deletion receipt does not belong to this parent Session.", 403);
-      return { accepted: true, operation: replay, idempotentReplay: true };
+      if (input.inspectOnly !== true && (replay.state !== "failed" || !replay.retryable)) {
+        return { accepted: true, operation: replay, idempotentReplay: true };
+      }
     }
     const child = this.store.getTask(required(input.childTaskId, "childTaskId"));
     // Deletion retries may revisit a child whose deletion is already queued.

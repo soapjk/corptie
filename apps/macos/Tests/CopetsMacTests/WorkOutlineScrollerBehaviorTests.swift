@@ -58,48 +58,79 @@ final class WorkOutlineScrollerBehaviorTests: XCTestCase {
 
     func testCapsulePixelsAreSymmetricAtOneAndTwoTimesScale() throws {
         _ = NSApplication.shared
-        for size in [NSControl.ControlSize.small, .regular] {
-            let thumb = WorkOutlineThinScroller(frame: .init(x: 0, y: 0, width: 20, height: 200))
-            thumb.controlSize = size
-            thumb.scrollerStyle = .overlay
-            thumb.knobProportion = 0.25
-            thumb.doubleValue = 0.5
-            let knob = thumb.rect(for: .knob)
-            for scale in [1, 2] {
-                let width = Int(knob.width) * scale
-                let height = Int(ceil(knob.height * CGFloat(scale)))
-                let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width,
-                    pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
-                    isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
-                memset(try XCTUnwrap(bitmap.bitmapData), 0, bitmap.bytesPerRow * height)
-                NSGraphicsContext.saveGraphicsState()
-                NSGraphicsContext.current = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
-                let context = try XCTUnwrap(NSGraphicsContext.current?.cgContext)
-                context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
-                context.translateBy(x: -knob.minX, y: -knob.minY)
-                thumb.drawKnob()
-                NSGraphicsContext.restoreGraphicsState()
-                var paintedRows: [[Int]] = []
-                var paintedY: [Int] = []
-                for y in 0..<height {
-                    var painted: [Int] = []
-                    for x in 0..<width {
-                        let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
-                        let mirrored = bitmap.colorAt(x: width - 1 - x, y: y)?.alphaComponent ?? 0
-                        XCTAssertEqual(alpha, mirrored, accuracy: 0.025,
-                            "Every row must have symmetric caps at \(scale)x, size \(size)")
-                        if alpha > 0.1 { painted.append(x) }
+        for thumb in [WorkOutlineThinScroller(frame: .init(x: 0, y: 0, width: 20, height: 200)),
+                      TimelineIntentScroller(frame: .init(x: 0, y: 0, width: 20, height: 200))] {
+            for size in [NSControl.ControlSize.small, .regular] {
+                thumb.controlSize = size
+                thumb.scrollerStyle = .overlay
+                thumb.knobProportion = 0.25
+                thumb.doubleValue = 0.5
+                let knob = thumb.rect(for: .knob)
+                for scale in [1, 2] {
+                    let width = Int(knob.width) * scale
+                    let height = Int(ceil(knob.height * CGFloat(scale)))
+                    let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width,
+                        pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                        isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
+                    memset(try XCTUnwrap(bitmap.bitmapData), 0, bitmap.bytesPerRow * height)
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+                    let context = try XCTUnwrap(NSGraphicsContext.current?.cgContext)
+                    context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+                    context.translateBy(x: -knob.minX, y: -knob.minY)
+                    thumb.drawKnob()
+                    NSGraphicsContext.restoreGraphicsState()
+                    var paintedRows: [[Int]] = []
+                    var paintedY: [Int] = []
+                    for y in 0..<height {
+                        var painted: [Int] = []
+                        for x in 0..<width {
+                            let alpha = bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                            let mirrored = bitmap.colorAt(x: width - 1 - x, y: y)?.alphaComponent ?? 0
+                            XCTAssertEqual(alpha, mirrored, accuracy: 0.025,
+                                "Every row must have symmetric caps at \(scale)x, size \(size)")
+                            if alpha > 0.1 { painted.append(x) }
+                        }
+                        if !painted.isEmpty { paintedRows.append(painted); paintedY.append(y) }
                     }
-                    if !painted.isEmpty { paintedRows.append(painted); paintedY.append(y) }
+                    // At 1x an antialiased corner can have partial coverage. Its
+                    // alpha must taper below the center rather than form a flat end.
+                    for y in [try XCTUnwrap(paintedY.first), try XCTUnwrap(paintedY.last)] {
+                        let edge = bitmap.colorAt(x: 0, y: y)?.alphaComponent ?? 0
+                        let center = bitmap.colorAt(x: width / 2, y: y)?.alphaComponent ?? 0
+                        XCTAssertLessThan(edge, center - 0.05)
+                    }
+                    XCTAssertEqual(paintedRows[paintedRows.count / 2].count, width)
                 }
-                // At 1x an antialiased corner can have partial coverage. Its
-                // alpha must taper below the center rather than form a flat end.
-                for y in [try XCTUnwrap(paintedY.first), try XCTUnwrap(paintedY.last)] {
-                    let edge = bitmap.colorAt(x: 0, y: y)?.alphaComponent ?? 0
-                    let center = bitmap.colorAt(x: width / 2, y: y)?.alphaComponent ?? 0
-                    XCTAssertLessThan(edge, center - 0.05)
-                }
-                XCTAssertEqual(paintedRows[paintedRows.count / 2].count, width)
+            }
+        }
+    }
+
+    func testTimelineReusesWorkStyleWithoutReplacingIntentOrShrinkingContent() throws {
+        _ = NSApplication.shared
+        let scroll = AppKitChatTimelineView.makeScrollView(tableView: NSTableView())
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 300, height: 200),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        defer { window.contentView = nil; window.orderOut(nil) }
+        scroll.documentView = NSView(frame: .init(x: 0, y: 0, width: 300, height: 3000))
+        let thumb = try XCTUnwrap(scroll.verticalScroller as? TimelineIntentScroller)
+        WorkNavigationScrollStyle.configure(scroll)
+        XCTAssertTrue(scroll.verticalScroller === thumb)
+        XCTAssertTrue(scroll.autohidesScrollers)
+        XCTAssertEqual(thumb.controlSize, .small)
+        XCTAssertEqual(scroll.scrollerInsets.right, WorkNavigationScrollStyle.trailingClearance)
+        for width in [220.0, 400.0, 284.0] {
+            window.setContentSize(.init(width: width, height: 200))
+            scroll.layoutSubtreeIfNeeded()
+            scroll.tile()
+            XCTAssertEqual(scroll.contentView.frame.width, width, accuracy: 0.5)
+            XCTAssertEqual(thumb.frame.maxX, width - WorkNavigationScrollStyle.trailingClearance, accuracy: 0.5)
+            let knob = thumb.rect(for: .knob)
+            if knob.width > 0 {
+                XCTAssertGreaterThan(knob.minX, thumb.bounds.minX)
+                XCTAssertLessThan(knob.maxX, thumb.bounds.maxX)
             }
         }
     }

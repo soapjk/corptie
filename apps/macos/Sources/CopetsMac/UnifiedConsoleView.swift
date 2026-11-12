@@ -945,7 +945,6 @@ struct UnifiedConsoleView: View {
     /// with the conversation title on the other side of the divider.
     private var consoleSidebarCreationRow: some View {
         outlineCreationMenu
-            .padding(.horizontal, 16)
             .padding(.top, 4)
             .padding(.bottom, 6)
     }
@@ -955,16 +954,13 @@ struct UnifiedConsoleView: View {
             HStack(spacing: 8) {
                 Image(systemName: "plus").font(.system(size: 13))
                 Text(L10n("Create")).font(WorkbenchTypography.font(for: .navigation))
-                Spacer(minLength: 8)
             }
             .foregroundStyle(.primary)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+            .consoleOutlineRowSurface(isSelected: false,
+                leadingInset: navigationMode == .workOutline ? 13 : 16)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .consoleHoverFeedback()
         .help(L10n("Create Task, Work, or chat"))
         .accessibilityLabel(L10n("Create Task, Work, or chat"))
         .accessibilityIdentifier("work-outline-create")

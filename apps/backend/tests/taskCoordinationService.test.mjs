@@ -442,6 +442,33 @@ test("production deletion composition authorizes only the real parent Session an
   assert.equal(repeated.operation.operationId, operation.operationId);
 });
 
+test("parent deletion resumes failed receipt through the authorized deletion service", async t => {
+  const f = await fixture(t);
+  const child = f.child("Retry_disposable");
+  const composition = createTaskExecutionComposition({ store: f.store, workService: f.workService,
+    inspectTaskWorktree: async () => ({ status: "none", worktree: null }), removeTaskDeletionWorktree: async () => ({}),
+    sessionApplicationService: { deleteSessionForTaskDeletion: async () => ({ providerDeleted: true }) }, artifactService: {}, emitEvent() {},
+    ensureTaskWorkspace: async () => ({}) });
+  const deletion = composition.taskDeletionService;
+  f.coordinator.deletion = deletion;
+  let attempts = 0;
+  deletion.handleArtifacts = async () => {
+    if (++attempts === 1) throw Object.assign(new Error("transient"), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
+    return { artifactIds: [] };
+  };
+  const input = { childTaskId: child.id, idempotencyKey: "parent-retry", artifactDisposition: "work" };
+  const first = await f.collaboration.deleteChildTask(f.source, f.role.agentId, input);
+  await deletion.inFlight.get(first.operation.operationId);
+  assert.equal(deletion.getOperation(first.operation.operationId).state, "failed");
+  await f.collaboration.deleteChildTask(f.source, f.role.agentId, { ...input, inspectOnly: true });
+  assert.equal(attempts, 1);
+  const retry = await f.collaboration.deleteChildTask(f.source, f.role.agentId, input);
+  assert.equal(retry.operation.operationId, first.operation.operationId);
+  await deletion.inFlight.get(retry.operation.operationId);
+  assert.equal(deletion.getOperation(retry.operation.operationId).state, "succeeded");
+  assert.equal(attempts, 2);
+});
+
 test("MCP schemas and HTTP dispatch share authenticated Session context", async t => {
   const f = await fixture(t);
   const tool = collaborationDynamicTools.find(row => row.name === "corptie_task_dispatch");

@@ -168,8 +168,8 @@ struct ConsoleOverlayScrollerTests {
             let viewport = scroll.contentView.bounds.width
             let lane = WorkbenchStyle.lane(viewportWidth: viewport)
             #expect(scroller.frame.width > 0, "the indicator must be placed")
-            #expect(abs(scroller.frame.maxX - scroll.bounds.maxX) <= 1,
-                    "indicator must hug the far right of the viewport")
+            #expect(abs(scroller.frame.maxX - (scroll.bounds.maxX - WorkNavigationScrollStyle.trailingClearance)) <= 1,
+                    "indicator must share the Work column trailing clearance")
             #expect(scroller.frame.minX >= lane.maxX - 0.5,
                     "indicator must stay entirely inside the trailing gutter")
             #expect(abs(table.frame.minX - lane.minX) <= 0.5)

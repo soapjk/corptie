@@ -46,6 +46,7 @@ struct ResidentSessionPageSwitcher<Fallback: View>: NSViewControllerRepresentabl
 }
 
 struct ResidentSessionPageRoot: View {
+    @State private var showsMailbox = false
     @AppStorage("ui.conversation.showDetails", store: CorptieAppEnvironment.userDefaults) private var showsDetailColumn = false
     let inputs: SessionPageRenderInputs
     let backend: BackendClient
@@ -75,9 +76,19 @@ struct ResidentSessionPageRoot: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             .modifier(ConversationColumnSurface(.transcript))
         } detail: {
-            SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
-                activity: inputs.activity, detailPresentation: detailPresentation)
-                .frame(maxHeight: .infinity)
+            SessionAuxiliaryPanel(showsMailbox: $showsMailbox) {
+                if showsMailbox && inputs.activity.isActive {
+                    SessionMailboxPanel(sessionID: inputs.scope.sessionID,
+                        pendingRevision: "\(inputs.session.mailboxPendingCount ?? 0):\(inputs.session.executionStatus ?? inputs.session.status.rawValue)",
+                        activity: inputs.activity, showsTitle: false)
+                        .id(inputs.scope.sessionID)
+                } else {
+                    SessionDetailPanel(session: inputs.session, railWidth: ConversationDetailWidgetMetrics.railWidth,
+                        activity: inputs.activity, detailPresentation: detailPresentation)
+                }
+            }
+            .frame(width: ConversationDetailWidgetMetrics.railWidth)
+            .frame(maxHeight: .infinity)
         } header: {
             // Keep the total height inside the pinned 48pt accessory: the
             // header moved its padding from the bottom to the top.
@@ -90,9 +101,43 @@ struct ResidentSessionPageRoot: View {
         // transcript leaves Detail's clip edge below the floating controls.
         .ignoresSafeArea(.container, edges: .top)
         .environment(\.detailColumnVisibility, $showsDetailColumn)
+        .environment(\.sessionMailboxVisibility, $showsMailbox)
+        .onChange(of: inputs.activity.isActive) { _, active in if !active { showsMailbox = false } }
+        .onChange(of: showsDetailColumn) { _, visible in if !visible { showsMailbox = false } }
         .modifier(ConversationSkinHost())
         .environmentObject(layout)
         .environmentObject(backend)
+    }
+}
+
+/// Local tabs share the existing detail rail and its outer background.
+/// Only the selected content is mounted, so a hidden mailbox does no work.
+private struct SessionAuxiliaryPanel<Content: View>: View {
+    @Environment(\.detailColumnVisibility) private var visibility
+    @Binding var showsMailbox: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Picker("侧边区域", selection: $showsMailbox) {
+                    Label("信箱", systemImage: "tray").tag(true)
+                    Label("详情", systemImage: "sidebar.right").tag(false)
+                }
+                .pickerStyle(.segmented).labelsHidden().controlSize(.small)
+                Button {
+                    showsMailbox = false
+                    visibility?.wrappedValue = false
+                } label: {
+                    Image(systemName: "xmark").frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain).help("关闭侧边区域")
+                .accessibilityLabel("关闭侧边区域")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            Divider()
+            content().frame(maxHeight: .infinity, alignment: .top)
+        }
     }
 }
 

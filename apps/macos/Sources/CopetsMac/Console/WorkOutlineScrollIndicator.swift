@@ -2,7 +2,7 @@ import AppKit
 
 /// AppKit owns knob geometry, tracking and layer fading. Only the capsule
 /// pixels are drawn here, avoiding the inherited bitmap's asymmetric caps.
-final class WorkOutlineThinScroller: ConsoleThinScroller {
+class WorkOutlineThinScroller: ConsoleThinScroller {
     override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
 
     override func drawKnob() {

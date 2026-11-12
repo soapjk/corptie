@@ -62,6 +62,7 @@ struct SessionConversationContent: View {
 struct SessionConversationSurface: View {
     @Environment(\.locale) private var locale
     private let backendClient: BackendClient
+    private let quickMessageCache: ClientQuickMessageCache
     private let timelineHistory: SessionTimelineHistoryController
     private let archivedSessionState: ArchivedSessionController
     private let legacyCanRenderMessages: Bool
@@ -167,12 +168,14 @@ struct SessionConversationSurface: View {
         compactComposer: Bool = false,
         presentation: SessionConversationPresentation = .standard,
         renderInputs: SessionPageRenderInputs? = nil,
-        legacyRevision: UInt64 = 0, legacyCanRenderMessages: Bool = true
+        legacyRevision: UInt64 = 0, legacyCanRenderMessages: Bool = true,
+        quickMessageCache: ClientQuickMessageCache = BackendClient.quickMessageCache
     ) {
         self.sessionId = sessionId
         self.presentationCache = presentationCache
         self.composerDraftRepository = composerDraftRepository
         self.backendClient = backendClient
+        self.quickMessageCache = quickMessageCache
         self.timelineHistory = backendClient.timelineHistoryController
         self.archivedSessionState = backendClient.archivedSessionController
         self.renderInputs = renderInputs; self.legacyRevision = legacyRevision
@@ -544,7 +547,12 @@ struct SessionConversationSurface: View {
                     if let detail = displayedDetail {
                         Group {
                             if showsWelcome {
-                                Color.clear
+                                ConversationWelcomeView(
+                                    isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
+                                )
+                                .modifier(WorkbenchReadingLane(compact: false))
+                                .padding(.vertical, WorkbenchStyle.readingInset)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                             } else if shouldRenderDetailMessages {
                                 appKitCachedDetailMessages()
                             } else {
@@ -590,7 +598,6 @@ struct SessionConversationSurface: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-            .frame(height: showsWelcome ? 0 : nil)
             .clipped()
             .background {
                 // The reading canvas stops at the viewport. The shared
@@ -657,14 +664,8 @@ struct SessionConversationSurface: View {
 
     private var inputDock: some View {
         VStack(spacing: 0) {
-            if showsWelcome {
-                // One editor at one structural position: placement changes must
-                // not recreate the native text view, attachments or draft owner.
-                ConversationWelcomeView(
-                    isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
-                )
-                .padding(.bottom, 24)
-            }
+            // Welcome content belongs to the flexible viewport. Keep this
+            // editor at one structural position across the first submission.
             ConversationComposerDock {
                 EmptyView()
             } composer: {
@@ -675,7 +676,6 @@ struct SessionConversationSurface: View {
             }
         }
         .modifier(WorkbenchReadingLane(compact: compactComposer))
-        .frame(maxHeight: showsWelcome ? .infinity : nil)
     }
 
     private var conversationTopChrome: some View {
@@ -724,6 +724,7 @@ struct SessionConversationSurface: View {
             enabled: ComposerSendPolicy.canSend(session: selectedSession, sessionId: sessionId,
                 backendClient: backendClient, renderInputs: renderInputs)
                 && !(renderInputs?.sendingMessage ?? backendClient.isSendingMessage) && selectedSession?.archived != true,
+            cache: quickMessageCache,
             activity: renderInputs?.activity, showsMessages: quickMessagePresentation.showsMessages,
             onJumpToLatest: nil, hasUnreadMessagesBelow: viewportState.hasNewMessagesBelow) { text in
             guard ComposerSendPolicy.canSend(session: selectedSession, sessionId: sessionId,

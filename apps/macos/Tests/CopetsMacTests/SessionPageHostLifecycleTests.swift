@@ -85,9 +85,18 @@ import CorptieConversation
             suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil, updatedAt: "2026-09-01",
             accent: .cyan, archived: false, pinned: false, sortOrder: 0, capabilities: nil, external: nil)
     }
-    private func makeInputs() -> (SessionPageRenderInputs, AppStateStore, BackendClient, SessionTimelineState) {
+    private func makeInputs(richToolbar: Bool = false) -> (SessionPageRenderInputs, AppStateStore, BackendClient, SessionTimelineState) {
         let client = BackendClient(), source = AppStateStore()
-        let value = session()
+        var value = session()
+        if richToolbar {
+            var fields = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as! [String: Any]
+            fields["capabilities"] = ["canSend": true, "canSwitchModel": true, "canInterrupt": true]
+            fields["external"] = ["provider": "fixture", "currentModel": "A provider neutral long model name", "currentReasoningLevel": "high"]
+            fields["executionStatus"] = "running"
+            value = try! JSONDecoder().decode(TaskSession.self, from: JSONSerialization.data(withJSONObject: fields))
+            client.supplementaryDataController.selectedSessionUsage = try! JSONDecoder().decode(SessionUsageResponse.self,
+                from: Data(#"{"account":{"available":true,"provider":"fixture","rateLimits":{"primary":{"usedPercent":63.5}}},"context":{"usedTokens":141400,"contextWindow":200000,"remainingTokens":58600,"usedPercent":70.7}}"#.utf8))
+        }
         source.acceptCreatedSession(value)
         client.sessionSelectionController.select(value.id)
         let timeline = SessionTimelineState(sessionID: value.id)
@@ -275,8 +284,176 @@ import CorptieConversation
         XCTAssertTrue(findEditor(host) === editor)
     }
     private func findEditor(_ view: NSView) -> NSTextView? {
-        if let text = view as? NSTextView { return text }
+        if let text = view as? NSTextView, text.isEditable { return text }
         return view.subviews.lazy.compactMap { self.findEditor($0) }.first
+    }
+
+    func testWelcomeResizeAndFirstMessageKeepBottomEditorAndMarkedDraft() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs()
+        client.markBackendConnectedFromSessionStream()
+        let empty = CodexThreadDetail(id: "thread", title: "Welcome", status: .complete,
+            source: nil, connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil,
+            activityStatus: nil, cwd: nil, createdAt: "", updatedAt: "", canSend: true,
+            sendUnavailableReason: nil, capabilities: nil, turnCount: 0, items: [])
+        timeline.apply(empty)
+        inputs.resume(); await settle()
+        let drafts = ComposerDraftRepository()
+        let host = NSHostingView(rootView: SessionConversationSurface(
+            sessionId: inputs.scope.sessionID, presentationCache: SessionPresentationCache(),
+            composerDraftRepository: drafts, backendClient: client,
+            showsHeader: false, renderInputs: inputs))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { inputs.retire(); window.contentView = nil; window.close() }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let editor = try XCTUnwrap(findEditor(host))
+        window.makeFirstResponder(editor)
+        editor.insertText("draft ", replacementRange: NSRange(location: 0, length: 0))
+        editor.setMarkedText("输入", selectedRange: NSRange(location: 2, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0))
+        let text = editor.string
+        let selection = editor.selectedRange()
+        func region(_ view: NSView) -> ConversationRegionContainer<AnyView, AnyView>? {
+            (view as? ConversationRegionContainer<AnyView, AnyView>)
+                ?? view.subviews.lazy.compactMap(region).first
+        }
+        let regions = try XCTUnwrap(region(host))
+        for size in [CGSize(width: 360, height: 500), CGSize(width: 1000, height: 800)] {
+            window.setContentSize(size)
+            host.layoutSubtreeIfNeeded(); await settle(); host.layoutSubtreeIfNeeded()
+            XCTAssertGreaterThan(regions.content.frame.height, size.height / 2)
+            XCTAssertEqual(regions.accessory.frame.minY, regions.bounds.minY, accuracy: 0.5)
+            XCTAssertEqual(regions.content.frame.minY, regions.accessory.frame.maxY, accuracy: 0.5)
+        }
+        timeline.apply(detail(1))
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        XCTAssertTrue(findEditor(host) === editor)
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertEqual(editor.string, text)
+        XCTAssertEqual(editor.selectedRange(), selection)
+        XCTAssertTrue(editor.hasMarkedText())
+    }
+
+    func testRealSessionQuickDockGeometryAcrossChecklistNoticesAndEditorGrowth() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream()
+        timeline.apply(detail(1)); inputs.resume(); await settle()
+        let suite = "welcome-dock-geometry-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        let scope = ClientQuickMessageCache.scope(host: client.baseURL.absoluteString,
+            taskID: inputs.session.taskId, sessionID: inputs.scope.sessionID)
+        cache.remember((0..<8).map { .init(id: "chip-\($0)",
+            text: "A full quick message recommendation \($0)", scope: "task", count: 1) }, for: scope)
+        let host = NSHostingView(rootView: SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs, quickMessageCache: cache))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { inputs.retire(); window.contentView = nil; window.close() }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let region = try XCTUnwrap(descendants(host).compactMap { $0 as? ConversationRegionContainer<AnyView, AnyView> }.first)
+        let editor = try XCTUnwrap(findEditor(host))
+        var revision = 0
+        XCTAssertNotNil(inputs.usage?.context)
+        XCTAssertEqual(inputs.session.capabilities?.canSwitchModel, true)
+        for width: CGFloat in [340, 1233] {
+            window.setContentSize(.init(width: width, height: 700))
+            for checklist in [false, true] {
+                revision += 1
+                let fields: [String: Any] = ["schemaVersion": 1, "planId": "checklist:geometry", "taskId": inputs.session.taskId ?? "task-a",
+                    "revision": revision, "closed": !checklist, "lifecycle": "completed", "completedCount": 1,
+                    "updatedAt": "2026-11-12", "steps": [["stepId": "one", "ordinal": 0, "text": "Completed", "status": "completed"]]]
+                let plan = try JSONDecoder().decode(ConversationExecutionPlan.self, from: JSONSerialization.data(withJSONObject: fields))
+                NotificationCenter.default.post(name: .executionChecklistChanged, object: inputs.session.taskId, userInfo: ["checklist": plan])
+                for notice in [nil, "   ", "Send failed"] as [String?] {
+                    client.sessionCommandController.setSendFailure(notice, sessionID: inputs.scope.sessionID)
+                    var shortHeight: CGFloat = 0
+                    for longDraft in [false, true] {
+                        let text = longDraft ? Array(repeating: "A longer draft line", count: 12).joined(separator: "\n") : "Draft"
+                        editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+                        await settle(); host.layoutSubtreeIfNeeded(); await settle(); host.layoutSubtreeIfNeeded()
+                        let scroll = try XCTUnwrap(editor.enclosingScrollView)
+                        let quick = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }
+                            .first { abs($0.frame.height - ConversationQuickMessages.rowHeight) < 0.5 })
+                        let qf = quick.convert(quick.bounds, to: region)
+                        let ef = scroll.convert(scroll.bounds, to: region)
+                        let laneWidth = WorkbenchStyle.lane(viewportWidth: region.bounds.width).width
+                        let chromeView = try XCTUnwrap(descendants(region.accessory).first {
+                            abs($0.frame.width - laneWidth) < 0.5 && $0.frame.height > ef.height + 20
+                        })
+                        let chromeFrame = chromeView.convert(chromeView.bounds, to: region)
+                        let chromeTop = chromeFrame.maxY
+                        XCTAssertEqual(chromeTop - ef.maxY, 10, accuracy: 0.5)
+                        if width == 1233 { XCTAssertEqual(chromeFrame.height, ef.height + 60, accuracy: 0.5) }
+                        else { XCTAssertGreaterThan(chromeFrame.height, ef.height + 60) }
+                        let noticeHeight = region.accessory.frame.maxY - chromeTop
+                        XCTAssertEqual(qf.minY, region.accessory.frame.maxY + 4, accuracy: 0.5,
+                            "The real quick row must retain its existing 4pt exterior spacing")
+                        if notice == "Send failed" { XCTAssertGreaterThan(noticeHeight, 6) }
+                        else { XCTAssertEqual(noticeHeight, 0, accuracy: 0.5) }
+                        XCTAssertEqual(region.accessory.frame.minY, region.bounds.minY, accuracy: 0.5)
+                        XCTAssertEqual(region.content.frame.minY, region.accessory.frame.maxY, accuracy: 0.5,
+                            "The transcript viewport must still reach the editor boundary beneath the floating row")
+                        XCTAssertEqual(region.floatingRegionClearance ?? -1, checklist ? 76 : 34, accuracy: 0.5)
+                        let chips = descendants(quick).filter { abs($0.frame.height - 24) < 0.5 && $0.frame.width > 0 }
+                        XCTAssertEqual(chips.count, 8, "Use the actual overflowing eight-chip native row")
+                        let chip = try XCTUnwrap(chips.first)
+                        let chipGap = chip.convert(chip.bounds, to: region).minY - chromeTop
+                        XCTAssertEqual(chipGap, noticeHeight + 7, accuracy: 0.5)
+                        if longDraft { XCTAssertGreaterThan(ef.height, shortHeight) }
+                        else { shortHeight = ef.height }
+                        XCTAssertTrue(findEditor(host) === editor)
+                        XCTAssertEqual(descendants(host).compactMap { $0 as? NSTextView }.filter(\.isEditable).count, 1)
+                        XCTAssertEqual(editor.string, text)
+                        print("REAL_DOCK width=\(width) checklist=\(checklist) notice=\(notice ?? "nil") long=\(longDraft) rowGap=\(qf.minY - region.accessory.frame.maxY) chipGap=\(chipGap) noticeHeight=\(noticeHeight) editorHeight=\(ef.height) viewport=\(region.content.frame) accessory=\(region.accessory.frame) floating=\(region.floatingHost.frame) quick=\(qf) chip=\(chip.convert(chip.bounds, to: region)) chrome=\(chromeFrame) editor=\(ef)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testRealToolbarWidthChangesKeepMarkedTextDuringNativeLiveResize() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream(); timeline.apply(detail(1))
+        inputs.resume(); await settle()
+        let host = NSHostingView(rootView: SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1233, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { inputs.retire(); window.contentView = nil; window.close() }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let editor = try XCTUnwrap(findEditor(host))
+        window.makeFirstResponder(editor)
+        editor.setMarkedText("输入", selectedRange: NSRange(location: 2, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0))
+        let text = editor.string, selection = editor.selectedRange(), marked = editor.markedRange()
+        func region(_ view: NSView) -> ConversationRegionContainer<AnyView, AnyView>? {
+            (view as? ConversationRegionContainer<AnyView, AnyView>) ?? view.subviews.lazy.compactMap(region).first
+        }
+        let native = try XCTUnwrap(region(host))
+        native.liveResizeOverride = true
+        let commits = native.rootCommitCount
+        for width: CGFloat in [1000, 740, 560, 340, 560, 740, 1000, 1233] {
+            window.setContentSize(.init(width: width, height: 700))
+            host.layoutSubtreeIfNeeded(); await settle(); host.layoutSubtreeIfNeeded()
+            XCTAssertTrue(findEditor(host) === editor)
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(editor.string, text); XCTAssertEqual(editor.selectedRange(), selection)
+            XCTAssertEqual(editor.markedRange(), marked)
+            XCTAssertEqual(native.rootCommitCount, commits, "Width binding must not commit the retained content roots")
+        }
+        native.liveResizeOverride = false; native.commitPendingRoots()
+        XCTAssertTrue(findEditor(host) === editor)
     }
 
     func testMissingResidentInputDoesNotConsumeSelectionAndNextClickCanRecover() throws {

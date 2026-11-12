@@ -744,6 +744,7 @@ struct ComposerQuickMessagesBar: View {
     let online: Bool
     let refreshRevision: Int
     let enabled: Bool
+    var cache: ClientQuickMessageCache = BackendClient.quickMessageCache
     let activity: ConversationDetailPresentationActivity?
     let showsMessages: Bool
     let onJumpToLatest: (() -> Void)?
@@ -772,7 +773,7 @@ struct ComposerQuickMessagesBar: View {
                 if showsMessages {
                     MacComposerQuickMessages(host: backendClient.baseURL.absoluteString, sessionID: sessionId,
                         taskID: taskID, online: online, refreshRevision: refreshRevision,
-                        enabled: enabled,
+                        enabled: enabled, cache: cache,
                         activity: activity,
                         load: { try await backendClient.quickMessages(for: sessionId) }) { text in
                         send(text)
