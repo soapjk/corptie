@@ -1112,3 +1112,68 @@ test("the reported checklist query ranks the checklist contract before Task crea
     }
   } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
 });
+
+for (const legacy of [false, true]) test(`fixed MCP gateway reuses ${legacy ? 'legacy' : 'complete'} observation when a business domain loads`, async () => {
+  const value = await fixture({
+    capability: { generatedMcpRefresh: true, restrictedGateway: true, capabilityRevision: 'fake:mcp:1' },
+    apply: async () => ({ status: 'awaiting_provider_observation', observationKind: 'mcp_tools_list' })
+  });
+  const scope = { logicalSessionId: 'logical:worker', providerBindingId: 'binding:worker' };
+  try {
+    const pending = await value.coordinator.ensureApplied(scope);
+    const applied = await value.coordinator.observeGeneratedMcpToolsList({ ...scope,
+      desiredVersion: pending.record.desiredVersion, observationId: 'real-observation' });
+    assert.equal(applied.providerReceipt.providerObservationKind, 'mcp_tools_list');
+    assert.equal(applied.providerReceipt.providerDefinitionsCount, 3);
+    if (legacy) {
+      const oldReceipt = { ...applied.providerReceipt };
+      delete oldReceipt.providerObservationKind;
+      delete oldReceipt.providerDefinitionsCount;
+      value.store.db.run('UPDATE session_tool_catalog_materializations SET provider_receipt_json = ? WHERE logical_session_id = ?',
+        [JSON.stringify(oldReceipt), scope.logicalSessionId]);
+    }
+    const loaded = await value.coordinator.ensureApplied({ ...scope, desiredDomains: ['memory'], activeTurn: true });
+    assert.equal(loaded.status, 'applied');
+    assert.equal(value.applyCount, 1);
+    assert.ok(loaded.record.appliedDomains.some(domain => domain.domainId === 'memory'));
+  } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
+});
+
+test('old pending MCP observation fails boundedly in-turn but a real late observation can recover', async () => {
+  const value = await fixture({
+    capability: { generatedMcpRefresh: true, restrictedGateway: true, capabilityRevision: 'fake:mcp:1' },
+    apply: async () => ({ status: 'awaiting_provider_observation', observationKind: 'mcp_tools_list' })
+  });
+  const scope = { logicalSessionId: 'logical:worker', providerBindingId: 'binding:worker' };
+  try {
+    value.coordinator.clock = () => '2026-01-01T00:00:00Z';
+    const pending = await value.coordinator.ensureApplied(scope);
+    value.coordinator.clock = () => '2026-01-01T00:01:00Z';
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(value.coordinator.ensureApplied({ ...scope, activeTurn: true }),
+        { code: 'PROVIDER_TOOL_OBSERVATION_TIMEOUT' });
+    }
+    assert.equal(value.applyCount, 1);
+    assert.equal((await value.coordinator.ensureApplied(scope)).status, 'applying');
+    const recovered = await value.coordinator.observeGeneratedMcpToolsList({ ...scope,
+      desiredVersion: pending.record.desiredVersion, observationId: 'actual-late-read' });
+    assert.equal(recovered.status, 'applied');
+  } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
+});
+
+test('direct MCP contract expansion still requires a new observation', async () => {
+  const value = await fixture({
+    capability: { generatedMcpRefresh: true, restrictedGateway: false, capabilityRevision: 'fake:mcp:1' },
+    apply: async () => ({ status: 'awaiting_provider_observation', observationKind: 'mcp_tools_list' })
+  });
+  const scope = { logicalSessionId: 'logical:worker', providerBindingId: 'binding:worker' };
+  try {
+    const first = await value.coordinator.ensureApplied(scope);
+    await value.coordinator.observeGeneratedMcpToolsList({ ...scope, desiredVersion: first.record.desiredVersion, observationId: 'first' });
+    const expanded = await value.coordinator.ensureApplied({ ...scope, desiredDomains: ['memory'], activeTurn: true });
+    assert.equal(expanded.status, 'applying');
+    assert.equal(value.applyCount, 2);
+    await assert.rejects(value.coordinator.observeGeneratedMcpToolsList({ ...scope,
+      desiredVersion: first.record.desiredVersion, observationId: 'stale' }), { code: 'PROVIDER_TOOL_OBSERVATION_STALE' });
+  } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
+});

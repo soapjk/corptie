@@ -456,7 +456,7 @@ export class ToolHostService {
       scope.logicalSessionId, scope.providerBindingId
     );
     const skillRevision = this.skillMcpGateway?.revision(input.actorId) ?? "none";
-    return `${record?.appliedVersion ?? record?.desiredVersion ?? "none"}:${skillRevision}`;
+    return `${record?.desiredVersion ?? record?.appliedVersion ?? "none"}:${skillRevision}`;
   }
 
   async confirmPreparedSession(prepared, options = {}) {

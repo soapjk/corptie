@@ -364,7 +364,11 @@ struct SessionConversationSurface: View {
             if let page = renderInputs {
                 SessionNotReadyComposerSurface(backendClient: backendClient, session: session,
                     reason: reason, restarting: page.restarting, renderInputs: page)
-            } else { SessionNotReadyComposerNotice(session: session, reason: reason) }
+                    .padding(.bottom, 6)
+            } else {
+                SessionNotReadyComposerNotice(session: session, reason: reason)
+                    .padding(.bottom, 6)
+            }
         }
     }
 
@@ -648,7 +652,7 @@ struct SessionConversationSurface: View {
                 ConversationComposerDock {
                     if showsDockQuickMessages { dockQuickMessages }
                 } composer: {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 0) {
                         if let session = selectedSession {
                             if let page = renderInputs { SessionSendFailureSurface(message: page.sendFailure) }
                             else { SessionSendFailureView(sessionID: session.id) }

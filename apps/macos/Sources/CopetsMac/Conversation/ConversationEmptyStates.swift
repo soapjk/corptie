@@ -107,13 +107,14 @@ struct SessionSendFailureView: View {
 struct SessionSendFailureSurface: View {
     let message: String?
     var body: some View {
-        if let message {
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Text(message)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.red)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
                 .accessibilityIdentifier("session.send-failure")
+                .padding(.bottom, 6)
         }
     }
 }

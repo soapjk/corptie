@@ -120,6 +120,12 @@ export class ToolHostMaterializationCoordinator {
     if (record.status === "refreshing"
       && record.providerReceipt?.status === "awaiting_provider_observation"
       && record.providerReceipt?.requestedVersion === desiredVersion) {
+      const waitingSince = Date.parse(record.providerReceipt.requestedAt ?? record.refreshStartedAt);
+      if (input.activeTurn === true && Number.isFinite(waitingSince)
+        && Date.parse(this.clock()) - waitingSince >= 30_000) {
+        throw toolError("PROVIDER_TOOL_OBSERVATION_TIMEOUT",
+          "Provider has not confirmed the Tool catalog. Stop retrying domain_load in this Turn; recover the Tool attachment at an idle Session boundary.", 503);
+      }
       return Object.freeze({ status: "applying", record, plan, snapshot, joined: false });
     }
     if (input.activeTurn === true
@@ -454,6 +460,8 @@ export class ToolHostMaterializationCoordinator {
       providerDefinitionsHash: current.exposurePlan.providerDefinitionsHash,
       providerContractHash: current.exposurePlan.providerContractHash,
       refreshMode: current.exposurePlan.refreshMode,
+      providerObservationKind: "mcp_tools_list",
+      providerDefinitionsCount: current.exposurePlan.providerDefinitions.length,
       providerRevision: `mcp-tools-list:${observationId}`,
       receiptId: `mcp-tools-list:${binding.providerBindingId}:${current.desiredVersion}:${observationId}`
     });
@@ -786,7 +794,15 @@ function compatibleDefinitionOnly(record, binding, capability, plan, desiredVers
   const receipt = record.providerReceipt;
   if (!receipt || receipt.providerBindingId !== binding.providerBindingId) return false;
   if (receipt.providerCapabilityRevision !== capability.capabilityRevision) return false;
-  if (!receipt.providerObservationKind || !receipt.providerDefinitionsHash) return false;
+  // Older generated-MCP receipts omitted the kind but carry an exact observation
+  // identity. Accept only that persisted success proof, never a pending receipt.
+  const legacyMcpProof = receipt.refreshMode === "generated_mcp_refresh"
+    && receipt.appliedVersion === record.appliedVersion
+    && typeof receipt.providerRevision === "string"
+    && receipt.providerRevision.startsWith("mcp-tools-list:")
+    && receipt.providerRevision.length > "mcp-tools-list:".length
+    && receipt.receiptId === `mcp-tools-list:${binding.providerBindingId}:${receipt.appliedVersion}:${receipt.providerRevision.slice("mcp-tools-list:".length)}`;
+  if ((!receipt.providerObservationKind && !legacyMcpProof) || !receipt.providerDefinitionsHash) return false;
   const installedContractHash = providerContractHashFromReceipt(
     receipt,
     record.exposurePlan?.providerDefinitions

@@ -102,3 +102,31 @@ test("authenticated MCP announces an assignment-driven catalog revision change",
     await server.close();
   }
 });
+
+test('revision notifications retry boundedly until real tools/list acknowledges the desired generation', async () => {
+  let revision = 'old';
+  let now = 0;
+  let check;
+  let notices = 0;
+  const server = createCatalogBackedMcpServer({ clock: () => now, client: {
+    get: async () => ({ revision, tools: [] }),
+    subscribeCatalogChanges: callback => { check = callback; return () => {}; }
+  } });
+  const client = new Client({ name: 'bounded-notices', version: '1' });
+  client.setNotificationHandler(ToolListChangedNotificationSchema, () => { notices++; });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(b), client.connect(a)]);
+  try {
+    await client.listTools();
+    revision = 'pending';
+    for (let i = 0; i < 6; i++) { now += 5000; await check(); }
+    assert.equal(notices, 3);
+    await client.listTools();
+    now += 5000;
+    await check();
+    assert.equal(notices, 3);
+    revision = 'next';
+    await check();
+    assert.equal(notices, 4);
+  } finally { await client.close(); await server.close(); }
+});

@@ -132,6 +132,66 @@ import XCTest
         }
     }
 
+    private struct NoticeDockFixture: View {
+        let message: String?
+        let modelName: String
+        let hasUsage: Bool
+        var body: some View {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                ConversationComposerDock {
+                    DockMarker(name: "quick").frame(height: 30)
+                } composer: {
+                    VStack(spacing: 0) {
+                        SessionSendFailureSurface(message: message)
+                        VStack {
+                            DockMarker(name: "editor").frame(height: 44)
+                            HStack {
+                                Text("执行中")
+                                if hasUsage { Text("上下文已用 11.7%") }
+                                Spacer(minLength: 0)
+                                Text(modelName).lineLimit(1).frame(maxWidth: 176)
+                                DockMarker(name: "send").frame(width: 28, height: 28)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func testAbsentNoticesDoNotAddGapAcrossProviderContentAndWindowSizes() throws {
+        func marker(_ name: String, in view: NSView) -> NSView? {
+            if view.identifier?.rawValue == name { return view }
+            return view.subviews.lazy.compactMap { marker(name, in: $0) }.first
+        }
+        let host = NSHostingView(rootView: NoticeDockFixture(message: nil, modelName: "GPT", hasUsage: true))
+        var originalEditor: NSView?
+        for width: CGFloat in [320, 760] {
+            for height: CGFloat in [400, 800] {
+                for message in [nil, "", "   ", "发送失败"] as [String?] {
+                    for hasUsage in [true, false] {
+                        host.rootView = NoticeDockFixture(message: message,
+                            modelName: hasUsage ? "GPT-6.1-Sol" : "WorkBuddy Local Long Model", hasUsage: hasUsage)
+                        host.frame = .init(x: 0, y: 0, width: width, height: height)
+                        host.layoutSubtreeIfNeeded()
+                        let editor = try XCTUnwrap(marker("editor", in: host))
+                        if let originalEditor { XCTAssertTrue(originalEditor === editor) }
+                        else { originalEditor = editor }
+                        let quick = try XCTUnwrap(marker("quick", in: host))
+                        let ef = editor.convert(editor.bounds, to: host)
+                        let qf = quick.convert(quick.bounds, to: host)
+                        let gap = host.isFlipped ? ef.minY - qf.maxY : qf.minY - ef.maxY
+                        if message == "发送失败" { XCTAssertGreaterThan(gap, 4) }
+                        else { XCTAssertEqual(gap, 4, accuracy: 0.5) }
+                        let send = try XCTUnwrap(marker("send", in: host))
+                        XCTAssertEqual(send.convert(send.bounds, to: host).maxX, width, accuracy: 0.5)
+                    }
+                }
+            }
+        }
+    }
+
     func testLiveResizeHoldsContentRootsAndCommitsLatestOnce() {
         let view = ConversationRegionContainer<AnyView, AnyView>(
             content: AnyView(Color.clear), accessory: AnyView(Text("Header")),
