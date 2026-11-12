@@ -119,6 +119,7 @@ public struct ClientDetailBusinessScope: Equatable, Sendable {
                                     !value.attached || value.worktreeId == nil { handle.worktree.retire() }
                         }
                         catch {
+                            ClientFailureDiagnostics.log(error, operation: "detail.receive", sessionID: handle.scope.sessionID)
                             handle.store.fail("详情数据不合法，请重试；已保留上次内容", disposition: .temporary)
                             handle.notify(); return
                         }
@@ -126,7 +127,9 @@ public struct ClientDetailBusinessScope: Equatable, Sendable {
                         if [401, 403, 404].contains(status) { handle.retire(); break }
                         let retired = ["DETAIL_BINDING_CHANGED", "DETAIL_SCOPE_RETIRED"].contains(code)
                         let terminal = ClientDetailBusinessFailurePolicy.requiresManualRetry(code)
-                        let message = terminal ? "详情加载失败，请重试；已有内容已保留" : "详情更新失败，正在重试；已有内容已保留"
+                        let message = retired ? "会话绑定已变化，请重新打开详情" : terminal
+                            ? "详情数据校验失败，请重试；已有内容已保留"
+                            : "详情连接中断，正在重试；已有内容已保留"
                         handle.store.fail(message, disposition: retired ? .bindingRetired : .temporary)
                     case .unsupported: handle.legacy = true
                     }

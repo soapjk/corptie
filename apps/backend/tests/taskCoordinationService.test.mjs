@@ -489,7 +489,7 @@ test("MCP schemas and HTTP dispatch share authenticated Session context", async 
   await f.coordinator.runDispatch(payload.dispatches[0].dispatchId);
 });
 
-test("native Detail toggle is user-command scoped, revision checked and absent from child controls", async t => {
+test("native Detail toggle is user-command scoped, revision checked and available to child controls", async t => {
   const f = await fixture(t);
   const identity = { kind: "local_user", principalId: "owner" };
   const bound = () => ({ sessionId: "logical:parent", logicalSessionId: "logical:parent", task: f.store.getTask(f.parent.id) });
@@ -509,6 +509,21 @@ test("native Detail toggle is user-command scoped, revision checked and absent f
   const child = f.child("Child_view");
   const childDoc = projectNativeBusinessDocument({ logicalSessionId: "logical:child", session: { sessionKind: "worker" }, task: child, work: f.work }, {}, "test-generation", { editors: true });
   assert.equal(childDoc.cards.find(row => row.kind === "taskInfo").actions.some(row => row.operation === "task.coordination.update"), true);
+  const childPorts = createDetailBusinessActionPorts({ inspector: {
+    scope: () => ({ sessionId: "logical:child", logicalSessionId: "logical:child", task: f.store.getTask(child.id) }),
+    updateTask: (id, fields) => f.workService.updateTask(id, fields),
+    perform: (_scope, operation, fields) => { assert.equal(operation, "task.update"); return f.workService.updateTask(child.id, fields); }
+  } });
+  const childRegistry = createDetailActionRegistry(childPorts);
+  const childScope = { sessionId: "logical:child", identity };
+  for (const enabled of [true, false]) {
+    const current = f.store.getTask(child.id);
+    const currentDoc = projectNativeBusinessDocument({ logicalSessionId: "logical:child", session: { sessionKind: "worker" }, task: current }, {}, "test-generation", { editors: true });
+    const action = currentDoc.cards.find(row => row.kind === "taskInfo").actions.find(row => row.operation === "task.coordination.update");
+    const prepared = await childRegistry.prepare({ action, fields: { coordinationEnabled: enabled }, expectedResourceRevision: action.expectedResourceRevision, scope: childScope });
+    await prepared.port.execute(childScope, action.target, { coordinationEnabled: enabled }, { resource: prepared.resource, fingerprint: `child-${enabled}` });
+    assert.equal(f.store.getTask(child.id).coordination_enabled, Number(enabled));
+  }
 });
 
 test("desktop production composition saves enable and disable through real inspector commands and durable receipts", async t => {

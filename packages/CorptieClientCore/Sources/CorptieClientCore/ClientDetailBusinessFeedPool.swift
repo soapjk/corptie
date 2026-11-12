@@ -59,6 +59,7 @@ actor ClientDetailBusinessFeedPool {
             } catch is CancellationError { return }
             catch {
                 guard !Task.isCancelled else { return }
+                ClientFailureDiagnostics.log(error, operation: "detail.subscribe", sessionID: entry.scope.sessionID)
                 if let error = error as? ClientServiceFailure {
                     if error.statusCode == 409 && error.code == "DETAIL_CATALOG_UNSUPPORTED" {
                         publish(.unsupported, entry); finish(entry); return

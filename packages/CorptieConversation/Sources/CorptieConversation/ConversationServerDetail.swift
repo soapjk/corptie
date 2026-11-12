@@ -91,7 +91,13 @@ public struct ConversationServerDetail: View {
                     }
                     if displayStore.error != nil || runtime.error != nil || runtime.needsRecovery {
                         ConversationDetailModuleCard(title: "详情状态", systemImage: "exclamationmark.triangle") {
-                            if let message = displayStore.error { Text(message).font(.caption).foregroundStyle(.secondary) }
+                            if let message = displayStore.error {
+                                Text(message).font(.caption).foregroundStyle(.secondary)
+                                if !displayRetired {
+                                    Button(refreshing ? "正在重试…" : "重试加载详情") { Task { await refresh() } }
+                                        .font(.caption).disabled(refreshing || !isPresentationActive)
+                                }
+                            }
                             if let message = runtime.error { Text(message).font(.caption).foregroundStyle(.secondary) }
                             if runtime.needsRecovery {
                                 Button("核对回执，不重发") {
@@ -155,19 +161,21 @@ public struct ConversationServerDetail: View {
     private func deactivatePresentation() { renderState?.freeze(); runtime.retire(); selected = nil }
     private func refresh() async {
         let generation = activity?.generation ?? 0
-        guard isPresentationActive, !handle.retired, !refreshing, let selected else { return }; refreshing = true
+        guard isPresentationActive, !handle.retired, !refreshing else { return }; refreshing = true
         store.markRefreshing()
         defer { refreshing = false }
         do {
-            let next = try await api().businessSnapshot(sessionID: store.sessionID ?? sessionID)
+            let client = try await api().nativeBusinessPolicy
+            let next = try await client.businessSnapshot(sessionID: store.sessionID ?? sessionID)
             try Task.checkCancellation(); guard allows(generation), !handle.retired else { return }; try store.receive(next, resetPages: true)
+            selected = client
             repository.resumeIfNeeded(handle, api: api)
         } catch {
             guard !Task.isCancelled, allows(generation), !handle.retired else { return }
+            ClientFailureDiagnostics.log(error, operation: "detail.refresh", sessionID: sessionID)
             if let failure = error as? ClientServiceFailure, [401, 403, 404].contains(failure.statusCode) {
                 store.fail("访问已失效，请重新连接", disposition: .accessRevoked); runtime.retire()
             } else { store.fail("刷新未完成，已保留上次内容", disposition: .temporary) }
         }
-        _ = selected
     }
 }
