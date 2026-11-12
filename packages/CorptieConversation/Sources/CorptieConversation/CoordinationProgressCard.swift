@@ -32,7 +32,7 @@ public struct CoordinationProgressCard: View {
             if progress.hasMore || progress.total > 3 { Button { showingAll = true } label: { Text("查看全部 \(progress.total) 项", bundle: .module) }.font(.caption) }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(ConversationSkinSurface(role: .structured, radius: 12, legacyFill: Color.secondary.opacity(0.05)))
+        .modifier(ConversationSkinSurface(role: .structured, radius: 12, legacyFill: WorkbenchCanvasSurface.defaultColor, legacyBorder: Color.primary.opacity(0.10)))
         .sheet(item: $selection) { item in
             NavigationStack { CoordinationProgressItemDetail(item: item, progress: progress, api: api, openSession: openSession) }
                 .frame(minWidth: 280, minHeight: 280)

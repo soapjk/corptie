@@ -552,7 +552,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(composer.contains("static let jumpControlSize: CGFloat = 30"))
         #expect(conversation.contains("ComposerQuickMessagesBar.jumpControlSize"))
         // Untinted system liquid glass only: no opaque plate, stroke or brand fill.
-        #expect(styles.contains(".platformGlassSurface(in: Circle(), interactive: true)"))
+        #expect(styles.contains(".platformGlassSurface(in: Circle(), interactive: true, variant: .regular)"))
         #expect(!styles.contains("CorptiePalette.connected"))
         #expect(!styles.contains(".background(background, in: Circle())"))
         #expect(!styles.contains("strokeBorder(border"))
