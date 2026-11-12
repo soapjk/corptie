@@ -46,6 +46,47 @@ final class SessionListRowStyleTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testIntrinsicHeightRowSurfaceKeepsTheSameHighlightInsets() throws {
+        for selected in [false, true] {
+            let contentBounds = NSView(), surfaceBounds = NSView()
+            let row = HStack(spacing: 9) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("消息列表 UI 持续优化").font(.system(size: 13)).lineLimit(1)
+                    Text("Corptie").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+            }
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RowBoundsProbe(view: contentBounds))
+            .consoleOutlineRowSurface(isSelected: selected, fixesHeightToNativeRow: false)
+            .background(RowBoundsProbe(view: surfaceBounds))
+
+            let host = NSHostingView(rootView: row)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 30),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.contentView = nil; window.close() }
+            for width: CGFloat in [160, 220, 300, 520] {
+                window.setContentSize(NSSize(width: width, height: 30))
+                host.layoutSubtreeIfNeeded()
+                let surface = surfaceBounds.convert(surfaceBounds.bounds, to: host)
+                let content = contentBounds.convert(contentBounds.bounds, to: host)
+                XCTAssertEqual(surface.width, width, accuracy: 0.5)
+                XCTAssertGreaterThan(surface.height, 30,
+                    "A project-subtitle row must not be clipped to the native outline height")
+                let background = surface.insetBy(dx: 8, dy: 0)
+                XCTAssertTrue(background.contains(content),
+                    "Highlight must cover the title and the status indicator: \(content) in \(background)")
+                XCTAssertGreaterThanOrEqual(content.minX - background.minX, 7.5)
+                XCTAssertGreaterThanOrEqual(background.maxX - content.maxX, 7.5)
+            }
+        }
+    }
+
     func testSessionsSidebarIsMoreCompactThanStandardRow() {
         XCTAssertEqual(CompactSessionRowStyle.standard.height, 46)
         XCTAssertEqual(CompactSessionRowStyle.sessionsSidebar.height, 38)

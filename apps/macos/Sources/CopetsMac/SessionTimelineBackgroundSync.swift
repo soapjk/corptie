@@ -36,6 +36,29 @@ enum SessionTerminalTimelineReconciliation {
     }
 }
 
+/// A stored snapshot is a bounded tail window, not the whole Timeline. The
+/// backend returns `DEFAULT_SESSION_HISTORY_WINDOW` items with
+/// `hasMoreHistory: true`. Publishing that window as-is discards every earlier
+/// history page the user loaded, so a terminal reconciliation or a duplicate
+/// recovery reads like lost messages. Reattach the loaded pages by anchoring
+/// on the first snapshot item; the snapshot tail remains authoritative for
+/// recent activity and for the final reply the reconciliation is looking for.
+enum SessionTimelineSnapshotHistoryMerge {
+    static func preservingLoadedHistory(
+        snapshot: CodexThreadDetail,
+        resident: CodexThreadDetail?
+    ) -> CodexThreadDetail {
+        guard let resident,
+              resident.id == snapshot.id,
+              snapshot.hasMoreHistory == true,
+              let anchorID = snapshot.items.first?.id,
+              let anchorIndex = resident.items.firstIndex(where: { $0.id == anchorID }),
+              anchorIndex > 0 else { return snapshot }
+        let earlier = Array(resident.items[..<anchorIndex])
+        return ResidentTimelineWindow.replacingItems(in: snapshot, with: earlier + snapshot.items)
+    }
+}
+
 struct SessionTimelineChangeEnvelope: Decodable, Sendable {
     let snapshotRequired: Bool
     let baseRevision: Int?

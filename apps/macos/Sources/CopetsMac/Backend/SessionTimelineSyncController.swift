@@ -187,7 +187,14 @@ final class SessionTimelineSyncController {
             return false
         }
         guard sessionRouteIsCurrent(session) else { return false }
-        let reconciledDetail = mergePending(snapshot.detail)
+        // A snapshot is only a tail window. Keep earlier pages the user has
+        // already loaded instead of replacing the whole resident Timeline.
+        let reconciledDetail = mergePending(
+            SessionTimelineSnapshotHistoryMerge.preservingLoadedHistory(
+                snapshot: snapshot.detail,
+                resident: SessionTimelineRepository.shared.detail(for: session.id)
+            )
+        )
         storeDetail(reconciledDetail, session.id, snapshot.timelineRevision)
         ChatPerformanceTrace.timelineStage("published", sessionID: session.id, revision: snapshot.timelineRevision)
         await warmPresentationCache(for: session.id)

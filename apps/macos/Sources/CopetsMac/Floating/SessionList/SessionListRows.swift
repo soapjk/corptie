@@ -245,35 +245,68 @@ struct SessionIdentityLine: View {
     }
 }
 
+/// One provider badge for the session header, sidebar rows and reply headers.
+/// Inputs are value-only, so native timeline cells never observe the catalog.
+struct ProviderBrandLabel: View {
+    let iconAsset: String?
+    let label: String
+    var iconSize: CGFloat = 13
+    var spacing: CGFloat = 2
+    var foreground: Color = .primary
+    var font: Font? = nil
+    /// Icon-only variants keep the provider name in the tooltip and accessibility label.
+    var showsLabel = true
+
+    var body: some View {
+        if showsLabel {
+            badge
+        } else {
+            badge
+                .help(label)
+                .accessibilityLabel(Text(label))
+        }
+    }
+
+    private var badge: some View {
+        HStack(spacing: spacing) {
+            Group {
+                if let iconAsset,
+                   let icon = ProviderBrandIcon.image(for: iconAsset, providers: []) {
+                    Image(nsImage: icon).resizable().interpolation(.high)
+                } else {
+                    Image(systemName: "cpu")
+                }
+            }
+            .foregroundStyle(foreground)
+            .frame(width: iconSize, height: iconSize)
+            .accessibilityHidden(showsLabel)
+            if showsLabel {
+                Text(label)
+                    .font(font)
+                    .foregroundStyle(foreground)
+                    .lineLimit(1)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 struct SessionProviderIdentity: View {
     @ObservedObject private var modelCatalog = BackendClient.shared.modelCatalog
     let session: TaskSession
     var prominentText = false
 
     var body: some View {
-        HStack(spacing: 2) {
-            if let icon = ProviderBrandIcon.image(
+        ProviderBrandLabel(
+            iconAsset: ProviderBrandIcon.assetName(
                 for: session.external?.provider ?? session.agent,
-                providers: modelCatalog.agentProviders
-            ) {
-                Image(nsImage: icon)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 13, height: 13)
-                    .accessibilityHidden(true)
-            } else {
-                Image(systemName: "cpu")
-                    .foregroundStyle(session.accent.color)
-                    .accessibilityHidden(true)
-            }
-            Text(sessionProviderIdentityLabel(
+                providers: modelCatalog.agentProviders),
+            label: sessionProviderIdentityLabel(
                 providerIdentity: session.external?.provider,
                 legacyAgentLabel: session.agent,
-                providers: modelCatalog.agentProviders
-            ))
-            .foregroundStyle(prominentText ? Color.primary : session.accent.color)
-        }
-        .fixedSize(horizontal: true, vertical: false)
+                providers: modelCatalog.agentProviders),
+            foreground: prominentText ? Color.primary : session.accent.color
+        )
     }
 }
 

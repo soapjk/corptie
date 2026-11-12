@@ -7,6 +7,10 @@ struct ConversationReplyIdentity: Equatable {
     let roleID: String
     let name: String
     let avatarPath: String?
+    /// Provider branding is captured as plain values when the page projects
+    /// its rows. Native timeline cells must never observe the global catalog.
+    var providerLabel: String? = nil
+    var providerIconAsset: String? = nil
 }
 
 enum ReplyIdentityLayout {
@@ -308,9 +312,18 @@ enum ChatBubbleWidthPolicy {
                 bodyWidth = 0
             } else {
                 let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style, typography: typography)
-                bodyWidth = ceil(attributed.boundingRect(
-                    with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+                // Probe with a finite box comfortably wider than the 640pt card
+                // ceiling. An infinite line fragment saturates NSStringDrawing
+                // and under-reports the glyph bounds of a long single line.
+                let measured = ceil(attributed.boundingRect(
+                    with: NSSize(width: 4096, height: CGFloat.greatestFiniteMagnitude),
                     options: [.usesLineFragmentOrigin, .usesFontLeading]).width)
+                // The card hugs `bodyWidth`, and the body renders at exactly
+                // `cardWidth - horizontalPadding`: zero slack. Reserve one body
+                // glyph so a measuring/rendering delta cannot push the final
+                // character (plus punctuation that cannot start a line) into
+                // a one-character second line.
+                bodyWidth = measured + typography.bodySize
             }
             let titleWidth = ceil((title as NSString).size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .bold)]).width)

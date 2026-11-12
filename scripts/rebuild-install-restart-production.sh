@@ -353,8 +353,24 @@ install_and_start_production_backend() {
     || true
   mv "${LAUNCH_AGENT_STAGED_PLIST}" "${LAUNCH_AGENT_PLIST}"
   LAUNCH_AGENT_STAGED_PLIST=""
-  launchctl bootstrap "gui/$(id -u)" "${LAUNCH_AGENT_PLIST}"
-  launchctl kickstart "gui/$(id -u)/${LAUNCH_AGENT_LABEL}"
+  # Replacing a LaunchAgent plist can make launchd re-load the service
+  # asynchronously, and bootstrap exits 5 (EIO) when that happens. Wait a bounded
+  # window for the service, then fall back to the legacy loader before treating
+  # it as a failure; otherwise the whole upgrade gets rolled back needlessly.
+  if ! launchctl bootstrap "gui/$(id -u)" "${LAUNCH_AGENT_PLIST}" >/dev/null 2>&1; then
+    for _ in $(seq 1 20); do
+      if launchctl print "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1; then break; fi
+      sleep 0.5
+    done
+    if ! launchctl print "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1; then
+      launchctl load -w "${LAUNCH_AGENT_PLIST}" >/dev/null 2>&1 || true
+    fi
+    if ! launchctl print "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1; then
+      echo "Could not load the production backend LaunchAgent." >&2
+      return 1
+    fi
+  fi
+  launchctl kickstart -k "gui/$(id -u)/${LAUNCH_AGENT_LABEL}"
 }
 
 cleanup() {

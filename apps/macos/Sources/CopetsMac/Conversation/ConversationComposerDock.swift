@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Quick actions and the editor share one SDK layout and fixed spacing.
+/// Quick actions now live in their own floating host. This dock owns only the
+/// editor and its optional chrome, so it reserves no empty row above them.
 struct ConversationComposerDock<QuickMessages: View, Composer: View>: View {
     let quickMessages: QuickMessages
     let composer: Composer
@@ -11,13 +12,9 @@ struct ConversationComposerDock<QuickMessages: View, Composer: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 0) {
             quickMessages
             composer
         }
-        // Only the transcript absorbs spare window height. Keep the dock at
-        // its content height regardless of checklist, usage or model content.
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(.bottom, 4)
     }
 }

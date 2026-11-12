@@ -63,7 +63,7 @@ public struct ClientSessionPreparation: Codable, Equatable, Sendable, Identifiab
         switch state {
         case "queued": "正在等待核验，草稿已保留"
         case "verifying": "正在核验会话，草稿已保留"
-        case "ready": "会话已就绪，未自动发送草稿"
+        case "ready": "核验完成，草稿未自动发送"
         case "cancelled": "已停止等待，草稿已保留"
         default: remoteDisposition == "unknown"
             ? "恢复结果仍需核对，未重发消息" : "会话尚未就绪，草稿已保留"

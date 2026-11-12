@@ -1087,24 +1087,98 @@ export class GitWorkspaceManager {
       throw integrationGitError("MAIN_HEAD_CHANGED", `main HEAD changed while the integration task was running.\nTarget: ${input.mainPath}\nExpected HEAD: ${input.expectedMainHead}\nActual HEAD: ${mainHead}`,
         { expectedHead: input.expectedMainHead, actualHead: mainHead });
     }
-    const mainStatus = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
-
     await this.assertIntegrationTreePolicy(input.mainPath,input.sourceHead,input.expectedMainHead);
-    try {
-      await this.assertCommitHasNoMainLinkedAgentConfiguration(input.sourcePath ?? input.mainPath,input.mainPath,input.sourceHead);
-      await this.runGit(input.mainPath, input.mergeStrategy==="ff-only" ? ["merge","--autostash","--ff-only",input.sourceHead] : ["merge", "--autostash", "--no-ff", "--no-edit", input.sourceHead]);
-    } catch (error) {
-      const conflicts = (await this.gitOutput(input.mainPath, ["diff", "--name-only", "--diff-filter=U"]))
-        .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
-      if (conflicts.length > 0) {
-        const conflict = integrationGitError("MERGE_CONFLICT", safeGitError(error, "Merge conflict"), { cause: error });
-        conflict.conflictFiles = conflicts;
-        throw conflict;
+    await this.assertCommitHasNoMainLinkedAgentConfiguration(input.sourcePath ?? input.mainPath,input.mainPath,input.sourceHead);
+    const unmergedPaths = async () => (await this.gitOutput(input.mainPath, ["diff", "--name-only", "--diff-filter=U"]))
+      .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    const conflictError = (message, files, cause) => {
+      const error = integrationGitError("MERGE_CONFLICT", message, cause ? { cause } : {});
+      error.conflictFiles = files;
+      return error;
+    };
+
+    if (input.mergeStrategy === "ff-only") {
+      // Fast-forward 不产生 merge commit，保留原有 autostash 语义。
+      try {
+        await this.runGit(input.mainPath, ["merge", "--autostash", "--ff-only", input.sourceHead]);
+      } catch (error) {
+        const conflicts = await unmergedPaths();
+        if (conflicts.length > 0) throw conflictError(safeGitError(error, "Merge conflict"), conflicts, error);
+        throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"), { cause: error });
       }
+      const updatedHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+      if (updatedHead !== input.sourceHead) throw integrationGitError("INTEGRATION_ACCEPTANCE_STALE","Final main HEAD differs from the accepted parent.");
+      await this.#assertIntegrationPostconditionClean(input.mainPath);
+      return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
+    }
+
+    // A merge conflict must never leave a merge commit in main, and main must keep
+    // MERGE_HEAD until the conflict-resolution Session takes over. Git's
+    // --autostash restores local changes *after* the merge commit is written; if
+    // that restore conflicts, the worktree has unmerged files while the commit is
+    // already irreversible and MERGE_HEAD is gone, breaking the Session's core
+    // assumption that main is still inside the task-owned merge.
+    // Instead, stash local changes explicitly and restore them *before* committing.
+    const hasTrackedChanges = !await this.gitSucceeds(input.mainPath, ["diff", "--quiet"])
+      || !await this.gitSucceeds(input.mainPath, ["diff", "--cached", "--quiet"]);
+    let stashOid = null;
+    if (hasTrackedChanges) {
+      try {
+        await this.runGit(input.mainPath, ["stash", "push", "-m", `corptie-integration-${input.jobId ?? "merge"}`]);
+      } catch (error) {
+        throw integrationGitError("MAIN_CHANGES_NOT_STASHED",
+          safeGitError(error, "Could not preserve main's local changes before merging"), { cause: error });
+      }
+      stashOid = (await this.gitOutput(input.mainPath, ["rev-parse", "-q", "--verify", "refs/stash"])).trim() || null;
+      if (!stashOid) throw integrationGitError("MAIN_CHANGES_NOT_STASHED", "main's local changes were stashed but cannot be located.");
+    }
+
+    try {
+      await this.runGit(input.mainPath, ["merge", "--no-commit", "--no-ff", input.sourceHead]);
+    } catch (error) {
+      const conflicts = await unmergedPaths();
+      if (conflicts.length > 0) throw conflictError(safeGitError(error, "Merge conflict"), conflicts, error);
       throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"), { cause: error });
     }
+    if (await this.integrationOperationState(input.mainPath) !== "merge") {
+      throw integrationGitError("MERGE_STATE_MISSING",
+        "Git did not leave the task-owned merge in progress; refusing to create a merge commit.");
+    }
+    const mergeConflicts = await unmergedPaths();
+    if (mergeConflicts.length > 0) {
+      throw conflictError("Resolve the merge conflicts in main, then retry.", mergeConflicts, null);
+    }
+
+    if (stashOid) {
+      const currentStash = (await this.gitOutput(input.mainPath, ["rev-parse", "-q", "--verify", "refs/stash"])).trim();
+      if (currentStash !== stashOid) {
+        throw integrationGitError("MAIN_CHANGES_NOT_RESTORED",
+          "main's stash changed while the merge was in progress; the merge was preserved.");
+      }
+      // A failed pop keeps the stash intact, so local changes are never lost.
+      if (!await this.gitSucceeds(input.mainPath, ["stash", "pop", "stash@{0}"])) {
+        const conflicts = await unmergedPaths();
+        if (conflicts.length > 0) {
+          throw conflictError(
+            "Restoring main's local changes produced conflicts. No merge commit was created; the merge stays in progress.",
+            conflicts, null);
+        }
+        throw integrationGitError("MAIN_CHANGES_NOT_RESTORED",
+          "Could not restore main's local changes; the merge was preserved.");
+      }
+    }
+    const restoredConflicts = await unmergedPaths();
+    if (restoredConflicts.length > 0) {
+      throw conflictError(
+        "Restoring main's local changes produced conflicts. No merge commit was created; the merge stays in progress.",
+        restoredConflicts, null);
+    }
+    try {
+      await this.runGit(input.mainPath, ["commit", "--no-edit"]);
+    } catch (error) {
+      throw integrationGitError("MERGE_COMMIT_FAILED", safeGitError(error, "Could not finish the resolved merge"), { cause: error });
+    }
     const updatedHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
-    if(input.mergeStrategy==="ff-only" && updatedHead!==input.sourceHead) throw integrationGitError("INTEGRATION_ACCEPTANCE_STALE","Final main HEAD differs from the accepted parent.");
     await this.#assertIntegrationPostconditionClean(input.mainPath);
     return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
   }

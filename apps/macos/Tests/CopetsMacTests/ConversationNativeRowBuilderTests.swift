@@ -236,6 +236,33 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         }
     }
 
+    func testReplyIdentityCarriesProviderBrandingAsValues() throws {
+        // Real provider identities must resolve to a bundled logo asset.
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "codex-app-server", providers: []), "codex")
+        XCTAssertEqual(ProviderBrandIcon.assetName(for: "claude-sdk", providers: []), "claude-code")
+
+        let legacy = ConversationReplyIdentity(roleID: "agent:one", name: "Developer", avatarPath: nil)
+        let codex = ConversationReplyIdentity(roleID: "agent:one", name: "Developer", avatarPath: nil,
+            providerLabel: "Codex", providerIconAsset: "codex")
+        let claude = ConversationReplyIdentity(roleID: "agent:one", name: "Developer", avatarPath: nil,
+            providerLabel: "Claude Code", providerIconAsset: "claude-code")
+        XCTAssertNil(legacy.providerLabel)
+        XCTAssertNil(legacy.providerIconAsset)
+        XCTAssertNotEqual(legacy, codex)
+        // A provider switch must invalidate the cached header identity.
+        XCTAssertNotEqual(codex, claude)
+
+        var projection = builder()
+        projection.replyIdentity = codex
+        let entry = ChatDisplayEntry(kind: .message(try item(["id": "final"])))
+        let rows = projection.applyingReplyIdentity(
+            to: [projection.nativeAppKitRow(entry, expandedTurnIds: [])], entries: [entry])
+        XCTAssertEqual(rows[0].replyIdentity, codex)
+        projection.replyIdentity = claude
+        let refreshed = projection.applyingReplyIdentity(to: rows, entries: [entry])
+        XCTAssertEqual(refreshed[0].replyIdentity, claude)
+    }
+
     func testAgentIdentityAppearsOncePerReplyAndSkipsSpecialMessages() throws {
         var projection = builder()
         let identity = ConversationReplyIdentity(roleID: "agent:one", name: "Developer", avatarPath: nil)

@@ -1,87 +1,102 @@
 import SwiftUI
 import CorptieClientCore
 
-/// Local recovery chrome only. It never owns the composer draft or Timeline.
+/// Read-only, self-driving Session readiness chrome.
+///
+/// It never owns the composer draft, never offers a control, and never asks the
+/// user to confirm recovery: a confirmed attempt refreshes the authoritative
+/// snapshot, which removes the owning surface. While the Session stays
+/// unavailable it shows one reason only, then retries on its own.
 @MainActor
 public struct SessionPreparationNotice: View {
     private let activity: ConversationDetailPresentationActivity?
     private var isActive: Bool { activity?.isActive ?? true }
     private let sessionID: String
+    private let fallbackReason: String
     private let api: @MainActor () async throws -> ClientSessionPreparationAPI
     private let didPrepare: @MainActor () async -> Void
     @State private var preparation: ClientSessionPreparation?
     @State private var issue: String?
-    @State private var revision = 0
-    @State private var cancelAttemptID: String?
 
     public init(sessionID: String,
                 api: @escaping @MainActor () async throws -> ClientSessionPreparationAPI,
                 didPrepare: @escaping @MainActor () async -> Void,
-                activity: ConversationDetailPresentationActivity? = nil) {
-        self.sessionID = sessionID; self.api = api; self.didPrepare = didPrepare; self.activity = activity
+                activity: ConversationDetailPresentationActivity? = nil,
+                fallbackReason: String = "会话不可用") {
+        self.sessionID = sessionID; self.api = api; self.didPrepare = didPrepare
+        self.activity = activity; self.fallbackReason = fallbackReason
     }
 
     public var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(issue ?? preparation?.statusText ?? "正在核验会话，草稿已保留")
-                if let detail = preparation?.failureDetail, issue == nil {
-                    Text(detail)
-                }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-            Spacer(minLength: 4)
-            if let preparation, preparation.isAwaitingConfirmation, issue == nil {
-                Button("停止等待") { guard isActive else { return }; cancelAttemptID = preparation.id; revision += 1 }
-                    .accessibilityHint("只停止核验等待，不声称远端操作已取消")
-            } else if preparation?.isReady != true {
-                Button("重新核验") { guard isActive else { return }; cancelAttemptID = nil; revision += 1 }
-                    .accessibilityHint("结果未知时只核对状态，不重发消息")
+        // The task lives on a stable container so it keeps running even after a
+        // confirmed attempt stops rendering chrome.
+        VStack(spacing: 0) {
+            if preparation?.isReady != true {
+                Text(displayedReason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("session-preparation-notice")
             }
         }
-        .buttonStyle(.bordered).controlSize(.small)
-        .accessibilityIdentifier("session-preparation-notice")
-        .task(id: "\(sessionID):\(revision):\(isActive):\(activity?.generation ?? 0)") { await run() }
+        .task(id: "\(sessionID):\(isActive):\(activity?.generation ?? 0)") { await run() }
+    }
+
+    /// Only reasons, never progress or success copy: a ready Session shows
+    /// nothing here at all.
+    private var displayedReason: String {
+        if let issue { return issue }
+        if let detail = preparation?.failureDetail { return detail }
+        return fallbackReason
     }
 
     private func run() async {
         guard isActive else { return }
         let generation = activity?.generation ?? 0
         let accepts = { !Task.isCancelled && (activity?.allows(generation: generation) ?? true) }
-        issue = nil
-        do {
-            let client = try await api()
-            guard accepts() else { return }
-            let initial = if let cancelAttemptID {
-                try await client.cancel(sessionID: sessionID, attemptID: cancelAttemptID)
-            } else {
-                try await client.start(sessionID: sessionID)
-            }
-            guard accepts() else { return }
-            preparation = initial
-            while preparation?.isAwaitingConfirmation == true {
-                let awaitingRemoteResult = preparation?.isActive != true
-                try await Task.sleep(for: .seconds(awaitingRemoteResult ? 10 : 2))
+        let backoff: [Duration] = [.seconds(2), .seconds(5), .seconds(10)]
+        var retryIndex = 0
+
+        while !Task.isCancelled && accepts() {
+            do {
+                let client = try await api()
                 guard accepts() else { return }
-                // For an unknown sent operation, start only schedules the
-                // server's read-only reconciliation of the same attempt.
-                let next = if awaitingRemoteResult {
-                    try await client.start(sessionID: sessionID)
-                } else {
-                    try await client.current(sessionID: sessionID)
+                var current = try await client.start(sessionID: sessionID)
+                guard accepts() else { return }
+                preparation = current
+                issue = nil
+                retryIndex = 0
+
+                while current?.isAwaitingConfirmation == true && !Task.isCancelled && accepts() {
+                    let awaitingRemoteResult = current?.isActive != true
+                    try await Task.sleep(for: awaitingRemoteResult ? .seconds(10) : .seconds(2))
+                    guard accepts() else { return }
+                    // For an unknown sent operation, start only schedules the
+                    // server's read-only reconciliation of the same attempt.
+                    current = awaitingRemoteResult
+                        ? try await client.start(sessionID: sessionID)
+                        : try await client.current(sessionID: sessionID)
+                    guard accepts() else { return }
+                    preparation = current
                 }
                 guard accepts() else { return }
-                if preparation != next { preparation = next }
+                if current?.isReady == true {
+                    await didPrepare()
+                    return
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard accepts() else { return }
+                issue = ClientSessionPreparation.requestFailureDetail(error)
             }
-            guard accepts() else { return }
-            if preparation?.isReady == true { await didPrepare() }
-        } catch is CancellationError {
-            return
-        } catch {
-            guard accepts() else { return }
-            issue = "\(ClientSessionPreparation.requestFailureDetail(error))；草稿已保留"
+            // A terminal non-ready outcome or a transport failure is retried
+            // automatically. The reason stays visible until the authoritative
+            // snapshot turns ready and the owning surface disappears.
+            try? await Task.sleep(for: backoff[min(retryIndex, backoff.count - 1)])
+            retryIndex = min(retryIndex + 1, backoff.count - 1)
         }
     }
 }

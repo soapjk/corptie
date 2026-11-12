@@ -529,7 +529,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(composer.contains("Button(action: onJumpToLatest)"))
         #expect(composer.contains("JumpToLatestButtonStyle(highlightsUnread: hasUnreadMessagesBelow)"))
         #expect(conversation.contains("bottomClearance: 0"))
-        #expect(conversation.contains("ConversationRegionStack(floating: AnyView(floatingDock))"))
+        #expect(conversation.contains("ConversationRegionStack(floating: AnyView(floatingDock),"))
         #expect(!conversation.contains(".onPreferenceChange(ConversationChromeFramePreferenceKey.self)"))
         #expect(!conversation.contains("conversationChromeFrame(.composer)"))
         #expect(conversation.contains("ConversationComposerDock"))
@@ -569,12 +569,12 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(conversation.contains("private var usesJumpControlSlot"))
         #expect(conversation.contains("private var floatingDock: some View"))
         #expect(!conversation.contains("private var quickMessageOverlap"))
-        #expect(conversation.contains("ConversationRegionStack(floating: AnyView(floatingDock))"))
+        #expect(conversation.contains("ConversationRegionStack(floating: AnyView(floatingDock),"))
         #expect(conversation.contains("bottomClearance: 0"))
     }
 
     @Test
-    func unavailableSessionExplainsTheDisabledComposerAndOffersRecovery() throws {
+    func unavailableSessionShowsOneReasonWithNoInteractiveRecovery() throws {
         let source = try source(named: "Conversation/SessionConversationContent.swift")
             + source(named: "Conversation/ConversationEmptyStates.swift")
         let noticeStart = try #require(source.range(of: "struct SessionNotReadyComposerNotice: View"))
@@ -587,11 +587,13 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("sessionReadinessNotice"))
         #expect(source.contains("session.readiness == .notReady"))
         #expect(source.contains("let reason = session.notReadyReason"))
+        #expect(notice.contains("SessionPreparationNotice"))
+        #expect(notice.contains("fallbackReason"))
         #expect(notice.contains("reason.presentationMessage"))
-        #expect(notice.contains("reason.shouldOfferRestartRecovery"))
-        #expect(notice.contains("session.actions?.restart?.available == true"))
-        #expect(notice.contains("backendClient.restart(session: session)"))
-        #expect(notice.contains("commandState.restartingSessionIds.contains(session.id)"))
+        #expect(!notice.contains("Button("))
+        #expect(!notice.contains("Restart Session"))
+        #expect(!notice.contains("shouldOfferRestartRecovery"))
+        #expect(!notice.contains("commandState"))
     }
 
     @Test
@@ -896,6 +898,20 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!source.contains("ConsoleWorkOutlineRows"))
         #expect(!source.contains("consoleWorkOutlineGroupCard"))
         #expect(source.contains("outlineFullyExpandedWorkIDs.remove(workID)"))
+    }
+
+    @Test
+    func flatSessionListSharesTheOutlineRowSurfaceInsteadOfPaintingItsOwnHighlight() throws {
+        let flat = try source(named: "Console/ConsoleFlatSessionList.swift")
+        #expect(flat.contains(".consoleOutlineRowSurface(isSelected:"))
+        #expect(flat.contains("fixesHeightToNativeRow: false"))
+        #expect(flat.contains(".listRowInsets(EdgeInsets())"))
+        #expect(!flat.contains(".consoleHoverFeedback(isSelected:"))
+        #expect(!flat.contains("horizontalInset: 0"))
+
+        let policies = try source(named: "Console/ConsoleNavigationPolicies.swift")
+        #expect(policies.contains("horizontalInset: 8"))
+        #expect(policies.contains("var fixesHeightToNativeRow = true"))
     }
 
     @Test

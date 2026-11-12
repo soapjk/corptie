@@ -352,12 +352,8 @@ struct SessionConversationSurface: View {
            let reason = session.notReadyReason {
             if let page = renderInputs {
                 SessionNotReadyComposerSurface(backendClient: backendClient, session: session,
-                    reason: reason, restarting: page.restarting, renderInputs: page)
-                    .padding(.bottom, 6)
-            } else {
-                SessionNotReadyComposerNotice(session: session, reason: reason)
-                    .padding(.bottom, 6)
-            }
+                    reason: reason, renderInputs: page)
+            } else { SessionNotReadyComposerNotice(session: session, reason: reason) }
         }
     }
 
@@ -517,7 +513,8 @@ struct SessionConversationSurface: View {
     }
 
     private var conversationLayout: some View {
-        ConversationRegionStack(floating: AnyView(floatingDock)) {
+        ConversationRegionStack(floating: AnyView(floatingDock),
+            floatingClearanceInset: usesJumpControlSlot ? ComposerQuickMessagesBar.jumpControlSize : 0) {
             messageViewport
         } accessory: {
             inputDock
@@ -638,31 +635,47 @@ struct SessionConversationSurface: View {
         }
     }
 
+    /// Optional chrome occupies zero height when there is nothing to report:
+    /// a healthy session must not leave a blank strip above the editor.
+    @ViewBuilder
+    private var composerNotices: some View {
+        if let page = renderInputs {
+            SessionSendFailureSurface(message: page.sendFailure)
+        } else if let session = selectedSession {
+            SessionSendFailureView(sessionID: session.id)
+        }
+        sessionReadinessNotice
+            .padding(.bottom, showsReadinessNotice ? 6 : 0)
+    }
+
+    private var showsReadinessNotice: Bool {
+        displayedOnline
+            && pageWorkspaceRecovery?.blocksSessionInput != true
+            && selectedSession?.readiness == .notReady
+            && selectedSession?.notReadyReason != nil
+    }
+
     private var inputDock: some View {
         VStack(spacing: 0) {
-            // One editor at one structural position: placement changes must
-            // not recreate the native text view, attachments or draft owner.
-            VStack(spacing: 24) {
-                if showsWelcome {
-                    ConversationWelcomeView(
-                        isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
-                    )
-                }
-                ConversationComposerDock {
-                    EmptyView()
-                } composer: {
-                    VStack(spacing: 0) {
-                        if let session = selectedSession {
-                            if let page = renderInputs { SessionSendFailureSurface(message: page.sendFailure) }
-                            else { SessionSendFailureView(sessionID: session.id) }
-                        }
-                        sessionReadinessNotice
-                        sessionComposer
-                    }
+            if showsWelcome {
+                // One editor at one structural position: placement changes must
+                // not recreate the native text view, attachments or draft owner.
+                ConversationWelcomeView(
+                    isAssistant: selectedSession?.resolvedSessionKind == .assistantChat
+                )
+                .padding(.bottom, 24)
+            }
+            ConversationComposerDock {
+                EmptyView()
+            } composer: {
+                VStack(spacing: 0) {
+                    composerNotices
+                    sessionComposer
                 }
             }
-            .modifier(WorkbenchReadingLane(compact: compactComposer))
-            .frame(maxHeight: showsWelcome ? .infinity : nil)        }
+        }
+        .modifier(WorkbenchReadingLane(compact: compactComposer))
+        .frame(maxHeight: showsWelcome ? .infinity : nil)
     }
 
     private var conversationTopChrome: some View {
@@ -992,8 +1005,14 @@ struct SessionConversationSurface: View {
         guard let session = selectedSession else { return nil }
         let roles = renderInputs?.roles ?? EntityAPIClient.shared.roles
         let agent = roles.first { $0.roleId == session.roleId }
+        let providers = backendClient.modelCatalog.agentProviders
         return ConversationReplyIdentity(roleID: agent?.roleId ?? session.roleId ?? session.id,
-            name: agent?.name ?? L10n("Role"), avatarPath: agent?.avatarPath)
+            name: agent?.name ?? L10n("Role"), avatarPath: agent?.avatarPath,
+            providerLabel: sessionProviderIdentityLabel(
+                providerIdentity: session.external?.provider,
+                legacyAgentLabel: session.agent, providers: providers),
+            providerIconAsset: ProviderBrandIcon.assetName(
+                for: session.external?.provider ?? session.agent, providers: providers))
     }
 
     private var forkUnavailableReason: String? {

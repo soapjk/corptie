@@ -19,8 +19,15 @@ struct MacReplyIdentityHeader: View {
             .frame(width: ReplyIdentityLayout.avatarSize, height: ReplyIdentityLayout.avatarSize)
             .clipShape(Circle())
             .accessibilityHidden(true)
-            Text(identity.name).font(WorkbenchTypography.font(for: .conversationMetadata))
-                .foregroundStyle(skin == .codexFlat ? Color.secondary : Color.primary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(identity.name).font(WorkbenchTypography.font(for: .conversationMetadata))
+                    .foregroundStyle(skin == .codexFlat ? Color.secondary : Color.primary).lineLimit(1)
+                if let label = identity.providerLabel, !label.isEmpty {
+                    ProviderBrandLabel(iconAsset: identity.providerIconAsset, label: label,
+                        iconSize: 11, foreground: Color.secondary, showsLabel: false)
+                        .accessibilityIdentifier("chat.timeline.reply-provider")
+                }
+            }
         }
         .frame(maxWidth: .infinity, minHeight: ReplyIdentityLayout.headerHeight, maxHeight: ReplyIdentityLayout.headerHeight, alignment: .leading)
         .accessibilityElement(children: .combine)

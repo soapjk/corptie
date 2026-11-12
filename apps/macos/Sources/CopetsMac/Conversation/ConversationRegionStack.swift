@@ -9,6 +9,9 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
     var accessoryHeight: CGFloat? = nil
     var accessoryOverlap: CGFloat = 0
     var floating: AnyView? = nil
+    /// Part of the floating dock that is a transparent, centred control: the
+    /// transcript may scroll underneath it instead of reserving blank rows.
+    var floatingClearanceInset: CGFloat = 0
     @ViewBuilder var content: () -> Content
     @ViewBuilder var accessory: () -> Accessory
 
@@ -21,6 +24,7 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
     func makeNSView(context: Context) -> ConversationRegionContainer<AnyView, AnyView> {
         ConversationRegionContainer(content: AnyView(content().environment(\.self, environment)), accessory: accessoryRoot(),
             atTop: accessoryAtTop, height: accessoryHeight, overlap: accessoryOverlap,
+            floatingClearanceInset: floatingClearanceInset,
             floating: floating.map { AnyView($0.environment(\.self, environment)) })
     }
     func updateNSView(_ view: ConversationRegionContainer<AnyView, AnyView>, context: Context) {
@@ -51,7 +55,12 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
     let floatingHost: NSHostingView<AnyView>
     private var pendingFloating: AnyView?
     private var hasFloating = false
-    var floatingRegionClearance: CGFloat? { hasFloating ? floatingHost.frame.height : nil }
+    /// Only the opaque rows need reserved transcript space. The transparent
+    /// jump-control slot floats over message text; reserving it produces a
+    /// blank white band that clips the last visible line above the composer.
+    var floatingRegionClearance: CGFloat? {
+        hasFloating ? max(0, floatingHost.frame.height - floatingClearanceInset) : nil
+    }
     var floatingClearanceDidLayout: ((CGFloat) -> Void)?
     private var contentBottom: NSLayoutConstraint?
     /// `NSWindow.inLiveResize` is not settable outside AppKit; tests drive the
@@ -61,9 +70,12 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
     private var pendingContent: Content?
     private var pendingAccessory: Accessory?
     private var observesLiveResizeEnd = false
+    private let floatingClearanceInset: CGFloat
     private(set) var rootCommitCount = 0
     var hasPendingRoots: Bool { pendingContent != nil || pendingAccessory != nil }
-    init(content: Content, accessory: Accessory, atTop: Bool, height: CGFloat?, overlap: CGFloat = 0, floating: AnyView? = nil) {
+    init(content: Content, accessory: Accessory, atTop: Bool, height: CGFloat?, overlap: CGFloat = 0,
+         floatingClearanceInset: CGFloat = 0, floating: AnyView? = nil) {
+        self.floatingClearanceInset = floatingClearanceInset
         self.content = NSHostingView(rootView: content)
         self.accessory = NSHostingView(rootView: accessory)
         floatingHost = NSHostingView(rootView: floating ?? AnyView(EmptyView().frame(height: 0)))

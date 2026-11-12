@@ -147,6 +147,52 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         XCTAssertTrue(client.contains("forceSnapshot: true"))
     }
 
+    func testStoredSnapshotTailKeepsEarlierHistoryPagesTheUserLoaded() {
+        let resident = detail(items: [
+            item("older-user", type: "userMessage", at: "2026-10-29T06:37:32Z"),
+            item("older-reply", at: "2026-10-29T06:38:00Z"),
+            item("window-first", at: "2026-11-11T13:04:30Z"),
+            item("window-second", at: "2026-11-11T15:00:00Z")
+        ], hasMoreHistory: true)
+        let snapshot = detail(items: [
+            item("window-first", text: "settled", at: "2026-11-11T13:04:30Z"),
+            item("window-second", at: "2026-11-11T15:00:00Z"),
+            item("final-reply", at: "2026-11-11T16:14:00Z")
+        ], hasMoreHistory: true)
+
+        let merged = SessionTimelineSnapshotHistoryMerge.preservingLoadedHistory(
+            snapshot: snapshot, resident: resident)
+
+        XCTAssertEqual(merged.items.map(\.id),
+            ["older-user", "older-reply", "window-first", "window-second", "final-reply"],
+            "A 200-item snapshot must not evict loaded history")
+        XCTAssertEqual(merged.items.first { $0.id == "window-first" }?.text, "settled",
+            "The snapshot tail stays authoritative for recent items")
+        XCTAssertEqual(merged.hasMoreHistory, true)
+    }
+
+    func testCompleteStoredSnapshotStillReplacesTheResidentTimeline() {
+        let resident = detail(items: [item("older"), item("tail")], hasMoreHistory: true)
+        let snapshot = detail(items: [item("tail"), item("final")], hasMoreHistory: false)
+
+        XCTAssertEqual(
+            SessionTimelineSnapshotHistoryMerge.preservingLoadedHistory(
+                snapshot: snapshot, resident: resident).items.map(\.id),
+            ["tail", "final"],
+            "Without a truncated window, the snapshot is the whole authority")
+    }
+
+    func testSnapshotHistoryMergeIsWiredIntoTheSnapshotPublishPath() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sync = try String(contentsOf: packageRoot.appendingPathComponent(
+            "Sources/CopetsMac/Backend/SessionTimelineSyncController.swift"), encoding: .utf8)
+        XCTAssertTrue(sync.contains("SessionTimelineSnapshotHistoryMerge.preservingLoadedHistory("),
+            "Every stored-snapshot fallback must preserve loaded history")
+    }
+
     func testDistinctStableMessageIDsRemainDistinctWithoutContentBasedCorrection() throws {
         let messages = [
             item("item-47", turnID: "turn-a", type: "userMessage", text: "Sent only once"),
@@ -301,7 +347,10 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         try JSONDecoder().decode(SessionTimelineChangeEnvelope.self, from: Data(json.utf8))
     }
 
-    private func detail(items: [CodexThreadItem]) -> CodexThreadDetail {
+    private func detail(
+        items: [CodexThreadItem],
+        hasMoreHistory: Bool? = nil
+    ) -> CodexThreadDetail {
         CodexThreadDetail(
             id: "provider-thread",
             title: "Session",
@@ -318,7 +367,8 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
             sendUnavailableReason: nil,
             capabilities: nil,
             turnCount: 1,
-            items: items
+            items: items,
+            hasMoreHistory: hasMoreHistory
         )
     }
 

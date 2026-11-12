@@ -113,22 +113,20 @@ struct SessionSendFailureSurface: View {
                 .foregroundStyle(.red)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-                .accessibilityIdentifier("session.send-failure")
                 .padding(.bottom, 6)
+                .accessibilityIdentifier("session.send-failure")
         }
     }
 }
 
 struct SessionNotReadyComposerNotice: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
 
     let session: TaskSession
     let reason: SessionNotReadyReason
 
     var body: some View {
-        SessionNotReadyComposerSurface(backendClient: backendClient, session: session, reason: reason,
-            restarting: commandState.restartingSessionIds.contains(session.id))
+        SessionNotReadyComposerSurface(backendClient: backendClient, session: session, reason: reason)
     }
 }
 
@@ -136,59 +134,33 @@ struct SessionNotReadyComposerSurface: View {
     let backendClient: BackendClient
     let session: TaskSession
     let reason: SessionNotReadyReason
-    let restarting: Bool
     var renderInputs: SessionPageRenderInputs? = nil
+
     private var allowsActions: Bool {
         guard let renderInputs else { return true }
         return renderInputs.actionSession(generation: renderInputs.activity.generation) != nil
     }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+
             SessionPreparationNotice(sessionID: session.id, api: {
                 let transport = try BackendTransport(endpoint: BackendEndpoint(backendClient.baseURL))
                 return ClientSessionPreparationAPI(transport: transport, route: .desktop)
             }, didPrepare: {
                 guard allowsActions else { return }
                 await AppStateSyncController.shared.refreshSnapshot()
-            }, activity: renderInputs?.activity)
-        HStack(alignment: .center, spacing: 9) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.orange)
-
-            Text(reason.code == "PROVIDER_INITIALIZING" ? "正在启动 Provider…" : reason.presentationTitle)
-                .font(.system(size: 10))
-                .foregroundStyle(CorptiePalette.secondaryText)
-                .lineLimit(1)
-                .help(reason.presentationMessage)
+            }, activity: renderInputs?.activity, fallbackReason: fallbackReason)
 
             Spacer(minLength: 8)
-
-            if reason.shouldOfferRestartRecovery,
-               session.actions?.restart?.available == true {
-                Button {
-                    guard allowsActions else { return }
-                    if let renderInputs {
-                        guard let current = renderInputs.actionSession(generation: renderInputs.activity.generation) else { return }
-                        backendClient.restart(session: current)
-                    } else { backendClient.restart(session: session) }
-                } label: {
-                    if restarting {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text(L10n("Restart Session"))
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(restarting)
-                .accessibilityLabel(L10n("Restart Session"))
-            }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .help("\(reason.presentationMessage)（\(reason.code)）")
         .background(
             Color.orange.opacity(0.07),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -197,7 +169,13 @@ struct SessionNotReadyComposerSurface: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.orange.opacity(0.2), lineWidth: 1)
         }
-        }
+    }
+
+    /// One plain line of reason. No controls: recovery is automatic, and a ready
+    /// Session removes this surface entirely.
+    private var fallbackReason: String {
+        let detail = reason.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? "会话不可用（\(reason.code)）" : "会话不可用：\(detail)"
     }
 }
 

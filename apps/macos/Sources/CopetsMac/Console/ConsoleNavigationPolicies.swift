@@ -37,24 +37,33 @@ extension View {
 
 /// Establish the complete row bounds before painting either interaction state.
 /// Padding belongs inside that surface so text and indicators cannot overhang it.
+/// Every console navigation mode uses this one surface: the native work outline
+/// and the flat session list must paint hover and selection over the same
+/// rectangle, with the same breathing room around the title and status.
 struct ConsoleOutlineRowSurface: ViewModifier {
     let isSelected: Bool
+    /// NSOutlineView rows are fixed at 30pt. Flat-list rows carry a project
+    /// subtitle, so they need their intrinsic height instead of being clipped.
+    var fixesHeightToNativeRow = true
 
     func body(content: Content) -> some View {
-        content
+        let height: CGFloat? = fixesHeightToNativeRow ? 30 : nil
+        return content
             // Native List supplies hierarchy indentation. Leave 8pt of content
             // padding inside each edge of the surface's 8pt outer inset.
             .padding(.leading, 16)
             .padding(.trailing, 16)
-            .frame(maxWidth: .infinity, minHeight: 30,
-                   maxHeight: 30, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: height,
+                   maxHeight: height, alignment: .leading)
             .consoleHoverFeedback(isSelected: isSelected, horizontalInset: 8)
     }
 }
 
 extension View {
-    func consoleOutlineRowSurface(isSelected: Bool) -> some View {
-        modifier(ConsoleOutlineRowSurface(isSelected: isSelected))
+    func consoleOutlineRowSurface(isSelected: Bool,
+                                  fixesHeightToNativeRow: Bool = true) -> some View {
+        modifier(ConsoleOutlineRowSurface(isSelected: isSelected,
+            fixesHeightToNativeRow: fixesHeightToNativeRow))
     }
 }
 

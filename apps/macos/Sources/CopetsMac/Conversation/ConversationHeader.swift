@@ -557,14 +557,12 @@ private struct SessionHeaderProviderIdentity: View {
     let session: TaskSession
     let providers: [AgentProviderDescriptor]
     var body: some View {
-        HStack(spacing: 2) {
-            if let icon = ProviderBrandIcon.image(for: session.external?.provider ?? session.agent, providers: providers) {
-                Image(nsImage: icon).resizable().interpolation(.high).frame(width: 13, height: 13).accessibilityHidden(true)
-            } else {
-                Image(systemName: "cpu").foregroundStyle(session.accent.color).accessibilityHidden(true)
-            }
-            Text(sessionProviderIdentityLabel(providerIdentity: session.external?.provider,
-                legacyAgentLabel: session.agent, providers: providers)).foregroundStyle(Color.primary)
-        }.fixedSize(horizontal: true, vertical: false)
+        ProviderBrandLabel(
+            iconAsset: ProviderBrandIcon.assetName(
+                for: session.external?.provider ?? session.agent, providers: providers),
+            label: sessionProviderIdentityLabel(providerIdentity: session.external?.provider,
+                legacyAgentLabel: session.agent, providers: providers),
+            foreground: Color.primary
+        )
     }
 }

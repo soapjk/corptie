@@ -53,6 +53,7 @@ struct ConsoleFlatSessionList: View {
                     ConsoleSessionRow(showsHoverFeedback: false, isActive: isActive,
                         row: row, selectionRequested: select)
                         .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id)
+                        .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                 }
                 if sections.chats.isEmpty {
@@ -78,13 +79,16 @@ struct ConsoleFlatSessionList: View {
             .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
             .listRowSeparator(.hidden)
             ForEach(sections.projects) { row in
+                // The "项目" rows use the exact same surface as the native work
+                // outline. List insets stay at zero so the surface owns both the
+                // 16pt content padding and the 8pt highlight breathing room.
                 ConsoleSessionRow(projectName: Self.projectName(for: row.session,
                     workNames: workNames, taskWorks: taskWorks),
                     showsHoverFeedback: false, isActive: isActive, row: row,
                     selectionRequested: select)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .consoleHoverFeedback(isSelected: selectedSessionID == row.id, horizontalInset: 0)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                    .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id,
+                        fixesHeightToNativeRow: false)
+                    .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
             }
         }
