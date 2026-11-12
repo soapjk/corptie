@@ -1299,7 +1299,7 @@ test("Corptie开发工程师_Session switches from CodeX to OpenClacky, routes t
       resolveId: (providerId) => ["codex-app-server", "openclacky"].includes(providerId) ? providerId : null,
       invoke: async (providerId, capability, reference, message) => {
         invocations.push({ providerId, capability, reference, message });
-        return { turn: { id: "openclacky:turn:after-switch" }, turnId: "openclacky:turn:after-switch" };
+        return { turn: { id: "openclacky:turn:after-switch" }, turnId: "openclacky:turn:after-switch", delivery: "accepted" };
       }
     };
     const coordinator = new SessionProviderSwitchCoordinator({

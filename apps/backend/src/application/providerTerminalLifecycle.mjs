@@ -34,13 +34,17 @@ export function createProviderTerminalLifecycle({
     // delivered. Require user review before advancing queued work.
     if (event.payload?.suppressAutomaticContinuation === true) return;
     const agent = collaborationCore.getAgentForSession(nextSession.id);
+    // A requested Provider switch waits for execution to stop, not to succeed.
+    const providerSwitch = continuePendingProviderSwitch(logicalRoute);
+    if (providerSwitch) {
+      providerSwitch.then(() => scheduleAgentWorkDrain(nextSession.id));
+      return;
+    }
     if (!failed && !cancelled) {
       const continuation = continuePendingWorkspaceTransition(logicalRoute, event.turnId);
-      const providerSwitch = continuePendingProviderSwitch(logicalRoute);
       resumeWorkAfterTransition(continuation, () => {
         scheduleAgentWorkDrain(nextSession.id);
       });
-      if (providerSwitch) providerSwitch.then(() => scheduleAgentWorkDrain(nextSession.id));
     } else if (agent) {
       scheduleAgentWorkDrain(nextSession.id);
     }
