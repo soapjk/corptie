@@ -37,7 +37,7 @@ struct JumpToLatestButtonStyle: ButtonStyle {
             // is no opaque plate or stroke around the circle, so the transcript
             // underneath shows through while the system handles the press state.
             .foregroundStyle(highlightsUnread ? Color.accentColor : Color.primary)
-            .platformGlassSurface(in: Circle(), interactive: true)
+            .platformGlassSurface(in: Circle(), interactive: true, variant: .regular)
             .contentShape(Circle())
             .opacity(configuration.isPressed ? 0.86 : 1)
     }

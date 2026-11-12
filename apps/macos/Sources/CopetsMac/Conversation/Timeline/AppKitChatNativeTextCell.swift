@@ -69,7 +69,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let collaborationSentStatus = NSStackView()
     private let collaborationSentStatusIcon = NSImageView()
     // This footer acknowledges confirmation, not transport delivery.
-    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已确认 · 不代表消息已送达"))
+    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已确认"))
     private let processSeparator = NSView()
     private let processButton = IntrinsicTimelineProcessButton()
     private var processSeparatorHeight: NSLayoutConstraint!

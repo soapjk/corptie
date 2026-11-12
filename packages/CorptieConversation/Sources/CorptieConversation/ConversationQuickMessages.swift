@@ -58,7 +58,11 @@ public struct ConversationQuickMessages: View {
             .font(.system(size: 11, weight: .medium))
             .lineLimit(1).fixedSize()
             .padding(.horizontal, 9).frame(height: 24)
+            #if os(macOS)
+            .platformGlassSurface(in: Capsule(), interactive: true, variant: .regular)
+            #else
             .platformGlassSurface(in: Capsule(), interactive: true, variant: .clear)
+            #endif
     }
 
     @ViewBuilder private func chip(_ item: ClientQuickMessage) -> some View {

@@ -53,6 +53,32 @@ struct TaskActivityIndicatorTests {
         #expect(view.ring.animation(forKey: "runningRotation") != nil)
     }
 
+    @Test func staggeredAndReattachedRingsShareTheSameMediaTimeOrigin() throws {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 80, height: 40))
+        let window = NSWindow(contentRect: container.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = container
+        defer { window.contentView = nil; window.close() }
+        let first = TaskRunningRingView()
+        container.addSubview(first)
+        func origin(_ view: TaskRunningRingView) throws -> Double {
+            let animation = try #require(view.ring.animation(forKey: "runningRotation"))
+            #expect(animation.beginTime != 0)
+            return view.ring.convertTime(animation.beginTime, to: nil)
+        }
+        let expected = try origin(first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        let second = TaskRunningRingView()
+        container.addSubview(second)
+        #expect(abs(try origin(second) - expected) < 0.000001)
+        second.removeFromSuperview()
+        #expect(second.ring.animation(forKey: "runningRotation") == nil)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        container.addSubview(second)
+        #expect(abs(try origin(second) - expected) < 0.000001)
+        #expect(abs(try origin(first) - expected) < 0.000001)
+    }
+
     private func findRing(_ view: NSView) -> TaskRunningRingView? {
         (view as? TaskRunningRingView) ?? view.subviews.lazy.compactMap(findRing).first
     }

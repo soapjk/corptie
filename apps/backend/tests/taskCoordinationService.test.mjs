@@ -1539,3 +1539,27 @@ test('current execution view reports live operation instead of stale Task comple
  assert.equal(view.status,'running');assert.equal(view.turnId,'turn:current');assert.equal(view.targetOutcome,'not_assessed');
  assert.equal(view.operationId,'operation:view');
 });
+
+ test('closed children leave active progress without being counted as delivered',async t=>{
+ const f=await fixture(t);
+ f.store.db.run('UPDATE tasks SET current_session_id=? WHERE id=?',[f.source.sessionId,f.parent.id]);
+ const first=f.child('Closing_progress'),second=f.child('Archived_progress');
+ f.open('closing-progress',first.id);f.open('archived-progress',second.id);
+ const service=f.coordinator.progress;
+ service.adoptManualTask(first.id);
+ const batch=f.store.selectOne('SELECT batch_id FROM coordination_progress_assignments WHERE task_id=?',[first.id]);
+ service.attach(service.batch(batch.batch_id),{target_task_id:second.id,dispatch_id:null});
+ assert.equal(service.refresh(batch.batch_id).total,2);
+ f.store.db.run('INSERT INTO task_completion_authorizations(operation_id,task_id,work_id,source_type,nonce,validated_at) VALUES(?,?,?,?,?,?)',
+ ['progress-close-fixture',first.id,first.work_id,'direct_macos_ui_action','progress-fixture',new Date().toISOString()]);
+ f.store.db.run("UPDATE tasks SET lifecycle_state='done', completion_operation_id='progress-close-fixture', completion_source_type='direct_macos_ui_action' WHERE id=?",[first.id]);
+ let snapshot=service.refresh(batch.batch_id);
+ assert.equal(snapshot.total,1);assert.equal(snapshot.counts.delivered,0);
+ assert.equal(service.page('logical:parent',batch.batch_id).items[0].taskId,second.id);
+ f.store.db.run('UPDATE tasks SET archived=1 WHERE id=?',[second.id]);
+ assert.equal(service.refresh(batch.batch_id).total,0);
+ assert.equal(service.latest(f.parent.id),null);
+ assert.equal(f.store.selectOne('SELECT id FROM session_items WHERE id=?',[`coordination-progress:${batch.batch_id}`]),null);
+ assert.equal(service.page('logical:parent',batch.batch_id).items.length,0);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM coordination_progress_assignments WHERE batch_id=?',[batch.batch_id]).n,2);
+ });

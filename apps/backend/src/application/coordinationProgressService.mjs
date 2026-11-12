@@ -8,7 +8,7 @@ export function coordinationProgressFor(store){
 export class CoordinationProgressService {
   constructor(store){this.store=store;this.pending=new Set();}
   batch(id){return this.store.selectOne('SELECT * FROM coordination_progress_batches WHERE batch_id=?',[id]);}
-  latest(parentTaskId){const row=this.store.selectOne('SELECT snapshot_json FROM coordination_progress_batches WHERE parent_task_id=? AND snapshot_json IS NOT NULL ORDER BY created_at DESC,batch_id DESC LIMIT 1',[parentTaskId]);return row?JSON.parse(row.snapshot_json):null;}
+  latest(parentTaskId){const row=this.store.selectOne('SELECT snapshot_json FROM coordination_progress_batches WHERE parent_task_id=? AND snapshot_json IS NOT NULL ORDER BY created_at DESC,batch_id DESC LIMIT 1',[parentTaskId]);const snapshot=row?JSON.parse(row.snapshot_json):null;return snapshot?.total>0?snapshot:null;}
   ensure(scope,sourceTurnId,batchId=null){
     if(batchId){const old=this.batch(batchId);if(!old||old.parent_task_id!==scope.parent.id||old.source_session_id!==scope.logicalSessionId)fail();return old;}
     const old=this.store.selectOne('SELECT * FROM coordination_progress_batches WHERE source_session_id=? AND source_turn_id=?',[scope.logicalSessionId,sourceTurnId]);
@@ -30,7 +30,7 @@ export class CoordinationProgressService {
   }
   scheduleDispatch(id){for(const row of this.store.selectAll('SELECT batch_id FROM coordination_progress_assignments WHERE dispatch_id=?',[id]))this.schedule(row.batch_id);}
   schedule(batchId){if(this.pending.has(batchId))return;this.pending.add(batchId);setImmediate(()=>{this.pending.delete(batchId);if(!this.store.db)return;try{this.refresh(batchId);}catch(error){console.warn('[coordination-progress]',error.code??error.message);}});}
-  facts(batch){
+  facts(batch,offset=null){
     return this.store.selectAll(`SELECT a.*,d.status AS dispatch_state,d.target_task_id,d.error_message,d.error_code,d.operation_id,d.updated_at,
       t.title,t.current_session_id,t.lifecycle_state,s.status AS session_status,
       json_extract(d.request_json,'$.creation.title') AS requested_title,
@@ -38,7 +38,7 @@ export class CoordinationProgressService {
         AND delivery.created_at>=COALESCE(d.created_at,a.created_at) ORDER BY delivery.created_at DESC LIMIT 1) AS delivery_state
       FROM coordination_progress_assignments a LEFT JOIN task_coordination_dispatches d ON d.dispatch_id=a.dispatch_id
       LEFT JOIN tasks t ON t.id=COALESCE(d.target_task_id,a.task_id) LEFT JOIN sessions s ON s.id=t.current_session_id
-      WHERE a.batch_id=? ORDER BY a.assignment_id LIMIT 10001`,[batch.batch_id]).map(row=>({
+      WHERE a.batch_id=? AND (COALESCE(d.target_task_id,a.task_id) IS NULL OR (t.id IS NOT NULL AND t.lifecycle_state<>'done' AND COALESCE(t.archived,0)=0)) ORDER BY a.assignment_id LIMIT ? OFFSET ?`,[batch.batch_id,offset===null?10001:21,offset??0]).map(row=>({
       preparedState:row.state_json,assignmentId:row.assignment_id,taskId:row.target_task_id??row.task_id,sessionId:row.current_session_id,
       title:row.title??row.requested_title??'准备子任务',dispatchState:row.dispatch_state??(row.lifecycle_state==='done'?'completed':row.session_status),
       executionState:row.session_status,waitingInput:row.session_status==='blocked' && (!row.dispatch_state || row.dispatch_state==='running'),
@@ -58,6 +58,7 @@ export class CoordinationProgressService {
     let preparedChanged=false;
     for(const fact of facts){const data=JSON.stringify(projectCoordinationAssignment(fact));if(data!==fact.preparedState){
       this.store.db.run('UPDATE coordination_progress_assignments SET state_json=?,task_id=COALESCE(task_id,?) WHERE batch_id=? AND assignment_id=?',[data,fact.taskId,batchId,fact.assignmentId]);preparedChanged=true;}}
+    if(snapshot.total===0)this.store.removeItem(session.id,`coordination-progress:${batchId}`);
     if(batch.snapshot_json===JSON.stringify(snapshot)){if(preparedChanged)this.store.scheduleSave();return snapshot;}
     snapshot.revision++;
     this.store.runInTransaction(()=>{
@@ -65,7 +66,7 @@ export class CoordinationProgressService {
       const text=['子任务进展',...snapshot.items.map(item=>`${item.title} · ${item.state}${item.summary?'：'+item.summary:''}`),snapshot.focus,snapshot.decision].filter(Boolean).join('\n');
       const item={id:`coordination-progress:${batchId}`,turnId:`coordination-progress:${batchId}`,type:'coordinationProgress',title:'子任务进展',text,
         presentationRole:'system_event',status:'completed',turnStatus:'completed',createdAt:batch.created_at,coordinationProgress:snapshot};
-      this.store.upsertTimelineItemProjection(session.id,{...item,rawMetadataJSON:JSON.stringify(item)});
+      if(snapshot.total>0)this.store.upsertTimelineItemProjection(session.id,{...item,rawMetadataJSON:JSON.stringify(item)});
     });
     const stage=snapshot.total>0&&snapshot.counts.accepted===snapshot.total?'accepted'
       :snapshot.total>0&&snapshot.counts.delivered+snapshot.counts.accepted===snapshot.total?'delivered':null;
@@ -100,7 +101,7 @@ export class CoordinationProgressService {
   correlateReports(dispatchId,reportMessageId){
     this.store.db.run('UPDATE coordination_progress_assignments SET report_message_id=? WHERE dispatch_id=?',[reportMessageId,dispatchId]);this.scheduleDispatch(dispatchId);
   }
-  scheduleTask(taskId){for(const row of this.store.selectAll('SELECT DISTINCT batch_id FROM coordination_progress_assignments WHERE task_id=?',[taskId]))this.schedule(row.batch_id);}
+  scheduleTask(taskId){for(const row of this.store.selectAll('SELECT DISTINCT a.batch_id FROM coordination_progress_assignments a LEFT JOIN task_coordination_dispatches d ON d.dispatch_id=a.dispatch_id WHERE COALESCE(d.target_task_id,a.task_id)=?',[taskId]))this.schedule(row.batch_id);}
   adoptManualTask(taskId){
     const task=this.store.getTask(taskId);if(!task?.parent_task_id)return;
     const origin=this.store.getTaskCreationOrigin?.(taskId);
@@ -155,7 +156,7 @@ export class CoordinationProgressService {
     const session=this.store.getSession(route.legacySessionId);if(!session||session.archived||session.deletedAt||session.taskId!==batch.parent_task_id)fail();
     if(!Number.isInteger(offset)||offset<0||offset>10000)fail();
     // Bounded persisted authority rows, not conversation-history scans.
-    const rows=this.store.selectAll('SELECT state_json FROM coordination_progress_assignments WHERE batch_id=? AND state_json IS NOT NULL ORDER BY rowid LIMIT 21 OFFSET ?',[batchId,offset]);
-    return {items:rows.slice(0,20).map(row=>JSON.parse(row.state_json)),nextOffset:rows.length>20?offset+20:null};
+    const rows=this.facts(batch,offset).map(projectCoordinationAssignment);
+    return {items:rows.slice(0,20),nextOffset:rows.length>20?offset+20:null};
   }
 }

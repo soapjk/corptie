@@ -84,8 +84,7 @@ struct PinnedExecutionChecklistCard: View {
         .frame(height: Self.height(plan: plan, width: width, expanded: expanded))
         .frame(maxWidth: 780)
         .onGeometryChange(for: CGFloat.self) { max(148, $0.size.width) } action: { width = $0 }
-        .modifier(ConversationSkinSurface(role: .plan, radius: 14,
-            legacyFill: Color.secondary.opacity(0.06), legacyBorder: Color.secondary.opacity(0.2)))
+        .platformGlassSurface(in: RoundedRectangle(cornerRadius: 14, style: .continuous), variant: .regular)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("conversation.pinned-execution-checklist")
     }

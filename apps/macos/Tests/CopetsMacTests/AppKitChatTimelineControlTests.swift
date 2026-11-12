@@ -1135,7 +1135,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         XCTAssertFalse(status.isHidden)
         XCTAssertEqual(icon.contentTintColor, .systemGreen)
-        XCTAssertEqual(label.stringValue, L10n("已确认 · 不代表消息已送达"))
+        XCTAssertEqual(label.stringValue, L10n("已确认"))
         XCTAssertEqual(label.textColor, .systemGreen)
         XCTAssertNil(button(in: cell, identifier: "chat.timeline.action.confirm"))
     }

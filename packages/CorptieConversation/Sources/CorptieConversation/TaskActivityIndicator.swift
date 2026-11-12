@@ -6,6 +6,12 @@ import AppKit
 import UIKit
 #endif
 
+// A process-wide monotonic origin keeps independently mounted rings in phase.
+// Core Animation owns every frame; no timer or observable UI state is needed.
+private enum TaskRunningRingClock {
+    static let origin = CACurrentMediaTime()
+}
+
 public struct TaskActivityIndicator: View {
     let activity: TaskSessionActivity
     let lifecycleState: String
@@ -129,6 +135,7 @@ final class TaskRunningRingView: NSView {
         let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
         rotation.fromValue = 0
         rotation.toValue = 2 * Double.pi
+        rotation.beginTime = ring.convertTime(TaskRunningRingClock.origin, from: nil)
         rotation.duration = 0.8
         rotation.repeatCount = .infinity
         ring.add(rotation, forKey: "runningRotation")
@@ -196,6 +203,7 @@ final class TaskRunningRingView: UIView {
         let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
         rotation.fromValue = 0
         rotation.toValue = 2 * Double.pi
+        rotation.beginTime = ring.convertTime(TaskRunningRingClock.origin, from: nil)
         rotation.duration = 0.8
         rotation.repeatCount = .infinity
         ring.add(rotation, forKey: "runningRotation")
