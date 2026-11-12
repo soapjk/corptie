@@ -99,6 +99,17 @@ import AppKit
         #expect(DetailWidgetPlacement.make(width: 0, widgets: []).size.height == 0)
     }
 
+    @Test func providerUsesAvailableRowWithoutAnEmptyHalf() throws {
+        let provider = try decode(kind: "provider", data: ["providerId": "test", "name": "Provider", "model": "model", "reasoning": "high", "switching": false, "providers": []])
+        let size = DetailWidgetSizing.preferredSize(for: provider)
+        for width: CGFloat in [260, 300, 390, 600] {
+            let plan = DetailWidgetPlacement.make(width: width, widgets: [.strip, size, .medium])
+            #expect(plan.frames[1].width == width)
+            #expect(plan.frames[1].minX == 0)
+            #expect(plan.frames[2].minY == plan.frames[1].maxY + 12)
+        }
+    }
+
     @Test func shortCardsUseTwelvePointHeightSteps() {
         #expect(DetailWidgetSize.fitted(height: 1).height == 60)
         #expect(DetailWidgetSize.fitted(height: 61).height == 72)
@@ -153,7 +164,7 @@ import AppKit
         #expect(DetailWidgetSizing.preferredSize(for: session) == .fitted(height: 96))
         let provider = try decode(kind: "provider", data: ["providerId": "test", "name": "Provider", "model": "Model",
             "reasoning": "Medium", "switching": false, "providers": []])
-        #expect(DetailWidgetSizing.preferredSize(for: provider) == .small)
+        #expect(DetailWidgetSizing.preferredSize(for: provider) == .medium)
         let memory: [String: Any] = ["memoryId": "memory:1", "kind": "fact", "content": String(repeating: "隐藏正文", count: 5000),
             "unavailable": false, "snapshotAtRecall": false]
         for more in [false, true] {

@@ -12,7 +12,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     @Bindable var workspace: PadWorkspace
     let kind: ConversationInspectorKind
     let onOpenAutomation: (String) -> Void
-    let primary: Primary
+    let primary: (ConversationReferenceManagement) -> Primary
     let secondary: Secondary
     let providerManagementID: String?
     let richPresentation: Bool
@@ -20,14 +20,14 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
     init(store: PadInspectorStore, connection: PadConnection, sessionID: String, workspace: PadWorkspace, kind: ConversationInspectorKind,
          onOpenAutomation: @escaping (String) -> Void, providerManagementID: String? = nil, richPresentation: Bool = false,
          standaloneCard: String? = nil,
-         @ViewBuilder primary: () -> Primary, @ViewBuilder secondary: () -> Secondary) {
+         @ViewBuilder primary: @escaping (ConversationReferenceManagement) -> Primary, @ViewBuilder secondary: () -> Secondary) {
         self.store = store
         self.connection = connection
         self.sessionID = sessionID
         self.workspace = workspace
         self.kind = kind
         self.onOpenAutomation = onOpenAutomation
-        self.primary = primary()
+        self.primary = primary
         self.secondary = secondary()
         self.providerManagementID = providerManagementID
         self.richPresentation = richPresentation
@@ -86,7 +86,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                     ContentUnavailableView("Provider 绑定已变化", systemImage: "exclamationmark.triangle")
                 }
             } else {
-            primary
+            primary(referenceManagement)
             ConversationSessionAbilities(scope: "\(connection.serverID):\(sessionID)",
                 refreshKey: String(section("abilities")["resourceVersion"].number ?? -1), read: {
                 let api = ClientInspectorAPI(transport: try await connection.transport())
@@ -110,7 +110,7 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
             NavigationStack {
                 ScrollView {
                     PadInspectorResources<EmptyView, EmptyView>(store: store, connection: connection, sessionID: sessionID,
-                        workspace: workspace, kind: kind, onOpenAutomation: onOpenAutomation, standaloneCard: "resources") {
+                        workspace: workspace, kind: kind, onOpenAutomation: onOpenAutomation, standaloneCard: "resources") { _ in
                         EmptyView()
                     } secondary: { EmptyView() }
                     .padding()
@@ -139,7 +139,10 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
         .onChange(of: section("artifacts")) { _, _ in moreArtifacts = []; nextArtifactOffset = nil }
         .onChange(of: section("memories")) { _, _ in moreMemories = []; nextMemoryCursor = nil }
-        .onChange(of: sessionID) { _, _ in recallsExpanded = false }
+        .onChange(of: sessionID) { _, _ in recallsExpanded = false; retireReferenceEditors() }
+        .onChange(of: store.connected) { _, connected in if !connected { retireReferenceEditors() } }
+        .onChange(of: store.snapshot?.taskId) { _, _ in retireReferenceEditors() }
+        .onChange(of: store.snapshot?.workId) { _, _ in retireReferenceEditors() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data]) { result in
             switch result {
             case .success(let url): Task { await importDocument(url) }
@@ -182,6 +185,58 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         }
         ForEach((store.snapshot?.errors.keys.sorted() ?? []).filter { $0 != "schedules" }, id: \.self) { key in
             Text("\(key)：\(store.snapshot?.errors[key] ?? "")（保留旧数据）").font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    private func retireReferenceEditors() {
+        editor = nil; confirmation = nil; importing = false
+    }
+    private var canManageReferences: Bool {
+        store.connected && !locked && store.snapshot?.sessionId == sessionID
+            && workspace.sessionsByID[sessionID] != nil
+    }
+    private var referenceManagement: ConversationReferenceManagement {
+        .init(addKinds: ConversationReferenceAddKind.allCases, canAdd: canManageReferences,
+            add: { kind in
+                guard canManageReferences else { return }
+                editor = referenceEditor(type: kind.rawValue,
+                    title: kind == .localFile ? "Mac 本地文件" : kind.title)
+            }, operations: referenceOperations, perform: performReferenceOperation,
+            importFile: {
+                guard canManageReferences else { return }
+                importAsArtifact = false; importing = true
+            })
+    }
+    private func managedReference(_ id: String) -> ClientInspectorValue? {
+        guard canManageReferences else { return nil }
+        return section("references").items.first { $0["referenceId"].text == id }
+    }
+    private func referenceOperations(_ id: String) -> [ConversationReferenceOperation] {
+        guard let reference = managedReference(id) else { return [] }
+        var result: [ConversationReferenceOperation] = []
+        if reference["enabled"].flag && reference["status"].text == "available",
+           reference["targetType"].text == "webURL" { result.append(.open) }
+        if reference["targetType"].text == "localFile" { result += [.copyPath, .refresh, .replace] }
+        if reference["targetType"].text == "webURL" { result.append(.refresh) }
+        result += [reference["enabled"].flag ? .disable : .enable, .remove]
+        return result
+    }
+    private func performReferenceOperation(_ id: String, _ operation: ConversationReferenceOperation) {
+        guard let reference = managedReference(id), referenceOperations(id).contains(operation) else { return }
+        switch operation {
+        case .enable, .disable:
+            Task { await store.command("reference.update", fields: ["id": .string(id), "enabled": .bool(operation == .enable)],
+                sessionID: sessionID, connection: connection) }
+        case .refresh: perform("reference.refresh", id: .string(id))
+        case .remove: confirm("移除引用？", action: "reference.delete", id: .string(id))
+        case .copyPath: UIPasteboard.general.string = reference["locator"].text
+        case .replace:
+            editor = PadInspectorEdit(title: "更换 Mac 文件路径", action: "reference.update",
+                fields: ["id": .string(id)], inputs: [.init(key: "locator", label: "Mac 上的绝对路径")])
+        case .open:
+            if let raw = reference["locator"].text, let url = URL(string: raw),
+               ["http", "https"].contains(url.scheme) { openURL(url) }
+        case .reveal: break // Finder is a desktop-only operation.
         }
     }
 

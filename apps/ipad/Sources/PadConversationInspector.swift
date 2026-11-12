@@ -49,7 +49,7 @@ struct PadConversationInspector: View {
         ConversationDetailDashboard {
             if let session {
                 PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
-                    kind: kind, onOpenAutomation: onOpenAutomation, richPresentation: richDetailReady != false) {
+                    kind: kind, onOpenAutomation: onOpenAutomation, richPresentation: richDetailReady != false) { references in
                     ConversationServerDetail(scope: resourceScope,
                         sessionID: sessionID, context: ClientDetailContext(sessionKind: session.sessionKind, taskID: session.taskId, workID: session.workId), actions: nativeDetailNavigation,
                         coordinator: { selected, canonical in try await detailCoordinator(selected: selected, canonicalSessionID: canonical) },
@@ -57,7 +57,7 @@ struct PadConversationInspector: View {
                         repository: connection.detailBusinessRepository,
                         displayScope: connection.businessDisplayScope(sessionID: sessionID, taskID: session.taskId, workID: session.workId),
                         presentationRepository: detailPresentation,
-                        adapters: detailAdapters(session), api: {
+                        adapters: detailAdapters(session, references: references), api: {
                             ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
                         })
                         .id(resourceScope)
@@ -93,7 +93,7 @@ struct PadConversationInspector: View {
                     switch destination {
                     case .provider(let id):
                         PadInspectorResources(store: inspector, connection: connection, sessionID: sessionID, workspace: workspace,
-                            kind: kind, onOpenAutomation: onOpenAutomation, providerManagementID: id) {
+                            kind: kind, onOpenAutomation: onOpenAutomation, providerManagementID: id) { _ in
                             EmptyView()
                         } secondary: { EmptyView() }
                     case .worktree(let id, let authority):
@@ -128,7 +128,7 @@ struct PadConversationInspector: View {
         .onChange(of: inspector.snapshot?.workId) { _, _ in retireNativeManagement() }
         .onDisappear { retireNativeManagement() }
     }
-    private func detailAdapters(_ session: ClientSession) -> ConversationDetailAdapters {
+    private func detailAdapters(_ session: ClientSession, references: ConversationReferenceManagement) -> ConversationDetailAdapters {
         let config = PadDetailConfigurationAdapter(store: inspector, workspace: workspace, connection: connection, sessionID: sessionID)
         let authority = try? connection.detailActionScope(sessionID: sessionID, negotiation: .legacy)
         let task = workspace.tasks.first { $0.id == session.taskId }
@@ -142,6 +142,7 @@ struct PadConversationInspector: View {
                     if let notification = job.notification { PadOperationNotifications.shared.observe(notification) }
                 }
             }, resident: .init(taskTitle: task?.title ?? "", workName: work?.name ?? "", workDescription: work?.description ?? ""), turnSnapshot: turn.snapshot,
+            referenceManagement: references,
             openArtifact: { NotificationCenter.default.post(name: .corptieOpenResource, object: $0) },
             openSession: { id in if let target=permittedDetailSession(id) { workspace.selection=target } })
     }

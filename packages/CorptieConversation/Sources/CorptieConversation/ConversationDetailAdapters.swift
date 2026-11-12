@@ -36,6 +36,7 @@ public enum ConversationReferenceOperation: String, Identifiable {
 /// Native platform registration only; reference IDs are resolved by the trusted host.
 @MainActor public struct ConversationReferenceManagement {
     let addKinds: [ConversationReferenceAddKind]
+    let importFile: (() -> Void)?
     let canAdd: Bool
     let add: (ConversationReferenceAddKind) -> Void
     let operations: (String) -> [ConversationReferenceOperation]
@@ -43,9 +44,10 @@ public enum ConversationReferenceOperation: String, Identifiable {
     public init(addKinds: [ConversationReferenceAddKind], canAdd: Bool,
                 add: @escaping (ConversationReferenceAddKind) -> Void,
                 operations: @escaping (String) -> [ConversationReferenceOperation],
-                perform: @escaping (String, ConversationReferenceOperation) -> Void) {
+                perform: @escaping (String, ConversationReferenceOperation) -> Void,
+                importFile: (() -> Void)? = nil) {
         self.addKinds = addKinds; self.canAdd = canAdd; self.add = add
-        self.operations = operations; self.perform = perform
+        self.operations = operations; self.perform = perform; self.importFile = importFile
     }
 }
 

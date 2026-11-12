@@ -12,13 +12,7 @@ public struct ConversationDetailProviderCard: View {
     @State private var submitting = false
     @State private var error: String?
     @State private var lifetime = UUID()
-    private var compact: Bool {
-        #if os(macOS)
-        widgetSize == .small
-        #else
-        false
-        #endif
-    }
+    private var compact: Bool { widgetSize != nil }
     public init(configuration: ClientDetailConfiguration, scope: String,
                 select: @escaping @MainActor (ClientDetailConfiguration.Field, String) async throws -> Void,
                 reload: @escaping @MainActor () async -> Void) {
@@ -29,10 +23,18 @@ public struct ConversationDetailProviderCard: View {
             Button { Task { await reload() } } label: { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).disabled(submitting || configuration.busy).help("刷新配置").accessibilityLabel("刷新配置")
         }) {
-            VStack(alignment: .leading, spacing: compact ? 0 : 8) {
-                selector(.provider, label: "Provider")
-                selector(.model, label: "模型")
-                selector(.reasoning, label: "处理强度")
+            if compact {
+                HStack(alignment: .top, spacing: 8) {
+                    selector(.provider, label: "Provider")
+                    selector(.model, label: "模型")
+                    selector(.reasoning, label: "处理强度")
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    selector(.provider, label: "Provider")
+                    selector(.model, label: "模型")
+                    selector(.reasoning, label: "处理强度")
+                }
             }
             if submitting || configuration.busy { Label("正在更新配置…", systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
             if let message = error ?? configuration.error { Text(message).font(.caption).foregroundStyle(.secondary) }
@@ -64,7 +66,7 @@ public struct ConversationDetailProviderCard: View {
                     Text(value.title.isEmpty ? "未设置" : value.title).lineLimit(1)
                     if value.canSelect { Image(systemName: "chevron.up.chevron.down").font(.caption2) }
                 }.foregroundStyle(value.canSelect ? Color.accentColor : Color.secondary)
-                    .frame(maxWidth: .infinity, minHeight: compact ? 24 : 28, alignment: .leading).contentShape(Rectangle())
+                    .frame(maxWidth: .infinity, minHeight: compact ? 44 : 28, alignment: .leading).contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .disabled(!value.canSelect || value.choices.isEmpty || submitting || configuration.busy)
@@ -72,7 +74,12 @@ public struct ConversationDetailProviderCard: View {
             .accessibilityValue(value.title.isEmpty ? "未设置" : value.title)
             .help("\(label)：\(value.title.isEmpty ? "未设置" : value.title)")
         return Group {
-            if compact { menu }
+            if compact {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    menu
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
             else { ConversationDetailPropertyRow(label) { menu } }
         }.font(WorkbenchTypography.font(for: compact ? .help : .body))
     }
