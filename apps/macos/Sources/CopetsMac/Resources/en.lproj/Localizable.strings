@@ -2201,3 +2201,6 @@
 "此引擎暂不支持在此管理账号或模型来源。" = "This engine does not yet support managing accounts or model sources here.";
 
 "推荐" = "Recommended";
+
+"Check for Updates…" = "Check for Updates…";
+"Automatic updates are not configured for this build." = "Automatic updates are not configured for this build.";

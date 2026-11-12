@@ -2,10 +2,10 @@
 
 corptie_validate_macos_signing_config() {
   local identity="${1:-${CORPTIE_APP_SIGNING_IDENTITY:--}}"
-  if [[ "${identity}" == "-" && "${CORPTIE_ALLOW_ADHOC_PACKAGE:-0}" != "1" ]]; then
+  if [[ "${identity}" == "-" && "${CORPTIE_ALLOW_ADHOC_PACKAGE:-1}" != "1" ]]; then
     echo "Error: refusing to package Corptie with an ad-hoc signature." >&2
     echo "Set CORPTIE_APP_SIGNING_IDENTITY to a stable Apple signing identity." >&2
-    echo "For an intentional local-only artifact, explicitly set CORPTIE_ALLOW_ADHOC_PACKAGE=1." >&2
+    echo "For distribution without an Apple membership, set CORPTIE_ALLOW_ADHOC_PACKAGE=1." >&2
     return 64
   fi
 }
