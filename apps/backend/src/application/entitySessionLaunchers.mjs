@@ -87,7 +87,7 @@ export function createEntitySessionLaunchers({
   // 与 startup coordinator 的低层 Session 构造端口复用 createSessionThroughApplication。
   // cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir；Task Worker 仍走权威
   // Work Session startup coordinator，并使用 Task ExecutionSpace。
-  async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt, model }) {
+  async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt, model, autoUniqueTitle = false }) {
     const providerId = resolveSessionProviderId(requestedProviderId);
     if (!providerId) {
       const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
@@ -101,6 +101,7 @@ export function createEntitySessionLaunchers({
         cwd,
         title,
         defaultTitle: defaultSessionTitleForAgent(agent.name),
+        autoUniqueTitle,
         prompt,
         model,
         agent: agent.name,

@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 struct WorkCreateView: View {
     var isFirstRun = false
+    var dismissOnCreated = true
+    var onCancel: (() -> Void)? = nil
     var onCreated: (Work) -> Void = { _ in }
     @State private var isCreating = false
     @State private var creationError: String?
@@ -95,7 +97,7 @@ struct WorkCreateView: View {
             HStack {
                 Spacer()
                 if let creationError { Text(creationError).font(.caption).foregroundStyle(.red) }
-                Button(L10n("取消")) { dismiss() }.disabled(isCreating)
+                Button(L10n("取消")) { if let onCancel { onCancel() } else { dismiss() } }.disabled(isCreating)
                 Button(L10n(isCreating ? "正在创建…" : "创建")) {
                     if isFirstRun { createFirstWork() }
                     else if create() { dismiss() }
@@ -124,7 +126,7 @@ struct WorkCreateView: View {
                 workspaceId: workspaceId, contributorRoleIds: Array(contributorRoleIds)
             ) {
                 onCreated(work)
-                dismiss()
+                if dismissOnCreated { dismiss() }
             } else {
                 creationError = client.errorMessage ?? L10n("Work 创建失败，可重试。")
             }

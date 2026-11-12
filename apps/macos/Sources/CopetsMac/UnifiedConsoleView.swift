@@ -86,7 +86,6 @@ struct UnifiedConsoleView: View {
     @EnvironmentObject var sidebarState: TabSidebarState
     /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
     @State var showNewSessionCreation = false
-    @State private var showsCreationMenu = false
     @State var isCreatingWork = false
     struct TaskCreationTarget: Identifiable {
         let id = UUID()
@@ -247,10 +246,10 @@ struct UnifiedConsoleView: View {
             WorkCreateView()
         }
         .sheet(item: $taskCreationTarget) { target in
-            CorptieTaskCreateView(initialWorkId: target.workID,parentTaskId:target.parentTaskId) { task in
-                selectedWorkId = task.workId
-                selectedTaskId = task.id
-            }
+            UnifiedConversationCreateView(context: .init(workID: target.workID,
+                roleID: backendClient.selectedSession?.roleId,
+                providerID: backendClient.selectedSession?.external?.provider,
+                modelID: backendClient.selectedSession?.external?.currentModel), parentTaskID: target.parentTaskId)
         }
         .sheet(item: $taskPendingEdit) { task in
             CorptieTaskEditView(task: task) {}
@@ -378,7 +377,8 @@ struct UnifiedConsoleView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) { consoleSidebarHeader }
         .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet(fixedKind: .assistantChat)
+            UnifiedConversationCreateView(context: .resolve(session: backendClient.selectedSession,
+                workID: selectedWorkId, chatSpace: selectedCategory == .assistant))
         }
     }
 
@@ -950,7 +950,7 @@ struct UnifiedConsoleView: View {
     }
 
     var outlineCreationMenu: some View {
-        Button { showsCreationMenu.toggle() } label: {
+        Button { showNewSessionCreation = true } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus").font(.system(size: 13))
                 Text(L10n("Create")).font(WorkbenchTypography.font(for: .navigation))
@@ -961,40 +961,10 @@ struct UnifiedConsoleView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(L10n("Create Task, Work, or chat"))
-        .accessibilityLabel(L10n("Create Task, Work, or chat"))
+        .help(L10n("新建会话"))
+        .accessibilityLabel(L10n("新建会话"))
         .accessibilityIdentifier("work-outline-create")
-        .popover(isPresented: $showsCreationMenu, arrowEdge: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                creationMenuItem("New Task", symbol: "checklist") {
-                    presentTaskCreation(for: selectedWorkId)
-                }
-                creationMenuItem("New Work", symbol: "folder.badge.plus") {
-                    isCreatingWork = true
-                }
-                Divider().padding(.vertical, 3)
-                creationMenuItem("New Chat", symbol: "square.and.pencil") {
-                    showNewSessionCreation = true
-                }
-            }
-            .padding(6)
-            .frame(width: 220)
-        }
-    }
 
-    private func creationMenuItem(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button {
-            showsCreationMenu = false
-            DispatchQueue.main.async { action() }
-        } label: {
-            Label(L10n(title), systemImage: symbol)
-                .font(WorkbenchTypography.font(for: .navigation))
-                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-                .padding(.horizontal, 10)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .consoleHoverFeedback()
     }
 
     func presentTaskCreation(for workID: String?) {

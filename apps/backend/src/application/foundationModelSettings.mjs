@@ -2,7 +2,7 @@ import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 export const FOUNDATION_API_ID = "foundation-api";
-export const FOUNDATION_PURPOSES = new Set(["task-summary", "assist-draft", "assist-form-draft", "commit-message"]);
+export const FOUNDATION_PURPOSES = new Set(["session-title", "task-summary", "assist-draft", "assist-form-draft", "commit-message"]);
 const defaults = { mode: "default", providerId: "", model: "", reasoning: "", baseURL: "", apiKey: "" };
 export class FoundationModelSettings {
   constructor(dataRoot) {
