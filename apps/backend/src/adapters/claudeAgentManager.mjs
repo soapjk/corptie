@@ -39,9 +39,13 @@ export class ClaudeAgentManager {
     this.onTurnSettled = options.onTurnSettled ?? null;
     this.onProviderEvent = options.onProviderEvent ?? null;
     this.resolveRuntimeOptions = options.resolveRuntimeOptions ?? null;
-    this.queryFactory = options.query ?? query;
+    const createQuery = options.query ?? query;
+    this.queryFactory = request => createQuery({ ...request,
+      options: { ...request.options, ...options.connectionOptions?.() } });
     this.forkSessionFactory = options.forkSession ?? forkSession;
     this.environment = options.environment ?? (() => process.env);
+    this.secretValues = () => [...claudeSecretValues(this.environment()),
+      options.connectionOptions?.()?.settings?.apiKeyHelper].filter(Boolean);
     this.structuredPlanEvents = options.structuredPlanEvents !== false;
     this.timelineWriter = createClaudeTimelineWriter({
       maxItems: () => this.maxItems,
@@ -218,7 +222,7 @@ export class ClaudeAgentManager {
       };
     } catch (error) {
       const failure = normalizeClaudeProviderError(error, {
-        secretValues: claudeSecretValues(this.environment())
+        secretValues: this.secretValues()
       });
       console.log(`[claude-sdk] context usage unavailable id=${id} code=${failure.code}`);
       return null;
@@ -234,7 +238,7 @@ export class ClaudeAgentManager {
       return normalizeClaudeAccountUsage(await readUsage.call(query), session.currentModel);
     } catch (error) {
       const failure = normalizeClaudeProviderError(error, {
-        secretValues: claudeSecretValues(this.environment())
+        secretValues: this.secretValues()
       });
       console.log(`[claude-sdk] account usage unavailable id=${id} code=${failure.code}`);
       return unavailableClaudeAccountUsage(this.get(id)?.currentModel);
@@ -246,6 +250,7 @@ export class ClaudeAgentManager {
     const resolved = claudeConnectionTestOptions(configuration, {
       environment: this.environment()
     });
+    resolved.secretValues.push(...this.secretValues());
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), resolved.timeoutMs);
     let operation = null;
@@ -459,7 +464,7 @@ export class ClaudeAgentManager {
         // Closing the Query below is the authoritative cancellation path. The
         // SDK can reject interrupt() when its child process has already exited.
         const failure = normalizeClaudeProviderError(error, {
-          secretValues: claudeSecretValues(this.environment())
+          secretValues: this.secretValues()
         });
         console.warn(`[claude-sdk] interrupt request failed id=${session.id} code=${failure.code}`);
       }
@@ -476,7 +481,7 @@ export class ClaudeAgentManager {
         await query.close();
       } catch (error) {
         const failure = normalizeClaudeProviderError(error, {
-          secretValues: claudeSecretValues(this.environment())
+          secretValues: this.secretValues()
         });
         console.warn(`[claude-sdk] query close failed id=${session.id} code=${failure.code}`);
       }
@@ -926,7 +931,7 @@ export class ClaudeAgentManager {
         }
       }
     } catch (error) {
-      const secretValues = claudeSecretValues(this.environment());
+      const secretValues = this.secretValues();
       if (!session.interruptRequested && error?.name !== "AbortError") logError("claude-sdk.query", error, { sessionId: session.id, secretValues });
       const failure = normalizeClaudeProviderError(error, {
         secretValues

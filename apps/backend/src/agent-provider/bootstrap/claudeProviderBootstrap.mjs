@@ -10,6 +10,7 @@ export function createClaudeProviderRuntime(options = {}) {
     onProviderEvent: options.onProviderEvent,
     resolveRuntimeOptions: options.resolveRuntimeOptions,
     environment: options.environment,
+    connectionOptions: options.connectionOptions,
     structuredPlanEvents: options.structuredPlanEvents !== false
   });
   const provider = createClaudeAgentSdkProvider(manager, {

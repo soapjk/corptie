@@ -123,6 +123,7 @@ export class ProviderRuntimeSettings {
     if (!adapter.executionEnvironment) return;
     this.preparedConnections.set(id, {
       env: adapter.executionEnvironment(value),
+      options: adapter.executionOptions?.(value) ?? {},
       metadata: adapter.describeConnection?.(value)?.current ?? null
     });
   }
@@ -133,6 +134,10 @@ export class ProviderRuntimeSettings {
 
   connectionMetadata(id) {
     return this.preparedConnections.get(id)?.metadata ?? null;
+  }
+
+  executionOptions(id) {
+    return this.preparedConnections.get(id)?.options ?? {};
   }
 
   async markManagedSource(adapter, source) {
