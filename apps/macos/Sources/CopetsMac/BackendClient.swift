@@ -775,7 +775,12 @@ final class BackendClient: ObservableObject {
                     ? false
                     : previousByID[session.id]?.executionTaskStatus == .running,
                 isRunning: session.executionTaskStatus == .running,
-                isSelected: session.id == selectedID
+                isSelected: session.id == selectedID,
+                messageCursorAdvanced: previousByID[session.id]?.lastAgentMessageSequence != session.lastAgentMessageSequence
+                    && SessionMessageCursorReconciliation.requiresSnapshot(
+                        serverSequence: session.lastAgentMessageSequence,
+                        cachedSequence: SessionTimelineRepository.shared.detail(for: session.id)?.lastAgentMessageSequence
+                    )
             ) {
                 reconcileTerminalSessionTimeline(session)
             }

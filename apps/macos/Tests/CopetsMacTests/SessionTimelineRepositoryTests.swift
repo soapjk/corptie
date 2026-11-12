@@ -4,6 +4,39 @@ import Combine
 
 @MainActor
 final class SessionTimelineRepositoryTests: XCTestCase {
+    func testAuthoritativeCursorAdvancesWithoutRebuildingUnchangedRows() {
+        let state = SessionTimelineState(sessionID: "session")
+        var snapshot = detail(id: "provider")
+        snapshot.lastAgentMessageSequence = 119
+        state.apply(snapshot, timelineRevision: 45548)
+        let presentationRevision = state.presentationRevision
+        snapshot.lastAgentMessageSequence = 120
+        state.apply(snapshot, timelineRevision: 45548)
+        XCTAssertEqual(state.detail?.lastAgentMessageSequence, 120)
+        XCTAssertEqual(state.presentationRevision, presentationRevision)
+    }
+
+    func testProviderRebindCannotClaimUnloadedRepliesAreCached() throws {
+        let session = try JSONDecoder().decode(TaskSession.self, from: Data("""
+        {"id":"session", "title":"Session", "agent":"Agent", "status":"complete",
+         "progress":1, "summary":"", "updatedAt":"2026-11-12T11:27:40Z",
+         "accent":"cyan", "lastAgentMessageSequence":120}
+        """.utf8))
+        var snapshot = detail(id: "old-provider")
+        snapshot.lastAgentMessageSequence = 119
+        let repository = SessionTimelineRepository()
+        repository.publish(snapshot, for: session.id, timelineRevision: 45548)
+        let rebound = try XCTUnwrap(repository.rebindProviderIdentity(for: session))
+        XCTAssertEqual(rebound.id, session.id)
+        XCTAssertEqual(rebound.lastAgentMessageSequence, 119)
+        XCTAssertEqual(repository.detail(for: session.id)?.id, session.id)
+        XCTAssertEqual(repository.detail(for: session.id)?.lastAgentMessageSequence, 119)
+        XCTAssertEqual(repository.timelineRevision(for: session.id), 45548)
+        XCTAssertTrue(SessionMessageCursorReconciliation.requiresSnapshot(
+            serverSequence: session.lastAgentMessageSequence,
+            cachedSequence: rebound.lastAgentMessageSequence))
+    }
+
     func testDefaultTimelineCacheRetainsNormalSessionBrowsingSet() {
         let repository = SessionTimelineRepository()
         for index in 0..<32 {

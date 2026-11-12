@@ -117,7 +117,7 @@ final class SessionTimelineLocalOverlay {
             capabilities: session.capabilities,
             turnCount: 0,
             items: pendingUserMessagesBySessionID[session.id] ?? [],
-            lastAgentMessageSequence: session.lastAgentMessageSequence
+            lastAgentMessageSequence: nil
         )
     }
 

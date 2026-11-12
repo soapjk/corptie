@@ -78,13 +78,18 @@ extension BackendClient {
             // cache (notably an archived Session) performs one Corptie-local
             // snapshot load after selection has committed; it never opens a
             // Provider connection or a second selected-detail stream.
-            if cachedDetail == nil {
+            let needsMessageSnapshot = SessionMessageCursorReconciliation.requiresSnapshot(
+                serverSequence: self.selectedSession?.lastAgentMessageSequence,
+                cachedSequence: self.cachedDetail(for: session.id)?.lastAgentMessageSequence
+            )
+            if cachedDetail == nil || needsMessageSnapshot {
                 self.coldTimelineLoadTask = Task { [weak self] in
                     guard !Task.isCancelled, let self,
                           self.sessionSelectionController.generation == generation,
-                          self.selectedSession?.id == session.id,
-                          self.selectedDetail == nil else { return }
-                    _ = await self.synchronizeStoredTimeline(for: session, localRevision: 0)
+                          self.selectedSession?.id == session.id else { return }
+                    _ = await self.synchronizeStoredTimeline(
+                        for: session, localRevision: 0, forceSnapshot: true
+                    )
                 }
             }
         }
@@ -128,7 +133,7 @@ extension BackendClient {
         let localRevision = SessionTimelineRepository.shared.detail(for: session.id) == nil
             ? 0
             : SessionTimelineRepository.shared.timelineRevision(for: session.id)
-        _ = await synchronizeStoredTimeline(for: session, localRevision: localRevision)
+        _ = await synchronizeStoredTimeline(for: session, localRevision: localRevision, forceSnapshot: true)
     }
 
     func loadSessionMessages(_ session: TaskSession) async {
