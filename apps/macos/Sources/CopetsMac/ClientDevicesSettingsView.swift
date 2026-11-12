@@ -253,14 +253,14 @@ struct ClientDevicesSettingsView: View {
         }
         .alert("移除 Cloud 设备？", isPresented: Binding(
             get: { cloudRevocation != nil }, set: { if !$0 { cloudRevocation = nil } }
-        )) {
+        ), presenting: cloudRevocation) { device in
             Button("取消", role: .cancel) { cloudRevocation = nil }
             Button("移除设备", role: .destructive) {
-                if let device = cloudRevocation { Task { await cloud.revoke(device) } }
                 cloudRevocation = nil
+                Task { await cloud.revoke(device) }
             }
-        } message: {
-            CloudDeviceRemovalMessage(device: cloudRevocation)
+        } message: { device in
+            CloudDeviceRemovalMessage(device: device)
         }
         .alert("删除已撤销的设备？", isPresented: Binding(
             get: { deletion != nil }, set: { if !$0 { deletion = nil } }
