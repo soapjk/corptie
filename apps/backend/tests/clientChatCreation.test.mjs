@@ -82,3 +82,19 @@ test("partial Chat creation failure remains uncertain and is never replayed", as
     assert.equal(f.calls.length, 1);
   } finally { await f.close(); }
 });
+
+test('local desktop creation reuses receipt journal and forwards model with an automatically unique temporary title', async () => {
+  const f = await fixture();
+  try {
+    const body = { ...input, title: '新对话', model: 'gateway-model' };
+    const local = { kind: 'local_user', principalId: 'local-user' };
+    const receipt = await f.api.createChat(local, body);
+    assert.equal(receipt.status, 'completed');
+    assert.equal(f.calls[0].model, 'gateway-model');
+    assert.equal(f.calls[0].autoUniqueTitle, true);
+    assert.deepEqual(await f.api.createChat(local, body), receipt);
+    assert.equal(f.calls.length, 1);
+    await assert.rejects(f.api.createChat(local, { ...body, model: 'other' }), { code: 'IDEMPOTENCY_CONFLICT' });
+    await assert.rejects(f.api.createChat(local, { ...body, requestId: 'invalid-model-001', model: 'bad\nmodel' }), { code: 'INVALID_CHAT_CREATION' });
+  } finally { await f.close(); }
+});

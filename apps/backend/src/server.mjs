@@ -1,3 +1,4 @@
+import { InitialMessageTitleService } from "./application/initialMessageTitleService.mjs";
 import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
 import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.mjs";
@@ -429,7 +430,10 @@ const { scheduleTimelineChangePublish } = createTimelineChangeDispatcher({
 const providerEventPublisher = createProviderEventPublisher({
   store, eventLog, sseClients, now, resolveProviderEventBinding,
   scheduleTimelineChangePublish, scheduleStateSyncPublish, scheduleAgentWorkDrain,
-  onCommittedMessageDelivery: (envelope) => taskSummaryService.onCommittedMessageDelivery(envelope),
+  onCommittedMessageDelivery: (envelope) => {
+    taskSummaryService.onCommittedMessageDelivery(envelope);
+    initialMessageTitleService.onCommittedMessageDelivery(envelope);
+  },
   publishDeviceTimeline: (sessionId) => clientDeviceGateway?.events.publishTimeline(sessionId)
 });
 const { publishProviderEventOutbox, notifySessionEventListeners } = providerEventPublisher;
@@ -1569,6 +1573,8 @@ memoryExtractor.classifyLegacyMany = createLegacyMemoryClassifier({ backgroundAg
   claimBudget: (day) => store.claimMemoryExtractionDailyCall(day, 24),
   refundBudget: (day) => store.refundMemoryExtractionDailyCall(day) });
 memoryTopicService.classify = createMemoryTopicClassifier({ backgroundAgent: backgroundAgentService });
+const initialMessageTitleService = new InitialMessageTitleService({ store, backgroundAgent: backgroundAgentService,
+  renameTask: (id, patch) => workService.updateTask(id, patch), emitEvent });
 const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: backgroundAgentService,
   isEnabled: () => !developmentPreview });
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({

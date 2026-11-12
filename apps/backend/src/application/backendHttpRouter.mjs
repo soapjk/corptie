@@ -1,3 +1,4 @@
+import { handleDesktopChatCreation } from "./desktopChatCreationHttp.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { handleExecutionChecklistHttp } from "./executionChecklistHttpApi.mjs";
 import { handleSessionAbilityHttp } from "./sessionAbilityHttpApi.mjs";
@@ -78,6 +79,8 @@ export function routeBackendHttpRequest(request, response, ports) {
   if (rejectUnavailableStoreRequest({
     request, response, url, backendStoreReady, store, dataRootMigrationCoordinator, sendJson
   })) return;
+
+  if (handleDesktopChatCreation({ request, response, url, api: clientDeviceGateway?.sessionAPI, store, readJson, sendJson })) return;
 
   if (executionChecklistService && handleExecutionChecklistHttp({ request, response, url, service: executionChecklistService, sendJson, readJson, preview: developmentPreview })) return;
 

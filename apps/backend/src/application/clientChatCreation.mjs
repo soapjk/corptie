@@ -13,12 +13,13 @@ export async function clientChatCreationOptions(api) {
 export async function createClientChat(api, identity, input, revalidateIdentity) {
   if (!api.chatCreation) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
   if (!input || typeof input !== "object" || Array.isArray(input)
-      || Object.keys(input).some(key => !["requestId", "title", "agentId", "providerId"].includes(key))
+      || Object.keys(input).some(key => !["requestId", "title", "agentId", "providerId", "model"].includes(key))
       || typeof input.requestId !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId)
       || ["title", "agentId", "providerId"].some(key => typeof input[key] !== "string"
         || !input[key].trim() || input[key].length > 512)) throw deviceError("INVALID_CHAT_CREATION", 400);
+  if (input.model != null && (typeof input.model !== "string" || input.model.length > 200 || /[\r\n\0]/.test(input.model))) throw deviceError("INVALID_CHAT_CREATION", 400);
   validateEntityName(input.title, "title", "Chat");
-  const fields = { title: input.title, agentId: input.agentId, providerId: input.providerId };
+  const fields = { title: input.title, agentId: input.agentId, providerId: input.providerId, ...(input.model ? { model: input.model } : {}) };
   // Validate inside the receipt operation: a replay remains readable even if
   // its Agent or Provider was subsequently removed or disabled.
   return executeClientCommand(api, identity, revalidateIdentity, { kind: "chat_create", entityId: "chats",
@@ -29,7 +30,7 @@ export async function createClientChat(api, identity, input, revalidateIdentity)
       if (!options.providers.some(provider => provider.id === fields.providerId && provider.available)) {
         throw deviceError("PROVIDER_CAPABILITY_UNAVAILABLE", 409);
       }
-      const session = await api.chatCreation.create({ agent, providerId: fields.providerId, title: fields.title });
+      const session = await api.chatCreation.create({ agent, providerId: fields.providerId, title: fields.title, ...(fields.model ? { model: fields.model } : {}), ...(fields.title === "新对话" ? { autoUniqueTitle: true } : {}) });
       if (!session?.id) throw deviceError("CHAT_CREATION_UNCERTAIN", 503);
       return { sessionId: session.id, title: session.title ?? fields.title };
     } });

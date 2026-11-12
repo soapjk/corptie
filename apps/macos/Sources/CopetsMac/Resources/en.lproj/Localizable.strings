@@ -2204,3 +2204,25 @@
 
 "Check for Updates…" = "Check for Updates…";
 "Automatic updates are not configured for this build." = "Automatic updates are not configured for this build.";
+
+"请选择可用 Agent。" = "Choose an available Agent.";
+
+"请选择可用执行引擎。" = "Choose an available engine.";
+
+"选择 Work" = "Choose Work";
+
+"新建 Work" = "New Work";
+
+"你想做什么？" = "What would you like to do?";
+
+"加载模型列表" = "Load models";
+
+"重试发送" = "Retry sending";
+
+"任务创建结果尚未确认，请重试查询原操作。" = "Task creation is not confirmed. Retry to check the original operation.";
+
+"创建结果未确认，请重试查询原操作。" = "Creation is not confirmed. Retry to check the original operation.";
+
+"创建结果未确认，请勿重新创建。" = "Creation is not confirmed. Do not create another conversation.";
+
+"发送失败，重试会保留原会话。" = "Sending failed. Retry using the same conversation.";
