@@ -8,7 +8,8 @@ final class SoftwareUpdater: NSObject {
     private var controller: SPUStandardUpdaterController?
 
     func start() {
-        guard controller == nil,
+        guard !CorptieAppEnvironment.isDevelopment,
+              controller == nil,
               Bundle.main.bundleIdentifier == "com.corptie.mac",
               let feed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
               URL(string: feed)?.scheme == "https",
