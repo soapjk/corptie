@@ -1,5 +1,5 @@
 import { logSessionMessageLatency } from "../utils/sessionMessageLatency.mjs";
-import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError, validateConversationSendReceipt } from "./contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError, AgentProviderCapabilityError, providerSupports, validateConversationSendReceipt } from "./contracts.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 import { SingleFlight } from "../utils/singleFlight.mjs";
 import { SessionContextDelivery } from "../application/sessionContextDelivery.mjs";
@@ -922,6 +922,13 @@ export class SessionApplicationService {
 
   async switchModel(sessionId, modelId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const tier = reference.metadata?.session?.external?.currentServiceTier;
+    if (tier && tier !== "default") {
+      const catalog = await this.listModels(reference.providerId, context);
+      if (!catalog?.models?.find(model => model.id === modelId)?.serviceTiers?.some(entry => entry.id === tier)) {
+        await this.switchServiceTier(sessionId, "default", context);
+      }
+    }
     const providerSession = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
@@ -953,6 +960,26 @@ export class SessionApplicationService {
       normalizedLevel,
       context
     );
+  }
+
+  async switchServiceTier(sessionId, tier, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    if (!providerSupports(this.registry.get(reference.providerId), AGENT_PROVIDER_CAPABILITIES.SERVICE_TIER_SWITCH)) {
+      throw new AgentProviderCapabilityError(reference.providerId, AGENT_PROVIDER_CAPABILITIES.SERVICE_TIER_SWITCH);
+    }
+    const current = reference.metadata?.session;
+    if (["running", "blocked"].includes(current?.status)) {
+      throw Object.assign(new Error("Wait for the current turn before changing service tier."), { code: "SESSION_BUSY" });
+    }
+    const value = requiredText(tier, "service tier");
+    const catalog = await this.listModels(reference.providerId, context);
+    const modelId = current?.external?.currentModel ?? catalog?.currentModel;
+    const model = catalog?.models?.find((entry) => entry.id === modelId);
+    if (value !== "default" && !model?.serviceTiers?.some((entry) => entry.id === value)) {
+      throw Object.assign(new Error("This model does not advertise the requested service tier."), { code: "SERVICE_TIER_UNSUPPORTED" });
+    }
+    return this.registry.invoke(reference.providerId, AGENT_PROVIDER_CAPABILITIES.SERVICE_TIER_SWITCH,
+      reference, value, context);
   }
 
   async updatePermissions(sessionId, permissions, context = {}) {

@@ -2582,3 +2582,9 @@
 "Delete This Session…" = "删除此会话…";
 "Delete Task and Associated Sessions…" = "删除 Task 及关联会话…";
 "Associated Task Unavailable" = "所属 Task 暂不可用";
+
+"Configuration update failed." = "配置更新失败。";
+
+"Session configuration mismatch." = "返回的会话配置与请求不一致。";
+
+"Fast mode may use more quota or incur higher charges." = "Fast 模式可能消耗更多额度或产生更高费用。";

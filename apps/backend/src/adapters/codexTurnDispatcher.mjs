@@ -82,6 +82,7 @@ export function createCodexTurnDispatcher({
       cwd: activeCwd,
       model: turnRuntime.model,
       reasoningEffort: turnRuntime.reasoningEffort,
+      serviceTier: managed.external?.currentServiceTier ?? undefined,
       additionalContext: context.sessionContext?.prompt ? {
         ...(options.additionalContext ?? {}),
         "corptie-session-context": {

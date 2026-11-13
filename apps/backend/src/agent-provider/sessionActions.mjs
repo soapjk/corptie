@@ -12,6 +12,7 @@ const ACTION_CAPABILITIES = Object.freeze({
   approve: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
   switchModel: AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
   switchReasoning: AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+  switchServiceTier: AGENT_PROVIDER_CAPABILITIES.SERVICE_TIER_SWITCH,
   updatePermissions: AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
   switchWorkspace: AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
   switchProvider: null
@@ -61,6 +62,9 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
     return unavailable("CAPABILITY_UNSUPPORTED", false);
   }
 
+  if (["switchServiceTier", "updatePermissions"].includes(action) && ["running", "blocked"].includes(session.status)) {
+    return unavailable("SESSION_BUSY", true);
+  }
   const legacy = session.capabilities ?? {};
   if (action === "fork") {
     if (!["worker", "assistantChat"].includes(session.sessionKind)) return unavailable("SESSION_KIND_UNSUPPORTED", false);

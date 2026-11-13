@@ -2232,3 +2232,9 @@
 "Delete This Session…" = "Delete This Session…";
 "Delete Task and Associated Sessions…" = "Delete Task and Associated Sessions…";
 "Associated Task Unavailable" = "Associated Task Unavailable";
+
+"Configuration update failed." = "Configuration update failed.";
+
+"Session configuration mismatch." = "Session configuration mismatch.";
+
+"Fast mode may use more quota or incur higher charges." = "Fast mode may use more quota or incur higher charges.";

@@ -25,6 +25,10 @@ final class UnifiedCreationDraft: ObservableObject {
     @Published var roleID: String? = nil
     @Published var providerID: String = ""
     @Published var modelID: String = ""
+    @Published var permission = ComposerPermissionChoice(sandbox: "workspace-write", approval: "on-request")
+    @Published var serviceTier = "default"
+    var permissionInitialized = false
+    var configurationApplied = false
     let editor = ComposerEditorController(draft: ComposerDraftBuffer())
     // Same buffer as the chat editor; keystrokes do not publish the whole page.
     var prompt: String {
@@ -111,6 +115,12 @@ struct UnifiedConversationCreateView: View {
     private var providers: [AgentProviderDescriptor] {
         catalog.agentProviders.filter { $0.supports("session.create") && $0.isExecutionEnabled }
     }
+    private var selectedProvider: AgentProviderDescriptor? { providers.first { $0.id == providerID } }
+    private var fastTier: String? {
+        guard selectedProvider?.supports("configuration.serviceTier.switch") == true else { return nil }
+        let id = modelID.isEmpty ? catalog.defaultModel(for: providerID) : modelID
+        return ComposerServiceTier.fastID(catalog.models(for: providerID).first { $0.id == id }?.serviceTiers)
+    }
     private var validation: String? {
         if taskMode && work == nil { return L10n("请选择 Work。") }
         if !roles.contains(where: { $0.roleId == roleID }) { return L10n("请选择可用 Agent。") }
@@ -136,6 +146,12 @@ struct UnifiedConversationCreateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .interactiveDismissDisabled(busy)
         .task {
+            if !draftState.permissionInitialized {
+                let defaults = backend.settingsController.settings?.newSessionDefaults
+                draftState.permission = .init(sandbox: defaults?.sandbox ?? "workspace-write",
+                                               approval: defaults?.approvalPolicy ?? "on-request")
+                draftState.permissionInitialized = true
+            }
             if !submissionStarted, providerID.isEmpty, context.providerID == nil, let defaults = backend.settingsController.settings?.newSessionDefaults?.taskCreation {
                 providerID = defaults.providerId ?? ""; modelID = defaults.model ?? ""
             }
@@ -145,6 +161,8 @@ struct UnifiedConversationCreateView: View {
             if catalog.agentProviders.isEmpty { await backend.loadProviders() }
             reconcile()
         }
+        .onChange(of: providerID) { _, _ in if !submissionStarted { draftState.serviceTier = "default" } }
+        .onChange(of: modelID) { _, _ in if !submissionStarted { draftState.serviceTier = "default" } }
         .onChange(of: workID) { _, _ in reconcile() }
         .onChange(of: client.roles) { _, _ in reconcile() }
         .onChange(of: client.works) { _, _ in reconcile() }
@@ -158,6 +176,7 @@ struct UnifiedConversationCreateView: View {
         VStack(spacing: 28) {
             Text(L10n("今天想做什么？"))
                 .font(.system(size: 26, weight: .semibold))
+                .background(ComposerTransitionAnchor(sessionID: nil, decoration: "title"))
             VStack(spacing: 0) {
                 ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
                     creationToolbar
@@ -183,8 +202,10 @@ struct UnifiedConversationCreateView: View {
                         }
                     }.padding(.horizontal, 10)
                 }
+                .background(ComposerTransitionAnchor(sessionID: nil))
                 creationDestination
                     .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(ComposerTransitionAnchor(sessionID: nil, decoration: "footer"))
             }
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 20))
             if let error {
@@ -214,6 +235,11 @@ struct UnifiedConversationCreateView: View {
                     .frame(width: 28, height: 28).contentShape(Rectangle())
             }.buttonStyle(.plain).help(L10n("添加图片")).disabled(submissionStarted)
             Spacer(minLength: 8)
+            if selectedProvider?.supports("configuration.permissions.update") == true {
+                ComposerPermissionMenu(selection: draftState.permission, disabled: submissionStarted) {
+                    draftState.permission = $0
+                }
+            }
             Menu {
                 ForEach(providers) { provider in
                     Button(provider.displayName) { providerID = provider.id; modelID = "" }
@@ -223,9 +249,14 @@ struct UnifiedConversationCreateView: View {
                 ForEach(catalog.models(for: providerID)) { model in
                     Button(model.name) { modelID = model.id }
                 }
+                if let fastTier {
+                    Divider()
+                    Toggle("Fast", isOn: Binding(get: { ComposerServiceTier.isFast(draftState.serviceTier) },
+                        set: { draftState.serviceTier = $0 ? fastTier : "default" }))
+                }
                 Button(L10n("加载模型列表")) { Task { await backend.loadModels(for: providerID) } }
             } label: {
-                Text(modelID.isEmpty ? (providers.first { $0.id == providerID }?.displayName ?? L10n("执行引擎")) : modelID)
+                Text((ComposerServiceTier.isFast(draftState.serviceTier) ? "⚡ " : "") + (modelID.isEmpty ? (providers.first { $0.id == providerID }?.displayName ?? L10n("执行引擎")) : modelID))
                     .lineLimit(1).truncationMode(.middle)
             }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 176).disabled(submissionStarted)
@@ -315,7 +346,7 @@ struct UnifiedConversationCreateView: View {
         Task { @MainActor in
             defer { busy = false }
             do {
-                let session: TaskSession
+                var session: TaskSession
                 if let createdSession { session = createdSession }
                 else if taskMode {
                     guard let workID, let task = await client.createCorptieTask(
@@ -331,10 +362,25 @@ struct UnifiedConversationCreateView: View {
                     session = try await createChat(roleID: roleID)
                 }
                 createdSession = session
+                if !draftState.configurationApplied {
+                    if selectedProvider?.supports("configuration.permissions.update") == true {
+                        session = try await backend.configureComposer(session: session,
+                            route: "permissions", values: ["sandbox": draftState.permission.sandbox,
+                                                          "approvalPolicy": draftState.permission.approval])
+                        createdSession = session
+                    }
+                    if selectedProvider?.supports("configuration.serviceTier.switch") == true {
+                        session = try await backend.configureComposer(session: session,
+                            route: "service-tier", values: ["serviceTier": draftState.serviceTier])
+                        createdSession = session
+                    }
+                    draftState.configurationApplied = true
+                }
                 while importedImages.count < imageURLs.count {
                     importedImages.append(try await backend.importChatImage(at: imageURLs[importedImages.count], to: session, preserveOriginal: false))
                 }
                 try await submitMessage(to: session)
+                ComposerCreationTransition.shared.begin(sessionID: session.id)
                 backend.acceptCreatedSession(session)
                 onSent()
             } catch { self.error = error.localizedDescription }

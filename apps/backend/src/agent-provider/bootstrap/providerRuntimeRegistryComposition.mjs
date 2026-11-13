@@ -59,6 +59,10 @@ export function createProviderRuntimeRegistryComposition({
       manageTurnChanges: manageCodexTurnChanges,
       switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
       switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
+      switchServiceTier: async (reference, serviceTier) => {
+        await codexRuntime.updateThreadSettings(reference.providerSessionId, { serviceTier });
+        return updateCodexProviderConfiguration(reference, { currentServiceTier: serviceTier });
+      },
       updatePermissions: updateCodexProviderPermissions,
       readAccountUsage: readCodexProviderAccountUsage,
       readSessionUsage: readCodexProviderSessionUsage,

@@ -184,6 +184,22 @@ final class SessionConfigurationController {
         }
     }
 
+    /// Also used before a newly created Session is selected; no navigation side effect.
+    func configureComposer(session: TaskSession, route: String, values: [String: String]) async throws -> TaskSession {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/\(route)"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: values)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let status = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(status) else {
+            throw BackendError.message(errorMessage(data) ?? L10n("Configuration update failed."))
+        }
+        let result = try JSONDecoder().decode(SessionConfigurationCommandResponse.self, from: data).session
+        guard result.id == session.id else { throw BackendError.message(L10n("Session configuration mismatch.")) }
+        _ = appState.acceptSessionConfiguration(result, requestedSessionID: session.id)
+        return result
+    }
+
     func updateSessionPermissions(
         session: TaskSession,
         sandbox: String,
@@ -207,6 +223,8 @@ final class SessionConfigurationController {
                     ?? "Bad server response"
                 throw BackendError.message(message)
             }
+            let result = try JSONDecoder().decode(SessionConfigurationCommandResponse.self, from: data)
+            _ = appState.acceptSessionConfiguration(result.session, requestedSessionID: session.id)
             sendStatusMessage = L10n("Session permissions updated.")
             return true
         } catch {

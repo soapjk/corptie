@@ -25,6 +25,8 @@ struct CodexModelMenu: View {
 }
 
 struct SessionModelMenuSurface: View {
+    @State private var switchingTier = false
+    @State private var tierError: String?
     let models: [CodexModel]
     let defaultModelID: String?
     let defaultReasoningLevel: String?
@@ -101,6 +103,25 @@ struct SessionModelMenuSurface: View {
                     .disabled(currentReasoningLevels.isEmpty || switchingReasoning)
                 }
 
+                if let fastID = ComposerServiceTier.fastID(models.first { $0.id == currentModelId }?.serviceTiers),
+                   let tierAction = session?.actions?.switchServiceTier, tierAction.reason != "CAPABILITY_UNSUPPORTED" {
+                    Divider()
+                    Toggle("Fast", isOn: Binding(get: {
+                        ComposerServiceTier.isFast(session?.external?.currentServiceTier)
+                    }, set: { enabled in
+                        guard canAct, !switchingTier, let session else { return }
+                        switchingTier = true
+                        Task { @MainActor in
+                            defer { switchingTier = false }
+                            do {
+                                _ = try await backendClient.configureComposer(session: session,
+                                    route: "service-tier", values: ["serviceTier": enabled ? fastID : "default"])
+                            } catch { tierError = error.localizedDescription }
+                        }
+                    }))
+                    .disabled(switchingTier || !tierAction.available)
+                    .help(L10n("Fast mode may use more quota or incur higher charges."))
+                }
                 Button {
                     reloadModels()
                 } label: {
@@ -109,6 +130,9 @@ struct SessionModelMenuSurface: View {
             }
         } label: {
             HStack(spacing: 4) {
+                if ComposerServiceTier.isFast(session?.external?.currentServiceTier) {
+                    Image(systemName: "bolt.fill").accessibilityLabel("Fast")
+                }
                 if let icon = ProviderBrandIcon.image(for: currentProvider,
                     providers: renderInputs?.providers ?? backendClient.modelCatalog.agentProviders) {
                     Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
@@ -136,6 +160,9 @@ struct SessionModelMenuSurface: View {
             isSwitchingReasoning: switchingReasoning
         ))
         .help(currentModelHelp)
+        .alert("Fast", isPresented: Binding(get: { tierError != nil }, set: { if !$0 { tierError = nil } })) {
+            Button(L10n("OK")) { tierError = nil }
+        } message: { Text(tierError ?? "") }
     }
 
     private func reloadModels() {

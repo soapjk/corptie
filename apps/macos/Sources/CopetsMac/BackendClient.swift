@@ -1057,6 +1057,10 @@ final class BackendClient: ObservableObject {
         try await sessionConfigurationController.configureReasoning(session: session, level: level)
     }
 
+    func configureComposer(session: TaskSession, route: String, values: [String: String]) async throws -> TaskSession {
+        try await sessionConfigurationController.configureComposer(session: session, route: route, values: values)
+    }
+
     func updateSessionPermissions(
         session: TaskSession, sandbox: String, approvalPolicy: String
     ) async -> Bool {
