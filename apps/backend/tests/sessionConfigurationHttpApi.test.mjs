@@ -10,7 +10,7 @@ function fixture() {
   const session = { id: "stored" };
   const record = (name) => async (...args) => { calls.push([name, ...args]); return session; };
   const service = {
-    switchModel: record("model"), switchReasoning: record("reasoning"), updatePermissions: record("permissions"),
+    switchServiceTier: record("service-tier"), switchModel: record("model"), switchReasoning: record("reasoning"), updatePermissions: record("permissions"),
     referenceFor: async (id) => { calls.push(["reference", id]); return reference; }
   };
   function dispatch(path, body = {}, method = "POST") {
@@ -83,4 +83,16 @@ test("parse failures and unrelated requests preserve error and fallthrough behav
   assert.equal(f.dispatch("/sessions/public/model", {}, "GET").handled, false);
   assert.equal(f.dispatch("/other").handled, false);
   assert.deepEqual(f.calls, []);
+});
+
+
+test("service tier route awaits shared service and preserves failures", async () => {
+  const f = fixture();
+  assert.equal((await f.dispatch("/sessions/public/service-tier", {serviceTier: "priority"}).result).status, 202);
+  assert.equal(f.calls[1][0], "service-tier");
+  assert.equal(f.calls[1][2], "priority");
+  assert.equal((await f.dispatch("/sessions/public/service-tier", {serviceTier: ""}).result).status, 400);
+  f.service.switchServiceTier = async () => { throw Object.assign(new Error("not supported"), {statusCode: 409}); };
+  assert.equal((await f.dispatch("/sessions/public/service-tier", {serviceTier: "priority"}).result).status, 409);
+  assert.equal(f.events.length, 1);
 });

@@ -423,10 +423,16 @@ final class AppStateStore: ObservableObject {
         if current.updatedAt > session.updatedAt {
             return current.external?.currentModel == committedExternal.currentModel
                 && current.external?.currentReasoningLevel == committedExternal.currentReasoningLevel
+                && current.external?.currentServiceTier == committedExternal.currentServiceTier
+                && current.external?.sandbox == committedExternal.sandbox
+                && current.external?.approvalPolicy == committedExternal.approvalPolicy
         }
         var external = current.external ?? committedExternal
         external.currentModel = committedExternal.currentModel
         external.currentReasoningLevel = committedExternal.currentReasoningLevel
+        external.currentServiceTier = committedExternal.currentServiceTier
+        external.sandbox = committedExternal.sandbox
+        external.approvalPolicy = committedExternal.approvalPolicy
         current.external = external
         current.updatedAt = session.updatedAt
         var next = state

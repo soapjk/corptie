@@ -56,6 +56,23 @@ export function handleSessionConfigurationHttpRequest({
     return true;
   }
 
+  const tierMatch = url.pathname.match(/^\/sessions\/([^/]+)\/service-tier$/);
+  if (request.method === "POST" && tierMatch) {
+    const sessionId = decodeURIComponent(tierMatch[1]);
+    readJson(request).then(async (input) => {
+      if (typeof input.serviceTier !== "string" || !input.serviceTier.trim()) {
+        sendJson(response, 400, { error: "Service tier is required" }); return;
+      }
+      const reference = await sessionApplicationService.referenceFor(sessionId);
+      const session = await sessionApplicationService.switchServiceTier(sessionId, input.serviceTier.trim());
+      emitEvent("SessionServiceTierChanged", { sessionId: reference.sessionId,
+        logicalSessionId: reference.logicalSessionId, serviceTier: session.external?.currentServiceTier },
+        { sessionId: reference.sessionId });
+      sendJson(response, 202, { session });
+    }).catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return true;
+  }
+
   const sessionPermissionsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/permissions$/);
   if (request.method === "POST" && sessionPermissionsMatch) {
     const sessionId = decodeURIComponent(sessionPermissionsMatch[1]);

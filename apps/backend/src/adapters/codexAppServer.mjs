@@ -603,6 +603,7 @@ export class CodexAppServerClient {
     const result = await this.request("turn/start", {
       threadId,
       input: codexTurnInput(message),
+      serviceTier: options.serviceTier ?? undefined,
       additionalContext: options.additionalContext ?? undefined,
       cwd: options.cwd ?? undefined,
       approvalPolicy: options.approvalPolicy ?? undefined,

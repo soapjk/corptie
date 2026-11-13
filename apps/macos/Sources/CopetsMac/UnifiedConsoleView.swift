@@ -217,7 +217,7 @@ struct UnifiedConsoleView: View {
             guard let sessionID,
                   let session = backendClient.sessions.first(where: { $0.id == sessionID })
                     ?? backendClient.archivedSessions.first(where: { $0.id == sessionID }) else { return }
-            showNewSessionCreation = false
+            if !creationDraft.busy { showNewSessionCreation = false }
             synchronizeConsoleSelection(with: session)
             Self.recordSessionId(session.id, category: SessionCategory(session: session))
             if sidebarState.isSelected {

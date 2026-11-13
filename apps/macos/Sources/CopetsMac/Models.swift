@@ -317,9 +317,10 @@ struct ExternalSession: Codable, Equatable, Sendable {
     let connectionStatus: String?
     var currentModel: String?
     var currentReasoningLevel: String?
+    var currentServiceTier: String? = nil
     let cwd: String?
-    let sandbox: String?
-    let approvalPolicy: String?
+    var sandbox: String?
+    var approvalPolicy: String?
     let source: String?
     let logicalSessionId: String?
     let workspace: SessionWorkspace?
@@ -745,6 +746,7 @@ struct SessionActions: Codable, Equatable, Sendable {
     let approve: SessionActionAvailability
     let switchModel: SessionActionAvailability
     let switchReasoning: SessionActionAvailability
+    var switchServiceTier: SessionActionAvailability? = nil
     let updatePermissions: SessionActionAvailability?
     let switchWorkspace: SessionActionAvailability
     let switchProvider: SessionActionAvailability

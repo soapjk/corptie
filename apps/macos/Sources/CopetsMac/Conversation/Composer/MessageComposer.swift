@@ -206,6 +206,8 @@ struct SessionMessageComposerSurface: View {
                     editorRow
                 }
                 .frame(maxWidth: .infinity)
+                .opacity(ComposerCreationTransition.shared.concealedSessionID == sessionId ? 0 : 1)
+                .background(ComposerTransitionAnchor(sessionID: sessionId))
             }
             if isImportingImages {
                 HStack(spacing: 6) {
@@ -318,6 +320,9 @@ struct SessionMessageComposerSurface: View {
         ComposerEditorRowLayout(minimumEditorWidth: 100, preservesLeadingContentWidth: true) {
             HStack(spacing: 6) {
                 moreMenu
+                if let session {
+                    SessionComposerPermissionControl(session: session, backend: backendClient, enabled: allowsActions && !sendingMessage)
+                }
                 ComposerStatusSurface(sessionID: sessionId, status: status, isReady: isReady,
                     notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs)
                 Spacer(minLength: 0)

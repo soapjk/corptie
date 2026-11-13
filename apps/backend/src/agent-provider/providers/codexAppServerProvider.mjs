@@ -77,6 +77,8 @@ export function createCodexAppServerProvider(operations, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+      ...(typeof operations.switchServiceTier === "function"
+        ? [AGENT_PROVIDER_CAPABILITIES.SERVICE_TIER_SWITCH] : []),
       AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
       ...(typeof operations.bindWorkspace === "function" && typeof operations.inspectWorkspaceBinding === "function"
