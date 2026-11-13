@@ -1,11 +1,11 @@
 const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_execution","read_mailbox","read_resource","search_resources"];
 export const COORDINATION_READ_QUERY_SCHEMA={type:"object",additionalProperties:false,
-  required:["tool","taskId","sessionId","query","cursor","messageId","offset","limit"],properties:{
+  required:["tool","taskId","sessionId","query","cursor","messageId","offset","limit","targetType","targetId","section"],properties:{
     tool:{enum:tools},taskId:{type:["string","null"],maxLength:512},sessionId:{type:["string","null"],maxLength:512},
     query:{type:["string","null"],maxLength:200},cursor:{type:["string","null"],maxLength:2000},
     messageId:{type:["string","null"],maxLength:512},offset:{type:"integer",minimum:0,maximum:1000000},
-    targetType:{enum:["work","task","session","agent","artifact"]},targetId:{type:"string",maxLength:512},
-    section:{type:"string",maxLength:32},
+    targetType:{enum:["work","task","session","agent","artifact",null]},targetId:{type:["string","null"],maxLength:512},
+    section:{type:["string","null"],maxLength:32},
     limit:{type:"integer",minimum:1,maximum:12}}};
 export const COORDINATION_READ_TOOLS=tools;
 const fail=code=>{throw Object.assign(new Error(code),{code,statusCode:403});};

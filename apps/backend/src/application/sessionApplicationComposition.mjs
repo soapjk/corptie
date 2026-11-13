@@ -133,7 +133,7 @@ export function createSessionApplicationComposition({
         );
         baseContext = buildWorkSessionContext({
           session, task, work,
-          coordination: task?.coordination_enabled === 1 ? {
+          coordination: task ? {
             children: store.selectAll("SELECT id,substr(title,1,120) AS title,current_session_id AS sessionId,lifecycle_state AS state,execution_status AS executionStatus FROM tasks WHERE parent_task_id=? AND COALESCE(deletion_status,'')<>'deleted' ORDER BY updated_at DESC LIMIT 20", [task.id]),
             dispatches: store.selectAll("SELECT dispatch_id AS dispatchId,target_task_id AS taskId,status,error_code AS errorCode FROM task_coordination_dispatches WHERE parent_task_id=? ORDER BY created_at DESC LIMIT 20", [task.id])
           } : null,
@@ -272,6 +272,14 @@ export function createSessionApplicationComposition({
         approvalPolicy: input.approvalPolicy,
         sandbox: input.sandbox
       });
+      if (context.source === "coordination-request" && logical) {
+        const request = store.selectOne("SELECT * FROM coordination_requests WHERE request_id=?", [context.requestId]);
+        if (!request || request.main_session_id !== context.shadowOwnerSessionId || request.parent_task_id !== context.taskId || request.shadow_session_id)
+          throw Object.assign(new Error("Request reservation changed"), { code: "REQUEST_RESERVATION_CHANGED" });
+        store.db.run("UPDATE coordination_requests SET shadow_session_id=?,updated_at=? WHERE request_id=? AND shadow_session_id IS NULL",
+          [logical.logicalSessionId, new Date().toISOString(), context.requestId]);
+        store.scheduleSave();
+      }
       if (context.source === "coordination-shadow" && context.shadowOwnerSessionId && logical) {
         const delegation = store.selectOne("SELECT * FROM coordination_shadow_sessions WHERE main_session_id=?", [context.shadowOwnerSessionId]);
         if (!delegation || delegation.parent_task_id !== context.taskId || delegation.shadow_session_id) {

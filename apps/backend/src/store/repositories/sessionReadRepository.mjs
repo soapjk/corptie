@@ -85,6 +85,7 @@ export class SessionReadRepository {
       `${sessionProjectionSelectSQL()}
        WHERE sessions.deleted_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM coordination_shadow_sessions sh JOIN logical_sessions sl ON sl.logical_session_id=sh.shadow_session_id WHERE sl.legacy_session_id=sessions.id)
+      AND NOT EXISTS (SELECT 1 FROM coordination_requests rq JOIN logical_sessions rl ON rl.logical_session_id=rq.shadow_session_id WHERE rl.legacy_session_id=sessions.id)
          AND ${effectiveSessionArchivedSQL()} = ?
        ORDER BY sessions.pinned DESC, sessions.sort_order ASC, sessions.updated_at DESC`,
       [archived]
@@ -119,6 +120,7 @@ export class SessionReadRepository {
       `${sessionProjectionSelectSQL()}
        WHERE sessions.deleted_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM coordination_shadow_sessions sh JOIN logical_sessions sl ON sl.logical_session_id=sh.shadow_session_id WHERE sl.legacy_session_id=sessions.id)
+      AND NOT EXISTS (SELECT 1 FROM coordination_requests rq JOIN logical_sessions rl ON rl.logical_session_id=rq.shadow_session_id WHERE rl.legacy_session_id=sessions.id)
          ${includeArchived ? "" : `AND ${effectiveSessionArchivedSQL()} = ?`}
          ${sessionId ? "AND sessions.id = ?" : ""}
          ${workId ? "AND sessions.work_id = ?" : ""}

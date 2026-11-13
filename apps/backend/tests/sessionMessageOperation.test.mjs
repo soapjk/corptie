@@ -20,6 +20,7 @@ function fixture(overrides = {}) {
         return { task: { taskId: "task" }, outbox: { id: "outbox" } };
       }
     },
+    sessionApplicationService: {},
     requireSessionReference: () => reference,
     sessionBindingReadinessProbe: {
       verify: async (...args) => { calls.push(["verify", ...args]); return { ready: true }; }
@@ -298,4 +299,22 @@ test('a missing required image settles outstanding reads and never dispatches a 
   assert.equal(settled, false);
   release(); await checked;
   assert.equal(sends, 0);
+});
+
+
+test("coordinated input hands off without registering or draining the main queue", async () => {
+  const accepted=[];
+  const {operation,calls}=fixture({
+    store:{
+      getRunningAgentTaskForSession:()=>null,
+      getLogicalSession:()=>({activeBinding:{bindingId:"binding"}}),
+      getLogicalSessionByLegacySessionId:()=>({activeBinding:{bindingId:"binding",state:"active"}}),
+      createUserMessageDelivery:()=>({task:{taskId:"operation"},outbox:{id:"outbox"}}),
+      getMessageDelivery:()=>({deliveryId:"delivery"}),getAgentTask:()=>({taskId:"operation",status:"completed"})
+    },
+    sessionApplicationService:{coordinationRequests:{accepts:()=>true,admit:(...args)=>{accepted.push(args);return {request_id:"request"};}}}
+  });
+  const result=await operation.sendUnifiedSessionMessage("session","question",{type:"desktop",messageId:"message",deliveryId:"delivery"});
+  assert.equal(result.requestId,"request");assert.equal(result.queued,false);assert.equal(accepted.length,1);
+  assert.equal(calls.some(([name])=>["register","drain"].includes(name)),false);
 });

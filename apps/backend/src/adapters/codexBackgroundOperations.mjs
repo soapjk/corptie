@@ -24,7 +24,7 @@ export function createCodexBackgroundOperations({
       ephemeral: true
     });
     const threadId = started.thread.id;
-    const turn = await startTurn(threadId, prompt, {
+    const turn = await startTurn(threadId, options.images?.length ? { text: prompt, images: options.images } : prompt, {
       cwd,
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly" },
@@ -134,7 +134,7 @@ export function createCodexBackgroundOperations({
       if (!threadId) throw new Error("Codex thread/start returned no ephemeral thread id.");
       options.signal?.throwIfAborted();
       phase = "start_turn";
-      const turn = await startTurn(threadId, prompt, {
+      const turn = await startTurn(threadId, options.images?.length ? { text: prompt, images: options.images } : prompt, {
         cwd,
         approvalPolicy: "never",
         sandboxPolicy,
@@ -146,8 +146,11 @@ export function createCodexBackgroundOperations({
       turnId = turn?.turn?.id ?? null;
       if (!turnId) throw new Error("Codex turn/start returned no ephemeral turn id.");
       phase = "wait_completion";
+      let lastText = "";
       while (Date.now() - startedAt < timeoutMs) {
         options.signal?.throwIfAborted();
+        const partial = latestAgentMessageText(threadId, turnId);
+        if (partial && partial !== lastText) { lastText = partial; options.onText?.(partial); }
         const completed = notificationsSince(notificationStart).find((message) => {
           return message.method === "turn/completed"
             && message.params?.threadId === threadId

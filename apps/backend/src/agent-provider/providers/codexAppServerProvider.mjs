@@ -32,6 +32,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
         ? "local-proof" : "unsupported", runtimeEpoch: typeof operations.readinessEpoch === "function" },
       conversationCommands: ["goal", "compact", "review", "ps", "stop", "clean"],
       backgroundExecutionPolicies: ["no-tools"],
+      backgroundImages: true, backgroundTextUpdates: true,
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.UNAVAILABLE,
         supportsStatusProbe: typeof operations.probeTurnExecution === "function",

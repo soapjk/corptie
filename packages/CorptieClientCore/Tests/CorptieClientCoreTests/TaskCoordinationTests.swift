@@ -3,6 +3,14 @@ import Testing
 @testable import CorptieClientCore
 
 struct TaskCoordinationTests {
+    @Test func parallelRequestsHaveIndependentIdentityAndFailureState() throws {
+        let payload = #"{"status":"enforced","reason":"并行处理","requests":[{"requestId":"request:1","messageId":"message:1","status":"running","question":"第一个问题"},{"requestId":"request:2","messageId":"message:2","status":"failed","question":"第二个问题","errorMessage":"模型暂不可用","phase":"reading"}]}"#
+        let execution = try JSONDecoder().decode(ClientCoordinationExecution.self, from: Data(payload.utf8))
+        #expect(execution.requests?.count == 2)
+        #expect(execution.requests?.first?.statusLabel == "处理中")
+        #expect(execution.requests?.last?.errorMessage == "模型暂不可用")
+        #expect(execution.requests?.last?.id == "request:2")
+    }
     @Test func shadowStateIsIndependentOfInteractiveExecution() throws {
         let payload = #"{"status":"enforced","reason":"后台协调","shadow":{"sessionId":"logical:shadow","status":"running","lastReportAt":"2026-11-13T03:00:00Z","pendingDecisions":1,"reports":[{"id":"report:1","text":"交付结果","createdAt":"2026-11-13T03:00:00Z"}]}}"#
         let execution = try JSONDecoder().decode(ClientCoordinationExecution.self, from: Data(payload.utf8))

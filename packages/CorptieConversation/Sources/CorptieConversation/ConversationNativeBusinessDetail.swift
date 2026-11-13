@@ -298,7 +298,11 @@ private struct NativeBusinessCard: View {
             }
             NativeBusinessSummary(summary: value.summary)
             if let action = command("task.coordination.update", target: value.taskId) {
-                ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false, dispatches: value.coordinationDispatches ?? [], execution: value.coordinationExecution) { enabled in
+                ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false, dispatches: value.coordinationDispatches ?? [], execution: value.coordinationExecution, onRequestControl: { requestId, operation in
+                    if let control = command("task.request.control", target: value.taskId) {
+                        perform(control, ["requestId": .string(requestId), "action": .string(operation)])
+                    }
+                }) { enabled in
                     perform(action, ["coordinationEnabled": .bool(enabled)])
                 }.disabled(!action.available)
             }

@@ -9,6 +9,7 @@ import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
 import { ShadowSessionService } from "./application/shadowSessionService.mjs";
 import { ChildTaskReclamationService } from "./application/childTaskReclamationService.mjs";
+import { CoordinationRequestService } from "./application/coordinationRequestService.mjs";
 import { CoordinationTurnService } from "./application/coordinationTurnService.mjs";
 import { SessionChannelMailboxService } from "./collaboration/sessionChannelMailboxService.mjs";
 import http from "node:http";
@@ -1743,6 +1744,20 @@ sessionApplicationService.coordinationTurns = new CoordinationTurnService({
     logicalRoute: store.getLogicalSession(reference.logicalSessionId)
   })
 });
+const coordinationRequestService = new CoordinationRequestService({ store,
+  resolveMessage: async (reference, message) => ({ ...message, images: await Promise.all((message.images ?? []).map(async image => {
+    const stored = await chatResourceService.readImage(reference, image.managedPath);
+    return { ...image, absolutePath: stored.path, mimeType: stored.mimeType };
+  })) }),
+  buildContext: (reference, message, source) => sessionApplicationService.resolveMessageContext(reference, { message, source }),
+  turns: sessionApplicationService.coordinationTurns, resolveReference: requireSessionReference, emitEvent,
+  createSession: (...args) => createSessionThroughApplication(...args),
+  deleteSession: id => sessionApplicationService.deleteSession(id, { source: "coordination-request-reclamation" }) });
+sessionApplicationService.coordinationRequests = coordinationRequestService;
+sessionApplicationService.coordinationTurns.requests = coordinationRequestService;
+taskCoordinationService.requests = coordinationRequestService;
+workService.controlCoordinationRequest = (mainId, requestId, action) => action === "cancel"
+  ? coordinationRequestService.cancel(mainId, requestId) : coordinationRequestService.retry(mainId, requestId);
 workService.assertCoordinationCanEnable = task => sessionApplicationService.coordinationTurns.assertCanEnable(task);
 workService.onCoordinationChanged = taskId => {
   sessionApplicationService.coordinationTurns.policyChanged(taskId);
@@ -1888,6 +1903,8 @@ const {
   inspectWorkspaceDispatchBlocker: sessionId => worktreeDispatchBlocker(store,{sessionId})
 });
 function cancelQueuedUserMessage(sessionId, taskId) {
+  const request = store.selectOne("SELECT request_id,main_session_id FROM coordination_requests WHERE operation_id=?", [taskId]);
+  if (request) return coordinationRequestService.cancel(requireSessionReference(sessionId).logicalSessionId, request.request_id);
   const routedSessionId = requireSessionReference(sessionId).sessionId;
   const task = store.runInTransaction(() => {
     const cancelled = store.cancelQueuedUserAgentTask(routedSessionId, taskId);
@@ -2662,6 +2679,7 @@ function startBackendRuntime() {
   sessionMailbox.importQueuedAutomations();
   executionChecklistService.retireLegacyContinuations();
   sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
+  coordinationRequestService.recover();
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();

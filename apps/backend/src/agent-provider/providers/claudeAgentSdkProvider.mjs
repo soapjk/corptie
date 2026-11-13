@@ -59,6 +59,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       bindingReadiness: { version: 1, reconciliation: "unsupported", runtimeEpoch: true },
       backgroundPermissionProfiles: ["read-only"],
       backgroundExecutionPolicies: ["no-tools"],
+      backgroundImages: true, backgroundTextUpdates: true,
       turnLiveness: {
         heartbeat: AGENT_PROVIDER_HEARTBEAT_RELIABILITY.BEST_EFFORT,
         supportsStatusProbe: false,

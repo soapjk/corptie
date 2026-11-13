@@ -188,6 +188,13 @@ export class ChildTaskDeliveryService {
   assertAuthority(id) {
     const operation=this.repository.getOperation(id), approval=operation && this.store.getTaskCompletionOperation(operation.approvalOperationId);
     if (operation?.actor?.type === "shadow_session" && ["running", "waiting"].includes(operation.state)) {
+      const amendment = this.store.selectOne(`SELECT pending.request_id FROM coordination_requests pending
+        JOIN coordination_requests original ON original.request_id=pending.related_request_id
+        JOIN json_each(COALESCE(original.dispatch_json,'[]')) dispatched
+        WHERE pending.parent_task_id=? AND pending.status IN ('accepted','preparing','running','waiting')
+          AND pending.relation IN ('supplement','depends_on','cancel')
+          AND json_extract(dispatched.value,'$.taskId')=? LIMIT 1`, [operation.parentTaskId, operation.taskId]);
+      if (amendment) throw failure("CHILD_REQUEST_PENDING", `该子任务仍有用户请求 ${amendment.request_id} 待处理，处理后再交付回收。`);
       const review = this.store.selectOne(`SELECT r.* FROM coordination_shadow_reclamation r
         JOIN coordination_shadow_sessions sh ON sh.shadow_session_id=r.shadow_session_id
         JOIN coordination_shadow_reports report ON report.report_id=r.report_id

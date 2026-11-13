@@ -84,3 +84,16 @@ test('explicit cancellation preserves the caller reason and closes the Claude op
   }), error => error === reason);
   assert.equal(closed, 1);
 });
+
+test('background reply updates use the provider-neutral text callback', async () => {
+  const updates=[];
+  const result=await runClaudeBackgroundPrompt({executionPolicy:'no-tools',prompt:'hello',onText:text=>updates.push(text)}, {
+    environment:()=>({}),queryFactory:()=>({
+      async *[Symbol.asyncIterator](){
+        yield {type:'assistant',message:{content:[{type:'text',text:'reply'}]}};
+        yield {type:'result',subtype:'success',result:'reply'};
+      },close(){}
+    })
+  });
+  assert.deepEqual(updates,['reply']);assert.equal(result.text,'reply');
+});
