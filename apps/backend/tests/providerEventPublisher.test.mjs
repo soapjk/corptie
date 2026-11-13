@@ -8,7 +8,7 @@ function fixture() {
   const publisher = createProviderEventPublisher({
     store: {
       markEventOutboxPublished: (id) => calls.push(["published", id]),
-      getSessionContextUsage: () => ({ context: { tokens: 12 } })
+      getSessionContextUsage: () => ({ providerId: "test-provider", model: "model-a", context: { tokens: 12 } })
     },
     eventLog: { append: (event) => { calls.push(["event", event]); return { id: calls.length, ...event }; } },
     sseClients: new Set([{ write: (frame) => frames.push(frame) }]),
@@ -60,6 +60,8 @@ test("usage wake publishes persisted context and notifies durable session listen
     "ProviderEventCommitted", "SessionUsageUpdated"
   ]);
   assert.equal(f.frames.length, 2);
+  const usage = f.calls.filter(([name]) => name === "event").map(([, event]) => event).find(event => event.type === "SessionUsageUpdated");
+  assert.deepEqual(usage.payload, { sessionId: "session", providerId: "test-provider", model: "model-a", context: { tokens: 12 } });
   assert.deepEqual(received, [sessionEvent]);
   assert.deepEqual(f.calls.at(-1), ["published", "provider-events"]);
   stop();

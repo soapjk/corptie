@@ -20,7 +20,8 @@ struct ComposerStatusSurface: View {
                 readinessMessage: notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."),
                 readinessCode: notReadyReason?.code, executionState: status?.sharedExecutionState,
                 activity: page.restart?.text ?? activityStatus) {
-                    ChatUsageBar(sessionID: sessionID, usage: page.usage)
+                    ChatUsageBar(sessionID: sessionID, usage: page.usage?.matching(provider: page.session.external?.provider, model: page.session.external?.currentModel), loadState: page.usageLoadState, accountSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.account.read"),
+                        contextSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.session.read"))
                 }
         } else {
             ThreadMetaView(sessionID: sessionID, status: status, isReady: isReady,
@@ -187,5 +188,40 @@ struct ComposerSendControl: View {
         }
         .buttonStyle(.plain).disabled(disabled)
         .accessibilityLabel(L10n("Send instruction"))
+    }
+}
+
+/// One stored read per draft scope, cancelled with the leaf. No timer or global observation.
+struct DraftComposerUsageSurface: View {
+    let provider: String
+    let model: String?
+    let supported: Bool?
+    let baseURL: URL
+    @State private var usage: SessionUsageResponse?
+    @State private var loadState: UsageLoadState = .loading
+
+    var body: some View {
+        ChatUsageBar(sessionID: "", usage: usage, loadState: loadState,
+                     isDraft: true, accountSupported: supported)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .task {
+                guard !provider.isEmpty else { loadState = .ready; return }
+                do {
+                    let url = baseURL.appending(path: "provider-model-usage").appending(queryItems: [
+                        URLQueryItem(name: "provider", value: provider),
+                        URLQueryItem(name: "model", value: model)
+                    ])
+                    let (data, response) = try await URLSession.shared.data(from: url)
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                        throw URLError(.badServerResponse)
+                    }
+                    let snapshot = try JSONDecoder().decode(SessionUsageResponse.self, from: data)
+                    guard !Task.isCancelled else { return }
+                    usage = snapshot.matching(provider: provider, model: model)
+                    loadState = .ready
+                } catch {
+                    if !Task.isCancelled { loadState = .failed }
+                }
+            }
     }
 }

@@ -1,5 +1,7 @@
 import Foundation
 
+enum UsageLoadState: Equatable { case loading, ready, failed }
+
 /// Owns the fallback poll and the debounced account refresh as one lifecycle.
 /// The selected value stays in the existing supplementary state controller.
 @MainActor
@@ -22,10 +24,13 @@ final class SessionUsageController {
     }
 
     func publishCachedUsage(for sessionID: String) {
+        fetchGeneration &+= 1
         state.selectedSessionUsage = client.cached(for: sessionID)
+        state.usageLoadState = state.selectedSessionUsage == nil ? .loading : .ready
     }
 
     func stopRefreshing() {
+        fetchGeneration &+= 1
         refreshTask?.cancel()
         refreshTask = nil
         eventRefreshTask?.cancel()
@@ -70,12 +75,16 @@ final class SessionUsageController {
         fetchGeneration &+= 1
         let generation = fetchGeneration
         do {
-            guard let usage = try await client.fetch(for: sessionID) else { return false }
-            guard selectedSessionID() == sessionID, generation == fetchGeneration else { return false }
+            guard let usage = try await client.fetch(for: sessionID) else { throw URLError(.badServerResponse) }
+            guard !Task.isCancelled, selectedSessionID() == sessionID, generation == fetchGeneration else { return false }
             client.remember(usage, for: sessionID)
             state.selectedSessionUsage = usage
+            state.usageLoadState = .ready
             return true
         } catch {
+            if selectedSessionID() == sessionID, generation == fetchGeneration, !Task.isCancelled {
+                state.usageLoadState = .failed
+            }
             // Usage is supplementary; failure must not disable conversation.
             return false
         }
@@ -83,16 +92,27 @@ final class SessionUsageController {
 
     func refreshFreshAccount(for sessionID: String) async -> SessionUsageResponse? {
         guard selectedSessionID() == sessionID else { return nil }
+        fetchGeneration &+= 1
+        let generation = fetchGeneration
         do {
             guard let usage = try await client.fetchFreshAccount(for: sessionID),
                   !Task.isCancelled,
-                  selectedSessionID() == sessionID else { return nil }
+                  selectedSessionID() == sessionID, generation == fetchGeneration else { return nil }
             client.remember(usage, for: sessionID)
             state.selectedSessionUsage = usage
+            state.usageLoadState = .ready
             return usage
         } catch {
             return nil
         }
+    }
+
+    func invalidateConfiguration() {
+        fetchGeneration &+= 1
+        eventRefreshTask?.cancel()
+        eventRefreshTask = nil
+        state.selectedSessionUsage = nil
+        state.usageLoadState = .loading
     }
 
     func refreshSelectedUsage() async {
