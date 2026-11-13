@@ -172,7 +172,6 @@ struct PadWorkOutline: View {
         orderedTasks = sort.tasks(workspace.tasks, latestSessionActivity: workspace.latestSessionActivityByTask,
                                  showingArchived: showingArchived).filter {
             query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-                    || ($0.description ?? "").localizedCaseInsensitiveContains(query)
                     || (workNames[$0.workId] ?? "").localizedCaseInsensitiveContains(query)
         }
         hierarchyProjection = PadTaskOutlineHierarchy(filtered: orderedTasks, inventory: workspace.tasks,

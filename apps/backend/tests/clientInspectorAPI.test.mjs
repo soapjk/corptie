@@ -77,17 +77,17 @@ test("paired-device Detail reads active schedules with the scheduler actor and r
     assert.equal(Object.hasOwn(denied.sections, "schedules"), false);
   } finally { await f.close(); }
 });
-test("task Detail snapshot carries the same definition fields as desktop", async () => {
+test("task Detail snapshot omits retired definition fields on both clients", async () => {
   const f = await fixture();
   try {
-    const task = f.store.createTask({ workId: "work:test", title: "Task", description: "Scope",
-      acceptanceCriteria: "Accepted", verificationCriteria: "Verified", mainAgentId: "agent:test" });
+    const task = f.store.createTask({ workId: "work:test", title: "Task",
+        mainAgentId: "agent:test" });
     f.store.createSession({ id: "s:task", title: "Worker", workId: "work:test", taskId: task.id, agentId: "agent:test" });
     const snapshot = await f.inspector.snapshot(identity, "s:task");
     assert.equal(snapshot.taskId, task.id);
-    assert.equal(snapshot.taskDefinition.description, "Scope");
-    assert.equal(snapshot.taskDefinition.acceptanceCriteria, "Accepted");
-    assert.equal(snapshot.taskDefinition.verificationCriteria, "Verified");
+    assert.equal(Object.hasOwn(snapshot.taskDefinition, "description"), false);
+    assert.equal(Object.hasOwn(snapshot.taskDefinition, "acceptanceCriteria"), false);
+    assert.equal(Object.hasOwn(snapshot.taskDefinition, "verificationCriteria"), false);
     assert.equal(snapshot.taskDefinition.revision, task.revision);
     assert.equal(snapshot.taskDefinition.autoTitleEnabled, true);
     assert.throws(() => f.store.updateTask(task.id, { autoTitleEnabled: "false" }), { code: "INVALID_FIELD_TYPE" });

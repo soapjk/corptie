@@ -1,5 +1,6 @@
 import AppKit
 import CorptieConversation
+import QuartzCore
 import SwiftUI
 import Testing
 @testable import CorptieMac
@@ -169,6 +170,74 @@ struct ConsoleWindowSplitViewTests {
         // Divider-driven collapse also exposes the same restore affordance.
         controller.splitViewItems[0].isCollapsed = true
         #expect(!handle.isHidden)
+    }
+
+    @Test
+    func workColumnAnimatesBothWaysAndRapidReversalKeepsSavedWidth() async throws {
+        _ = NSApplication.shared
+        let suite = "ConsoleWindowSplitViewTests.motion.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(400, forKey: "console.nativeSidebar.listWidth.v2")
+        let controller = ConsoleSplitController(mode: .workOutline,
+            sidebar: WorkColumnCollapseButton(), detail: Text("Messages"), defaults: defaults)
+        controller.reduceMotionOverride = false
+        let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 1400, height: 800),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.orderBack(nil)
+        window.setContentSize(.init(width: 1400, height: 800))
+        defer { window.orderOut(nil); window.contentViewController = nil; window.close() }
+        controller.view.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        let sidebar = controller.splitViewItems[0].viewController
+        let detail = controller.splitViewItems[1].viewController
+        let detailRegion = try #require(controller.splitView.arrangedSubviews.last)
+        let commits = controller.detailRootCommitCount
+        let updates = controller.contentUpdateCount
+        let expandedX = detailRegion.frame.minX
+        let collapsedX = controller.splitView.dividerThickness
+        #expect(expandedX > 399)
+        func presentedX() -> CGFloat {
+            detailRegion.layer?.presentation()?.frame.minX ?? detailRegion.frame.minX
+        }
+        for collapsed in [true, false] {
+            controller.setWorkColumnCollapsed(collapsed)
+            var positions: [CGFloat] = []
+            for _ in 0..<30 {
+                try await Task.sleep(for: .milliseconds(10))
+                positions.append(presentedX())
+            }
+            #expect(positions.contains { $0 > 2 && $0 < expandedX - 2 },
+                "Both directions must present an intermediate position, not just change the boolean")
+            #expect(controller.splitViewItems[0].isCollapsed == collapsed)
+            #expect(controller.workColumnAnimationTarget == nil)
+            #expect(abs(detailRegion.frame.minX - (collapsed ? collapsedX : expandedX)) < 1)
+        }
+        for collapsed in [true, false, true, false] {
+            controller.setWorkColumnCollapsed(collapsed)
+            try await Task.sleep(for: .milliseconds(35))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!controller.splitViewItems[0].isCollapsed)
+        #expect(controller.workColumnAnimationTarget == nil)
+        #expect(abs(sidebar.view.frame.width - 400) < 1)
+        #expect(abs(defaults.double(forKey: "console.nativeSidebar.listWidth.v2") - 400) < 1)
+        #expect(controller.detailRootCommitCount == commits)
+        #expect(controller.contentUpdateCount == updates)
+        #expect(controller.splitViewItems[0].viewController === sidebar)
+        #expect(controller.splitViewItems[1].viewController === detail)
+
+        // Reduced motion follows the same controls and geometry without a transition.
+        controller.reduceMotionOverride = true
+        for collapsed in [true, false] {
+            controller.setWorkColumnCollapsed(collapsed)
+            controller.view.layoutSubtreeIfNeeded()
+            #expect(controller.workColumnAnimationTarget == nil)
+            #expect(controller.splitViewItems[0].isCollapsed == collapsed)
+            #expect(abs(detailRegion.frame.minX - (collapsed ? collapsedX : expandedX)) < 1)
+        }
     }
 
     @Test

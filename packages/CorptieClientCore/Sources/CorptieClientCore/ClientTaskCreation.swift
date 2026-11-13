@@ -6,9 +6,6 @@ public struct ClientTaskCreation: Codable, Sendable {
     public let title: String
     public let mainRoleId: String
     public let providerId: String
-    public var description: String?
-    public var acceptanceCriteria: String?
-    public var verificationCriteria: String?
     public var priority: String?
     public var model: String?
     public var reasoningLevel: String?
@@ -24,9 +21,6 @@ public struct ClientTaskCreation: Codable, Sendable {
         try values.encode(title, forKey: .title)
         try values.encode(mainRoleId, forKey: .mainRoleId)
         try values.encode(providerId, forKey: .providerId)
-        try values.encodeIfPresent(description, forKey: .description)
-        try values.encodeIfPresent(acceptanceCriteria, forKey: .acceptanceCriteria)
-        try values.encodeIfPresent(verificationCriteria, forKey: .verificationCriteria)
         try values.encodeIfPresent(priority, forKey: .priority)
         try values.encodeIfPresent(model, forKey: .model)
         try values.encodeIfPresent(reasoningLevel, forKey: .reasoningLevel)
@@ -47,9 +41,6 @@ public struct ClientTaskCreation: Codable, Sendable {
         case title
         case mainRoleId = "mainAgentId"
         case providerId
-        case description
-        case acceptanceCriteria
-        case verificationCriteria
         case priority
         case model
         case reasoningLevel

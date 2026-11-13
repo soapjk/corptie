@@ -43,8 +43,7 @@ export class WorkChatContextService {
     const taskCandidates = tasks.map((item) => ({
       id: item.id,
       title: boundedText(item.title, 512),
-      description: boundedText(item.description, 2_048),
-      acceptanceCriteria: boundedText(item.acceptance_criteria, 2_048),
+
       priority: item.priority,
       lifecycleState: item.lifecycle_state,
       mainAgentId: item.main_agent_id,
@@ -72,7 +71,7 @@ export class WorkChatContextService {
         taskReasons: {},
         workspaces: 0,
         contributors: Math.max(0, work.contributorAgentIds.length - contributorAgentIds.length),
-        workTextTruncated: String(work.name ?? "").length > 512 || String(work.description ?? "").length > 2048 || tasks.some(task => String(task.title ?? "").length > 512 || String(task.description ?? "").length > 2048 || String(task.acceptance_criteria ?? "").length > 2048)
+        workTextTruncated: String(work.name ?? "").length > 512 || String(work.description ?? "").length > 2048 || tasks.some(task => String(task.title ?? "").length > 512)
       }
     };
     const header = [

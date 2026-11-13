@@ -94,8 +94,7 @@ test("Work Chat cannot fork", async t => {
 test("Task fork retains Work and Agent, applies confirmed fields, and never dispatches a turn", async t => {
   const { store, service, input, session, creates } = await fixture(t);
   const work = service.workService.createWork({ name: "项目", contributorAgentIds: ["agent:test"] });
-  const parent = service.workService.createTask({ workId: work.id, title: "原任务", mainAgentId: "agent:test",
-    description: "原描述", acceptanceCriteria: "原标准" });
+  const parent = service.workService.createTask({ workId: work.id, title: "原任务", mainAgentId: "agent:test"});
   store.bindSessionToTask("source", parent.id, work.id);
   store.getTaskWorkspaceContext = () => ({ repository: { id: "repo:test" } });
   service.startWorkSession = async command => {
@@ -107,18 +106,18 @@ test("Task fork retains Work and Agent, applies confirmed fields, and never disp
     store.bindSessionToTask("child", command.taskId, work.id);
     return { status: "ready", session: store.getSession("child") };
   };
-  const result = await service.create("source", { ...input, description: "新目标", acceptanceCriteria: "新标准",
-    verificationCriteria: "新验证", priority: "high" });
+  const result = await service.create("source", { ...input,
+     priority: "high" });
   const child = store.getTask(result.taskId);
   assert.notEqual(child.id, parent.id);
   assert.equal(child.work_id, work.id);
-  assert.equal(child.description, "新目标");
-  assert.equal(child.acceptance_criteria, "新标准");
-  assert.equal(child.verification_criteria, "新验证");
+  assert.equal(Object.hasOwn(child, "description"), false);
+  assert.equal(Object.hasOwn(child, "acceptance_criteria"), false);
+  assert.equal(Object.hasOwn(child, "verification_criteria"), false);
   assert.equal(child.priority, "high");
   assert.equal(result.session.sessionKind, "worker");
   assert.equal(creates(), 0);
-  assert.equal(store.getTask(parent.id).description, "原描述");
+  assert.equal(Object.hasOwn(store.getTask(parent.id), "description"), false);
 });
 
 test("finalization retries retain the same target and do not duplicate history or audit events", async t => {

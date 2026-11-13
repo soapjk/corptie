@@ -376,7 +376,6 @@ extension UnifiedConsoleView {
             .filter { task in
                 query.isEmpty
                     || task.title.localizedCaseInsensitiveContains(query)
-                    || task.description.localizedCaseInsensitiveContains(query)
             }
             .sorted { lhs, rhs in
                 if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }

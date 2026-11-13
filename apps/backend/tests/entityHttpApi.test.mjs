@@ -481,7 +481,7 @@ test("Task restore endpoint delegates the atomic execution recovery flow", async
     const task = services.workService.createTask({
       workId: services.workService.createWork({
         name: "Recovery_work",
-        description: "Recovered",
+
         contributorAgentIds: [agent.agentId]
       }).id,
       title: "Recover_me",
@@ -693,7 +693,7 @@ test("POST /assist/form-draft generates every field without creating an entity",
       body: {
         formType: "task",
         prompt: "实现统一的一键填充",
-        currentValues: { title: "", description: "", acceptanceCriteria: "", priority: "medium" }
+        currentValues: { title: "",  priority: "medium" }
       },
       backgroundAgentService: {
         async run(input) {
@@ -706,8 +706,7 @@ test("POST /assist/form-draft generates every field without creating an entity",
             },
             text: JSON.stringify({
               title: "统一帮我写",
-              description: "一次生成并回填全部字段。",
-              acceptanceCriteria: "- 所有字段可编辑\n- 不自动创建实体",
+
               priority: "high"
             })
           };
@@ -980,7 +979,7 @@ test("POST /assist/form-draft rejects generated Work, Task, and Agent names with
       {
         formType: "task",
         fields: {
-          title: "Fix%UI", description: "修复界面", acceptanceCriteria: "- 验证通过", priority: "medium"
+          title: "Fix%UI",   priority: "medium"
         }
       }
     ];
@@ -1597,11 +1596,7 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
     });
     const task = services.workService.createTask({
       workId: work.id,
-      title: "First_problem",
-      description: "Initial description",
-      acceptanceCriteria: "Initial acceptance",
-      verificationCriteria: "Initial verification"
-    });
+      title: "First_problem"});
     services.store.createSession({
       id: "session:task-revision-http",
       title: "Task worker",
@@ -1617,11 +1612,7 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
         expectedRevision: 1,
         createdBySessionId: "session:task-revision-http",
         next: {
-          title: "Second_problem",
-          description: "Second description",
-          acceptanceCriteria: "Second acceptance",
-          verificationCriteria: "Second verification"
-        },
+          title: "Second_problem"},
         executionSummary: "The first problem is complete."
       },
       ...services
@@ -1721,9 +1712,7 @@ test("Task completion requires a passing evidence-backed acceptance assessment",
       pathname: "/tasks",
       body: {
         workId: work.body.id,
-        title: "验收任务",
-        acceptanceCriteria: "- Tests pass\n- App starts"
-      },
+        title: "验收任务"},
       ...services
     });
     services.store.upsertSession({
@@ -1860,9 +1849,7 @@ test("explicit user confirmation completes an in-progress Task without automatic
       pathname: "/tasks",
       body: {
         workId: work.body.id,
-        title: "人工确认任务",
-        acceptanceCriteria: "User reviews the delivered result"
-      },
+        title: "人工确认任务"},
       ...services
     });
     await callApi({
@@ -1918,9 +1905,7 @@ test("explicit user confirmation completes an in-progress Task after automated a
       pathname: "/tasks",
       body: {
         workId: work.body.id,
-        title: "未通过后人工确认任务",
-        acceptanceCriteria: "Tests pass"
-      },
+        title: "未通过后人工确认任务"},
       ...services
     });
     services.store.upsertSession({
@@ -1978,9 +1963,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
       pathname: "/tasks",
       body: {
         workId: work.body.id,
-        title: "联合验收任务",
-        acceptanceCriteria: "- Implementation verified\n- Runtime verified"
-      },
+        title: "联合验收任务"},
       ...services
     });
 

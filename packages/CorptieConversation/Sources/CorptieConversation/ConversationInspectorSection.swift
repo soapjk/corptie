@@ -303,35 +303,6 @@ public struct ConversationDetailDisclosure<Header: View, Content: View>: View {
     }
 }
 
-public struct ConversationTaskDefinition: View {
-    private let values: [String]
-    private let titles: [String]
-    private let expandLabel: String
-    private let collapseLabel: String
-    nonisolated public static func hasContent(description: String, acceptance: String) -> Bool {
-        [description, acceptance].contains {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-    }
-    public init(description: String, acceptance: String,
-                descriptionTitle: String = "描述", acceptanceTitle: String = "验收标准",
-                expandLabel: String = "展开", collapseLabel: String = "收起") {
-        values = [description, acceptance]
-        titles = [descriptionTitle, acceptanceTitle]
-        self.expandLabel = expandLabel; self.collapseLabel = collapseLabel
-    }
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(values.indices, id: \.self) { index in
-                if !values[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    ConversationStampedParagraph(title: titles[index], text: values[index],
-                        expandLabel: expandLabel, collapseLabel: collapseLabel)
-                }
-            }
-        }
-    }
-}
-
 /// Stable property columns in regular widgets, stacked values in compact ones.
 public struct ConversationDetailPropertyRow<Value: View>: View {
     @Environment(\.detailWidgetSize) private var widgetSize

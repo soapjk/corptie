@@ -171,3 +171,67 @@ test("Task goal removal drops persisted columns while preserving Task and snapsh
   assert.equal(db.prepare("PRAGMA foreign_key_check").all().length, 0);
   db.close();
 });
+
+test("retired Task definition columns are dropped transactionally from current rows and snapshots", async () => {
+  const { migrateTaskDefinitionRemovalV1 } = await import("../src/store/taskSchemaMigration.mjs");
+  const db = database();
+  migrateTaskDomainV1(db);
+  // Build the old stored shape, including a historical immutable snapshot.
+  db.exec("ALTER TABLE tasks ADD COLUMN verification_criteria TEXT NOT NULL DEFAULT ''");
+  for (const field of ["description", "acceptance_criteria", "verification_criteria"]) {
+    db.exec(`ALTER TABLE task_snapshots ADD COLUMN ${field} TEXT NOT NULL DEFAULT ''`);
+  }
+  db.exec(`INSERT INTO task_snapshots(id,task_id,version,title,description,acceptance_criteria,verification_criteria,
+    created_by_session_id,content_hash,created_at) VALUES ('snapshot:old','work_item:1',1,'Old title','old scope','old criteria','old checks','session:1','old-hash','2026-09-01')`);
+  db.exec("UPDATE tasks SET description='scope',acceptance_criteria='criteria',verification_criteria='checks'");
+  const result = migrateTaskDefinitionRemovalV1(db);
+  assert.equal(result.droppedColumns.length, 6);
+  for (const table of ["tasks", "task_snapshots"]) {
+    const columns = db.all(`PRAGMA table_info(${table})`).map(row => row.name);
+    for (const field of ["description", "acceptance_criteria", "verification_criteria"]) assert.ok(!columns.includes(field));
+  }
+  assert.equal(db.get("SELECT title FROM tasks").title, "Legacy");
+  assert.equal(db.get("SELECT task_id FROM sessions").task_id, "work_item:1");
+  assert.equal(db.get("SELECT content_hash FROM task_snapshots").content_hash, "old-hash");
+  assert.throws(() => db.run("UPDATE task_snapshots SET title='changed'"), /TASK_SNAPSHOT_IMMUTABLE/);
+  assert.throws(() => db.run("DELETE FROM task_snapshots"), /TASK_SNAPSHOT_IMMUTABLE/);
+  assert.deepEqual(db.all("PRAGMA foreign_key_check"), []);
+  assert.equal(migrateTaskDefinitionRemovalV1(db).migrated, false);
+  db.close();
+});
+
+test("failed column migration rolls back all drops and its receipt", async () => {
+  const { migrateTaskDefinitionRemovalV1 } = await import("../src/store/taskSchemaMigration.mjs");
+  const db = database();
+  migrateTaskDomainV1(db);
+  db.exec("CREATE VIEW retired_task_field AS SELECT acceptance_criteria FROM tasks");
+  assert.throws(() => migrateTaskDefinitionRemovalV1(db));
+  assert.ok(db.all("PRAGMA table_info(tasks)").some(row => row.name === "description"));
+  assert.equal(db.get("SELECT migration_id FROM data_migrations WHERE migration_id='task-definition-fields-removal-v1'"), undefined);
+  db.exec("DROP VIEW retired_task_field");
+  assert.equal(migrateTaskDefinitionRemovalV1(db).migrated, true);
+  db.close();
+});
+
+test("upgrade removes retired fields from resumable creation metadata without losing instructions or runtime", async () => {
+  const { migrateTaskDefinitionRemovalV1 } = await import("../src/store/taskSchemaMigration.mjs");
+  const { createHash } = await import("node:crypto");
+  const db = database(); migrateTaskDomainV1(db);
+  db.exec("ALTER TABLE tasks ADD COLUMN creation_intent_json TEXT");
+  db.exec("ALTER TABLE tasks ADD COLUMN creation_intent_fingerprint TEXT");
+  db.exec("CREATE TABLE task_coordination_dispatches(dispatch_id TEXT PRIMARY KEY, request_json TEXT NOT NULL)");
+  const intent = {version:1,request:{workId:"work:1",title:"Task",description:"scope",acceptanceCriteria:"criteria",verificationCriteria:"checks",priority:"high",eventId:"user:1"},
+    runtime:{providerId:"test",model:"chosen"},startupCommand:{idempotencyKey:"original"}};
+  const request = {action:"create",text:"Keep the actual instruction",creation:{title:"Task",description:"scope",acceptanceCriteria:"criteria",verificationCriteria:"checks",agentId:"agent:1"}};
+  db.run("UPDATE tasks SET creation_intent_json=?,creation_intent_fingerprint='old'",[JSON.stringify(intent)]);
+  db.run("INSERT INTO task_coordination_dispatches VALUES (?,?)",["dispatch:1",JSON.stringify(request)]);
+  migrateTaskDefinitionRemovalV1(db);
+  const row=db.get("SELECT creation_intent_json,creation_intent_fingerprint FROM tasks");
+  const migrated=JSON.parse(row.creation_intent_json);
+  assert.deepEqual(migrated.request,{workId:"work:1",title:"Task",priority:"high",eventId:"user:1"});
+  assert.deepEqual(migrated.runtime,intent.runtime); assert.deepEqual(migrated.startupCommand,intent.startupCommand);
+  assert.equal(row.creation_intent_fingerprint,createHash("sha256").update(JSON.stringify({workId:"work:1",title:"Task",priority:"high"})).digest("hex"));
+  assert.deepEqual(JSON.parse(db.get("SELECT request_json FROM task_coordination_dispatches").request_json),{
+    action:"create",text:request.text,creation:{title:"Task",agentId:"agent:1"}});
+  db.close();
+});

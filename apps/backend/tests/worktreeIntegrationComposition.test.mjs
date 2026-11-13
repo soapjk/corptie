@@ -192,7 +192,6 @@ test("an explicitly deleted conflict plan can be replaced without reusing its st
   const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
   const deletedTask = {
     id: "task", work_id: "work", title: "Deleted conflict plan", main_agent_id: "agent",
-    description: "Worktree Integration Job worktree_integration:plan",
     deletion_status: "deleted"
   };
   const sourceTask = {
@@ -254,6 +253,41 @@ test("a plan startup whose first Turn failed resumes the same Task and startup o
   assert.equal(calls[0][1].sourceSessionId, "logical:source");
   assert.equal(calls[0][1].providerId, "persisted-provider");
   assert.ok(calls[0][1].initialPrompt.includes("source-head"));
+});
+
+test("conflict plan recovery uses Task identity without a description", async () => {
+  const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
+  const planTask = { id: "task:integration_conflicts:plan", work_id: "work", title: "Conflict",
+    main_agent_id: "agent", current_session_id: "session" };
+  store.listTasks = () => [{ ...planTask, id: "task:integration_conflicts:plan-other", current_session_id: "wrong" }, planTask];
+  const input = conflictInput();
+  delete input.job.conflictAutomation;
+  const result = await jobs.launchConflictResolution(input);
+  assert.equal(result.reused, true);
+  assert.equal(result.taskId, planTask.id);
+  assert.equal(result.sessionId, "session");
+  assert.deepEqual(calls.map(([kind]) => kind), ["update", "admit"]);
+});
+
+test("deleted conflict replacements advance their identity without retired fields or contiguous history", async () => {
+  const { worktreeIntegrationJobService: jobs, store, calls } = fixture();
+  const base = "task:integration_conflicts:plan";
+  const deleted = { id: `${base}:replacement-7`, work_id: "work", title: "Deleted",
+    main_agent_id: "agent", deletion_status: "deleted" };
+  const source = { id: "source-task", work_id: "work", title: "Source", main_agent_id: "agent" };
+  store.listTasks = () => [deleted, { ...deleted, id: "task:integration_conflicts:plan-other:replacement-99" }];
+  store.getTask = id => id === deleted.id ? deleted : source;
+  store.getSession = () => null;
+  const input = conflictInput();
+  input.job.conflictAutomation.taskId = deleted.id;
+  input.item.associations = [{ taskId: source.id }];
+  await jobs.launchConflictResolution(input);
+  assert.equal(calls[0][0], "create");
+  assert.equal(calls[0][1].id, `${base}:replacement-8`);
+  assert.equal(calls[1][1].idempotencyKey, "integration-plan:worktree_integration:plan:start:replacement-8");
+  for (const field of ["description", "acceptanceCriteria", "verificationCriteria"]) {
+    assert.equal(Object.hasOwn(calls[0][1], field), false);
+  }
 });
 
 test("a plan Session bound to a different worktree is rejected before mutation", async () => {

@@ -96,8 +96,8 @@ export const collaborationDynamicTools = Object.freeze([
       properties: { action: { type: "string", enum: ["create", "send"] }, task_id: taskIdSchema,
         text: { type: "string", minLength: 1, maxLength: 49152 }, idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
         creation: { type: "object", additionalProperties: false, properties: { title: { type: "string", minLength: 1 },
-          description: taskFieldsSchema.description, acceptance_criteria: taskFieldsSchema.acceptance_criteria,
-          verification_criteria: taskFieldsSchema.verification_criteria, priority: taskFieldsSchema.priority,
+
+           priority: taskFieldsSchema.priority,
           agent_id: agentIdSchema, provider_id: { type: "string", minLength: 1 },
           artifact_reference: artifactReferenceSchema, file_reference: fileReferenceSchema }, required: ["title", "agent_id"] } },
       required: ["action", "text", "idempotency_key"],
@@ -114,9 +114,7 @@ export const collaborationDynamicTools = Object.freeze([
   }, ["child_task_id", "idempotency_key"]),
   tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Child creation is autonomous: the authenticated parent Session decides when and how many children to create, without explicit user creation requests, message evidence, confirmation or a total creation quota. Specify parent_task_id; no parent version is needed; Worker may target only its bound root Task, Work Chat a root in its Work. Prefer create_batch for 1-10 children per call. Independent Tasks (parent omitted/null) still require an explicit current direct-user request and authoritative turn evidence. Never use platform administration as a fallback.", {
     title: { type: "string", minLength: 1 },
-    description: taskFieldsSchema.description,
-    acceptance_criteria: taskFieldsSchema.acceptance_criteria,
-    verification_criteria: taskFieldsSchema.verification_criteria,
+
     parent_task_id: { type: ["string", "null"], minLength: 1, description: "Explicit same-Work root Task; omit/null for independent creation." },
     expected_parent_resource_version: { type: "integer", minimum: 1, description: "Deprecated optional compatibility field; ignored for creation." },
     priority: taskFieldsSchema.priority,
@@ -144,8 +142,8 @@ export const collaborationDynamicTools = Object.freeze([
     items: { type: "array", minItems: 1, maxItems: 100, items: {
       type: "object", additionalProperties: false,
       properties: {
-        title: { type: "string", minLength: 1 }, description: taskFieldsSchema.description,
-        acceptance_criteria: taskFieldsSchema.acceptance_criteria, verification_criteria: taskFieldsSchema.verification_criteria,
+        title: { type: "string", minLength: 1 },
+
         priority: taskFieldsSchema.priority, agent_id: agentIdSchema,
         provider_id: { type: "string", minLength: 1, description: "Optional override; omit to use configured creation defaults, not the caller's Provider." },
         artifact_reference: artifactReferenceSchema, file_reference: fileReferenceSchema,
@@ -332,8 +330,8 @@ function compact(value) {
 }
 
 function taskCreationBody(input) {
-  return compact({ title: input.title, description: input.description,
-    acceptanceCriteria: input.acceptance_criteria, verificationCriteria: input.verification_criteria,
+  return compact({ title: input.title,
+
     parentTaskId: input.parent_task_id, expectedParentResourceVersion: input.expected_parent_resource_version,
     priority: input.priority, agentId: input.agent_id, providerId: input.provider_id,
     artifactReference: input.artifact_reference ? { artifactId: input.artifact_reference.artifact_id,

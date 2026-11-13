@@ -173,7 +173,6 @@ private struct ReplyActions: NSViewRepresentable {
 private struct MessageTextSelectionIdentity: Equatable {
     let sessionID: String?
     let rowID: String
-    let revision: Int
 }
 private struct MessageTextSelectionKey: EnvironmentKey {
     static let defaultValue: MessageTextSelectionIdentity? = nil
@@ -240,7 +239,9 @@ struct MacSharedMessageTextCard: View {
             }
             if let identity = row.replyIdentity {
                 MacReplyIdentityHeader(identity: identity, skin: skin)
-                    .padding(.horizontal, ReplyLeadingLayout.contentLeading).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
+                    .padding(.horizontal, ReplyLeadingLayout.contentLeading)
+                    .padding(.top, ReplyIdentityLayout.topSpacing + layout.typography.rowInset)
+                    .padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
                 if row.processStep != nil, let block = layout.processBlocks.first {
@@ -291,7 +292,7 @@ struct MacSharedMessageTextCard: View {
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.leading, ReplyLeadingLayout.cardLeading(for: row, skin: skin))
             .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
-            .padding(.top, row.followsReplyProcess ? MessageCardMetrics.rowInset : layout.typography.rowInset)
+            .padding(.top, row.replyIdentity != nil ? 0 : (row.followsReplyProcess ? MessageCardMetrics.rowInset : layout.typography.rowInset))
             .padding(.bottom, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)
@@ -302,7 +303,7 @@ struct MacSharedMessageTextCard: View {
         }
         .environment(\.conversationSkin, skin)
         .environment(\.messageTextSelectionIdentity, MessageTextSelectionIdentity(
-            sessionID: row.sessionID, rowID: row.id, revision: row.contentRevision))
+            sessionID: row.sessionID, rowID: row.id))
         .environment(\.messageTextContextMenu, contextMenu)
     }
 
@@ -1083,9 +1084,22 @@ struct MeasuredMessageText: NSViewRepresentable {
         if view.textContainer?.lineBreakMode != mode { view.textContainer?.lineBreakMode = mode }
         if context.coordinator.text !== text {
             let selection = view.selectedRanges
+            let previous = view.string as NSString
+            let next = text.string as NSString
+            // Streaming completion may replace attributed storage on the same
+            // retained message. Preserve a real selection while its selected
+            // characters are unchanged; a different message identity still
+            // clears it below. Inspect only selected ranges, not the full body.
             let sameText = view.string == text.string
+            let unchangedSelection = selection.contains { $0.rangeValue.length > 0 }
+                && selection.allSatisfy {
+                    let range = $0.rangeValue
+                    return range.location != NSNotFound && NSMaxRange(range) <= previous.length
+                        && NSMaxRange(range) <= next.length
+                        && previous.substring(with: range) == next.substring(with: range)
+                }
             view.textStorage?.setAttributedString(text)
-            if sameText { view.selectedRanges = selection }
+            if sameText || unchangedSelection { view.selectedRanges = selection }
             context.coordinator.text = text
         }
         if context.coordinator.selectionIdentity != selectionIdentity {

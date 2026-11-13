@@ -126,8 +126,7 @@ private func makeCorptieTask(currentSessionId: String?, executionStatus: String?
         id: "task:one",
         workId: "work:one",
         title: "CorptieTask",
-        description: "",
-        acceptanceCriteria: "",
+
         priority: "medium",
         lifecycleState: "in_progress",
         mainRoleId: "agent:one",

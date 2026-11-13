@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const MIGRATION_ID = "task-domain-v1";
 const TASK_GOAL_REMOVAL_MIGRATION_ID = "task-goal-removal-v1";
 
@@ -69,6 +71,61 @@ export function migrateTaskGoalRemovalV1(db, now = new Date().toISOString()) {
     if (violations.length > 0) {
       throw new Error(`TASK_GOAL_REMOVAL_FOREIGN_KEY_FAILURE: ${JSON.stringify(violations)}`);
     }
+    db.run("COMMIT");
+  } catch (error) {
+    try { db.run("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return { migrated: true, droppedColumns };
+}
+
+// Remove retired Task definition fields from both current rows and version snapshots.
+// Audit payloads and receipt hashes remain historical evidence, not editable Task fields.
+export function migrateTaskDefinitionRemovalV1(db, now = new Date().toISOString()) {
+  const migrationId = "task-definition-fields-removal-v1";
+  if (db.get("SELECT migration_id FROM data_migrations WHERE migration_id=?", [migrationId])) {
+    return { migrated: false, droppedColumns: [] };
+  }
+  const droppedColumns = [];
+  db.run("BEGIN IMMEDIATE");
+  try {
+    for (const tableName of ["tasks", "task_snapshots"]) {
+      for (const column of ["description", "acceptance_criteria", "verification_criteria"]) {
+        if (!hasColumn(db, tableName, column)) continue;
+        db.run(`ALTER TABLE ${identifier(tableName)} DROP COLUMN ${identifier(column)}`);
+        droppedColumns.push({ table: tableName, column });
+      }
+    }
+    // Frozen creation requests must replay against the reduced contract after upgrade.
+    // Keep their runtime, startup command, identity and actual instruction text unchanged.
+    const stripDefinition = value => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      let changed = false;
+      for (const key of ["description", "acceptanceCriteria", "verificationCriteria"]) {
+        if (Object.hasOwn(value, key)) { delete value[key]; changed = true; }
+      }
+      return changed;
+    };
+    if (hasColumn(db, "tasks", "creation_intent_json")) {
+      for (const row of db.all("SELECT id,creation_intent_json FROM tasks WHERE creation_intent_json IS NOT NULL")) {
+        const intent = JSON.parse(row.creation_intent_json);
+        if (!stripDefinition(intent.request)) continue;
+        const { eventId, ...definition } = intent.request;
+        const fingerprint = createHash("sha256").update(JSON.stringify(definition)).digest("hex");
+        db.run("UPDATE tasks SET creation_intent_json=?,creation_intent_fingerprint=? WHERE id=?",
+          [JSON.stringify(intent),fingerprint,row.id]);
+      }
+    }
+    if (hasColumn(db, "task_coordination_dispatches", "request_json")) {
+      for (const row of db.all("SELECT dispatch_id,request_json FROM task_coordination_dispatches")) {
+        const request = JSON.parse(row.request_json);
+        if (request.action !== "create" || !stripDefinition(request.creation)) continue;
+        db.run("UPDATE task_coordination_dispatches SET request_json=? WHERE dispatch_id=?", [JSON.stringify(request),row.dispatch_id]);
+      }
+    }
+    db.run("INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)", [migrationId, now]);
+    const violations = db.all("PRAGMA foreign_key_check");
+    if (violations.length) throw new Error(`TASK_DEFINITION_REMOVAL_FOREIGN_KEY_FAILURE: ${JSON.stringify(violations)}`);
     db.run("COMMIT");
   } catch (error) {
     try { db.run("ROLLBACK"); } catch {}
@@ -236,9 +293,6 @@ function createTaskSnapshotSchema(db) {
     task_id TEXT NOT NULL,
     version INTEGER NOT NULL CHECK (version >= 1),
     title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    acceptance_criteria TEXT NOT NULL DEFAULT '',
-    verification_criteria TEXT NOT NULL DEFAULT '',
     acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',
     completion_evidence_json TEXT NOT NULL DEFAULT '[]',
     execution_summary TEXT NOT NULL DEFAULT '',

@@ -106,7 +106,7 @@ test("offline producer requires explicit capabilities and does not enable action
   assert.throws(() => projectDetailBusinessRich(scope, {}, { ...options, profile: { ...profile, clientCapabilities: [] } }));
   assert.deepEqual(state.instances["business-artifacts"].actions, {});
   assert.doesNotMatch(JSON.stringify(state), /private|secret|locator|hidden/);
-  assert.match(state.instances["task-information"].fields.body, /Acceptance[\s\S]*Verification/);
+  assert.equal(state.instances["task-information"].fields.body, "");
 });
 test("native Task editor uses the existing navigation token only behind host editor gate and actual button capability", () => {
   const input = { ...scope, task: { ...scope.task, revision: 14 } };

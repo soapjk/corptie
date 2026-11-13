@@ -7,9 +7,9 @@ struct ConsoleChatCanvasTests {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")
         let canvas = try String(contentsOf: root.appendingPathComponent("ConsoleCardWorkspace.swift"), encoding: .utf8)
-        let outline = try String(contentsOf: root.appendingPathComponent("Console/UnifiedConsoleOutline.swift"), encoding: .utf8)
         let border = try String(contentsOf: root.appendingPathComponent("../../../../packages/CorptieConversation/Sources/CorptieConversation/WorkActivity.swift"), encoding: .utf8)
-        #expect(outline.contains("isChatRunning: workChat?.executionTaskStatus == .running"))
+        #expect(canvas.contains("isChatRunning: runningDiscussionWorkIDs.contains(work.id)"))
+        #expect(canvas.contains("session.executionTaskStatus == .running ? session.workId : nil"))
         #expect(canvas.contains("session.archived != true && session.resolvedSessionKind == .workChat"))
         #expect(canvas.contains("isChatSelected: discussionSessionIDByWork[work.id].map { selectedSessionID == $0 } ?? false"))
         #expect(canvas.contains("isChatSelected ? Color.accentColor : Color.secondary"))
@@ -44,17 +44,17 @@ struct ConsoleChatCanvasTests {
             generatedAt: "", providerID: nil, model: nil,
             basis: .init(taskRevision: 1, sessionID: "s", timelineRevision: 1), messageSummary: "最新消息摘要")
         #expect(TaskCardSummaryPreview.text(content: content, isCurrent: true,
-            sessionSummary: "会话摘要", description: "任务描述") == "最新消息摘要")
+            sessionSummary: "会话摘要") == "最新消息摘要")
         #expect(TaskCardSummaryPreview.text(content: content, isCurrent: false,
-            sessionSummary: nil, description: "任务描述").hasPrefix("旧摘要 · 待更新 · "))
+            sessionSummary: nil).hasPrefix("旧摘要 · 待更新 · "))
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: "会话摘要", description: "任务描述") == "会话摘要")
+            sessionSummary: "会话摘要") == "会话摘要")
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: " \n", description: "任务描述") == "任务描述")
+            sessionSummary: " \n") == "摘要待生成")
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: nil, description: "") == "摘要待生成")
+            sessionSummary: nil) == "摘要待生成")
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: nil, description: String(repeating: "文", count: 500)).count == 101)
+            sessionSummary: String(repeating: "文", count: 500)).count == 101)
     }
 
     @Test func chatLivesInCanvasAndSharesInteractionWithoutAttentionFiltering() throws {

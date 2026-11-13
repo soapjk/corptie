@@ -19,9 +19,6 @@ struct SessionForkPreview: Decodable {
     let sourceSessionTitle: String
     let sourceTurnNumber: Int
     let sourceExcerpt: String
-    let description: String
-    let acceptanceCriteria: String
-    let verificationCriteria: String
     let priority: String
     let hasWorktree: Bool
 }
@@ -54,9 +51,6 @@ struct SessionForkSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var preview: SessionForkPreview?
     @State private var title = ""
-    @State private var description = ""
-    @State private var acceptanceCriteria = ""
-    @State private var verificationCriteria = ""
     @State private var priority = "medium"
     @State private var requestID = UUID().uuidString
     @State private var errorText: String?
@@ -80,9 +74,6 @@ struct SessionForkSheet: View {
                             LabeledContent(L10n("Model"), value: [preview.providerName, preview.model, preview.reasoningLevel]
                                 .compactMap { $0 }.joined(separator: " · "))
                             if preview.kind == "worker" {
-                                editor(L10n("Description"), text: $description, height: 64)
-                                editor(L10n("Acceptance Criteria"), text: $acceptanceCriteria, height: 74)
-                                editor(L10n("Verification Criteria"), text: $verificationCriteria, height: 64)
                                 Picker(L10n("Priority"), selection: $priority) {
                                     Text(L10n("Low")).tag("low")
                                     Text(L10n("Medium")).tag("medium")
@@ -124,9 +115,6 @@ struct SessionForkSheet: View {
                 let value = try await backendClient.previewSessionFork(selection)
                 preview = value
                 title = value.suggestedTitle
-                description = value.description
-                acceptanceCriteria = value.acceptanceCriteria
-                verificationCriteria = value.verificationCriteria
                 priority = value.priority
                 titleFocused = true
             } catch { errorText = error.localizedDescription }
@@ -139,17 +127,13 @@ struct SessionForkSheet: View {
         let requestID = requestID
         let sourceBindingID = preview.sourceBindingId
         let title = title
-        let description = description
-        let acceptanceCriteria = acceptanceCriteria
-        let verificationCriteria = verificationCriteria
         let priority = priority
         let backendClient = backendClient
         SessionForkBackgroundOperation.shared.run(requestID: requestID) {
             do {
                 let result = try await backendClient.createSessionFork(selection, requestID: requestID,
                     sourceBindingID: sourceBindingID, title: title,
-                    description: description, acceptanceCriteria: acceptanceCriteria,
-                    verificationCriteria: verificationCriteria, priority: priority)
+                    priority: priority)
                 backendClient.acceptCreatedSession(result.session, selectImmediately: false)
                 OperationNotificationManager.shared.complete(.init(category: .environment, outcome: .succeeded,
                     name: "Session fork", summary: title, sessionID: result.session.id))

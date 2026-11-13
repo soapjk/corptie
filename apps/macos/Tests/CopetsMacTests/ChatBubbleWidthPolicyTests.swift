@@ -1,9 +1,111 @@
 import XCTest
+import SwiftUI
 import CorptieConversation
 @testable import CorptieMac
 
 @MainActor
 final class ChatBubbleWidthPolicyTests: XCTestCase {
+    func testNaturalWidthMatchesRenderedTextWithoutSpareCharacterOrOrphanLine() throws {
+        let samples = ["开始开发", "开始开发。", "（开始开发）", "好的，谢谢！", "Please continue.",
+            "Mixed 中文 **bold** punctuation!", "Emoji 👩🏽‍💻 works", "مرحبا بالعالم",
+            "第一行较长的正文\n短句", "A longer first line\nSecond line.",
+            "> 一段引用。", "- 第一项\n- 第二个项目", "# Heading\n正文。"]
+        for typography in [ConversationTypography.classic, .codexReading] {
+            for style in [AppKitChatTimelineRow.NativeStyle.user, .agent] {
+                for text in samples {
+                    let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style, typography: typography)
+                    let natural = try renderedGeometry(attributed, width: 4096)
+                    let cardWidth = ChatBubbleWidthPolicy.preferredWidth(text: text, style: style,
+                        title: "", metadata: "", typography: typography)
+                    let bodyWidth = cardWidth - ChatBubbleWidthPolicy.horizontalPadding
+                    let actual = try renderedGeometry(attributed, width: bodyWidth)
+                    let context = "\(typography)/\(style): \(text)"
+                    XCTAssertEqual(actual.lines, natural.lines, "No new orphan line: \(context)")
+                    XCTAssertEqual(actual.height, natural.height, accuracy: 0.01, context)
+                    XCTAssertGreaterThanOrEqual(bodyWidth + 0.01, actual.width, context)
+                    if natural.width > ChatBubbleWidthPolicy.minimumWidth - ChatBubbleWidthPolicy.horizontalPadding {
+                        XCTAssertLessThan(bodyWidth - natural.width, 1.01, "Only rounding slack: \(context)")
+                    }
+                }
+            }
+        }
+    }
+
+    func testClampedUserWidthStillWrapsAtNativeTextBoundaries() throws {
+        for typography in [ConversationTypography.classic, .codexReading] {
+            for text in [String(repeating: "Mixed 中文 punctuation，", count: 30), String(repeating: "x", count: 300)] {
+                for width: CGFloat in [180, 320, 900] {
+                    let cardWidth = ChatBubbleWidthPolicy.preferredWidth(text: text, style: .user,
+                        title: "", metadata: "", availableWidth: width, typography: typography)
+                    let attributed = NativeMarkdownTextCache.shared.value(text: text, style: .user, typography: typography)
+                    let actual = try renderedGeometry(attributed, width: cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
+                    XCTAssertEqual(cardWidth, min(width, ChatBubbleWidthPolicy.maximumWidth))
+                    XCTAssertGreaterThan(actual.lines, 1)
+                    XCTAssertLessThanOrEqual(actual.width, cardWidth - ChatBubbleWidthPolicy.horizontalPadding + 0.01)
+                }
+            }
+        }
+    }
+
+    func testHostedShortUserBubbleKeepsTightBodyAcrossResizeWithoutReplacingText() throws {
+        _ = NSApplication.shared
+        func textView(in view: NSView) -> NativeTimelineTextView? {
+            (view as? NativeTimelineTextView) ?? view.subviews.lazy.compactMap { textView(in: $0) }.first
+        }
+        for skin in ConversationSkin.allCases {
+            for text in ["开始开发", "开始开发。", "Please continue.", "First line\n第二行。"] {
+                let row = AppKitChatTimelineRow(id: "tight-user", contentRevision: 1,
+                    nativeText: text, copyText: text, nativeStyle: .user, title: "", metadata: "",
+                    expandableTurnId: nil, isExpanded: false, showsHeader: false)
+                let cell = AppKitSharedMessageTextCell(identifier: .init("tight-user"))
+                let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 900, height: 200),
+                    styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.contentView = cell
+                defer { window.contentView = nil; window.close() }
+                cell.updateAppearance(skin: skin)
+                cell.setContent(row, availableWidth: 900, onToggleExpansion: { _ in })
+                cell.layoutSubtreeIfNeeded()
+                let body = try XCTUnwrap(textView(in: cell))
+                let attributed = try XCTUnwrap(body.textStorage)
+                let natural = try renderedGeometry(attributed, width: 4096)
+                let configurations = cell.contentConfigurationCount, updates = cell.hostUpdateCount
+                body.setSelectedRange(.init(location: 1, length: 2))
+                for width: CGFloat in [900, 320, 600, 321, 900] {
+                    cell.setFrameSize(.init(width: width, height: 200))
+                    XCTAssertTrue(cell.updateLayoutIfContentUnchanged(row, availableWidth: width))
+                    cell.layoutSubtreeIfNeeded()
+                    XCTAssertTrue(textView(in: cell) === body)
+                    let container = try XCTUnwrap(body.textContainer), manager = try XCTUnwrap(body.layoutManager)
+                    manager.ensureLayout(for: container)
+                    let used = manager.usedRect(for: container)
+                    XCTAssertEqual(used.height, natural.height, accuracy: 0.01)
+                    XCTAssertGreaterThanOrEqual(body.bounds.width + 0.01, used.width)
+                    XCTAssertLessThan(body.bounds.width - natural.width, 1.01, "\(skin): \(text)")
+                    XCTAssertEqual(body.selectedRange(), NSRange(location: 1, length: 2))
+                    XCTAssertEqual(cell.contentConfigurationCount, configurations)
+                    XCTAssertEqual(cell.hostUpdateCount, updates)
+                }
+                print("TIGHT_BUBBLE \(skin) \(text.debugDescription): body=\(body.bounds.width), used=\(natural.width)")
+            }
+        }
+    }
+
+    private func renderedGeometry(_ text: NSAttributedString, width: CGFloat) throws -> (width: CGFloat, height: CGFloat, lines: Int) {
+        let view = NativeTimelineTextView()
+        view.textStorage?.setAttributedString(text)
+        let container = try XCTUnwrap(view.textContainer), manager = try XCTUnwrap(view.layoutManager)
+        container.widthTracksTextView = false
+        container.containerSize = .init(width: width, height: .greatestFiniteMagnitude)
+        manager.ensureLayout(for: container)
+        let used = manager.usedRect(for: container)
+        var lines = 0
+        manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) { _, _, _, _, _ in lines += 1 }
+        XCTAssertEqual(manager.characterRange(forGlyphRange: manager.glyphRange(for: container), actualGlyphRange: nil).length,
+            text.length, "The full message must be laid out")
+        return (used.width, used.height, lines)
+    }
+
     func testIntrinsicContentRestoresClassicTypographyAndAttributedContent() {
         let text = "模型回复 English **bold**\n\n" + String(repeating: "Wrapped 中文 text ", count: 40)
         let row = AppKitChatTimelineRow(id: "reading-cache", contentRevision: 1, nativeText: text,

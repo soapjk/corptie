@@ -11,7 +11,6 @@ import { clientCommandPrincipalKey } from "./clientCommandPrincipal.mjs";
 export const TASK_PRIORITIES = Object.freeze(["low", "medium", "high", "urgent"]);
 export const TASK_COMMANDS = Object.freeze(["update", "archive", "restart", "delete"]);
 export const WORK_COMMANDS = Object.freeze(["update", "delete", "repair-local-state"]);
-const TASK_TEXT_FIELDS = ["description", "acceptanceCriteria", "verificationCriteria"];
 const REQUEST_ID = /^[A-Za-z0-9_-]{8,128}$/;
 const TEXT_LIMIT = 16_000;
 
@@ -66,8 +65,8 @@ function rejection(error) {
 }
 
 function projectTask(task) {
-  return { id: task.id, workId: task.work_id, title: task.title, description: task.description ?? "",
-    acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "",
+  return { id: task.id, workId: task.work_id, title: task.title,
+
     priority: task.priority, lifecycleState: task.lifecycle_state, archived: Boolean(task.archived),
     autoTitleEnabled: task.auto_title_enabled !== 0,
     coordinationEnabled: task.coordination_enabled === 1,
@@ -239,7 +238,7 @@ function validateTaskCommand(api, task, command, input) {
   const code = "INVALID_TASK_COMMAND";
   switch (command) {
     case "update": {
-      knownFields(input, ["requestId", "title", ...TASK_TEXT_FIELDS, "priority", "mainAgentId", "autoTitleEnabled", "coordinationEnabled"], code);
+      knownFields(input, ["requestId", "title", "priority", "mainAgentId", "autoTitleEnabled", "coordinationEnabled"], code);
       const fields = {};
       if ("title" in input) fields.title = name(input.title, "title", "Task", code);
       if ("autoTitleEnabled" in input) {
@@ -250,7 +249,6 @@ function validateTaskCommand(api, task, command, input) {
         if (typeof input.coordinationEnabled !== "boolean") throw deviceError(code, 400);
         fields.coordinationEnabled = input.coordinationEnabled;
       }
-      for (const key of TASK_TEXT_FIELDS) if (key in input) fields[key] = text(input[key], code);
       if ("priority" in input) {
         if (!TASK_PRIORITIES.includes(input.priority)) throw deviceError(code, 400);
         fields.priority = input.priority;

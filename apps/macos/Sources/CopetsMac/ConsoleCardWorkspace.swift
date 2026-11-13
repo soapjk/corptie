@@ -491,7 +491,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 .help(reason)
         } else {
             let text = TaskCardSummaryPreview.text(content: task.userSummary?.content,
-                isCurrent: summary != nil, sessionSummary: session?.summary, description: task.description)
+                isCurrent: summary != nil, sessionSummary: session?.summary)
             Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
                 .help(text)
         }

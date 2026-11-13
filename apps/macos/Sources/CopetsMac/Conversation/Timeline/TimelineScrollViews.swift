@@ -59,8 +59,8 @@ final class FirstLayoutRestoringScrollView: NSScrollView {
 
     override func layout() {
         super.layout()
-        onLayout?()
         if let height = currentFloatingClearance { onFloatingClearance?(height) }
+        onLayout?()
     }
 }
 

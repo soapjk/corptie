@@ -95,7 +95,7 @@ struct DetailCardReorderDraft: Equatable {
         let ids = displayOrder(input.items.map(\.id))
         let sizes = ids.compactMap { id in input.items.first { $0.id == id }?.size }
         // Existing native card probes already own these frames. Read only the
-        // opted-in Provider height during a drag; never measure or publish geometry.
+        // opted-in natural height during a drag; never measure or publish geometry.
         var naturalHeights: [Int: CGFloat] = [:]
         for (index, id) in ids.enumerated() where input.items.first(where: { $0.id == id })?.naturalHeight == true {
             if let card = cards.object(forKey: id as NSString), card.bounds.height > 0 {

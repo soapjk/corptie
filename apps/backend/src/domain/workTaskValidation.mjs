@@ -10,8 +10,7 @@ const WORK_UPDATE_FIELDS = WORK_CREATE_FIELDS.filter(
 );
 
 const TASK_CREATE_FIELDS = [
-  "id", "workId", "title", "description", "acceptanceCriteria",
-  "verificationCriteria", "priority", "lifecycleState", "mainAgentId", "autoTitleEnabled", "parentTaskId"
+  "id", "workId", "title", "priority", "lifecycleState", "mainAgentId", "autoTitleEnabled", "parentTaskId"
 ];
 
 const TASK_UPDATE_FIELDS = [...TASK_CREATE_FIELDS.filter(
@@ -108,9 +107,6 @@ export function validateTaskInput(input, operation = "create") {
     }
   }
   if (has(input, "title")) normalized.title = validateEntityName(input.title, "title", "Task");
-  if (has(input, "description")) normalized.description = string(input.description, "description");
-  if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");
-  if (has(input, "verificationCriteria")) normalized.verificationCriteria = string(input.verificationCriteria, "verificationCriteria");
   if (has(input, "priority")) normalized.priority = string(input.priority, "priority", { nonEmpty: true, trim: true });
   if (has(input, "lifecycleState")) normalized.lifecycleState = string(input.lifecycleState, "lifecycleState", { nonEmpty: true, trim: true });
   if (has(input, "priority") && !TASK_PRIORITIES.includes(normalized.priority)) {

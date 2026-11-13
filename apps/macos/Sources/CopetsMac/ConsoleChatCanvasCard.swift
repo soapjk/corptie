@@ -53,7 +53,7 @@ private struct ConsoleChatCanvasRow: View {
                 isSelected: isSelected, isFixed: false, hasScheduledWake: session.hasPendingScheduledWake == true,
                 isUnread: isSessionUnread(session), isActive: isActive, session: session) {
                 let text = TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-                    sessionSummary: session.attention?.reason ?? session.summary, description: "")
+                    sessionSummary: session.attention?.reason ?? session.summary)
                 Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4).help(text)
             }
         }

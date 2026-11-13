@@ -398,28 +398,35 @@ final class SessionSwitchOptimizationTests: XCTestCase {
                 deletes: .init(sessions: ids, tasks: taskIDs, works: workIDs, roles: [], skills: [], repositories: [], integrationRuns: [])))
         }
         let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 2, rawItemCount: 10, longMessageCharacters: 200))
-        for index in ids.indices {
-            let work = Work(id: workIDs[index], workspaceId: "workspace:" + workIDs[index], name: "Switch work \(index)",
-                description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
-                createdAt: "2026-10-24", updatedAt: "2026-10-24")
-            store.hydrate(works: [work])
-            _ = store.acceptCorptieTask(CorptieTask(id: taskIDs[index], workId: workIDs[index],
-                title: "Switch task \(index)", description: "", acceptanceCriteria: "", priority: "medium",
-                lifecycleState: "todo", mainRoleId: nil, currentSessionId: ids[index], executionStatus: "idle",
-                createdAt: "2026-10-24", updatedAt: "2026-10-24"))
-            _ = store.acceptCreatedSession(TaskSession(id: ids[index], title: "Switch task \(index)", agent: "Fixture",
-                roleId: nil, sessionKind: .worker, workId: workIDs[index], taskId: taskIDs[index], status: .complete,
-                progress: 1, summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
-                updatedAt: "2026-10-24", accent: .cyan, archived: false, pinned: false, sortOrder: 0, capabilities: nil, external: nil))
-            client.storeCachedDetail(fixture.detail, for: ids[index])
+        func seedFixtures() {
+            for index in ids.indices {
+                let work = Work(id: workIDs[index], workspaceId: "workspace:" + workIDs[index], name: "Switch work \(index)",
+                    description: "", status: "active", profile: "general", tags: [], contributorRoleIds: [],
+                    createdAt: "2026-10-24", updatedAt: "2026-10-24")
+                store.hydrate(works: [work])
+                _ = store.acceptCorptieTask(CorptieTask(id: taskIDs[index], workId: workIDs[index],
+                    title: "Switch task \(index)",   priority: "medium",
+                    lifecycleState: "todo", mainRoleId: nil, currentSessionId: ids[index], executionStatus: "idle",
+                    createdAt: "2026-10-24", updatedAt: "2026-10-24"))
+                _ = store.acceptCreatedSession(TaskSession(id: ids[index], title: "Switch task \(index)", agent: "Fixture",
+                    roleId: nil, sessionKind: .worker, workId: workIDs[index], taskId: taskIDs[index], status: .complete,
+                    progress: 1, summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
+                    updatedAt: "2026-10-24", accent: .cyan, archived: false, pinned: false, sortOrder: 0, capabilities: nil, external: nil))
+                client.storeCachedDetail(fixture.detail, for: ids[index])
+            }
         }
+        seedFixtures()
         store.reportStateStreamConnected()
         client.sessionSelectionController.select(ids[0])
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1480, height: 900),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        // Route to the fixture explicitly so initial Console restoration does
+        // not replace it with a persisted user selection or an empty default.
+        let router = AppTabRouter()
+        router.pendingSessionId = ids[0]
         let host = NSHostingView(rootView: UnifiedConsoleView()
-            .environmentObject(AppTabRouter())
+            .environmentObject(router)
             .environmentObject(TabSidebarState(tab: .console)))
         host.sizingOptions = []
         window.contentView = host
@@ -440,7 +447,11 @@ final class SessionSwitchOptimizationTests: XCTestCase {
         // Console activation refreshes entities; this isolated fixture has no
         // HTTP server. After that initial refresh settles, simulate the next
         // authoritative connected-state event before testing the warm UI path.
+        // Initial hydration may have replaced this isolated in-memory inventory.
+        seedFixtures()
         store.reportStateStreamConnected()
+        router.pendingSessionId = ids[0]
+        client.sessionSelectionController.select(ids[0])
         pump(0.5)
         let split = try XCTUnwrap(descendants(host).compactMap { $0 as? ConsoleNativeSplitView }.first)
         var responder: NSResponder? = split
@@ -569,7 +580,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
     }
 
     private func task(_ id: String = "task:one", current: String? = nil) -> CorptieTask {
-        CorptieTask(id: id, workId: "work:one", title: id, description: "", acceptanceCriteria: "",
+        CorptieTask(id: id, workId: "work:one", title: id,
             priority: "medium", lifecycleState: "todo", mainRoleId: nil, currentSessionId: current,
             executionStatus: "idle", createdAt: "2026-09-01", updatedAt: "2026-09-01")
     }

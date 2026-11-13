@@ -165,10 +165,6 @@ export class WorkApplicationService {
     const normalized = validateTaskInput(patch, "update");
     if (normalized.coordinationEnabled === true) this.assertCoordinationCanEnable?.(current);
     const nextPatch = { ...normalized };
-    if (Object.prototype.hasOwnProperty.call(normalized, "acceptanceCriteria")
-      && String(normalized.acceptanceCriteria ?? "").trim() !== String(current.acceptance_criteria ?? "").trim()) {
-      nextPatch.acceptanceAssessment = null;
-    }
     const updated = this.store.updateTask(id, nextPatch);
     if (Object.hasOwn(normalized, "coordinationEnabled") && updated.coordination_enabled !== current.coordination_enabled) {
       this.onCoordinationChanged?.(updated.id);
@@ -359,10 +355,9 @@ function taskCreationMatches(existing, input) {
   const expected = {
     workId: input.workId,
     title: input.title,
-    description: input.description ?? "",
-    acceptanceCriteria: input.acceptanceCriteria ?? "",
+
     priority: input.priority ?? "medium",
-    verificationCriteria: input.verificationCriteria ?? "",
+
     lifecycleState: input.lifecycleState ?? "todo",
     mainAgentId: input.mainAgentId ?? null,
     parentTaskId: input.parentTaskId ?? null
@@ -370,10 +365,9 @@ function taskCreationMatches(existing, input) {
   const actual = {
     workId: existing.work_id,
     title: existing.title,
-    description: existing.description ?? "",
-    acceptanceCriteria: existing.acceptance_criteria ?? "",
+
     priority: existing.priority ?? "medium",
-    verificationCriteria: existing.verification_criteria ?? "",
+
     lifecycleState: existing.lifecycle_state ?? "todo",
     mainAgentId: existing.main_agent_id ?? null,
     parentTaskId: existing.parent_task_id ?? null

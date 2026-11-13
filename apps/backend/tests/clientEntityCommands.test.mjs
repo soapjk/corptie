@@ -101,8 +101,8 @@ test("management projections are available to every paired device and mirror the
 
     const management = api.taskManagement(tasks, f.task.id);
     assert.equal(management.schemaVersion, 1);
-    assert.deepEqual(management.task, { id: f.task.id, workId: "work:test", title: "Task", description: "", acceptanceCriteria: "",
-      verificationCriteria: "", priority: "medium", lifecycleState: "todo", archived: false,
+    assert.deepEqual(management.task, { id: f.task.id, workId: "work:test", title: "Task",
+       priority: "medium", lifecycleState: "todo", archived: false,
       autoTitleEnabled: true, coordinationEnabled: false, mainAgentId: "agent:test", deletionStatus: null });
     assert.deepEqual(management.agents, [{ id: "agent:test", name: "Test" }]);
     assert.deepEqual(management.priorities, ["low", "medium", "high", "urgent"]);
@@ -219,8 +219,7 @@ test("commands dispatch through shared services once, replay receipts and classi
     assert.match(input.idempotencyKey, new RegExp(`^task-delete:${f.task.id}:device:[a-f0-9]{64}$`));
 
     // Validation errors thrown by the shared services (no HTTP status) are still definite rejections.
-    const invalid = await api.taskCommand(tasks, f.task.id, "update", { requestId: "req_update_2", mainAgentId: "agent:test", acceptanceCriteria: "x" });
-    assert.equal(invalid.status, "completed");
+    assert.throws(() => api.taskCommand(tasks, f.task.id, "update", { requestId: "req_update_2", mainAgentId: "agent:test", acceptanceCriteria: "x" }), { code: "INVALID_TASK_COMMAND" });
     const lost = f.make({ entityCommands: { updateTask: async () => { throw new Error("socket hang up"); } } });
     const uncertain = await lost.taskCommand(tasks, f.task.id, "update", { requestId: "req_update_3", title: "Lost" });
     assert.equal(uncertain.status, "unknown");
