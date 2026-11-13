@@ -515,7 +515,7 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpToLatestFloatsInFixedSlotAboveChecklistInBaseLiquidGlass() throws {
+    func jumpToLatestFloatsAboveChecklistWithConditionalSpacingInBaseLiquidGlass() throws {
         let conversation = try source(named: "Conversation/SessionConversationContent.swift")
         let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
         let styles = try source(named: "Floating/Chrome/ConversationButtonStyles.swift")
@@ -537,16 +537,16 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(conversation.contains("quickMessagePresentation: quickMessagePresentation"))
         #expect(conversation.contains("appKitScrollToBottomRevision &+= 1"))
 
-        // The control owns a fixed slot ABOVE the pinned checklist, not a row
-        // between the checklist and the quick messages.
-        #expect(conversation.contains("if usesJumpControlSlot { jumpControlSlot }"))
+        // The conditional slot stays above the checklist; the rendered arrow
+        // follows the animated card edge.
+        #expect(conversation.contains("if showsFloatingJumpControl {"))
         #expect(conversation.contains(".frame(height: ComposerQuickMessagesBar.jumpControlSize)"))
         #expect(conversation.contains("onJumpToLatest: nil"))
-        let slot = try #require(conversation.range(of: "if usesJumpControlSlot { jumpControlSlot }"))
-        let checklist = try #require(conversation.range(of: "PinnedExecutionChecklistCard(plan: plan)"))
+        let slot = try #require(conversation.range(of: "if showsFloatingJumpControl {"))
+        let checklist = try #require(conversation.range(of: "PinnedExecutionChecklistCard(plan: plan,"))
         #expect(slot.lowerBound < checklist.lowerBound,
             "The jump slot must render before the checklist card")
-        // Centred, touching the checklist, floating over the transcript.
+        // Centred, separated from the checklist, floating over the transcript.
         #expect(composer.contains("VStack(spacing: 0)"))
         #expect(conversation.contains(".frame(maxWidth: .infinity, alignment: .center)"))
         #expect(composer.contains("static let jumpControlSize: CGFloat = 30"))
@@ -560,10 +560,9 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func jumpControlVisibilityNeverChangesDockHeightOrTranscriptInset() throws {
+    func jumpControlVisibilityExcludesTransparentSlotAndGapFromTranscriptInset() throws {
         let conversation = try source(named: "Conversation/SessionConversationContent.swift")
-        // Neither the dock overlap nor the timeline's bottom clearance may
-        // depend on whether the button is currently visible.
+        // Button visibility changes only the transparent slot, not opaque clearance.
         #expect(!conversation.contains("let jumpControlHeight"))
         #expect(!conversation.contains("quickMessagePresentation.showsMessages || composerJumpToLatestAction"))
         #expect(conversation.contains("private var usesJumpControlSlot"))

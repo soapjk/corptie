@@ -29,6 +29,42 @@ import XCTest
         XCTAssertEqual(clearance ?? -1, 154, accuracy: 0.5)
     }
 
+    private final class FloatingSize: ObservableObject {
+        @Published var height: CGFloat = 74
+    }
+    private struct StatefulFloating: View {
+        @ObservedObject var size: FloatingSize
+        var body: some View { Color.clear.frame(height: size.height) }
+    }
+    func testLocalFloatingStatePublishesNativeSizeWithoutRootReplacementOrViewportResize() async {
+        let size = FloatingSize()
+        let view = ConversationRegionContainer(content: Color.clear, accessory: Color.clear.frame(height: 100),
+            atTop: false, height: nil, floatingClearanceInset: 38, floating: AnyView(StatefulFloating(size: size)))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 700, height: 600),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        defer { window.contentView = nil }
+        view.layoutSubtreeIfNeeded()
+        let viewport = view.content.frame
+        let commits = view.rootCommitCount
+        var values: [CGFloat] = []
+        view.floatingClearanceDidLayout = { values.append($0) }
+        size.height = 198
+        try? await Task.sleep(for: .milliseconds(80))
+        view.floatingHost.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.floatingRegionClearance ?? -1, 160, accuracy: 0.5)
+        XCTAssertEqual(values.last ?? -1, 160, accuracy: 0.5)
+        XCTAssertEqual(view.content.frame, viewport)
+        XCTAssertEqual(view.rootCommitCount, commits)
+        // Removing the arrow and its 8pt gap leaves opaque clearance unchanged.
+        view.applyRoots(content: Color.clear, accessory: Color.clear.frame(height: 100), overlap: 0,
+            floatingClearanceInset: 0, floating: AnyView(Color.clear.frame(height: 160)))
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.floatingRegionClearance ?? -1, 160, accuracy: 0.5)
+        XCTAssertEqual(view.content.frame, viewport)
+    }
+
     func testRealQuickActionsFloatAboveEditorWithoutMovingTheViewportBoundary() {
         for width in [540.0, 920.0] {
             for height in [80.0, 160.0] {

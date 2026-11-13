@@ -19,6 +19,79 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
                 "updatedAt": "2026-11-04T00:00:00Z", "steps": steps]]
         return try JSONDecoder().decode(CodexThreadItem.self, from: JSONSerialization.data(withJSONObject: fields))
     }
+    private struct JumpProbe: NSViewRepresentable {
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView(); view.identifier = .init("jump-probe"); return view
+        }
+        func updateNSView(_ view: NSView, context: Context) {}
+    }
+    func testPinnedDisclosureAnimatesLocallyWithStableNativeEnvelopeAndEightPointJumpGap() async throws {
+        let plan = try XCTUnwrap(item(count: 20).executionPlan)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        do {
+            let card = PinnedExecutionChecklistCard(plan: plan,
+                jumpControl: AnyView(JumpProbe().frame(height: 30)))
+            let floating = VStack(spacing: 0) { Color.clear.frame(height: 38); card }
+            let region = ConversationRegionContainer(content: Color.clear, accessory: Color.clear.frame(height: 80),
+                atTop: false, height: nil, floatingClearanceInset: 38, floating: AnyView(floating))
+            let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 520, height: 600),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = region; window.orderBack(nil)
+            defer { window.orderOut(nil); window.contentView = nil }
+            try await Task.sleep(for: .milliseconds(100))
+            region.layoutSubtreeIfNeeded()
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            let scroll = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }.first)
+            let jump = try XCTUnwrap(descendants(region.floatingHost).first { $0.identifier?.rawValue == "jump-probe" })
+            let viewport = region.content.frame
+            var clearances: [CGFloat] = []
+            region.floatingClearanceDidLayout = { clearances.append($0) }
+            func clickDisclosure() throws {
+                let document = try XCTUnwrap(scroll.documentView)
+                let point = document.convert(.init(x: document.bounds.width - 43,
+                    y: document.isFlipped ? 18 : document.bounds.height - 18), to: nil)
+                print("Disclosure document=\(document.frame) visible=\(scroll.documentVisibleRect) point=\(point)")
+                for (number, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+                    let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
+                        modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: number,
+                        clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                    window.sendEvent(event)
+                }
+            }
+            func assertGap() {
+                let jf = jump.convert(jump.bounds, to: region)
+                let sf = scroll.convert(scroll.bounds, to: region)
+                XCTAssertEqual(jf.minY - sf.maxY, 8, accuracy: 1)
+            }
+            assertGap()
+            try clickDisclosure()
+            try await Task.sleep(for: .milliseconds(70))
+            let midHeight = scroll.frame.height
+            let envelope = region.floatingHost.frame.height
+            assertGap()
+            try await Task.sleep(for: .milliseconds(210))
+            let fullHeight = scroll.frame.height
+            XCTAssertGreaterThan(fullHeight, 36)
+            if !reduceMotion {
+                XCTAssertGreaterThan(midHeight, 36)
+                XCTAssertLessThan(midHeight, fullHeight)
+                XCTAssertEqual(region.floatingHost.frame.height, envelope, accuracy: 0.5)
+            }
+            assertGap()
+            try clickDisclosure()
+            try await Task.sleep(for: .milliseconds(70))
+            assertGap()
+            if !reduceMotion { XCTAssertEqual(region.floatingHost.frame.height, envelope, accuracy: 0.5) }
+            try await Task.sleep(for: .milliseconds(210))
+            XCTAssertEqual(scroll.frame.height, 36, accuracy: 0.5)
+            XCTAssertEqual(region.floatingHost.frame.height, 74, accuracy: 0.5)
+            XCTAssertEqual(region.content.frame, viewport)
+            XCTAssertEqual(region.rootCommitCount, 0)
+            XCTAssertLessThanOrEqual(clearances.count, 2, "No per-frame native clearance updates")
+            print("Pinned disclosure reduceMotion=\(reduceMotion) middle=\(midHeight) full=\(fullHeight) nativeClearanceUpdates=\(clearances.count) rootCommits=\(region.rootCommitCount)")
+        }
+    }
     private var builder: ConversationNativeRowBuilder {
         .init(sessionTitle: "Session", workingDirectory: nil, allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in nil })
     }
