@@ -28,7 +28,7 @@ public struct ConversationMessageImageReference: Identifiable, Hashable, Sendabl
                 let range = match.range(at: match.range(at: 1).location == NSNotFound ? 2 : 1)
                 let destination = string.substring(with: range)
                 guard let url = URL(string: destination),
-                      url.isFileURL || ["https", "http"].contains(url.scheme?.lowercased() ?? "") || url.scheme == nil,
+                      url.isFileURL || ["https", "http", "artifact", "corptie-image"].contains(url.scheme?.lowercased() ?? "") || url.scheme == nil,
                       string.substring(with: match.range).hasPrefix("!")
                         || ["png", "jpg", "jpeg", "gif", "webp", "heic"].contains(url.pathExtension.lowercased()) else { continue }
                 result.append(.init(source: destination, url: url,

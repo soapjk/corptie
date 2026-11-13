@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { messageImageGeometry, IMAGE_GEOMETRY_HEADER_LIMIT } from "./messageImageGeometry.mjs";
+import { readDeliveredMessageImage } from "./messageImageDelivery.mjs";
 import { readMessageResource } from "./messageResources.mjs";
 import { constants } from "node:fs";
 import { access, copyFile, mkdir, open, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
@@ -9,13 +10,40 @@ export const CHAT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 
 export class ChatResourceService {
   async readMessageResource(reference, itemId, path) {
+    if (/^(artifact|corptie-image):/.test(String(path))) {
+      // Only in-flight requests are shared. Authorization is rechecked on every
+      // subsequent load, so a revoked Artifact cannot survive a server cache.
+      const key = JSON.stringify([reference.sessionId, reference.logicalSessionId, itemId, path]);
+      if (this.imageReads.has(key)) return this.imageReads.get(key);
+      if (this.imageReads.size >= 24) throw resourceError("MESSAGE_IMAGE_BUSY", "Retry image loading.", 429);
+      const pending = this.#readDeliveredImage({ store: this.store, artifacts: this.artifacts,
+        reference, itemId, destination: path, readImage: image => this.readImage(reference, image) })
+        .finally(() => this.imageReads.delete(key));
+      this.imageReads.set(key, pending);
+      return pending;
+    }
     return readMessageResource({ store: this.store, environmentRoot: this.environmentRoot,
       ownedImageRoot: this.#safePath(this.#relativeDirectory(reference)), reference, itemId, path });
   }
   constructor(options = {}) {
     this.store = options.store ?? null;
+    this.artifacts = options.artifacts ?? null;
+    this.imageReads = new Map();
+    this.activeImageReads = 0;
+    this.imageReadQueue = [];
     this.idFactory = options.idFactory ?? randomUUID;
     this.environmentRoot = options.environmentRoot ?? null;
+  }
+
+  async #readDeliveredImage(input) {
+    if (this.activeImageReads >= 3) await new Promise(resolve => this.imageReadQueue.push(resolve));
+    else this.activeImageReads += 1;
+    try { return await readDeliveredMessageImage(input); }
+    finally {
+      const next = this.imageReadQueue.shift();
+      if (next) next();
+      else this.activeImageReads -= 1;
+    }
   }
 
   async initialize() {

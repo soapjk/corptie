@@ -1811,3 +1811,23 @@ for (const disposition of ["delete","work","retain"]) test(`parent deletion disp
     if(disposition!=="retain") assert.ok(audit.some(row=>row.actorId==="logical:delete-parent"));
   }finally{await f.store.close();await rm(f.directory,{recursive:true,force:true});}
 });
+
+test("message image previews pin legacy links, enforce work scope and recheck revocation", async () => {
+  const f = await fixture();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+  try {
+    const artifact = await f.service.create(managerContext(f), { title: 'Screenshot', content: png, mimeType: 'image/png' });
+    const input = { sessionId: 'session:manager', session: f.store.getSession('session:manager'), artifactId: artifact.artifactId,
+      version: null, contentHash: null, messageCreatedAt: '2026-08-23T12:00:01.000Z' };
+    const preview = await f.service.readMessageImage(input);
+    assert.deepEqual(preview.data, png); assert.equal(preview.version, 1); assert.equal(preview.pixelWidth, 1);
+    f.service.clock = () => '2026-08-24T12:00:00.000Z';
+    await f.service.publishVersion(managerContext(f), artifact.artifactId, { content: Buffer.concat([png, Buffer.from([0])]), mimeType: 'image/png' });
+    assert.equal((await f.service.readMessageImage(input)).version, 1);
+    await assert.rejects(f.service.readMessageImage({ ...input, messageCreatedAt: '2026-08-22T12:00:00.000Z' }));
+    await assert.rejects(f.service.readMessageImage({ ...input, sessionId: 'session:outsider' }));
+    await assert.rejects(f.service.readMessageImage({ ...input, version: 1, contentHash: '0'.repeat(64) }));
+    f.service.revokeArtifact(managerContext(f), artifact.artifactId, 'test');
+    await assert.rejects(f.service.readMessageImage(input));
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
