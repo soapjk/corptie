@@ -33,4 +33,18 @@ final class ComposerMentionIndexTests: XCTestCase {
         let index = try ComposerMentionCatalog.Index(works: [.init(id: "w", name: "Alpha")], sessions: [], workLabel: "工作")
         XCTAssertEqual(try index.matches(query: "工作", currentSessionID: "s", activeMentionIDs: []).map(\.id), ["work:w"])
     }
+    func testInstalledAbilitiesAreSearchableAndKeepExactMentionIdentities() throws {
+        let abilities: [ComposerMentionCatalog.Ability] = [
+            .init(id: "skill:one", name: "Research", kind: .skill),
+            .init(id: "mcp:one", name: "Research tools", kind: .mcp)]
+        let index = try ComposerMentionCatalog.Index(works: [], sessions: [], abilities: abilities)
+        let matches = try index.matches(query: "Research", currentSessionID: "s", activeMentionIDs: [])
+        XCTAssertEqual(matches.map(\.id), ["skill:skill:one", "mcp:mcp:one"])
+        XCTAssertEqual(matches.compactMap(index.suggestion), ComposerMentionCatalog.suggestions(
+            works: [], sessions: [], currentSessionID: "s", activeMentionIDs: [], query: "Research", abilities: abilities))
+        XCTAssertEqual(matches.compactMap(index.suggestion).map(\.kind), [.skill, .mcp])
+        XCTAssertEqual(try index.matches(query: "MCP", currentSessionID: "s", activeMentionIDs: []).map(\.id), ["mcp:mcp:one"])
+        XCTAssertEqual(try index.matches(query: "", currentSessionID: "s", activeMentionIDs: ["skill:skill:one"]).map(\.id), ["mcp:mcp:one"])
+    }
+
 }

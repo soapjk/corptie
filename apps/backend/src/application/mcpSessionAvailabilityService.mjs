@@ -1,12 +1,13 @@
 // Read-only diagnostic for one exact Session route. It never invokes a remote
 // tool or changes the Provider binding; it inspects the fixed gateway that the
-// Session's current Agent and Provider would use on its next turn.
+// Session's explicit activations and Provider would use on its next turn.
 export class McpSessionAvailabilityService {
-  constructor({ store, gateway, registry } = {}) {
+  constructor({ store, gateway, registry, preferences } = {}) {
     if (!store || !gateway) throw new TypeError("MCP Session availability requires store and gateway.");
     this.store = store;
     this.gateway = gateway;
     this.registry = registry;
+    this.preferences = preferences;
   }
 
   async inspect(sessionReference) {
@@ -33,12 +34,13 @@ export class McpSessionAvailabilityService {
     if (!agentId || !this.store.getAgent(agentId)) {
       return { ...base, status: "agent_unavailable", errorCode: "MCP_SESSION_AGENT_UNAVAILABLE", servers: [] };
     }
-    const declaredSkills = (this.store.listRegistrySkillsForAgent?.(agentId) ?? [])
-      .filter((skill) => skill.mcpDescriptorSubpath)
+    const enabled = (kind, id) => Boolean(this.preferences)
+      && !this.preferences.isDisabled(logical.logicalSessionId, kind, id);
+    const declaredSkills = (this.store.listRegistrySkills?.() ?? [])
+      .filter((skill) => skill.mcpDescriptorSubpath && enabled("skill", skill.skillId))
       .map((skill) => ({ skillId: skill.skillId, name: skill.name }));
-    const standaloneAssignments = (this.registry?.listForAgent(agentId) ?? [])
-      .map((serverId) => this.registry.get(serverId))
-      .filter(Boolean)
+    const standaloneAssignments = (this.registry?.list() ?? [])
+      .filter(server => server.enabled && enabled("mcp", server.serverId))
       .map((server) => ({ serverId: server.serverId, name: server.name,
         enabled: server.enabled, lastCheckStatus: server.lastCheckStatus,
         lastErrorCode: server.lastErrorCode,

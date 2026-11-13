@@ -36,6 +36,7 @@ struct PadComposer<Header: View>: View {
     @State private var composerWidth: CGFloat = 0
     @State private var mentionQuery: ComposerMentionQuery?
     @State private var mentionSelectionIndex = 0
+    @State private var mentionAbilities: [ComposerMentionCatalog.Ability] = []
     @State private var photos: [PhotosPickerItem] = []
     @State private var showPhotos = false
     @State private var showFiles = false
@@ -123,6 +124,10 @@ struct PadComposer<Header: View>: View {
             .buttonStyle(.plain)
             .accessibilityHidden(true)
         }
+        }
+        .task(id: "\(sessionID):\(mentionQuery != nil && connection.connected && scenePhase == .active)") {
+            guard mentionQuery != nil, connection.connected, scenePhase == .active else { return }
+            await loadMentionAbilities()
         }
         .task(id: recommendationRefreshKey) {
             let taskID = quickMessageTaskID
@@ -333,7 +338,24 @@ struct PadComposer<Header: View>: View {
         return ComposerMentionCatalog.suggestions(
             works: workspace.works.map { .init(id: $0.id, name: $0.name) },
             sessions: workspace.sessions.map { .init(id: $0.id, title: $0.title, workId: $0.workId) },
-            currentSessionID: sessionID, activeMentionIDs: activeMentionIDs, query: mentionQuery.text)
+            currentSessionID: sessionID, activeMentionIDs: activeMentionIDs, query: mentionQuery.text, abilities: mentionAbilities)
+    }
+
+    private func loadMentionAbilities() async {
+        do {
+            let api = ClientInspectorAPI(transport: try await connection.transport())
+            let value = try await api.read(sessionID: sessionID, resource: "abilities")
+            try Task.checkCancellation()
+            let next: [ComposerMentionCatalog.Ability] = value["abilities"].items.compactMap { item in
+                guard item["available"].flag, let id = item["id"].text,
+                      let kind = ComposerMentionSuggestion.Kind(rawValue: item["kind"].text ?? ""),
+                      kind == .skill || kind == .mcp else { return nil }
+                return .init(id: id, name: item["name"].text ?? id, kind: kind)
+            }
+            if mentionAbilities != next { mentionAbilities = next }
+        } catch is CancellationError {} catch {
+            if !mentionAbilities.isEmpty { mentionAbilities = [] }
+        }
     }
 
     private func updateMentionQuery(_ text: String, _ selection: NSRange) {
@@ -374,7 +396,7 @@ struct PadComposer<Header: View>: View {
 
     private func selectMention(_ suggestion: ComposerMentionSuggestion) {
         guard let mentionQuery else { return }
-        let mention = ClientDraftMention(targetType: suggestion.kind == .work ? "work" : "session",
+        let mention = ClientDraftMention(targetType: suggestion.kind.rawValue,
                                          targetId: suggestion.targetId, displayName: suggestion.displayName)
         var selected = workspace.draftMentions[sessionID] ?? []
         if !selected.contains(where: { $0.id == mention.id }) { selected.append(mention) }

@@ -1,3 +1,4 @@
+import { normalizeConversationMessage } from "./application/conversationMessage.mjs";
 import { InitialMessageTitleService } from "./application/initialMessageTitleService.mjs";
 import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
@@ -30,7 +31,7 @@ import { createCodexNotificationReceiver } from "./adapters/codexNotificationRec
 import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
 import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
 import { createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { CodexEnvironmentRegistry } from "./runtime/codexEnvironmentRegistry.mjs";
 import { createCodexEnvironmentRuntime } from "./agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
 import { createCodexEnvironmentSetup } from "./adapters/codexEnvironmentSetup.mjs";
@@ -675,16 +676,11 @@ const managedOpenClackyRuntime = configuredOpenClackyBaseURL ? null : new OpenCl
   // privacy grant and other launch context.
   env: () => ({ ...process.env, HOME: corptieOpenClackyRuntimePaths.providerHome })
 });
-// Skill 维护中心（provider-neutral）：全局共享的 Skill 映射表 + 物化到各 Provider 的 skills 目录。
-// skillsDirs 由组合根声明「各 Provider 的 skills 根目录」，SkillRegistryService 不感知 Provider 名语义，
-// 仅把 Skill 内容镜像到这些目录；Claude Code / Codex 运行时会自动扫描各自目录发现 Skill。
+// Global installation storage; runtime instructions are exposed only by the Session gateway.
 const skillRegistryService = new SkillRegistryService({
   store,
   packageRoot: join(store.dataRoot, "skill-packages"),
-  skillsDirs: {
-    "codex-app-server": corptieCodexRuntimePaths.skillsDir,
-    "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
-  }
+  skillsDirs: {}
 });
 const mcpRegistryService = new McpRegistryService({ store, ephemeral: developmentPreview });
 // Reconcile exact, durably queued package/Keychain cleanup after a prior crash.
@@ -695,7 +691,7 @@ const mcpCleanupInterval = setInterval(() => {
 mcpCleanupInterval.unref();
 function mcpAssignmentRevisionForAgent(agentId) {
   const skill = skillRegistryService.mcpAssignmentRevisionForAgent(agentId);
-  const standalone = mcpRegistryService.assignmentRevisionForAgent(agentId);
+  const standalone = mcpRegistryService.installationRevision();
   return skill === "none" && standalone === "none" ? "none" : `${skill}:${standalone}`;
 }
 const sessionAbilityPreferences = new SessionAbilityPreferences({ store, registry: mcpRegistryService });
@@ -706,7 +702,7 @@ const skillMcpGateway = new SkillMcpGateway({
     const reference = context.logicalSessionId ?? context.sessionId;
     const servers = {
       ...await skillRegistryService.mcpServersForAgent(actorId, providerId, { isolateFailures: true, sessionReference: reference }),
-      ...mcpRegistryService.serversForAgent(actorId)
+      ...mcpRegistryService.serversForSession(reference, sessionAbilityPreferences)
     };
     return Object.fromEntries(Object.entries(servers).filter(([, config]) =>
       !config.serverId || !sessionAbilityPreferences.isDisabled(reference, "mcp", config.serverId)));
@@ -730,7 +726,7 @@ const skillMcpGateway = new SkillMcpGateway({
   resolveRevision: mcpAssignmentRevisionForAgent
 });
 const mcpSessionAvailabilityService = new McpSessionAvailabilityService({
-  store, gateway: skillMcpGateway, registry: mcpRegistryService
+  store, gateway: skillMcpGateway, registry: mcpRegistryService, preferences: sessionAbilityPreferences
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
 agentContextService.resolveAgentSkills = (agentId, scope) => {
@@ -1454,8 +1450,8 @@ const sessionApplicationService = createSessionApplicationComposition({
   requireSessionReference, workChatContextService,
   resolveContextReferences: (sessionId, options) => sessionContextReferenceService.resolve(sessionId, options),
   artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
-  resolveAssignedCapabilities: (agentId, reference) => assignedCapabilitySummary(store, agentId)
-    .map(entry => ({ ...entry, enabled: entry.enabled && !sessionAbilityPreferences.isDisabled(reference, entry.kind, entry.id) })),
+  resolveAssignedCapabilities: (agentId, reference) => sessionAbilityPreferences.inspect(reference).abilities
+    .map(entry => ({ ...entry, enabled: entry.available && !entry.disabled })),
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 });
@@ -2229,7 +2225,18 @@ const sessionMessageOperation = createSessionMessageOperation({
 });
 
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
-  return sessionMessageOperation.sendUnifiedSessionMessage(sessionId, input, source, options);
+  const message = normalizeConversationMessage(input);
+  if (message.mentions?.some(m => ["skill", "mcp"].includes(m.targetType))) {
+    if (options.agentTask || !["desktop", "remote-client"].includes(source.type)) {
+      throw Object.assign(new Error("Only user messages can activate installed abilities."), { code: "CAPABILITY_ACTIVATION_FORBIDDEN", statusCode: 403 });
+    }
+    const receipt = sessionAbilityPreferences.activateMentions(sessionId, message.mentions);
+    if (receipt) {
+      const logicalSessionId = receipt.preferences.logicalSessionId;
+      emitEvent("SessionAbilitiesChanged", { sessionId: logicalSessionId, receipt }, { sessionId: logicalSessionId });
+    }
+  }
+  return sessionMessageOperation.sendUnifiedSessionMessage(sessionId, message, source, options);
 }
 
 function assertSessionRecoveryMessageBoundary(reference) {
@@ -2617,6 +2624,15 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+// Installed Skills are loaded through the Session-authorized gateway. Remove
+// historical registry mirrors from native scanners, leaving other runtime skills intact.
+for (const skill of store.listRegistrySkills()) {
+  if (!/^skill:[a-zA-Z0-9-]+$/.test(skill.skillId)) continue;
+  for (const root of [corptieCodexRuntimePaths.skillsDir, join(corptieClaudeRuntimePaths.pluginPath, "skills")]) {
+    await rm(join(root, skill.skillId), { recursive: true, force: true });
+  }
+}
+
 if (!developmentPreview) skillRegistryService.reconcileInterruptedInstallations();
 detailServiceFor(store, detailMigration);
 await providerRuntimeSettings.initialize();

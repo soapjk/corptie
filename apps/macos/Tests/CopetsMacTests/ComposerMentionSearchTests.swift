@@ -14,6 +14,19 @@ final class ComposerMentionSearchTests: XCTestCase {
         .init(query: query, catalogRevision: revision, draftRevision: 1, selectedMentions: mentions, active: active)
     }
 
+    func testInstalledAbilitiesInvalidateDirectoryAndPreserveWireTypes() async throws {
+        let search = ComposerMentionSearch()
+        var value = request("")
+        await search.search(value, sessionID: "current", sessions: [], works: [], draft: "@")
+        value.abilityRevision = 1
+        await search.search(value, sessionID: "current", sessions: [], works: [], draft: "@", abilities: [
+            .init(id: "skill:one", name: "Research", kind: .skill),
+            .init(id: "mcp:one", name: "Tools", kind: .mcp)])
+        XCTAssertEqual(search.candidate(at: 0)?.mention.targetType, .skill)
+        XCTAssertEqual(search.candidate(at: 1)?.mention.targetType, .mcp)
+        XCTAssertEqual(search.directoryBuildCount, 2)
+    }
+
     func testSameInputDoesNotSearchAgainAndQueryChangesReuseDirectory() async throws {
         let search = ComposerMentionSearch()
         let sessions = try [session("a", title: "Alpha"), session("b", title: "Beta"), session("archived", title: "Alpha", archived: true)]

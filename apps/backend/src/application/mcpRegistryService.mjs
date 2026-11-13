@@ -15,7 +15,8 @@ import { withMcpGitCheckout } from "./mcpGitSource.mjs";
 import { createMcpSecretStore } from "./mcpSecretStore.mjs";
 
 // Independent MCP installations are resources. A Session receives tools only
-// through its bound Agent's current assignment and the fixed Tool Host.
+// after explicit Session activation through the fixed Tool Host. Legacy Role
+// assignment APIs remain available solely for stored-data compatibility.
 export class McpRegistryService {
   constructor({ store, timeoutMs = 10_000, packageRoot, secretStore, ephemeral = false } = {}) {
     if (!store) throw new TypeError("McpRegistryService requires a store.");
@@ -823,15 +824,18 @@ export class McpRegistryService {
       .map((row) => ({ agentId: row.agent_id, name: row.name }));
     const history = this.store.selectAll(`SELECT package_root, credential_ref
       FROM mcp_server_package_versions WHERE server_id = ?`, [serverId]);
+    const legacyCredentials = this.store.selectAll(`SELECT credential_ref
+      FROM agent_mcp_assignments WHERE server_id = ? AND credential_ref IS NOT NULL`, [serverId]);
     return {
       serverId, configRevision: server.configRevision,
-      canRemove: assignedAgents.length === 0,
-      blockingCode: assignedAgents.length ? "MCP_SERVER_ASSIGNED" : null,
+      canRemove: true,
+      blockingCode: null,
       assignedAgents,
       managedPackageCopies: new Set([server.packageRoot,
         ...history.map((row) => row.package_root)].filter(Boolean)).size,
       credentialReferences: new Set([server.credentialRef,
-        ...history.map((row) => row.credential_ref)].filter(Boolean)).size,
+        ...history.map((row) => row.credential_ref),
+        ...legacyCredentials.map((row) => row.credential_ref)].filter(Boolean)).size,
       originalSourceWillBeDeleted: false
     };
   }
@@ -904,9 +908,6 @@ export class McpRegistryService {
   async remove(serverId) {
     const server = this.get(serverId);
     if (!server) return { serverId, removed: false, cleanupPending: (await this.drainCleanup({ serverId })) > 0 };
-    if (server.assignmentCount > 0) {
-      throw registryError("MCP_SERVER_ASSIGNED", "Remove all Agent assignments before deleting this MCP Server.", 409);
-    }
     const history = this.store.selectAll(`SELECT package_root, credential_ref
       FROM mcp_server_package_versions WHERE server_id = ?`, [serverId]);
     const packagePaths = [...new Set([server.packageRoot, ...history.map((row) => row.package_root)]
@@ -916,7 +917,13 @@ export class McpRegistryService {
       ...history.map((row) => row.credential_ref)].filter(Boolean))];
     this.store.db.run("BEGIN IMMEDIATE");
     try {
+      const legacyCredentials = this.store.selectAll(`SELECT credential_ref
+        FROM agent_mcp_assignments WHERE server_id = ? AND credential_ref IS NOT NULL`, [serverId]);
+      this.store.db.run("DELETE FROM agent_mcp_assignments WHERE server_id = ?", [serverId]);
       this.store.db.run("DELETE FROM mcp_server_registry WHERE server_id = ?", [serverId]);
+      // The cleanup worker checks all remaining installation/history/legacy
+      // references before removing a secret shared with another installation.
+      for (const row of legacyCredentials) this.#enqueueCleanup("credential_ref", row.credential_ref, serverId);
       for (const path of packagePaths) this.#enqueueCleanup("package_path", path, serverId);
       for (const ref of credentialRefs) this.#enqueueCleanup("credential_ref", ref, serverId);
       this.store.db.run("COMMIT");
@@ -929,6 +936,32 @@ export class McpRegistryService {
     return { serverId, removed: true, cleanupPending };
   }
 
+  // Production routing: installation is global; only explicit Session choices
+  // grant visibility. Filter before reading credentials or constructing a client.
+  serversForSession(reference, preferences) {
+    if (!reference || !preferences) return {};
+    const rows = this.store.selectAll(`
+      SELECT server_id, name, url, transport, command, args_json, cwd,
+             verified_at, credential_ref, NULL AS assignment_credential_ref,
+             NULL AS tool_allowlist_json
+      FROM mcp_server_registry WHERE enabled = 1 ORDER BY server_id
+    `).filter(row => !preferences.isDisabled(reference, "mcp", row.server_id));
+    return this.#runtimeServers(rows);
+  }
+
+  installationRevision() {
+    const rows = this.store.selectAll(`
+      SELECT server_id, url, transport, command, args_json, cwd, enabled,
+             updated_at, verified_at, credential_ref
+      FROM mcp_server_registry ORDER BY server_id
+    `);
+    return rows.length === 0 ? "none"
+      : createHash("sha256").update(JSON.stringify({ rows,
+        credentialStorageRevision: this.secretStore.revision?.() ?? 0 })).digest("hex");
+  }
+
+  // Compatibility inspection for historical assignment migrations. The Session
+  // gateway must use serversForSession, never this legacy Role projection.
   serversForAgent(agentId) {
     if (!this.store.getAgent(agentId)) return {};
     const rows = this.store.selectAll(`
@@ -939,6 +972,10 @@ export class McpRegistryService {
       JOIN agent_mcp_assignments a ON a.server_id = s.server_id
       WHERE a.agent_id = ? AND s.enabled = 1 ORDER BY s.server_id
     `, [agentId]);
+    return this.#runtimeServers(rows);
+  }
+
+  #runtimeServers(rows) {
     return Object.fromEntries(rows.map((row) => {
       const selectedRef = row.assignment_credential_ref ?? row.credential_ref;
       const toolAllowlist = row.tool_allowlist_json === null ? null : JSON.parse(row.tool_allowlist_json);
