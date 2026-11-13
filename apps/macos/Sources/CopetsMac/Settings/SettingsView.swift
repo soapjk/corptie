@@ -587,33 +587,6 @@ struct SettingsView: View {
                         .font(WorkbenchTypography.font(for: .help))
                         .foregroundStyle(CorptiePalette.secondaryText)
 
-                    if let migration = backendClient.dataRootMigration {
-                        let presentedPhase = backendClient.dataRootMigrationPresentationPhase ?? migration.phase
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 8) {
-                                if presentedPhase != "completed" && presentedPhase != "failed" {
-                                    ProgressView().controlSize(.small)
-                                }
-                                Text(dataRootMigrationPhaseLabel(presentedPhase))
-                                    .font(WorkbenchTypography.font(for: .metadata).weight(.semibold))
-                                Spacer()
-                                Text("#\(migration.generation)")
-                                    .font(WorkbenchTypography.font(for: .technical))
-                                    .foregroundStyle(CorptiePalette.secondaryText)
-                            }
-                            Text(migration.targetDataRoot)
-                                .font(WorkbenchTypography.font(for: .technical))
-                                .foregroundStyle(CorptiePalette.secondaryText)
-                                .lineLimit(2)
-                            if let error = migration.error {
-                                Text("\(error.code): \(error.message)")
-                                    .font(WorkbenchTypography.font(for: .help))
-                                    .foregroundStyle(.red)
-                            }
-                        }
-                        .padding(12)
-                        .background(CorptiePalette.secondaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                    }
                 }
 
 
