@@ -59,13 +59,51 @@ struct ConversationChecklistDockProjection {
     }
 }
 
+/// One generation owns both the indicator gate and the native height envelope.
+/// Interrupted SwiftUI animations still call completion; they must not reopen it.
+struct ChecklistDisclosureVisibility {
+    private var generation = UUID()
+    private var presented = false
+    private(set) var settled = false
+    private(set) var retainsExpandedEnvelope = false
+
+    func allowsIndicators(expanded: Bool) -> Bool { presented && settled && expanded }
+
+    mutating func begin(animated: Bool) -> UUID {
+        generation = UUID()
+        settled = !animated
+        retainsExpandedEnvelope = animated
+        return generation
+    }
+
+    mutating func complete(_ token: UUID) {
+        guard presented, generation == token else { return }
+        settled = true
+        retainsExpandedEnvelope = false
+    }
+
+    mutating func setPresented(_ value: Bool) {
+        generation = UUID()
+        presented = value
+        settled = value
+        retainsExpandedEnvelope = false
+    }
+
+    mutating func settleImmediately() {
+        generation = UUID()
+        settled = presented
+        retainsExpandedEnvelope = false
+    }
+}
+
 /// A sibling of the message scroller, so reading history cannot hide it.
 struct PinnedExecutionChecklistCard: View {
     let plan: ConversationExecutionPlan
     var jumpControl: AnyView? = nil
+    var active = true
     @State private var width: CGFloat = 300
     @State private var expanded = false
-    @State private var retainsExpandedEnvelope = false
+    @State private var disclosureVisibility = ChecklistDisclosureVisibility()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func height(plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool) -> CGFloat {
@@ -77,19 +115,23 @@ struct PinnedExecutionChecklistCard: View {
     }
 
     var body: some View {
-        let expandedHeight = expanded || retainsExpandedEnvelope
+        let allowsIndicator = active && disclosureVisibility.allowsIndicators(expanded: expanded)
+        let expandedHeight = expanded || disclosureVisibility.retainsExpandedEnvelope
             ? Self.height(plan: plan, width: width, expanded: true) : 36
-        let animation: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.2)
         ScrollView(.vertical) {
             if let taskID = plan.taskId {
                 DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width - 20,
-                    isExpanded: expanded, onToggleExpansion: {
-                        retainsExpandedEnvelope = !reduceMotion
-                        expanded.toggle()
-                    }, compact: true)
+                    isExpanded: expanded, onToggleExpansion: toggleExpansion, compact: true)
                     .padding(.horizontal, 10).padding(.vertical, 8)
+                    // Probe the floating card's own scroll content, never the
+                    // transcript or Detail rail. Use the exact Work navigation
+                    // drawing/fading policy used by ConsoleFlatSessionList.
+                    .background(ConsoleOverlayScroller(usesWorkStyle: true, allowsVerticalIndicator: allowsIndicator))
             }
         }
+        // SwiftUI and the native configuration receive the same gate, including
+        // first layout; neither can reopen it during disclosure animation.
+        .scrollIndicators(allowsIndicator ? .automatic : .hidden)
         .frame(height: Self.height(plan: plan, width: width, expanded: expanded))
         .frame(maxWidth: 780)
         .onGeometryChange(for: CGFloat.self) { max(148, $0.size.width) } action: { width = $0 }
@@ -99,21 +141,32 @@ struct PinnedExecutionChecklistCard: View {
                 jumpControl.offset(y: -(ComposerQuickMessagesBar.jumpControlSize + 8))
             }
         }
-        .animation(animation, value: expanded)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: expanded)
         // Native ideal size changes only at expansion start / collapse end.
         // The interpolated card stays bottom-aligned inside that safe envelope.
-        .frame(height: expanded || retainsExpandedEnvelope ? expandedHeight : 36, alignment: .bottom)
+        .frame(height: expanded || disclosureVisibility.retainsExpandedEnvelope ? expandedHeight : 36, alignment: .bottom)
+        // Keep the native envelope discrete even though the disclosure uses an
+        // explicit completion transaction. Only the inner card animates above.
+        .transaction { $0.animation = nil }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: expanded) {
-            guard !expanded, retainsExpandedEnvelope else { return }
-            if !reduceMotion { try? await Task.sleep(for: .milliseconds(200)) }
-            guard !Task.isCancelled else { return }
-            retainsExpandedEnvelope = false
-        }
+        .onAppear { disclosureVisibility.setPresented(active) }
+        .onDisappear { disclosureVisibility.setPresented(false) }
+        .onChange(of: active) { _, active in disclosureVisibility.setPresented(active) }
         .onChange(of: reduceMotion) { _, reduced in
-            if reduced { retainsExpandedEnvelope = false }
+            if reduced { disclosureVisibility.settleImmediately() }
         }
         .accessibilityIdentifier("conversation.pinned-execution-checklist")
+    }
+
+    private func toggleExpansion() {
+        guard active else { return }
+        // Close the gate outside the animation transaction, including collapse.
+        let token = disclosureVisibility.begin(animated: !reduceMotion)
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2), completionCriteria: .removed) {
+            expanded.toggle()
+        } completion: {
+            disclosureVisibility.complete(token)
+        }
     }
 }
 

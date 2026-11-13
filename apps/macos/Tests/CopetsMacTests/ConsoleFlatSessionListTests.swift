@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import CorptieMac
 
@@ -21,7 +22,7 @@ final class ConsoleFlatSessionListTests: XCTestCase {
         }
         let chat = SessionRowModel(session: try session("chat"))
         let workChat = SessionRowModel(session: try session("work-chat", workID: "work-0"))
-        let result = ConsoleFlatSessionList.partitionedRows(rows + [chat, workChat], sort: .standard)
+        let result = ConsoleFlatSessionList<EmptyView>.partitionedRows(rows + [chat, workChat], sort: .standard)
         XCTAssertEqual(result.projects.count, 1_001)
         XCTAssertEqual(result.chats.count, 1)
         XCTAssertTrue(result.projects[999] === rows[999])
@@ -36,7 +37,7 @@ final class ConsoleFlatSessionListTests: XCTestCase {
             value.lastMessageAt = "2026-11-11T00:00:0\(index)Z"
             return SessionRowModel(session: value)
         }
-        let chats = ConsoleFlatSessionList.partitionedRows(rows, sort: .name).chats
+        let chats = ConsoleFlatSessionList<EmptyView>.partitionedRows(rows, sort: .name).chats
         let count = ConsoleChatPreviewPolicy.visibleCount(total: chats.count, showsAll: false)
         XCTAssertEqual(chats.prefix(count).map(\.id), ["chat-8", "chat-7", "chat-6", "chat-5", "chat-4"])
         var showsAll = false
@@ -54,11 +55,11 @@ final class ConsoleFlatSessionListTests: XCTestCase {
     func testProjectSubtitleUsesDirectProjectThenTaskBindingAndUnassignedFallback() throws {
         let names = ["work-a": "Project A", "work-b": "Project B"]
         let tasks = ["child-task": "work-b"]
-        XCTAssertEqual(ConsoleFlatSessionList.projectName(for: try session("direct", workID: "work-a", taskID: "child-task"),
+        XCTAssertEqual(ConsoleFlatSessionList<EmptyView>.projectName(for: try session("direct", workID: "work-a", taskID: "child-task"),
             workNames: names, taskWorks: tasks), "Project A")
-        XCTAssertEqual(ConsoleFlatSessionList.projectName(for: try session("child", taskID: "child-task"),
+        XCTAssertEqual(ConsoleFlatSessionList<EmptyView>.projectName(for: try session("child", taskID: "child-task"),
             workNames: names, taskWorks: tasks), "Project B")
-        XCTAssertEqual(ConsoleFlatSessionList.projectName(for: try session("chat"),
+        XCTAssertEqual(ConsoleFlatSessionList<EmptyView>.projectName(for: try session("chat"),
             workNames: names, taskWorks: tasks), L10n("未关联项目"))
     }
 
@@ -67,8 +68,8 @@ final class ConsoleFlatSessionListTests: XCTestCase {
         var recent = try session("B")
         recent.lastMessageAt = "2026-11-12T00:00:00Z"
         let b = SessionRowModel(session: recent)
-        XCTAssertEqual(ConsoleFlatSessionList.orderedRows([b, a], sort: .name).map(\.id), ["A", "B"])
-        XCTAssertEqual(ConsoleFlatSessionList.orderedRows([a, b], sort: .updated).map(\.id), ["B", "A"])
+        XCTAssertEqual(ConsoleFlatSessionList<EmptyView>.orderedRows([b, a], sort: .name).map(\.id), ["A", "B"])
+        XCTAssertEqual(ConsoleFlatSessionList<EmptyView>.orderedRows([a, b], sort: .updated).map(\.id), ["B", "A"])
         XCTAssertEqual(ConsoleNavigationMode.resolved("sessionList"), .sessionList)
     }
 }

@@ -6,6 +6,40 @@ import Testing
 
 @MainActor
 struct ConsoleOverlayScrollerTests {
+    @Test func workStyleConfigurationNeverReopensAClosedIndicatorGate() throws {
+        let scroll = IndicatorEnableProbeScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 900))
+        scroll.documentView = content
+        scroll.hasVerticalScroller = true
+        scroll.enableAttempts = 0
+        let probe = ConsoleOverlayScroller.Probe(usesWorkStyle: true, allowsVerticalIndicator: false)
+        content.addSubview(probe)
+        for _ in 0..<3 { probe.configure() }
+        #expect(!scroll.hasVerticalScroller)
+        #expect(scroll.enableAttempts == 0, "Closed-gate configuration must never enable then hide")
+        #expect(scroll.verticalScroller is WorkOutlineThinScroller)
+        #expect(scroll.autohidesScrollers)
+        #expect(scroll.scrollerStyle == .overlay)
+        #expect(scroll.scrollerInsets.right == WorkNavigationScrollStyle.trailingClearance)
+
+        probe.allowsVerticalIndicator = true
+        probe.configure()
+        #expect(scroll.hasVerticalScroller)
+        let sharedScroller = try #require(scroll.verticalScroller)
+        #expect(sharedScroller is WorkOutlineThinScroller)
+        probe.allowsVerticalIndicator = false
+        scroll.enableAttempts = 0
+        for _ in 0..<3 { probe.configure() }
+        #expect(!scroll.hasVerticalScroller)
+        #expect(scroll.enableAttempts == 0)
+        #expect(scroll.verticalScroller === sharedScroller)
+
+        // Other Work navigation callers retain their existing default policy.
+        WorkNavigationScrollStyle.configure(scroll)
+        #expect(scroll.hasVerticalScroller)
+        #expect(scroll.verticalScroller === sharedScroller)
+    }
+
     @Test func hostedWorkOutlineKeepsScrollerLeftAndOutsideContentAfterResize() throws {
         let host = NSHostingView(rootView: ScrollView {
             VStack {
@@ -61,20 +95,6 @@ struct ConsoleOverlayScrollerTests {
         #expect(!scroll.contentView.drawsBackground)
         #expect(scroll.autohidesScrollers)
         #expect(scroll.verticalScroller?.isOpaque == false)
-    }
-
-    @Test func sessionListUsesTransparentAutoHidingOverlayWithoutAContentGutter() throws {
-        let scroll = AppKitSessionListView.makeScrollView(tableView: NSTableView())
-        scroll.setFrameSize(NSSize(width: 320, height: 240))
-        scroll.tile()
-        #expect(scroll.scrollerStyle == .overlay)
-        #expect(scroll.autohidesScrollers)
-        #expect(scroll.verticalScroller is ConsoleThinScroller)
-        #expect(!scroll.drawsBackground)
-        #expect(!scroll.contentView.drawsBackground)
-        #expect(scroll.borderType == .noBorder)
-        #expect(scroll.contentView.frame.width == 320)
-        #expect(scroll.scrollerInsets.right == 0)
     }
 
     @Test func contentProbeConfiguresOnlyItsEnclosingScrollView() {
@@ -199,6 +219,17 @@ struct ConsoleOverlayScrollerTests {
         #expect(coordinator.contains("centersReadingLane && reservesVerticalScrollerGutter"))
         #expect(content.contains("context.coordinator.setCentersReadingLane(centersReadingLane)"))
         #expect(scrollViews.contains("guard trailingScrollerExtension > 0 else { return }"))
+    }
+}
+
+private final class IndicatorEnableProbeScrollView: NSScrollView {
+    var enableAttempts = 0
+    override var hasVerticalScroller: Bool {
+        get { super.hasVerticalScroller }
+        set {
+            if newValue { enableAttempts += 1 }
+            super.hasVerticalScroller = newValue
+        }
     }
 }
 

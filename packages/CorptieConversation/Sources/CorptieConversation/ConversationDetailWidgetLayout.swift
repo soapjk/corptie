@@ -122,7 +122,7 @@ struct DetailWidgetPlacement: Equatable {
     let frames: [CGRect]
     let size: CGSize
 
-    static func make(width: CGFloat, widgets: [DetailWidgetSize]) -> Self {
+    static func make(width: CGFloat, widgets: [DetailWidgetSize], naturalHeights: [Int: CGFloat] = [:]) -> Self {
         let width = width.isFinite ? max(1, width) : ConversationDetailWidgetMetrics.railWidth - 24
         let gap = ConversationDetailWidgetMetrics.spacing
         let columns = width >= 292 ? 2 : 1
@@ -130,17 +130,20 @@ struct DetailWidgetPlacement: Equatable {
         var occupied = Set<Int>()
         var frames: [CGRect] = []
         var cursor = 0
-        for widget in widgets {
+        for (index, widget) in widgets.enumerated() {
+            let measured = naturalHeights[index].flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            let height = measured ?? widget.height
+            let rows = measured == nil ? widget.rows : max(1, Int(ceil((height + gap) / gap)))
             let span = min(columns, widget.columns)
             var position = cursor
             while true {
                 let row = position / columns, column = position % columns
-                let cells = (row..<(row + widget.rows)).flatMap { r in (column..<(column + span)).map { r * columns + $0 } }
+                let cells = (row..<(row + rows)).flatMap { r in (column..<(column + span)).map { r * columns + $0 } }
                 if column + span <= columns && cells.allSatisfy({ !occupied.contains($0) }) {
                     occupied.formUnion(cells)
                     frames.append(CGRect(x: CGFloat(column) * (unit + gap), y: CGFloat(row) * gap,
                         width: CGFloat(span) * unit + CGFloat(span - 1) * gap,
-                        height: widget.height))
+                        height: height))
                     cursor = position + span
                     break
                 }
@@ -156,18 +159,46 @@ struct DetailWidgetLayout: Layout {
     // traits. Keep the bounded size directory alongside the ordered card data.
     let sizes: [DetailWidgetSize]
     var fixedWidth: CGFloat? = nil
-    struct Cache { var widgets: [DetailWidgetSize] = []; var placements: [DetailWidgetPlacement] = [] }
+    // Opt in only bounded, non-scrolling cards. Existing dashboard viewports
+    // must never be probed for their potentially large nested content.
+    var naturalHeightIndices: Set<Int> = []
+    struct Cache {
+        var widgets: [DetailWidgetSize] = []
+        var naturalHeightIndices: Set<Int> = []
+        var placements: [DetailWidgetPlacement] = []
+    }
     func makeCache(subviews: Subviews) -> Cache { Cache() }
     func updateCache(_ cache: inout Cache, subviews: Subviews) {
         let widgets = subviews.indices.map { $0 < sizes.count ? sizes[$0] : .medium }
-        if cache.widgets != widgets { cache.widgets = widgets; cache.placements.removeAll(keepingCapacity: true) }
+        // SwiftUI calls this when content changes; a model name or an inline
+        // error can change natural height while the fixed size directory stays equal.
+        // Preserve the existing cache policy for grids with only fixed viewports.
+        if cache.widgets != widgets || cache.naturalHeightIndices != naturalHeightIndices || !naturalHeightIndices.isEmpty {
+            cache.widgets = widgets; cache.naturalHeightIndices = naturalHeightIndices
+            cache.placements.removeAll(keepingCapacity: true)
+        }
     }
     private func plan(width: CGFloat?, subviews: Subviews, cache: inout Cache) -> DetailWidgetPlacement {
         let width = fixedWidth ?? width.flatMap { $0.isFinite ? $0 : nil } ?? ConversationDetailWidgetMetrics.railWidth - 24
         let widgets = subviews.indices.map { $0 < sizes.count ? sizes[$0] : .medium }
-        if cache.widgets != widgets { cache.widgets = widgets; cache.placements.removeAll(keepingCapacity: true) }
+        if cache.widgets != widgets || cache.naturalHeightIndices != naturalHeightIndices {
+            cache.widgets = widgets; cache.naturalHeightIndices = naturalHeightIndices
+            cache.placements.removeAll(keepingCapacity: true)
+        }
         if let value = cache.placements.first(where: { $0.size.width == max(1, width) }) { return value }
-        let value = DetailWidgetPlacement.make(width: width, widgets: widgets)
+        let resolvedWidth = max(1, width)
+        let columns = resolvedWidth >= 292 ? 2 : 1
+        let gap = ConversationDetailWidgetMetrics.spacing
+        let unit = columns == 2 ? (resolvedWidth - gap) / 2 : resolvedWidth
+        var heights: [Int: CGFloat] = [:]
+        for index in subviews.indices where naturalHeightIndices.contains(index) {
+            let span = min(columns, widgets[index].columns)
+            let cardWidth = CGFloat(span) * unit + CGFloat(span - 1) * gap
+            heights[index] = subviews[index].sizeThatFits(.init(width: cardWidth, height: nil)).height
+        }
+        // Reuse the same bounded plan for size and placement at this width.
+        // No GeometryReader, preference publication or state feedback loop.
+        let value = DetailWidgetPlacement.make(width: resolvedWidth, widgets: widgets, naturalHeights: heights)
         if cache.placements.count == 3 { cache.placements.removeFirst() }
         cache.placements.append(value)
         return value

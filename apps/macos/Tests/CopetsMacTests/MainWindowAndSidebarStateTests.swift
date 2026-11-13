@@ -208,4 +208,23 @@ struct MainWindowAndSidebarStateTests {
         #expect(contents.contains("window.deminiaturize(nil)"))
         #expect(contents.contains("window.makeKeyAndOrderFront(nil)"))
     }
+
+    @Test
+    func legacyGlassWindowCannotBeCreatedAndGenericActionsUseMainWindow() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        for name in ["FloatingPanelController.swift", "FloatingRootView.swift",
+                     "Floating/Chrome/FloatingChrome.swift", "Floating/Chrome/FloatingPanelMenus.swift"] {
+            #expect(!FileManager.default.fileExists(atPath: sourceRoot.appendingPathComponent(name).path))
+        }
+        let app = try String(contentsOf: sourceRoot.appendingPathComponent("Application/AppDelegate.swift"), encoding: .utf8)
+        #expect(!app.contains("FloatingPanelController"))
+        #expect(!app.contains("openSessionInPanel"))
+        #expect(app.contains("self?.openSessionInMainWindow(sessionID: sessionID)"))
+        #expect(app.contains("self?.openSessionInMainWindow(sessionID: sessionId)"))
+        #expect(app.contains("L10n(\"Show Corptie\"), action: #selector(openWarRoom)"))
+    }
 }

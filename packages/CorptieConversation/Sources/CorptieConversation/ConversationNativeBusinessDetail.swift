@@ -44,7 +44,7 @@ struct ConversationNativeBusinessDetail: View {
         Group {
         #if os(macOS)
         let input = DetailCardReorderController.Input(scope: reorderScope, enabled: canReorder,
-            items: snapshot.map { .init(id: $0.id, size: $0.size) })
+            items: snapshot.map { .init(id: $0.id, size: $0.size, naturalHeight: isNaturalProvider($0)) })
         let generation = activity?.generation ?? 0
         let states = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
         grid(cardReorder.displayOrder(snapshot.map(\.id)).compactMap { states[$0] })
@@ -71,8 +71,12 @@ struct ConversationNativeBusinessDetail: View {
         }
     }
 
+    private func isNaturalProvider(_ card: SizedCard) -> Bool {
+        card.state.card.kind == "provider" && card.state.card.loadState != "error"
+    }
     private func grid(_ snapshot: [SizedCard]) -> some View {
-        DetailWidgetLayout(sizes: snapshot.map(\.size), fixedWidth: fixedContentWidth) {
+        DetailWidgetLayout(sizes: snapshot.map(\.size), fixedWidth: fixedContentWidth,
+            naturalHeightIndices: Set(snapshot.indices.filter { isNaturalProvider(snapshot[$0]) })) {
             ForEach(snapshot) { sized in
                 let state = sized.state
                 Group {
@@ -106,7 +110,7 @@ struct ConversationNativeBusinessDetail: View {
                 openSession: { adapters.openSession?($0) }).disabled(!store.isCurrent)
         case .provider:
             ConversationDetailProviderCard(configuration: adapters.configuration, scope: handle.scope.sessionID,
-                select: adapters.selectConfiguration, reload: adapters.reloadConfiguration).disabled(!store.isCurrent)
+                providerIcon: adapters.providerIcon, select: adapters.selectConfiguration, reload: adapters.reloadConfiguration).disabled(!store.isCurrent)
         case .turn(let value):
             if let id = value.turnId {
                 ConversationDetailTurnCard(state: handle.turn, executionID: id,

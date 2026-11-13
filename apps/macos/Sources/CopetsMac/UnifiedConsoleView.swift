@@ -1047,7 +1047,10 @@ struct UnifiedConsoleView: View {
             showsHoverFeedback: showsHoverFeedback,
             isActive: sidebarState.isSelected,
             row: row,
-            selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) }
+            selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) },
+            menuContent: { session, isRenaming in
+                sessionContextMenuContent(for: session, isRenaming: isRenaming)
+            }
         )
             .listRowBackground(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)

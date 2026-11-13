@@ -172,32 +172,3 @@ struct RenameCorptieTaskSheet: View {
     }
 }
 
-struct SheetPanelBackground: View {
-    let cornerRadius: CGFloat
-
-    var body: some View {
-        if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.clear)
-                .glassEffect(.clear.tint(Color.white.opacity(0.04)), in: .rect(cornerRadius: cornerRadius))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.regularMaterial)
-                        .opacity(0.74)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(CorptiePalette.glassVeilFocused)
-                        .opacity(0.46)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        } else {
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        }
-    }
-}

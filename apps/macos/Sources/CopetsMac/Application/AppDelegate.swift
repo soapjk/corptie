@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private let backendClient = BackendClient.shared
     private let appLanguage = AppLanguageController.shared
-    private var panelController: FloatingPanelController?
     private var agentOrbManager: AgentOrbManager?
     private var completionSoundManager: SessionCompletionSoundManager?
     private var automationNotificationManager: AutomationNotificationManager?
@@ -97,16 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             UNUserNotificationCenter.current().delegate = self
         }
 
-        let controller = FloatingPanelController(client: backendClient)
-        panelController = controller
-        // 控制台是主界面：启动默认打开控制台；液态玻璃悬浮窗是辅助界面，默认不打开
         if !suppressAutomaticWindowPresentation { openWarRoom() }
 
         // Agent 浮球：订阅 sessions + agents 变化驱动 sync（通知聚合 + 生命周期）
         let agentOrbManager = AgentOrbManager(
             client: backendClient,
             showMain: { [weak self] in self?.openWarRoom() },
-            openSession: { [weak self] sessionID in self?.openSessionInPanel(sessionId: sessionID) }
+            openSession: { [weak self] sessionID in self?.openSessionInMainWindow(sessionID: sessionID) }
         )
         self.agentOrbManager = agentOrbManager
         // `AgentOrbManager.sync` only reads roles — its sessions argument is
@@ -147,12 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             isSessionVisible: { [weak self] sessionID in
                 guard let self else { return false }
                 let isSelected = self.backendClient.selectedSession?.id == sessionID
-                let isVisibleInPanel = self.panelController?.isVisible == true && isSelected
                 let isVisibleInSessionOverview = NSApp.isActive
                     && self.warRoomWindow?.isVisible == true
                     && AppTabRouter.shared.selectedTab == .console
                     && isSelected
-                return isVisibleInPanel || isVisibleInSessionOverview
+                return isVisibleInSessionOverview
             },
             isOverviewVisible: { [weak self] in
                 NSApp.isActive
@@ -170,12 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         resetNotificationManager.start()
         installStatusItem()
 
-        // 控制台 CorptieTask 详情「打开对话」→ 在主悬浮窗打开该 session 对话
+        // Open task conversations and notification targets in the main window.
         NotificationCenter.default.publisher(for: .openSessionConversation)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
                 guard let sessionId = notification.userInfo?["sessionId"] as? String else { return }
-                self?.openSessionInPanel(sessionId: sessionId)
+                self?.openSessionInMainWindow(sessionID: sessionId)
             }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: .openSessionOverview)
@@ -337,7 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func refreshStatusMenu() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: L10n("Show Corptie"), action: #selector(showPanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L10n("Show Corptie"), action: #selector(openWarRoom), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Collaboration..."), action: #selector(openCollaboration), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "助手", action: #selector(openAssistant), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Workbench"), action: #selector(openWarRoom), keyEquivalent: ""))
@@ -367,28 +362,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         NSMenu.popUpContextMenu(statusMenu, with: event, for: button)
-    }
-
-    @objc private func showPanel() {
-        NSApp.activate(ignoringOtherApps: true)
-        panelController?.show()
-    }
-
-    // 在悬浮窗打开某个 session 的对话（选中 + 显示悬浮窗）
-    private func openSessionInPanel(sessionId: String) {
-        Task { @MainActor in
-            let cached = backendClient.sessions.first(where: { $0.id == sessionId })
-            let resolved: TaskSession?
-            if let cached { resolved = cached }
-            else { resolved = await AppStateSyncController.shared.hydrateSession(sessionId) }
-            guard let session = resolved else {
-                backendClient.reportNavigationError(sessionId: sessionId)
-                return
-            }
-            backendClient.select(session: session)
-            NSApp.activate(ignoringOtherApps: true)
-            panelController?.show()
-        }
     }
 
     @objc func openSettings() {
@@ -427,7 +400,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             MainWindowForegrounding.present(warRoomWindow) {
                 NSApp.activate(ignoringOtherApps: true)
             }
-            panelController?.hideAfterMainWindowForegrounding()
             return
         }
 
@@ -478,7 +450,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         MainWindowForegrounding.present(window) {
             NSApp.activate(ignoringOtherApps: true)
         }
-        panelController?.hideAfterMainWindowForegrounding()
     }
 
     func setMainWindowPinned(_ isPinned: Bool) {

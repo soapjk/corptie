@@ -79,11 +79,17 @@ public struct ConversationDetailContentSurface: ViewModifier {
 public struct ConversationDetailModuleSurface: ViewModifier {
     @Environment(\.detailWidgetSize) private var widgetSize
     @Environment(\.detailPrefersNaturalContent) private var prefersNaturalContent
-    public init() {}
+    private let naturalHeight: Bool
+    public init(naturalHeight: Bool = false) { self.naturalHeight = naturalHeight }
 
     public func body(content: Content) -> some View {
         Group {
-            if let widgetSize {
+            if naturalHeight {
+                content
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(widgetSize?.columns == 1 ? 12 : 16)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let widgetSize {
                 DetailWidgetViewport(size: widgetSize) {
                     if prefersNaturalContent {
                         ViewThatFits(in: .vertical) {
@@ -125,12 +131,14 @@ public struct ConversationDetailModuleCard<Content: View, HeaderActions: View>: 
     private let systemImage: String
     private let headerActions: HeaderActions
     private let content: Content
+    private let naturalHeight: Bool
 
-    public init(title: String, systemImage: String,
+    public init(title: String, systemImage: String, naturalHeight: Bool = false,
                 @ViewBuilder headerActions: () -> HeaderActions,
                 @ViewBuilder content: () -> Content) {
         self.title = title
         self.systemImage = systemImage
+        self.naturalHeight = naturalHeight
         self.headerActions = headerActions()
         self.content = content()
     }
@@ -145,7 +153,7 @@ public struct ConversationDetailModuleCard<Content: View, HeaderActions: View>: 
                         .accessibilityLabel("拖动卡片调整顺序")
                 }
             }) { content }
-            .modifier(ConversationDetailModuleSurface())
+            .modifier(ConversationDetailModuleSurface(naturalHeight: naturalHeight))
     }
 }
 

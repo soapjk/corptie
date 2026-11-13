@@ -18,9 +18,11 @@ class WorkOutlineThinScroller: ConsoleThinScroller {
 enum WorkNavigationScrollStyle {
     static let trailingClearance: CGFloat = 4
 
-    static func configure(_ scroll: NSScrollView) {
+    static func configure(_ scroll: NSScrollView, allowsVerticalIndicator: Bool = true) {
+        // A transitioning container owns this gate. Never temporarily enable
+        // the indicator while applying the shared drawing/fading policy.
+        if !allowsVerticalIndicator, scroll.hasVerticalScroller { scroll.hasVerticalScroller = false }
         if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
-        if !scroll.hasVerticalScroller { scroll.hasVerticalScroller = true }
         if !(scroll.verticalScroller is WorkOutlineThinScroller) {
             scroll.verticalScroller = WorkOutlineThinScroller()
         }
@@ -32,6 +34,9 @@ enum WorkNavigationScrollStyle {
         if scroll.scrollerInsets.top != 0 || scroll.scrollerInsets.left != 0
             || scroll.scrollerInsets.bottom != 0 || scroll.scrollerInsets.right != trailingClearance {
             scroll.scrollerInsets = insets
+        }
+        if scroll.hasVerticalScroller != allowsVerticalIndicator {
+            scroll.hasVerticalScroller = allowsVerticalIndicator
         }
     }
 }
