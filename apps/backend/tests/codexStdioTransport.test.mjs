@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { renameSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { CodexStdioTransport } from "../src/adapters/codexStdioTransport.mjs";
@@ -26,20 +30,42 @@ function fakeChild() {
   return child;
 }
 
-test("runtime validates the exact command before spawn and after handshake", async () => {
-  const child = fakeChild();
-  const events = [];
-  const transport = new CodexStdioTransport({ command: () => "/chosen/codex",
-    validateCommand: async path => events.push(["validate", path]),
-    spawnProcess: path => { events.push(["spawn", path]); return child; } });
+test("runtime accepts a replacement at the configured path between startups and retries a startup race", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "corptie-codex-program-"));
+  const command = join(dir, "codex");
+  const replacement = join(dir, "codex-next");
+  let child;
+  let replaceOnSpawn = false;
+  const transport = new CodexStdioTransport({ command, spawnProcess: path => {
+    assert.equal(path, command);
+    if (replaceOnSpawn) renameSync(replacement, command);
+    return child = fakeChild();
+  } });
+  t.after(async () => {
+    await transport.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  await writeFile(command, "#!/bin/sh\n# original\n", { mode: 0o700 });
   await transport.initialize();
-  assert.deepEqual(events, [["validate", "/chosen/codex"], ["spawn", "/chosen/codex"], ["validate", "/chosen/codex"]]);
-  assert.equal(transport.runningCommand, "/chosen/codex");
+  assert.equal(transport.runningCommand, command);
   await transport.close();
+
+  await writeFile(replacement, "#!/bin/sh\n# upgrade\n", { mode: 0o700 });
+  renameSync(replacement, command);
+  await transport.initialize();
+  assert.equal(transport.initialized, true);
+  await transport.close();
+
+  await writeFile(replacement, "#!/bin/sh\n# another upgrade\n", { mode: 0o700 });
+  replaceOnSpawn = true;
+  await assert.rejects(transport.initialize(), { code: "PROVIDER_PROGRAM_CHANGED" });
+  assert.equal(child.killed, true);
+  assert.equal(transport.initialized, false);
   assert.equal(transport.runningCommand, null);
-  const changed = new CodexStdioTransport({ validateCommand: () => { throw new Error("binary changed"); },
-    spawnProcess: () => { throw new Error("must not spawn"); } });
-  await assert.rejects(changed.initialize(), /binary changed/);
+
+  replaceOnSpawn = false;
+  await transport.initialize();
+  assert.equal(transport.initialized, true);
 });
 
 test("initialize acknowledgement enables notifications before commands and repeats only on reconnect", async () => {

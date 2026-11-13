@@ -1,17 +1,5 @@
-import { access, realpath, stat } from "node:fs/promises";
-import { constants } from "node:fs";
 import { execFile } from "node:child_process";
-import { isAbsolute } from "node:path";
-import { environmentForCommand } from "../utils/externalCommand.mjs";
-
-export async function executableFingerprint(path) {
-  if (typeof path !== "string" || !isAbsolute(path)) return null;
-  try {
-    await access(path, constants.X_OK);
-    const info = await stat(path);
-    return info.isFile() ? JSON.stringify([await realpath(path), info.ino, info.size, info.mtimeMs]) : null;
-  } catch { return null; }
-}
+import { environmentForCommand, executableFingerprint } from "../utils/externalCommand.mjs";
 
 export function parseExecutableVersion(text) {
   const match = String(text).trim().match(/(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:-([\w.-]+))?(?:\+[\w.-]+)?(?:\s|$)/);

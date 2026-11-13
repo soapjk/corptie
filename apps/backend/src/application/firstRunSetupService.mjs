@@ -1,7 +1,7 @@
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
-import { executableFingerprint } from "./providerExecutableDiscovery.mjs";
+import { executableFingerprint } from "../utils/externalCommand.mjs";
 
 // Provider-independent setup state. Only adapter reply tests can mark a binary
 // available; enabling a row never substitutes for a successful test.
@@ -219,14 +219,6 @@ export class FirstRunSetupService {
     return this.row(provider);
   }
 
-  async validateRuntimeProgram(id, path) {
-    const saved = this.state.providers[id];
-    if (!saved?.selectionMode || !saved?.configuredPath || saved.configuredPath !== path) return;
-    if (await executableFingerprint(path) !== (saved.programFingerprint ?? saved.probe?.fingerprint)) {
-      throw Object.assign(new Error("已采用的程序已变更，请重新检测后再运行。"), { code: "PROVIDER_PROGRAM_CHANGED" });
-    }
-  }
-
   invalidateConnectionTest(id) {
     return this.serialize(async () => {
       const saved = this.state.providers[id];
@@ -302,7 +294,7 @@ export class FirstRunSetupService {
       if (this.checks.has(provider.id) || this.runtimeSettings?.isBusy(provider.id)) throw new Error("请等待此引擎的当前请求结束。");
       await provider.configure(path, { fingerprint });
       const saved = this.state.providers[provider.id] ?? {};
-      await this.saveRow(provider.id, { ...saved, path, configuredPath: path, programFingerprint: fingerprint,
+      await this.saveRow(provider.id, { ...saved, path, configuredPath: path,
         selectionMode: controlled ? "controlled" : "manual", probe: { ...saved.probe, state: "unknown" } });
       return this.row(provider);
     });
@@ -318,8 +310,7 @@ export class FirstRunSetupService {
       if (input.enabled) await provider.configure(row.path, this.state.providers[provider.id]?.probe);
       await this.saveRow(provider.id, { ...this.state.providers[provider.id], enabled: input.enabled, userDisabled: !input.enabled,
         ...(row.program ? { selectionMode: row.program.mode } : {}),
-        configuredPath: input.enabled ? row.path : this.state.providers[provider.id]?.configuredPath,
-        programFingerprint: input.enabled ? await executableFingerprint(row.path) : this.state.providers[provider.id]?.programFingerprint });
+        configuredPath: input.enabled ? row.path : this.state.providers[provider.id]?.configuredPath });
       return this.row(provider);
     });
   }

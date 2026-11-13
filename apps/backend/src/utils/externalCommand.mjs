@@ -1,4 +1,5 @@
 import { accessSync, constants, readdirSync, statSync } from "node:fs";
+import { access, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -10,6 +11,15 @@ function isExecutableFile(candidate) {
   } catch {
     return false;
   }
+}
+
+export async function executableFingerprint(commandPath) {
+  if (typeof commandPath !== "string" || !path.isAbsolute(commandPath)) return null;
+  try {
+    await access(commandPath, constants.X_OK);
+    const info = await stat(commandPath);
+    return info.isFile() ? JSON.stringify([await realpath(commandPath), info.ino, info.size, info.mtimeMs]) : null;
+  } catch { return null; }
 }
 
 function childDirectories(root, suffix = "") {
