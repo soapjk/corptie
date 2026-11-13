@@ -19,6 +19,7 @@ export class TaskDeletionService {
     this.cancelIntegration = options.cancelIntegration;
     this.cleanupExecutionSpaces = options.cleanupExecutionSpaces;
     this.prepareChildDelivery = options.prepareChildDelivery;
+    this.backgroundWork = options.backgroundWork;
     this.inFlight = new Map();
     this.waitingOn = new Map();
     if (!this.store || typeof this.store.finalizeTaskDeletion !== "function"
@@ -48,7 +49,17 @@ export class TaskDeletionService {
   }
 
   async request(taskId, input = {}, actor = null) {
-    const requestedKey = String(input.idempotencyKey ?? "").trim();
+    let requestedKey = String(input.idempotencyKey ?? "").trim();
+    const failedRow = this.store.selectOne?.("SELECT operation_id FROM task_deletion_operations WHERE task_id=? AND state='failed' ORDER BY rowid DESC LIMIT 1", [taskId]);
+    const failed = failedRow && this.store.getTaskDeletionOperation(failedRow.operation_id);
+    if (failed?.retryable && failed.input.actor?.type === actor?.type && failed.input.actor?.id === actor?.id) {
+      const sameOptions = ["deleteWorktree", "artifactDisposition", "acknowledgeDataLoss", "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration"]
+        .every(field => input[field] === undefined || input[field] === failed.input[field]);
+      if (sameOptions) requestedKey = failed.idempotencyKey;
+      else if (failed.result?.cleanup?.removalStarted || failed.result?.cleanup?.worktreeRemoved) {
+        throw coded("TASK_DELETE_IDEMPOTENCY_CONFLICT", "清理已开始，请沿原删除选项继续，不能更改资源处理范围。", 409);
+      }
+    }
     if (requestedKey) {
       const replay = this.store.getTaskDeletionOperationByKey(taskId, requestedKey);
       if (replay) {
@@ -144,10 +155,13 @@ export class TaskDeletionService {
         completedAt: new Date().toISOString()
       });
     } catch (error) {
+      console.warn("[task-deletion]", JSON.stringify({ operationId, taskId: operation.taskId,
+        stage: error?.stage ?? this.getOperation(operationId).stage, attempt: operation.attempt,
+        code: error?.code ?? "TASK_DELETE_FAILED" }));
       if (this.store.getTask(operation.taskId)) this.store.markTaskDeletion(operation.taskId, "delete_failed", actionableFailure(error));
       operation = this.store.updateTaskDeletionOperation(operationId, {
         state: "failed",
-        stage: error?.stage ?? "cleanup",
+        stage: error?.stage ?? this.getOperation(operationId).stage ?? "cleanup",
         errorCode: error?.code ?? "TASK_DELETE_FAILED",
         errorMessage: actionableFailure(error),
         retryable: true,
@@ -210,7 +224,15 @@ export class TaskDeletionService {
     if (activeStart || sandboxStart || item.creation_state === "pending") {
       blockers.push({ code: "START_IN_PROGRESS", message: "Task 正在启动，可选择中断启动后删除。", action: "cancelStartup" });
     }
-    const inspection = await this.inspectWorktree(taskId);
+    const inspection = await this.inspectWorktree(taskId, currentOperation || previous || null);
+    if (this.backgroundWork && inspection?.worktree?.path) {
+      try {
+        const background = await this.backgroundWork.inspect(taskId, inspection.worktree.path);
+        if (background.processes.length) blockers.push({ code: background.canStop ? "TASK_BACKGROUND_WORK_RUNNING" : "TASK_BACKGROUND_IDENTITY_UNPROVEN",
+          message: `后台进程 ${background.processes.map(p => p.pid).join("、")} 仍使用工作区，${background.canStop ? "可选择停止后删除。" : "请等待退出后继续清理。"}`,
+          ...(background.canStop ? { action: "stopRunning", canResolve: true } : { canResolve: false }) });
+      } catch (error) { blockers.push({ code: error.code ?? "TASK_BACKGROUND_INSPECTION_FAILED", message: error.message }); }
+    }
     const risks = contentRisks(inspection?.worktree);
     blockers.push(...hardBlockers(inspection).map(blocker => blocker.code === "ACTIVE_WORKTREE_INTEGRATION_JOB" && inspection.integrationJob
       ? { ...blocker, jobId: inspection.integrationJob.id, status: inspection.integrationJob.status, phase: inspection.integrationJob.phase,
@@ -242,6 +264,7 @@ export class TaskDeletionService {
   }
 
   #target(taskId, plan) {
+    if (plan.inspection?.recoveryTarget) return plan.inspection.recoveryTarget;
     const task = this.store.getTask(taskId);
     const binding = this.store.getTaskDeliveryBinding?.(taskId);
     return { version: 1, taskId, parentTaskId: task.parent_task_id ?? null,
@@ -259,6 +282,8 @@ export class TaskDeletionService {
     this.#assertDeletionAllowed(plan, input, true);
     // Freeze scheduling before asking a Provider/startup operation to stop.
     this.store.markTaskDeletion(taskId, "deleting", null);
+    this.backgroundWork?.cancelWakeups(taskId);
+    if (input.stopRunning && plan.worktree?.path) await this.backgroundWork?.stop(taskId, plan.worktree.path);
     if (input.cancelIntegration) {
       for (const blocker of plan.blockers.filter(b => b.code === "ACTIVE_WORKTREE_INTEGRATION_JOB")) {
         if (blocker.jobId && this.cancelIntegration) await this.cancelIntegration(blocker.jobId, { actor, taskId });
@@ -324,6 +349,7 @@ export class TaskDeletionService {
           operationId, target: input.target });
         this.store.markTaskWorktreeRemoved(taskId);
       }
+      if (operationId) this.store.updateTaskDeletionOperation(operationId, { stage: "session_cleanup" });
       for (const session of this.store.listSessionsByTask(taskId)) {
         await this.deleteSession(session.id, {
           source: "task-deletion",
@@ -332,12 +358,14 @@ export class TaskDeletionService {
         deletedSessionIds.push(session.id);
       }
       await this.cleanupExecutionSpaces?.(taskId);
+      if (operationId) this.store.updateTaskDeletionOperation(operationId, { stage: "artifact_cleanup" });
       const artifactCleanup = await this.handleArtifacts({
         task: this.store.getTask(taskId),
         artifacts: plan.artifacts,
         disposition: artifactDisposition,
         operationId, actor
       });
+      if (operationId) this.store.updateTaskDeletionOperation(operationId, { stage: "finalizing" });
       const resources = {
         ...this.store.finalizeTaskDeletion(taskId),
         deletedSessionIds,
@@ -351,7 +379,7 @@ export class TaskDeletionService {
       }
       throw coded(
         error?.code ?? "TASK_DELETE_FAILED",
-        `删除未完成，已保留可识别状态，可安全重试：${actionableFailure(error)}`,
+        `删除未完成，已保留进度；请重新检查后继续清理：${actionableFailure(error)}`,
         error?.statusCode ?? 409
       );
     }
@@ -363,6 +391,7 @@ export class TaskDeletionService {
       if (input.deleteWorktree === false && WORKTREE_ONLY_BLOCKERS.has(blocker.code)) return false;
       if (["GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "WORKTREE_LOCKED"].includes(blocker.code)) return false;
       if (preparing && input.cancelStartup && this.cancelStartup && plan.blockers.some(b => b.code === "START_IN_PROGRESS") && ["WORKTREE_UNAVAILABLE", "NO_WORKSPACE_ROUTE"].includes(blocker.code)) return false;
+      if (preparing && blocker.code === "TASK_BACKGROUND_WORK_RUNNING" && blocker.canResolve && input.stopRunning && this.backgroundWork) return false;
       if (preparing && blocker.code === "SESSION_BUSY" && input.stopRunning && this.stopSession) return false;
       if (preparing && blocker.code === "START_IN_PROGRESS" && input.cancelStartup && this.cancelStartup) return false;
       if (preparing && blocker.code === "SHARED_WITH_ACTIVE_TASK" && input.deleteAssociatedTasks) return false;
@@ -380,6 +409,7 @@ function deletionPlan(item, inspection, risks, blockers, associatedSessionCount,
     parentTaskId: item.parent_task_id ?? null,
     status: blockers.length > 0 ? "blocked" : (risks.length > 0 ? "risky" : "safe"),
     retryable: true,
+    recoveryAvailable: Boolean(inspection?.pendingCleanup),
     associatedSessionCount,
     artifacts: artifacts.map((artifact) => ({
       artifactId: artifact.artifactId,

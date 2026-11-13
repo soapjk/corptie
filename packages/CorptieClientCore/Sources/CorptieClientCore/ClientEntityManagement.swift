@@ -62,6 +62,7 @@ public struct ClientTaskManagement: Decodable, Sendable {
 /// Desktop deletion plan without host paths (§10.1): branch name, dirtiness and
 /// counts are enough for the same confirmation the macOS dialog shows.
 public struct ClientTaskDeletionPlan: Decodable, Sendable {
+    public var recoveryAvailable: Bool? = nil
     public let parentTaskId: String?
     public struct Artifact: Decodable, Sendable, Identifiable, Equatable {
         public let id: String
@@ -177,7 +178,7 @@ public struct ClientTaskDeletionOptions: Codable, Sendable, Equatable {
     public init() {}
     public func resolves(_ code: String) -> Bool {
         switch code {
-        case "SESSION_BUSY": return stopRunning
+        case "SESSION_BUSY", "TASK_BACKGROUND_WORK_RUNNING": return stopRunning
         case "START_IN_PROGRESS": return cancelStartup
         case "SHARED_WITH_ACTIVE_TASK": return deleteAssociatedTasks
         case "ACTIVE_WORKTREE_INTEGRATION_JOB": return cancelIntegration

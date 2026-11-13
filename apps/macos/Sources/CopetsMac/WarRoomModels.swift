@@ -346,6 +346,7 @@ enum CorptieTaskArtifactDisposition: String, CaseIterable, Identifiable {
 }
 
 struct CorptieTaskDeletionPlan: Codable, Equatable {
+    var recoveryAvailable: Bool? = nil
     var parentTaskId: String? = nil
     let taskId: String
     let status: String

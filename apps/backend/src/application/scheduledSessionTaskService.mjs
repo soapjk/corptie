@@ -1086,7 +1086,7 @@ export function processObservationFromPs(output, spec) {
       };
     }
   }
-  if (!status.startsWith("Z")) return { state: "running", status };
+  if (!status.startsWith("Z")) return { state: "running", status, startedAt: new Date(startText).toISOString() };
 
   // macOS/BSD ps exposes the wait(2) status as xstat while a terminated
   // process remains observable as a zombie. Decode it before the parent

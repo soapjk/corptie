@@ -7,7 +7,7 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
     return ["done", "complete", "completed"].includes(String(status ?? ""));
   }
 
-  async function inspectTaskWorktree(taskId) {
+  async function inspectTaskWorktree(taskId, deletionOperation = null) {
     const task = store.getTask(taskId);
     if (!task) {
       const error = new Error(`Task not found: ${taskId}`);
@@ -15,10 +15,20 @@ export function createTaskWorktreeOperations({ store, gitWorkspaces, projectAppl
       error.statusCode = 404;
       throw error;
     }
+    if (deletionOperation) {
+      try {
+        const recovery = await gitWorkspaces.inspectTaskDeletionRecovery(deletionOperation);
+        if (recovery) return recovery;
+      } catch (error) {
+        return { status: "unavailable", worktree: null, blocker: error.code ?? "WORKTREE_UNAVAILABLE", detail: error.message };
+      }
+    }
     const sessions = store.listSessionsByTask(taskId);
     const delivery = store.getTaskDeliveryBinding?.(taskId);
     if (delivery) {
-      const project = await gitWorkspaces.taskDeletionStatusForWorktree(delivery.repository_id, delivery.worktree_id);
+      let project;
+      try { project = await gitWorkspaces.taskDeletionStatusForWorktree(delivery.repository_id, delivery.worktree_id); }
+      catch (error) { return { status: "unavailable", worktree: null, blocker: error.code ?? "WORKTREE_UNAVAILABLE", detail: error.message }; }
       const worktree = project.worktrees[0];
       if (!worktree || worktree.availability !== "available") return { status: "unavailable", worktree, blocker: "WORKTREE_UNAVAILABLE" };
       if (task.parent_task_id) worktree.deliveryComparison = await gitWorkspaces.taskDeletionDeliveryComparison(taskId, worktree);

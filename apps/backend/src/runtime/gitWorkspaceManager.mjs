@@ -1,3 +1,5 @@
+import { worktreeProcesses } from "../utils/worktreeProcesses.mjs";
+import { deletionDirectoryIdentity, inspectTaskDeletionRecovery, resumeTaskDeletionCleanup } from "./taskDeletionRecovery.mjs";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, lstat, mkdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
@@ -2386,6 +2388,10 @@ export class GitWorkspaceManager {
     });
   }
 
+  async inspectTaskDeletionRecovery(operation) {
+    return inspectTaskDeletionRecovery(this, operation);
+  }
+
   async removeWorktreeForProject(input) {
     this.store.assertStandaloneWorktreeMutation?.({worktreeIds:[input.sourceWorktreeId], taskDeletionOperationId: input.taskDeletionOperationId});
     const operation = input.taskDeletionOperationId && this.store.getTaskDeletionOperation(input.taskDeletionOperationId);
@@ -2414,17 +2420,12 @@ export class GitWorkspaceManager {
       && reserved.includes(input.sourceWorktreeId)) {
       throw deletionSafetyError("ACTIVE_WORKTREE_INTEGRATION_JOB", "仓库正执行 Git 作业，请等待结束后重试。");
     }
-    const checkpoint = operation?.result?.cleanup ?? operation?.input?.resumeCleanup;
-    if (checkpoint?.worktreeRemoved) {
-      const snapshot = await this.operationSnapshot(input.workingDirectory, input);
-      if (snapshot.worktrees.some(tree => tree.availability !== "missing" && (tree.worktreeId === target.worktreeId || tree.path === target.path
-        || tree.branchName === target.branchName))) throw deletionSafetyError("TASK_DELETE_SCOPE_INVALID", "清理目标已被重新使用，请重新检查。");
-      const exists = await this.gitSucceeds(input.workingDirectory, ["show-ref", "--verify", `refs/heads/${target.branchName}`]);
-      if (exists) {
-        await this.runGit(input.workingDirectory, ["branch", "-D", target.branchName]);
+    if (operation) {
+      if ((await (this.taskDeletionProcessProbe ?? worktreeProcesses)(target.path)).length) {
+        throw deletionSafetyError("TASK_BACKGROUND_WORK_RUNNING", "后台进程仍使用工作区，请等待退出后继续清理。");
       }
-      this.store.upsertGitWorkspaceSnapshot(await this.operationSnapshot(input.workingDirectory, input));
-      return { ...checkpoint, removed: true, branchDeleted: true };
+      const recovery = await this.inspectTaskDeletionRecovery(operation);
+      if (recovery) return resumeTaskDeletionCleanup(this, operation, recovery);
     }
     const sourceWorktreeId = input.sourceWorktreeId;
     const source = this.store.getGitWorktree(sourceWorktreeId);
@@ -2482,9 +2483,16 @@ export class GitWorkspaceManager {
       else if (currentSource.isDetached || !currentSource.branchName) error = deletionSafetyError("WORKTREE_BRANCH_AMBIGUOUS", "The branch for this Worktree cannot be determined safely.");
       if (error) throw error;
     }
+    const directoryIdentity = operation ? await deletionDirectoryIdentity(currentSource.path) : null;
+    if (operation) this.store.updateTaskDeletionOperation(operation.operationId, {
+      stage: "worktree_cleanup", result: { ...operation.result, cleanup: { removalStarted: true,
+        directoryIdentity, sourceHead: currentSource.headOid, sourceWorktreeId,
+        sourcePath: currentSource.path, sourceBranch: currentSource.branchName,
+        forced: requiresForceConfirmation, discardedCommitCount } }
+    });
     await this.runGit(main.path, ["worktree", "remove", "--force", "--force", currentSource.path]);
     if (operation) this.store.updateTaskDeletionOperation(operation.operationId, {
-      stage: "branch_cleanup", result: { ...operation.result, cleanup: { worktreeRemoved: true,
+      stage: "branch_cleanup", result: { ...operation.result, cleanup: { worktreeRemoved: true, directoryIdentity, sourceHead: currentSource.headOid,
         sourceWorktreeId, sourcePath: currentSource.path, sourceBranch: currentSource.branchName,
         forced: requiresForceConfirmation, discardedCommitCount } }
     });

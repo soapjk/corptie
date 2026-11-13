@@ -3,6 +3,14 @@ import Testing
 @testable import CorptieClientCore
 
 struct TaskHierarchyTests {
+    @Test func backgroundDeletionOnlyResolvesProvenOwnership() {
+        var options = ClientTaskDeletionOptions()
+        #expect(!options.resolves("TASK_BACKGROUND_WORK_RUNNING"))
+        options.stopRunning = true
+        #expect(options.resolves("TASK_BACKGROUND_WORK_RUNNING"))
+        #expect(!options.resolves("TASK_BACKGROUND_IDENTITY_UNPROVEN"))
+        #expect(!options.resolves("TASK_DELETE_SCOPE_INVALID"))
+    }
     @Test func childDeletionKeepsUnknownRisksAndAmbiguousTargetsBlocked() {
         #expect(TaskDeletionConfirmationPolicy.canForceDelete(riskCodes: ["NOT_DELIVERED_TO_PARENT", "UNTRACKED_FILES"], branchName: "task/child"))
         #expect(!TaskDeletionConfirmationPolicy.canForceDelete(riskCodes: ["FUTURE_RISK"], branchName: "task/child"))

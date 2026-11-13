@@ -123,6 +123,7 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
   return { schemaVersion: 1, taskId: task.id, parentTaskId: plan?.parentTaskId ?? null,
     status: ["blocked", "risky", "safe"].includes(plan?.status) ? plan.status : "blocked",
     associatedSessionCount: Number(plan?.associatedSessionCount) || 0,
+    recoveryAvailable: plan?.recoveryAvailable === true,
     associatedTaskIds: plan?.associatedTaskIds ?? [], childTaskIds: plan?.childTaskIds ?? [],
     artifacts: (plan?.artifacts ?? []).map(row => ({ id: String(row.artifactId), title: typeof row.title === "string" ? row.title : "" })).slice(0, 50),
     worktree: plan?.worktree ? { branchName: typeof plan.worktree.branchName === "string" ? plan.worktree.branchName : null,
