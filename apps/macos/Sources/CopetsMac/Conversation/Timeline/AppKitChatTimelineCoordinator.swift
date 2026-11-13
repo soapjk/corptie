@@ -273,7 +273,15 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let detachedKeys = cellsByKey.filter { $0.value.window == nil }.map(\.key)
         guard !detachedKeys.isEmpty else { return }
         for key in detachedKeys {
-            cellsByKey.removeValue(forKey: key)?.releaseRenderingResources()
+            guard let cell = cellsByKey.removeValue(forKey: key) else { continue }
+            // Losing the window does not detach the cell from its row view.
+            // `releaseRenderingResources()` only strips a fully detached cell,
+            // so this guard used to return immediately: the cache dropped the
+            // cell, but its superview still retained the NSHostingView,
+            // constraints, callbacks and AttributeGraph subgraph forever.
+            // Only cells with no window are touched, so visible rows are safe.
+            cell.removeFromSuperview()
+            cell.releaseRenderingResources()
         }
         cellRecency.removeAll { cellsByKey[$0] == nil }
     }
