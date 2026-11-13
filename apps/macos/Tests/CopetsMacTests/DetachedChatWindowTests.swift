@@ -47,10 +47,11 @@ struct DetachedChatWindowTests {
     @Test
     func taskAndChatMenusOfferTheSameSessionScopedWindowToggle() throws {
         let taskList = try contents(of: "Console/UnifiedConsoleWorkTaskList.swift")
-        let chatMenu = try contents(of: "Floating/SessionList/SessionListRows.swift")
+        let chatMenu = try contents(of: "Console/SessionContextMenuContent.swift")
         let manager = try contents(of: "DetachedChatWindowManager.swift")
 
-        #expect(taskList.contains("DetachedChatWindowMenuButton(session: session)"))
+        #expect(taskList.contains("Menu(L10n(\"This Session\"))"))
+        #expect(taskList.contains("SessionContextMenuContent(session: session"))
         #expect(chatMenu.contains("DetachedChatWindowMenuButton(session: session)"))
         #expect(manager.contains("func isOpen(sessionID: String) -> Bool"))
         #expect(manager.contains("manager.toggle(session: session)"))

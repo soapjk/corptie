@@ -39,13 +39,13 @@ public static func startedAt<Item: ConversationTimelineItem>(for items: [Item]) 
 }
 
 public static func durationText(startedAt start: Date, endingAt end: Date, showSeconds: Bool = false,
-                                fractionDigits: Int = 2) -> String? {
+                                fractionDigits: Int = 0) -> String? {
     let duration = end.timeIntervalSince(start)
     guard duration.isFinite, duration >= 0, duration > 0 || showSeconds,
           duration * 100 < Double(Int.max) else { return nil }
     // Round before splitting so 59.999s becomes 1m 0s, not 60s. The live
-    // elapsed label uses whole seconds to match its one-second cadence;
-    // a finished turn keeps hundredths as a precise, frozen value.
+    // elapsed label and frozen outcomes both default to whole seconds.
+    // This only rounds the display; source timestamps retain their precision.
     let scale = fractionDigits <= 0 ? 1 : 100
     let units = Int((duration * Double(scale)).rounded())
     let seconds = units / scale

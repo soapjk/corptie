@@ -256,11 +256,9 @@
 "Cards" = "卡片";
 "Collaboration confirmation resolved" = "协作确认已处理";
 "Command is required." = "必须填写命令。";
-"Compact List" = "紧凑列表";
 "Conversation cleared" = "会话已清空";
 "Data directory is required." = "必须选择数据目录。";
 "Feishu App ID and App Secret are required." = "必须填写飞书 App ID 和 App Secret。";
-"Group by Project" = "按项目分组";
 "Keep task" = "保留任务";
 "lark-cli Profile is required." = "必须选择 lark-cli 配置。";
 "Model switching is not available for this session." = "此会话不支持切换模型。";
@@ -324,19 +322,10 @@
 "Test passed in %.1f s" = "测试通过，耗时 %.1f 秒";
 "Unpin" = "取消置顶";
 "Pin to Top" = "置顶";
-"Close actions" = "关闭操作菜单";
-"Open actions" = "打开操作菜单";
-"Close layout options" = "关闭布局选项";
-"Layout and grouping" = "布局与分组";
 "Hide Advanced Settings" = "隐藏高级设置";
 "Advanced Settings" = "高级设置";
 "Hide advanced settings" = "隐藏高级设置";
 "Show advanced settings" = "显示高级设置";
-"Session is not bound yet" = "会话尚未绑定";
-"Session is available" = "会话可用";
-"Switching PTY connection" = "正在切换 PTY 连接";
-"Disconnect PTY" = "断开 PTY";
-"Reconnect PTY" = "重新连接 PTY";
 "Undone" = "已撤销";
 "Undo" = "撤销";
 "User" = "用户";
@@ -386,7 +375,6 @@
 "Saved" = "已保存";
 "Resolving Codex session workspace..." = "正在解析 Codex 会话工作区…";
 "Workspace loaded from bound Codex session." = "已从绑定的 Codex 会话加载工作区。";
-"Choice available" = "有待选择的选项";
 "No detail is available for this task." = "此任务没有可用详情。";
 "Codex CLI" = "Codex CLI";
 "Used by new Codex PTY sessions and resumed Codex sessions." = "用于新建 Codex PTY 会话及恢复的 Codex 会话。";
@@ -2587,3 +2575,10 @@
 "发送失败，重试会保留原会话。" = "发送失败，重试会保留原会话。";
 
 "今天想做什么？" = "今天想做什么？";
+"Restart Task Current Session" = "重启 Task 当前会话";
+"This Session" = "此会话";
+"Restart This Session" = "重启此会话";
+"Session Settings…" = "会话设置…";
+"Delete This Session…" = "删除此会话…";
+"Delete Task and Associated Sessions…" = "删除 Task 及关联会话…";
+"Associated Task Unavailable" = "所属 Task 暂不可用";

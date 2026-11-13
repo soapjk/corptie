@@ -198,14 +198,15 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                                 .environment(\.detailColumnVisibility, visibility)
                                 .frame(width: ConversationDetailWidgetMetrics.railWidth)
                                 .frame(maxHeight: .infinity)
-                                .background(DetailRailBackdrop())
                                 .background(DetailOutsideClickDismissal(enabled: !canDock) {
                                     temporaryVisible = false
                                 })
+                                .frame(width: DetailRailGeometry.viewportWidth, alignment: .trailing)
+                                .background(DetailRailBackdrop())
                         }
                     }
                 }
-                .frame(width: ConversationDetailWidgetMetrics.railWidth)
+                .frame(width: DetailRailGeometry.viewportWidth)
                 .frame(maxHeight: .infinity)
                 .allowsHitTesting(railPhase == .visible)
                 .accessibilityHidden(railPhase != .visible)
@@ -307,6 +308,15 @@ final class DetailOutsideClickView: NSView {
     isolated deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
 }
 
+/// Expose the existing 32pt material fade before the cards' 12pt inset.
+/// This fits inside the docked reading gutter; reserve/card widths stay intact.
+enum DetailRailGeometry {
+    static let leadingBackdropExtension: CGFloat = 20
+    static var viewportWidth: CGFloat {
+        ConversationDetailWidgetMetrics.railWidth + leadingBackdropExtension
+    }
+}
+
 /// Test-visible handle for the rail's slide state. The concrete view is generic
 /// over its SwiftUI content, so the assertion side uses this protocol.
 @MainActor
@@ -344,8 +354,8 @@ private struct DetailRailSlide<Content: View>: NSViewRepresentable {
 }
 
 private final class DetailRailSlideView<Content: View>: NSView, DetailRailSlidePositioning {
-    /// One full rail width is enough to move the card completely out of sight.
-    static var slideDistance: CGFloat { ConversationDetailWidgetMetrics.railWidth }
+    /// Move the entire backdrop, including its exposed leading fade, offscreen.
+    static var slideDistance: CGFloat { DetailRailGeometry.viewportWidth }
     private static var animationKey: String { "detail-rail-slide" }
 
     let host: NSHostingView<Content>
@@ -389,7 +399,13 @@ private final class DetailRailSlideView<Content: View>: NSView, DetailRailSlideP
             : CATransform3DMakeTranslation(Self.slideDistance, 0, 0)
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { visible ? super.hitTest(point) : nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // The exposed material is decoration over the reading gutter. It must
+        // not consume message clicks, selection or drag gestures underneath.
+        let local = convert(point, from: superview)
+        guard visible, local.x >= bounds.minX + DetailRailGeometry.leadingBackdropExtension else { return nil }
+        return super.hitTest(point)
+    }
 
     func setVisible(_ value: Bool, duration: Double, onSlideOutFinished: @escaping () -> Void) {
         guard value != visible else { return }

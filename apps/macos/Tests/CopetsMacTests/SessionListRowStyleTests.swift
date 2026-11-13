@@ -87,33 +87,6 @@ final class SessionListRowStyleTests: XCTestCase {
         }
     }
 
-    func testSessionsSidebarIsMoreCompactThanStandardRow() {
-        XCTAssertEqual(CompactSessionRowStyle.standard.height, 46)
-        XCTAssertEqual(CompactSessionRowStyle.sessionsSidebar.height, 38)
-        XCTAssertLessThan(
-            CompactSessionRowStyle.sessionsSidebar.height,
-            CompactSessionRowStyle.standard.height
-        )
-    }
-
-    func testSessionsSidebarUsesHigherTitleWeight() {
-        XCTAssertEqual(CompactSessionRowStyle.standard.titleWeight, .semibold)
-        XCTAssertEqual(CompactSessionRowStyle.sessionsSidebar.titleWeight, .bold)
-        XCTAssertEqual(CompactSessionRowStyle.sessionsSidebarWithSubtitle.titleWeight, .bold)
-    }
-
-    func testAllModeSubtitleRowStaysCompact() {
-        XCTAssertEqual(CompactSessionRowStyle.sessionsSidebarWithSubtitle.height, 44)
-        XCTAssertGreaterThan(
-            CompactSessionRowStyle.sessionsSidebarWithSubtitle.height,
-            CompactSessionRowStyle.sessionsSidebar.height
-        )
-        XCTAssertLessThan(
-            CompactSessionRowStyle.sessionsSidebarWithSubtitle.height,
-            CompactSessionRowStyle.standard.height
-        )
-    }
-
     func testLongCorptieTaskSessionTitleUsesCompactListProjection() {
         let title = "完善 Session 规划列表折叠、Tab 分组和多轮样式微调"
         let displayTitle = SessionListTitlePolicy.displayTitle(title, isCorptieTaskSession: true)

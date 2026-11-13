@@ -26,11 +26,12 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
         func updateNSView(_ view: NSView, context: Context) {}
     }
     func testPinnedDisclosureAnimatesLocallyWithStableNativeEnvelopeAndEightPointJumpGap() async throws {
-        let plan = try XCTUnwrap(item(count: 20).executionPlan)
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        do {
+        let systemReduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        for (count, reduceMotion) in [(2, systemReduceMotion), (80, systemReduceMotion), (80, true)] {
+            let plan = try XCTUnwrap(item(count: count).executionPlan)
             let card = PinnedExecutionChecklistCard(plan: plan,
                 jumpControl: AnyView(JumpProbe().frame(height: 30)))
+                .environment(\.accessibilityReduceMotion, reduceMotion)
             let floating = VStack(spacing: 0) { Color.clear.frame(height: 38); card }
             let region = ConversationRegionContainer(content: Color.clear, accessory: Color.clear.frame(height: 80),
                 atTop: false, height: nil, floatingClearanceInset: 38, floating: AnyView(floating))
@@ -42,6 +43,10 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
             region.layoutSubtreeIfNeeded()
             func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
             let scroll = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }.first)
+            let scrollerProbe = try XCTUnwrap(descendants(scroll).compactMap { $0 as? ConsoleOverlayScroller.Probe }.first)
+            // The floating host and shared checklist must not create another
+            // scroll owner. Its one native indicator uses the session-list class.
+            XCTAssertEqual(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }.count, 1)
             let jump = try XCTUnwrap(descendants(region.floatingHost).first { $0.identifier?.rawValue == "jump-probe" })
             let viewport = region.content.frame
             var clearances: [CGFloat] = []
@@ -64,11 +69,27 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
                 let sf = scroll.convert(scroll.bounds, to: region)
                 XCTAssertEqual(jf.minY - sf.maxY, 8, accuracy: 1)
             }
+            func assertIndicatorHidden() {
+                XCTAssertTrue(!scroll.hasVerticalScroller || scroll.verticalScroller?.isHidden != false
+                    || scroll.verticalScroller?.alphaValue == 0)
+            }
+            func assertGateClosed() {
+                XCTAssertTrue(scrollerProbe.usesWorkStyle)
+                XCTAssertFalse(scrollerProbe.allowsVerticalIndicator)
+                // Re-enter the same shared configuration used during native
+                // layout; it must not override the disclosure's closed gate.
+                scrollerProbe.configure()
+                scrollerProbe.configure()
+                XCTAssertFalse(scroll.hasVerticalScroller)
+                assertIndicatorHidden()
+            }
+            assertGateClosed()
             assertGap()
             try clickDisclosure()
             try await Task.sleep(for: .milliseconds(70))
             let midHeight = scroll.frame.height
             let envelope = region.floatingHost.frame.height
+            if !reduceMotion { assertGateClosed() }
             assertGap()
             try await Task.sleep(for: .milliseconds(210))
             let fullHeight = scroll.frame.height
@@ -78,19 +99,75 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
                 XCTAssertLessThan(midHeight, fullHeight)
                 XCTAssertEqual(region.floatingHost.frame.height, envelope, accuracy: 0.5)
             }
+            XCTAssertEqual(scroll.scrollerStyle, .overlay)
+            XCTAssertTrue(scroll.autohidesScrollers)
+            if count == 80 {
+                XCTAssertTrue(scroll.hasVerticalScroller)
+                XCTAssertTrue(scroll.verticalScroller is WorkOutlineThinScroller)
+                XCTAssertEqual(scroll.verticalScroller?.controlSize, .small)
+                XCTAssertEqual(scroll.scrollerInsets.right, WorkNavigationScrollStyle.trailingClearance)
+                XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).frame.height, scroll.contentView.bounds.height + 1)
+            } else {
+                XCTAssertLessThanOrEqual(try XCTUnwrap(scroll.documentView).frame.height, scroll.contentView.bounds.height + 1)
+                assertIndicatorHidden()
+            }
             assertGap()
             try clickDisclosure()
             try await Task.sleep(for: .milliseconds(70))
+            assertGateClosed()
             assertGap()
             if !reduceMotion { XCTAssertEqual(region.floatingHost.frame.height, envelope, accuracy: 0.5) }
             try await Task.sleep(for: .milliseconds(210))
             XCTAssertEqual(scroll.frame.height, 36, accuracy: 0.5)
+            assertGateClosed()
             XCTAssertEqual(region.floatingHost.frame.height, 74, accuracy: 0.5)
             XCTAssertEqual(region.content.frame, viewport)
             XCTAssertEqual(region.rootCommitCount, 0)
             XCTAssertLessThanOrEqual(clearances.count, 2, "No per-frame native clearance updates")
             print("Pinned disclosure reduceMotion=\(reduceMotion) middle=\(midHeight) full=\(fullHeight) nativeClearanceUpdates=\(clearances.count) rootCommits=\(region.rootCommitCount)")
         }
+    }
+    func testDisclosureCompletionCannotReopenAnInterruptedOrHiddenCard() {
+        var visibility = ChecklistDisclosureVisibility()
+        visibility.setPresented(true)
+        let firstExpansion = visibility.begin(animated: true)
+        XCTAssertFalse(visibility.allowsIndicators(expanded: true))
+        let collapse = visibility.begin(animated: true)
+        visibility.complete(firstExpansion)
+        XCTAssertFalse(visibility.settled)
+        XCTAssertTrue(visibility.retainsExpandedEnvelope)
+        visibility.complete(collapse)
+        XCTAssertFalse(visibility.allowsIndicators(expanded: false))
+
+        let nextExpansion = visibility.begin(animated: true)
+        visibility.complete(collapse)
+        XCTAssertFalse(visibility.allowsIndicators(expanded: true))
+        visibility.setPresented(false)
+        visibility.complete(nextExpansion)
+        XCTAssertFalse(visibility.allowsIndicators(expanded: true))
+        visibility.setPresented(true)
+        let currentExpansion = visibility.begin(animated: true)
+        visibility.complete(nextExpansion)
+        XCTAssertFalse(visibility.allowsIndicators(expanded: true))
+        visibility.complete(currentExpansion)
+        XCTAssertTrue(visibility.allowsIndicators(expanded: true))
+        XCTAssertFalse(visibility.retainsExpandedEnvelope)
+    }
+
+    func testReducedMotionSettlesImmediatelyAndInvalidatesPendingCompletion() {
+        var visibility = ChecklistDisclosureVisibility()
+        visibility.setPresented(true)
+        let animatedExpansion = visibility.begin(animated: true)
+        visibility.settleImmediately()
+        XCTAssertTrue(visibility.allowsIndicators(expanded: true))
+        XCTAssertFalse(visibility.retainsExpandedEnvelope)
+        let collapse = visibility.begin(animated: false)
+        visibility.complete(animatedExpansion)
+        XCTAssertFalse(visibility.allowsIndicators(expanded: false))
+        XCTAssertFalse(visibility.retainsExpandedEnvelope)
+        visibility.complete(collapse)
+        _ = visibility.begin(animated: false)
+        XCTAssertTrue(visibility.allowsIndicators(expanded: true))
     }
     private var builder: ConversationNativeRowBuilder {
         .init(sessionTitle: "Session", workingDirectory: nil, allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in nil })

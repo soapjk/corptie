@@ -4,7 +4,38 @@ import Testing
 
 struct SessionRestartInteractionTests {
     @Test
-    func selectedTaskContextMenuUsesTaskOperationsOnly() throws {
+    func flatAndGroupedWorkerEntriesShareTaskActionsWithoutChangingSessionDeletionTarget() throws {
+        let flat = try contents(of: "Console/ConsoleFlatSessionList.swift")
+        let host = try contents(of: "UnifiedConsoleView.swift")
+        let menus = try contents(of: "Console/UnifiedConsoleWorkTaskList.swift")
+        let row = try contents(of: "Console/ConsoleSessionRows.swift")
+        let session = try contents(of: "Console/SessionContextMenuContent.swift")
+        #expect(flat.contains("sessionContextMenuContent(for: session, isRenaming: isRenaming)"))
+        #expect(host.contains("sessionContextMenuContent(for: session, isRenaming: isRenaming)"))
+        #expect(row.contains("menuContent(session, $isRenaming)"))
+        #expect(menus.contains("let task = entityClient.task(taskID)"))
+        #expect(menus.contains("taskContextMenuContent(for: task, session: session)"))
+        #expect(menus.contains("let parent = entityClient.task(id)"))
+        #expect(session.contains("backendClient.delete(session: session)"))
+        #expect(session.contains("Delete This Session…"))
+        #expect(menus.contains("Task { await prepareTaskDeletion(task) }"))
+        #expect(menus.contains("Delete Task and Associated Sessions…"))
+        let start = try #require(menus.range(of: "func sessionContextMenuContent("))
+        #expect(!menus[start.lowerBound...].contains("entityClient.tasks.first(where:"))
+    }
+
+    @Test
+    func restartMenusObserveTheClientThatExecutesTheAction() throws {
+        let session = try contents(of: "Console/SessionContextMenuContent.swift")
+        let task = try contents(of: "Console/UnifiedConsoleWorkTaskList.swift")
+        #expect(session.contains("@ObservedObject var commandState: SessionCommandController"))
+        #expect(!session.contains("BackendClient.shared.sessionCommandController"))
+        #expect(session.contains("SessionRestartMenuButton(commandState: backendClient.sessionCommandController"))
+        #expect(task.contains("SessionRestartMenuButton(commandState: backendClient.sessionCommandController"))
+    }
+
+    @Test
+    func selectedTaskContextMenuKeepsTaskOperationsAndAnExplicitSessionSection() throws {
         let source = try contents(of: "Console/UnifiedConsoleWorkTaskList.swift")
         let menuStart = try #require(source.range(of: "func taskContextMenuContent("))
         let row = source[menuStart.lowerBound...]
@@ -13,7 +44,9 @@ struct SessionRestartInteractionTests {
         #expect(row.contains("taskPendingEdit = task"))
         #expect(row.contains("restartTask(task)"))
         #expect(row.contains("prepareTaskDeletion(task)"))
-        #expect(!row.contains("SessionContextMenuContent("))
+        #expect(row.contains("Menu(L10n(\"This Session\"))"))
+        #expect(row.contains("SessionContextMenuContent(session: session"))
+        #expect(row.contains("Delete Task and Associated Sessions…"))
         #expect(row.components(separatedBy: "systemImage: \"trash\"").count - 1 == 1)
         #expect(try contents(of: "Console/UnifiedConsoleTaskActions.swift").contains("restartCorptieTask(taskId: task.id)"))
     }
@@ -142,7 +175,7 @@ struct SessionRestartInteractionTests {
     @Test
     func sessionsTabSidebarExposesRestartThroughTheSharedContextMenu() throws {
         let sessionsSource = try contents(of: "Console/ConsoleSessionRows.swift")
-        let rowStart = try #require(sessionsSource.range(of: "struct ConsoleSessionRow: View"))
+        let rowStart = try #require(sessionsSource.range(of: "struct ConsoleSessionRow<MenuContent: View>: View"))
         let rowEnd = try #require(sessionsSource.range(
             of: "func sessionMatchingPendingSelection",
             range: rowStart.upperBound..<sessionsSource.endIndex
@@ -150,17 +183,17 @@ struct SessionRestartInteractionTests {
         let row = sessionsSource[rowStart.lowerBound..<rowEnd.lowerBound]
 
         #expect(row.contains(".contextMenu"))
-        #expect(row.contains("SessionContextMenuContent(session: session"))
+        #expect(row.contains("menuContent(session, $isRenaming)"))
     }
 
     @Test
     func restartRemainsDiscoverableWhenTemporarilyUnavailable() throws {
-        let source = try contents(of: "Floating/SessionList/SessionListRows.swift")
+        let source = try contents(of: "Console/SessionContextMenuContent.swift")
         let menuStart = try #require(source.range(of: "struct SessionContextMenuContent: View"))
         let menu = source[menuStart.lowerBound...]
 
-        #expect(menu.contains("Label(L10n(\"Restart Session\")"))
-        #expect(menu.contains("session.actions?.restart?.available != true"))
+        #expect(menu.contains("L10n(\"Restart Session\")"))
+        #expect(menu.contains("session?.actions?.restart?.available != true"))
         #expect(!menu.contains("if session.actions?.restart?.available == true"))
     }
 

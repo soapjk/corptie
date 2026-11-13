@@ -33,9 +33,9 @@ struct ProviderModelLoadingLifecycleTests {
         #expect(backendClient.contains("func loadModelsForSelectedSession(forceRefresh: Bool = false) async"))
         #expect(backendClient.contains("await loadModels(for: provider, forceRefresh: forceRefresh)"))
 
-        let floatingRootView = try source(named: "Floating/NewSession/NewProviderSessionSheet.swift")
-        #expect(floatingRootView.contains("private func loadModelsForCurrentAgent()"))
-        #expect(floatingRootView.contains("await backendClient.loadModels(for: provider)"))
+        let creationSource = try source(named: "ProjectWorkspace/NewProviderSessionSheet.swift")
+        #expect(creationSource.contains("private func loadModelsForCurrentAgent()"))
+        #expect(creationSource.contains("await backendClient.loadModels(for: provider)"))
 
         let appSource = try source(named: "Settings/SettingsView.swift")
         #expect(appSource.contains("await backendClient.loadModels(for: \"codex-pty\")"))

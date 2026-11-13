@@ -61,6 +61,7 @@ public enum ConversationReferenceOperation: String, Identifiable {
             self.taskTitle = taskTitle; self.workName = workName; self.workDescription = workDescription
         }
     }
+    let providerIcon: Image?
     let configuration: ClientDetailConfiguration
     let selectConfiguration: @MainActor (ClientDetailConfiguration.Field, String) async throws -> Void
     let reloadConfiguration: @MainActor () async -> Void
@@ -73,7 +74,7 @@ public enum ConversationReferenceOperation: String, Identifiable {
     let referenceManagement: ConversationReferenceManagement?
     let openArtifact: ((ClientResourceFocus) -> Void)?
     let openSession: ((String) -> Void)?
-    public init(configuration: ClientDetailConfiguration,
+    public init(configuration: ClientDetailConfiguration, providerIcon: Image? = nil,
                 selectConfiguration: @escaping @MainActor (ClientDetailConfiguration.Field, String) async throws -> Void,
                 reloadConfiguration: @escaping @MainActor () async -> Void,
                 readTurnSummary: @escaping @MainActor (String) async throws -> ClientTurnSummary,
@@ -84,6 +85,7 @@ public enum ConversationReferenceOperation: String, Identifiable {
                 referenceManagement: ConversationReferenceManagement? = nil,
                 openArtifact: ((ClientResourceFocus) -> Void)? = nil,
                 openSession: ((String) -> Void)? = nil) {
+        self.providerIcon = providerIcon
         self.configuration = configuration; self.selectConfiguration = selectConfiguration
         self.reloadConfiguration = reloadConfiguration; self.readTurnSummary = readTurnSummary; self.readTurnTrace = readTurnTrace
         self.worktreeAPI = worktreeAPI; self.onWorktreeJob = onWorktreeJob; self.resident = resident

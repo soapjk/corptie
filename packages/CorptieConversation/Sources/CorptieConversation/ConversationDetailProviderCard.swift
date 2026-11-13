@@ -3,7 +3,6 @@ import CorptieClientCore
 
 /// Complete shared controls, not platform-supplied View slots.
 public struct ConversationDetailProviderCard: View {
-    @Environment(\.detailWidgetSize) private var widgetSize
     let configuration: ClientDetailConfiguration
     let scope: String
     let select: @MainActor (ClientDetailConfiguration.Field, String) async throws -> Void
@@ -12,29 +11,22 @@ public struct ConversationDetailProviderCard: View {
     @State private var submitting = false
     @State private var error: String?
     @State private var lifetime = UUID()
-    private var compact: Bool { widgetSize != nil }
-    public init(configuration: ClientDetailConfiguration, scope: String,
+    private let providerIcon: Image?
+    public init(configuration: ClientDetailConfiguration, scope: String, providerIcon: Image? = nil,
                 select: @escaping @MainActor (ClientDetailConfiguration.Field, String) async throws -> Void,
                 reload: @escaping @MainActor () async -> Void) {
-        self.configuration = configuration; self.scope = scope; self.select = select; self.reload = reload
+        self.configuration = configuration; self.scope = scope; self.providerIcon = providerIcon
+        self.select = select; self.reload = reload
     }
     public var body: some View {
-        ConversationDetailModuleCard(title: "Provider", systemImage: "cpu", headerActions: {
+        ConversationDetailModuleCard(title: "Provider", systemImage: "cpu", naturalHeight: true, headerActions: {
             Button { Task { await reload() } } label: { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).disabled(submitting || configuration.busy).help("刷新配置").accessibilityLabel("刷新配置")
         }) {
-            if compact {
-                HStack(alignment: .top, spacing: 8) {
-                    selector(.provider, label: "Provider")
-                    selector(.model, label: "模型")
-                    selector(.reasoning, label: "处理强度")
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    selector(.provider, label: "Provider")
-                    selector(.model, label: "模型")
-                    selector(.reasoning, label: "处理强度")
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                selector(.provider, label: "Provider", symbol: "cpu")
+                selector(.model, label: "模型", symbol: "square.stack.3d.up")
+                selector(.reasoning, label: "处理强度", symbol: "slider.horizontal.3")
             }
             if submitting || configuration.busy { Label("正在更新配置…", systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
             if let message = error ?? configuration.error { Text(message).font(.caption).foregroundStyle(.secondary) }
@@ -51,37 +43,62 @@ public struct ConversationDetailProviderCard: View {
         .onChange(of: configuration.provider.id) { _, _ in pending = nil; error = nil }
         .onDisappear { lifetime = UUID(); pending = nil }
     }
-    private func selector(_ field: ClientDetailConfiguration.Field, label: String) -> some View {
+    private func selector(_ field: ClientDetailConfiguration.Field, label: String, symbol: String) -> some View {
         let value = configuration.selection(field)
-        let menu = Menu {
-                ForEach(value.choices) { choice in
-                    Button {
-                        if field == .provider { pending = choice } else { submit(field, choice.id) }
-                    } label: {
-                        if choice.id == value.id { Label(choice.title, systemImage: "checkmark") } else { Text(choice.title) }
-                    }.disabled(!choice.available || choice.id == value.id)
+        let title = value.title.isEmpty ? "未设置" : value.title
+        return Menu {
+            // Keep native menu content deferred; reuse the published choices without
+            // sorting, catalog lookup or image loading on the interaction path.
+            ForEach(value.choices) { choice in
+                Button {
+                    if field == .provider { pending = choice } else { submit(field, choice.id) }
+                } label: {
+                    if choice.id == value.id { Label(choice.title, systemImage: "checkmark") } else { Text(choice.title) }
+                }.disabled(!choice.available || choice.id == value.id)
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Group {
+                    if field == .provider, let providerIcon {
+                        providerIcon.resizable().scaledToFit()
+                    } else {
+                        Image(systemName: symbol).foregroundStyle(.secondary)
+                    }
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(value.title.isEmpty ? "未设置" : value.title).lineLimit(1)
-                    if value.canSelect { Image(systemName: "chevron.up.chevron.down").font(.caption2) }
-                }.foregroundStyle(value.canSelect ? Color.accentColor : Color.secondary)
-                    .frame(maxWidth: .infinity, minHeight: compact ? 44 : 28, alignment: .leading).contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .disabled(!value.canSelect || value.choices.isEmpty || submitting || configuration.busy)
-            .accessibilityLabel("切换\(label)")
-            .accessibilityValue(value.title.isEmpty ? "未设置" : value.title)
-            .help("\(label)：\(value.title.isEmpty ? "未设置" : value.title)")
-        return Group {
-            if compact {
+                .frame(width: 20, height: 20)
+                .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    menu
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                    Text(label).font(.caption).foregroundStyle(.secondary)
+                    Text(title)
+                        .font(WorkbenchTypography.font(for: .body))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if value.canSelect {
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
             }
-            else { ConversationDetailPropertyRow(label) { menu } }
-        }.font(WorkbenchTypography.font(for: compact ? .help : .body))
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        #if os(macOS)
+        // The borderless AppKit menu style flattens custom labels into a
+        // single native title. Button style preserves the full SwiftUI row.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        #else
+        .menuStyle(.borderlessButton)
+        #endif
+        .disabled(!value.canSelect || value.choices.isEmpty || submitting || configuration.busy)
+        .accessibilityLabel("切换\(label)")
+        .accessibilityValue(title)
+        .help("\(label)：\(title)")
     }
     private func submit(_ field: ClientDetailConfiguration.Field, _ id: String) {
         let value = configuration.selection(field)

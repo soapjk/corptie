@@ -54,6 +54,16 @@ import AppKit
         }
     }
 
+    @Test func naturalProviderDoesNotProbeOtherCardsScrollingContent() {
+        let counts = MeasureCounts()
+        let host = NSHostingView(rootView: DetailWidgetLayout(sizes: [.medium, .small], naturalHeightIndices: [0]) {
+            Color.clear.frame(height: 189)
+            DetailWidgetViewport(size: .small) { ExpensiveContent(counts: counts) { Color.clear } }
+        })
+        for _ in 0..<100 { _ = host.fittingSize }
+        #expect(counts.measurements == 0)
+    }
+
     @Test func viewportIdealSizeProbesDoNotMeasureScrollingContent() {
         let counts = MeasureCounts()
         let host = NSHostingView(rootView: DetailWidgetViewport(size: .small) {
@@ -110,6 +120,27 @@ import AppKit
         }
     }
 
+    @Test func naturalProviderReservesContentHeightWithoutChangingOtherCells() {
+        for width: CGFloat in [220, 300, 390] {
+            for height: CGFloat in [189, 251.5, 430] {
+                let plan = DetailWidgetPlacement.make(width: width, widgets: [.strip, .medium, .small, .small], naturalHeights: [1: height])
+                #expect(plan.frames[0].height == DetailWidgetSize.strip.height)
+                #expect(plan.frames[1].height == height)
+                #expect(plan.frames[1].width == width)
+                #expect(plan.frames[2].height == DetailWidgetSize.small.height)
+                let gap = plan.frames[2].minY - plan.frames[1].maxY
+                #expect(gap >= 12 && gap < 24)
+                for (index, frame) in plan.frames.enumerated() {
+                    for other in plan.frames.dropFirst(index + 1) { #expect(!frame.intersects(other)) }
+                }
+            }
+        }
+        let defaults = DetailWidgetPlacement.make(width: 300, widgets: [.medium, .small])
+        for invalid: CGFloat in [0, -1, .infinity, .nan] {
+            #expect(DetailWidgetPlacement.make(width: 300, widgets: [.medium, .small], naturalHeights: [0: invalid]) == defaults)
+        }
+    }
+
     @Test func shortCardsUseTwelvePointHeightSteps() {
         #expect(DetailWidgetSize.fitted(height: 1).height == 60)
         #expect(DetailWidgetSize.fitted(height: 61).height == 72)
@@ -143,7 +174,7 @@ import AppKit
         })
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 324, height: 400),
             styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         defer { window.contentView = nil; window.close() }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(80))
@@ -185,27 +216,31 @@ import AppKit
         #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 264))
     }
 
-    @Test func smallProviderShowsAllThreeControlsWithoutVerticalOverflow() async throws {
-        let selection = ClientDetailConfiguration.Selection(id: "test", title: "Example Model", choices: [], canSelect: false)
+    @Test func narrowProviderUsesNaturalHeightAndOnlyTheRailScrollOwner() async throws {
+        let selection = ClientDetailConfiguration.Selection(id: "test", title: "Example Model With A Long Fully Visible Name", choices: [], canSelect: false)
         let host = NSHostingView(rootView: ConversationDetailDashboard {
-            DetailWidgetLayout(sizes: [.small]) {
+            DetailWidgetLayout(sizes: [.medium], naturalHeightIndices: [0]) {
                 ConversationDetailProviderCard(configuration: .init(provider: selection, model: selection, reasoning: selection),
-                    scope: "test", select: { _, _ in }, reload: {}).detailWidget(.small)
+                    scope: "test", select: { _, _ in }, reload: {}).detailWidget(.medium)
             }
         })
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 324, height: 400),
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 244, height: 600),
             styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         defer { window.contentView = nil; window.close() }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(100))
         func scrolls(_ view: NSView) -> [NSScrollView] {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls)
         }
-        let outer = try #require(scrolls(host).first)
-        let inner = try #require(outer.documentView.flatMap { scrolls($0).first })
-        #expect(inner.bounds.size == CGSize(width: 144, height: 144))
-        #expect(try #require(inner.documentView).bounds.height <= inner.contentView.bounds.height + 1)
+        func probes(_ view: NSView) -> [DetailCardProbe.View] {
+            (view as? DetailCardProbe.View).map { [$0] } ?? view.subviews.flatMap(probes)
+        }
+        #expect(scrolls(host).count == 1)
+        let card = try #require(probes(host).first)
+        print("PROVIDER_NARROW frame=\(card.bounds)")
+        #expect(card.bounds.width == 220)
+        #expect(card.bounds.height > DetailWidgetSize.medium.height)
     }
 
     @Test func nativeBusinessGridSettlesWhileReorderingResizingAndUpdatingContent() async throws {
@@ -237,7 +272,7 @@ import AppKit
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        window.orderFront(nil)
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         defer { window.contentView = nil; window.close() }
         func probes(_ view: NSView) -> [DetailCardProbe.View] {
             if let probe = view as? DetailCardProbe.View { return [probe] }
@@ -295,7 +330,7 @@ import AppKit
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 376, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        window.orderFront(nil)
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         defer { window.contentView = nil; window.close() }
         func cards(_ view: NSView) -> [DetailCardProbe.View] {
             if let card = view as? DetailCardProbe.View { return [card] }

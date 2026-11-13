@@ -24,6 +24,22 @@ import CorptieClientCore
         controller.cancel()
     }
 
+    @Test func providerDragPreviewUsesItsNaturalCardHeight() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        try await fixture.settle()
+        let controller = try fixture.controller()
+        let provider = try #require(fixture.views(DetailCardProbe.View.self).first { $0.bounds.height > DetailWidgetSize.medium.height })
+        let height = provider.bounds.height
+        print("PROVIDER_DRAG frame=\(provider.bounds)")
+        #expect(height > DetailWidgetSize.medium.height)
+        controller.begin("provider", at: CGPoint(x: 40, y: 250))
+        #expect(controller.draft?.source == "provider")
+        #expect(abs(controller.preview.frame.height - height) <= 1)
+        controller.cancel()
+        #expect(fixture.defaults.object(forKey: "corptie.detail.cardKindOrder.v1") == nil)
+    }
+
     @Test func draftReconcilesLiveInsertionsAndDeletesWithoutMutatingSource() throws {
         let source = ["summary", "references", "provider"]
         var draft = try #require(DetailCardReorderDraft(source: "summary", order: source))
@@ -47,7 +63,9 @@ import CorptieClientCore
         controller.begin("summary", at: CGPoint(x: 50, y: 20))
         #expect(controller.draft?.source == "summary")
         #expect(controller.preview.image != nil)
-        let target = try #require(fixture.views(DetailCardProbe.View.self).first { $0.bounds.width == 144 })
+        // Provider is now a full-width natural-height card; the old 144pt
+        // half-cell selector no longer identifies any card in this fixture.
+        let target = try #require(fixture.views(DetailCardProbe.View.self).first { $0.bounds.height > DetailWidgetSize.medium.height })
         let container = try #require(fixture.views(DetailCardReorderContainerProbe.View.self).first)
         let nativePoint = target.convert(CGPoint(x: target.bounds.midX,
             y: target.isFlipped ? target.bounds.maxY - 4 : 4), to: container)
@@ -58,8 +76,9 @@ import CorptieClientCore
         #expect(fixture.arrangement.ordered(ClientDetailCardPolicy.orderedCards(in: fixture.handle.store, context: .init(sessionKind: "assistantChat", taskID: nil, workID: nil))).map(\.id) == ["summary", "provider", "references"])
         #expect(fixture.defaults.object(forKey: "corptie.detail.cardKindOrder.v1") == nil)
         let cells = fixture.views(DetailCardProbe.View.self)
+        print("PROVIDER_REORDER frames=\(cells.map { $0.bounds.size })")
         #expect(cells.count == 3)
-        #expect(cells.map { $0.bounds.size }.contains(CGSize(width: 144, height: 144)))
+        #expect(cells.contains { $0.bounds.width == 300 && $0.bounds.height > DetailWidgetSize.medium.height })
         #expect(cells.map { $0.bounds.size }.contains(CGSize(width: 300, height: 84)))
         controller.end(at: dropPoint)
         for _ in 0..<50 {
@@ -196,7 +215,7 @@ import CorptieClientCore
             host = NSHostingView(rootView: content)
             window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 324, height: 650),
                 styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false; window.contentView = host; window.orderFront(nil)
+            window.isReleasedWhenClosed = false; window.contentView = host; window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
             try receive()
         }
 

@@ -633,7 +633,8 @@ struct SessionConversationSurface: View {
             }
             if hasPinnedChecklist, let plan = currentChecklist {
                 PinnedExecutionChecklistCard(plan: plan,
-                    jumpControl: showsFloatingJumpControl ? AnyView(jumpControlSlot) : nil)
+                    jumpControl: showsFloatingJumpControl ? AnyView(jumpControlSlot) : nil,
+                    active: acceptsPresentationUpdates)
                     .id(sessionId + ":" + plan.planId)
                     .modifier(WorkbenchReadingLane(compact: compactComposer))
                     .padding(.bottom, 6)

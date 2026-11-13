@@ -14,6 +14,8 @@ extension UnifiedConsoleView {
                     hasUnread: sessionIndexStore.workUnreadSummary.hasUnreadAssistantSessions,
                     isProcessing: sessionIndexStore.hasProcessingAssistantSessions))) {
                     selectSessionAfterHighlight($0, focusComposer: true)
+                } menuContent: { session, isRenaming in
+                    sessionContextMenuContent(for: session, isRenaming: isRenaming)
                 }
             if isShowingWorkerArchive,
                backendClient.archivedSessionsHasMore
@@ -26,7 +28,7 @@ extension UnifiedConsoleView {
 }
 
 /// Uses the SDK's reusable list rows; status updates stay on SessionRowModel.
-struct ConsoleFlatSessionList: View {
+struct ConsoleFlatSessionList<MenuContent: View>: View {
     @ObservedObject var store: SessionIndexStore
     let works: [Work]
     let tasks: [CorptieTask]
@@ -37,11 +39,12 @@ struct ConsoleFlatSessionList: View {
     let toggleChats: () -> Void
     let chatHeader: AnyView
     let select: (TaskSession) -> Void
+    @ViewBuilder var menuContent: (TaskSession, Binding<Bool>) -> MenuContent
 
     var body: some View {
         let workNames = Dictionary(works.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
         let taskWorks = Dictionary(tasks.map { ($0.id, $0.workId) }, uniquingKeysWith: { _, last in last })
-        let sections = Self.partitionedRows(store.rows, sort: sort)
+        let sections = ConsoleFlatSessionList<EmptyView>.partitionedRows(store.rows, sort: sort)
         let chatCount = ConsoleChatPreviewPolicy.visibleCount(total: sections.chats.count, showsAll: showsAllChats)
         List {
             chatHeader
@@ -51,7 +54,7 @@ struct ConsoleFlatSessionList: View {
             Group {
                 ForEach(Array(sections.chats.prefix(chatCount))) { row in
                     ConsoleSessionRow(showsHoverFeedback: false, isActive: isActive,
-                        row: row, selectionRequested: select)
+                        row: row, selectionRequested: select, menuContent: menuContent)
                         .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
@@ -82,10 +85,10 @@ struct ConsoleFlatSessionList: View {
                 // The "项目" rows use the exact same surface as the native work
                 // outline. List insets stay at zero so the surface owns both the
                 // 16pt content padding and the 8pt highlight breathing room.
-                ConsoleSessionRow(projectName: Self.projectName(for: row.session,
+                ConsoleSessionRow(projectName: ConsoleFlatSessionList<EmptyView>.projectName(for: row.session,
                     workNames: workNames, taskWorks: taskWorks),
                     showsHoverFeedback: false, isActive: isActive, row: row,
-                    selectionRequested: select)
+                    selectionRequested: select, menuContent: menuContent)
                     .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id,
                         fixesHeightToNativeRow: false)
                     .listRowInsets(EdgeInsets())
@@ -98,6 +101,9 @@ struct ConsoleFlatSessionList: View {
         .accessibilityIdentifier("console.session-list")
     }
 
+}
+
+extension ConsoleFlatSessionList where MenuContent == EmptyView {
     @MainActor static func partitionedRows(_ rows: [SessionRowModel], sort: WorkOutlineSort)
         -> (chats: [SessionRowModel], projects: [SessionRowModel]) {
         let ordered = orderedRows(rows, sort: sort)

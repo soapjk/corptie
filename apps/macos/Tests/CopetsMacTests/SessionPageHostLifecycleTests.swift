@@ -340,7 +340,7 @@ import CorptieConversation
         _ = NSApplication.shared
         let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
         client.markBackendConnectedFromSessionStream()
-        timeline.apply(detail(1)); inputs.resume(); await settle()
+        timeline.apply(detail(15)); inputs.resume(); await settle()
         let suite = "welcome-dock-geometry-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -379,6 +379,12 @@ import CorptieConversation
                         let text = longDraft ? Array(repeating: "A longer draft line", count: 12).joined(separator: "\n") : "Draft"
                         editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
                         await settle(); host.layoutSubtreeIfNeeded(); await settle(); host.layoutSubtreeIfNeeded()
+                        let table = try XCTUnwrap(descendants(region.content).compactMap { $0 as? NSTableView }.first)
+                        let timelineScroll = try XCTUnwrap(table.enclosingScrollView)
+                        let last = table.convert(table.rect(ofRow: table.numberOfRows - 1), to: region)
+                        let opaqueTop = region.accessory.frame.maxY + (region.floatingRegionClearance ?? 0)
+                        XCTAssertGreaterThanOrEqual(last.minY, opaqueTop - 0.5)
+                        XCTAssertEqual((timelineScroll.documentView?.frame.height ?? 0) - timelineScroll.contentView.bounds.maxY, 0, accuracy: 0.5)
                         let scroll = try XCTUnwrap(editor.enclosingScrollView)
                         let quick = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }
                             .first { abs($0.frame.height - ConversationQuickMessages.rowHeight) < 0.5 })
@@ -416,6 +422,173 @@ import CorptieConversation
                     }
                 }
             }
+        }
+    }
+
+    func testLatestRowClearsRealDockAcrossSmallViewportChanges() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream()
+        timeline.apply(detail(15)); inputs.resume(); await settle()
+        let host = NSHostingView(rootView: SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { inputs.retire(); window.contentView = nil; window.close() }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let region = try XCTUnwrap(descendants(host).compactMap { $0 as? ConversationRegionContainer<AnyView, AnyView> }.first)
+        let table = try XCTUnwrap(descendants(region.content).compactMap { $0 as? NSTableView }.first)
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        func assertDockBoundary() throws {
+            let document = try XCTUnwrap(scroll.documentView)
+            let row = table.rect(ofRow: table.numberOfRows - 1)
+            let rowFrame = table.convert(row, to: region)
+            let opaqueTop = region.accessory.frame.maxY + (region.floatingRegionClearance ?? 0)
+            let gap = document.frame.height - scroll.contentView.bounds.maxY
+            print("BOTTOM_BOUNDARY height=\(window.frame.height) document=\(document.frame.height) clip=\(scroll.contentView.bounds) row=\(rowFrame) opaqueTop=\(opaqueTop) gap=\(gap)")
+            XCTAssertEqual(gap, 0, accuracy: 0.5)
+            XCTAssertGreaterThanOrEqual(rowFrame.minY, opaqueTop - 0.5)
+            var glyphChecks = 0
+            if let cell = table.view(atColumn: 0, row: table.numberOfRows - 1, makeIfNecessary: false) {
+                for text in descendants(cell).compactMap({ $0 as? NSTextView }) where !text.string.isEmpty {
+                    if let manager = text.layoutManager, let container = text.textContainer {
+                        glyphChecks += 1
+                        manager.ensureLayout(for: container)
+                        let used = manager.usedRect(for: container).offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+                        XCTAssertGreaterThanOrEqual(text.convert(used, to: region).minY, opaqueTop - 0.5)
+                    }
+                }
+            }
+            XCTAssertGreaterThan(glyphChecks, 0, "The real last row must include a measured text glyph boundary")
+        }
+        try assertDockBoundary()
+        for height: CGFloat in [699, 697, 694, 690, 685, 679, 672, 664, 700] {
+            window.setContentSize(.init(width: 900, height: height))
+            host.layoutSubtreeIfNeeded(); await settle(); host.layoutSubtreeIfNeeded(); await settle()
+            try assertDockBoundary()
+        }
+        // Same fixture IDs, longer final message: exercise streamed row growth.
+        for length in [64, 128, 512] {
+            timeline.apply(ChatPerformanceFixture.make(configuration: .init(turnCount: 15,
+                rawItemCount: 45, longMessageCharacters: length)).detail)
+            await settle(); host.layoutSubtreeIfNeeded(); await settle()
+            try assertDockBoundary()
+        }
+        host.isHidden = true; inputs.freeze()
+        window.setContentSize(.init(width: 540, height: 650))
+        host.layoutSubtreeIfNeeded(); inputs.resume(); host.isHidden = false
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        try assertDockBoundary()
+        let fields: [String: Any] = ["schemaVersion": 1, "planId": "checklist:bottom", "taskId": inputs.session.taskId ?? "task-a",
+            "revision": 1, "closed": false, "lifecycle": "active", "completedCount": 0, "updatedAt": "2026-11-13",
+            "steps": (0..<20).map { ["stepId": "step-\($0)", "ordinal": $0, "text": "Pending item \($0)", "status": "pending"] as [String: Any] }]
+        let plan = try JSONDecoder().decode(ConversationExecutionPlan.self, from: JSONSerialization.data(withJSONObject: fields))
+        NotificationCenter.default.post(name: .executionChecklistChanged, object: inputs.session.taskId, userInfo: ["checklist": plan])
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        try assertDockBoundary()
+        let checklistScroll = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }.first)
+        let checklistDocument = try XCTUnwrap(checklistScroll.documentView)
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        for _ in 0..<2 {
+            let point = checklistDocument.convert(.init(x: checklistDocument.bounds.width - 43,
+                y: checklistDocument.isFlipped ? 18 : checklistDocument.bounds.height - 18), to: nil)
+            for (number, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: number, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                window.sendEvent(event)
+            }
+            for _ in 0..<8 {
+                try await Task.sleep(for: .milliseconds(35))
+                host.layoutSubtreeIfNeeded(); try assertDockBoundary()
+            }
+        }
+    }
+
+    func testShortHistoryGlyphsStayAboveActualCompletedChecklistAndInsideClip() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream()
+        let sentence = "好，新建页直接复用现有聊天输入框组件，包括附件、Agent / 模型选择、发送按钮和输入交互。"
+        let message = try JSONDecoder().decode(CodexThreadItem.self, from: JSONSerialization.data(withJSONObject: [
+            "id": "short-reply", "turnId": "short-turn", "turnStatus": "completed",
+            "type": "agentMessage", "title": "", "text": sentence, "status": "completed"]))
+        let detail = CodexThreadDetail(id: "short-thread", title: "Short history", status: .complete,
+            source: nil, connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil,
+            activityStatus: nil, cwd: nil, createdAt: "", updatedAt: "", canSend: true,
+            sendUnavailableReason: nil, capabilities: nil, turnCount: 1, items: [message])
+        timeline.apply(detail); inputs.resume(); await settle()
+        let suite = "short-history-dock-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        let scope = ClientQuickMessageCache.scope(host: client.baseURL.absoluteString,
+            taskID: inputs.session.taskId, sessionID: inputs.scope.sessionID)
+        cache.remember((0..<8).map { .init(id: "short-chip-\($0)",
+            text: "A quick message with overflow \($0)", scope: "task", count: 1) }, for: scope)
+        let host = NSHostingView(rootView: SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs, quickMessageCache: cache))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1000, height: 760),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { inputs.retire(); window.contentView = nil; window.close() }
+        let fields: [String: Any] = ["schemaVersion": 1, "planId": "checklist:short-completed",
+            "taskId": inputs.session.taskId ?? "task-a", "revision": 1, "closed": false,
+            "lifecycle": "completed", "completedCount": 3, "updatedAt": "2026-11-13",
+            "steps": (0..<3).map { ["stepId": "done-\($0)", "ordinal": $0,
+                "text": "Completed item \($0)", "status": "completed"] as [String: Any] }]
+        let plan = try JSONDecoder().decode(ConversationExecutionPlan.self, from: JSONSerialization.data(withJSONObject: fields))
+        NotificationCenter.default.post(name: .executionChecklistChanged, object: inputs.session.taskId,
+            userInfo: ["checklist": plan])
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let region = try XCTUnwrap(descendants(host).compactMap { $0 as? ConversationRegionContainer<AnyView, AnyView> }.first)
+        let table = try XCTUnwrap(descendants(region.content).compactMap { $0 as? NSTableView }.first)
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        let editor = try XCTUnwrap(findEditor(host))
+        // Underfilled, wrapping, and scrollable cases use the same real page and editor.
+        for size in [CGSize(width: 1000, height: 760), CGSize(width: 420, height: 760),
+                     CGSize(width: 420, height: 320), CGSize(width: 1000, height: 760)] {
+            window.setContentSize(size)
+            host.layoutSubtreeIfNeeded(); await settle(); host.layoutSubtreeIfNeeded(); await settle()
+            let document = try XCTUnwrap(scroll.documentView)
+            XCTAssertGreaterThanOrEqual(document.frame.height + 0.5, scroll.contentView.bounds.height)
+            let checklist = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }
+                .first { abs($0.bounds.height - 36) < 0.5 }, "Measure the real collapsed card, not its host envelope")
+            let checklistFrame = checklist.convert(checklist.bounds, to: region)
+            let quick = try XCTUnwrap(descendants(region.floatingHost).compactMap { $0 as? NSScrollView }
+                .first { abs($0.bounds.height - ConversationQuickMessages.rowHeight) < 0.5 })
+            let quickFrame = quick.convert(quick.bounds, to: region)
+            let opaqueTop = max(checklistFrame.maxY, quickFrame.maxY)
+            let text = try XCTUnwrap(descendants(table).compactMap { $0 as? NSTextView }
+                .first { $0.string.contains("新建页直接复用") })
+            let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+            manager.ensureLayout(for: container)
+            let used = manager.usedRect(for: container).offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+            let glyphFrame = text.convert(used, to: region)
+            // This is an independent native card frame, not clearance subtraction.
+            XCTAssertGreaterThanOrEqual(glyphFrame.minY - opaqueTop, 4,
+                "The final complete glyph line must have visible space above the actual opaque card")
+            let visible = text.visibleRect.insetBy(dx: -0.5, dy: -0.5)
+            XCTAssertTrue(visible.contains(used), "All glyphs must survive native ancestor clipping")
+            let clipFrame = scroll.contentView.convert(scroll.contentView.bounds, to: region)
+            let bodyVisible = region.content.convert(region.content.visibleRect, to: region)
+            XCTAssertTrue(clipFrame.insetBy(dx: -0.5, dy: -0.5).contains(glyphFrame))
+            XCTAssertTrue(bodyVisible.insetBy(dx: -0.5, dy: -0.5).contains(glyphFrame))
+            let glyphs = manager.glyphRange(for: container)
+            if glyphs.length > 0 {
+                let lastGlyph = NSMaxRange(glyphs) - 1
+                let line = manager.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+                let baseline = text.convert(.init(x: text.textContainerOrigin.x,
+                    y: text.textContainerOrigin.y + line.minY + manager.location(forGlyphAt: lastGlyph).y), to: region).y
+                print("SHORT_DOCK size=\(size) doc=\(document.frame) clipBounds=\(scroll.contentView.bounds) documentVisible=\(scroll.documentVisibleRect) table=\(table.frame) clip=\(clipFrame) text=\(text.convert(text.bounds, to: region)) used=\(glyphFrame) lastGlyphBaseline=\(baseline) checklist=\(checklistFrame) quick=\(quickFrame)")
+            }
+            XCTAssertTrue(findEditor(host) === editor)
         }
     }
 

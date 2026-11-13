@@ -49,6 +49,8 @@ final class EntityAPIClient: ObservableObject {
     var works: [Work] { appState.works }
     var roles: [Role] { appState.roles }
     var tasks: [CorptieTask] { appState.tasks }
+    /// Direct resource lookup; never materialize or scan the sorted inventory for a menu.
+    func task(_ id: String) -> CorptieTask? { appState.task(id) }
     @Published private(set) var tasksRevision: UInt64 = 0
     let sessionGroupingDidChange = PassthroughSubject<Void, Never>()
     @Published private(set) var tasksLoadError: String?
