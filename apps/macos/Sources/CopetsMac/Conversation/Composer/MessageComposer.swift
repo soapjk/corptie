@@ -374,22 +374,8 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var sendButton: some View {
-        Button { sendCurrentDraft() } label: {
-            Group {
-                if sendingMessage || isImportingImages {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-            }
-            .foregroundStyle(isSendDisabled ? Color.secondary : Color.white)
-            .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
-            .background(isSendDisabled ? Color.primary.opacity(0.06) : Color.accentColor, in: Circle())
-                .contentShape(Circle().inset(by: compact ? 0 : -8))
-        }
-        .buttonStyle(.plain)
-        .disabled(isSendDisabled)
+        ComposerSendControl(disabled: isSendDisabled, busy: sendingMessage || isImportingImages,
+                            expandedHitArea: !compact, action: sendCurrentDraft)
         .help(isImportingImages ? L10n("正在导入图片…") : L10n("Send instruction"))
         .accessibilityLabel(isImportingImages ? L10n("正在导入图片…") : L10n("Send instruction"))
         .accessibilityIdentifier("conversation-composer-send")

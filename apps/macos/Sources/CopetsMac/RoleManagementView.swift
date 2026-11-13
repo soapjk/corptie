@@ -685,8 +685,9 @@ struct RoleCard: View {
     }
 }
 
-private struct RoleCardAvatar: View {
+struct RoleCardAvatar: View {
     let role: Role
+    var size: CGFloat = 40
     @State private var image: NSImage?
 
     var body: some View {
@@ -696,9 +697,9 @@ private struct RoleCardAvatar: View {
             } else {
                 DefaultInitialAvatarView(
                     familySeed: role.name, variationSeed: role.roleId,
-                    initials: DefaultAvatarInitials.make(from: role.name), size: 40)
+                    initials: DefaultAvatarInitials.make(from: role.name), size: size)
             }
-        }.frame(width: 40, height: 40).clipShape(Circle()).accessibilityHidden(true)
+        }.frame(width: size, height: size).clipShape(Circle()).accessibilityHidden(true)
             .task(id: role.avatarPath) {
                 // Static thumbnails; loading is tied to the path, never body evaluation.
                 image = role.avatarPath.flatMap { AvatarImageSupport.loadImage(at: $0) }

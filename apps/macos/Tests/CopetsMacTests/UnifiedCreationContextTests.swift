@@ -39,4 +39,35 @@ final class UnifiedCreationContextTests: XCTestCase {
         XCTAssertFalse(draft.taskMode)
         XCTAssertNil(draft.workID)
     }
+    @MainActor func testNativeEditorBufferIsTheCreationPromptAcrossNavigation() {
+        let draft = UnifiedCreationDraft()
+        draft.prepare(.init(workID: "a"))
+        draft.editor.recordEditorText("Native editor message")
+        draft.editor.suspendPresentation()
+        draft.prepare(.init(workID: "b"))
+        draft.editor.resumePresentation()
+        XCTAssertEqual(draft.prompt, "Native editor message")
+        XCTAssertEqual(draft.workID, "a")
+        XCTAssertEqual(draft.editor.submission()?.text, draft.prompt)
+        XCTAssertNil(draft.createdSession)
+    }
+
+    @MainActor func testWorkSelectionDeterminesTypeWithoutChangingDraftOrRetryIdentity() {
+        let draft = UnifiedCreationDraft()
+        draft.prepare(.init(workID: "original"), parentTaskID: "parent")
+        draft.prompt = "Keep this message"
+        let requestID = draft.requestID
+        draft.selectWork(nil)
+        XCTAssertFalse(draft.taskMode)
+        XCTAssertNil(draft.parentTaskID)
+        draft.selectWork("next")
+        XCTAssertTrue(draft.taskMode)
+        XCTAssertEqual(draft.prompt, "Keep this message")
+        XCTAssertEqual(draft.requestID, requestID)
+        draft.submissionStarted = true
+        draft.selectWork(nil)
+        XCTAssertEqual(draft.workID, "next")
+        XCTAssertTrue(draft.taskMode)
+    }
+
 }
