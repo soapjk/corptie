@@ -87,6 +87,8 @@ struct UnifiedConsoleView: View {
     /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
     @State var showNewSessionCreation = false
     @State var isCreatingWork = false
+    @State private var creationDraft = UnifiedCreationDraft()
+
     struct TaskCreationTarget: Identifiable {
         let id = UUID()
         let workID: String?
@@ -215,6 +217,7 @@ struct UnifiedConsoleView: View {
             guard let sessionID,
                   let session = backendClient.sessions.first(where: { $0.id == sessionID })
                     ?? backendClient.archivedSessions.first(where: { $0.id == sessionID }) else { return }
+            showNewSessionCreation = false
             synchronizeConsoleSelection(with: session)
             Self.recordSessionId(session.id, category: SessionCategory(session: session))
             if sidebarState.isSelected {
@@ -245,11 +248,11 @@ struct UnifiedConsoleView: View {
         .sheet(isPresented: $isCreatingWork) {
             WorkCreateView()
         }
-        .sheet(item: $taskCreationTarget) { target in
-            UnifiedConversationCreateView(context: .init(workID: target.workID,
-                roleID: backendClient.selectedSession?.roleId,
-                providerID: backendClient.selectedSession?.external?.provider,
-                modelID: backendClient.selectedSession?.external?.currentModel), parentTaskID: target.parentTaskId)
+        .onChange(of: taskCreationTarget?.id) { _, _ in
+            guard let target = taskCreationTarget else { return }
+            creationDraft.prepare(.resolve(session: backendClient.selectedSession, workID: target.workID), parentTaskID: target.parentTaskId)
+            showNewSessionCreation = true
+            taskCreationTarget = nil
         }
         .sheet(item: $taskPendingEdit) { task in
             CorptieTaskEditView(task: task) {}
@@ -376,10 +379,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { consoleSidebarHeader }
-        .sheet(isPresented: $showNewSessionCreation) {
-            UnifiedConversationCreateView(context: .resolve(session: backendClient.selectedSession,
-                workID: selectedWorkId, chatSpace: selectedCategory == .assistant))
-        }
+
     }
 
     var normalConsoleNavigationContent: some View {
@@ -950,7 +950,10 @@ struct UnifiedConsoleView: View {
     }
 
     var outlineCreationMenu: some View {
-        Button { showNewSessionCreation = true } label: {
+        Button {
+            creationDraft.prepare(.resolve(session: backendClient.selectedSession, workID: selectedWorkId, chatSpace: selectedCategory == .assistant))
+            showNewSessionCreation = true
+        } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus").font(.system(size: 13))
                 Text(L10n("Create")).font(WorkbenchTypography.font(for: .navigation))
@@ -1179,7 +1182,16 @@ struct UnifiedConsoleView: View {
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
 
     @ViewBuilder var sessionConversation: some View {
-        if Self.usesResidentPages {
+        if showNewSessionCreation {
+            if sidebarState.isSelected {
+                UnifiedConversationCreateView(draft: creationDraft) {
+                    showNewSessionCreation = false
+                    creationDraft = UnifiedCreationDraft()
+                }
+            } else {
+                Color.clear
+            }
+        } else if Self.usesResidentPages {
             ResidentSessionPageSwitcher(presentation: pagePresentation,
                 selectedSessionID: residentSelectedSessionID, isActive: sidebarState.isSelected,
                 backend: backendClient, cache: presentationCache, drafts: composerDraftRepository,
