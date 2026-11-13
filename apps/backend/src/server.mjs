@@ -508,7 +508,7 @@ const ensureRepositoryArtifactCommitHook = (path, options = {}) => ensureArtifac
 });
 const artifactService = new ArtifactService({ store, ensureCommitHook: ensureRepositoryArtifactCommitHook });
 const contextReadService = new ContextReadService({ store });
-const chatResourceService = new ChatResourceService({ store });
+const chatResourceService = new ChatResourceService({ store, artifacts: artifactService });
 const sceneService = new SceneApplicationService({ store });
 let benchmarkControlPlane = null;
 const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({

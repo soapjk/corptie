@@ -100,4 +100,16 @@ struct MessageImageGalleryTests {
         #expect(cache.references(messageID: "cache-test", text: first).first?.source == "/tmp/a.png")
         #expect(cache.references(messageID: "cache-test", text: next).first?.source == "/tmp/b.png")
     }
+    @Test func deliveredImagesUseTheSameReferencesOnDesktopAndMobile() {
+        let hash = String(repeating: "a", count: 64)
+        let pinned = "artifact:picture?version=2&hash=\(hash)"
+        let text = "截图\n![one](\(pinned))\n![legacy](artifact:old)\n![tool](corptie-image:tool-item)\n[document](artifact:report)\n```\n![hidden](artifact:example)\n```"
+        let refs = ConversationMessageImageReference.parse(text)
+        #expect(refs.map(\.source) == [pinned, "artifact:old", "corptie-image:tool-item"])
+        let body = ConversationMessageImageReference.removing(refs, from: text)
+        #expect(body.contains("截图"))
+        #expect(body.contains("[document](artifact:report)"))
+        #expect(body.contains("![hidden](artifact:example)"))
+        #expect(!body.contains("![one]"))
+    }
 }

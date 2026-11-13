@@ -154,6 +154,15 @@ final class MessageLinkResolverTests: XCTestCase {
         }
     }
 
+    func testDeliveredArtifactAndToolImagesResolveWithoutLocalFileProbing() {
+        let link = "artifact:picture?version=1&hash=" + String(repeating: "b", count: 64)
+        let refs = MessageMarkdownImageResolver.references(
+            in: "![one](\(link)) ![duplicate](\(link)) ![tool](corptie-image:tool-id)",
+            baseDirectory: nil)
+        XCTAssertEqual(refs.map(\.source), [link, "corptie-image:tool-id"])
+        XCTAssertEqual(refs.map { $0.url.scheme }, ["artifact", "corptie-image"])
+    }
+
     func testExtractsLocalAndRemoteMarkdownImagesOutsideCodeFences() throws {
         try withTemporaryDirectory { directory in
             let image = directory.appendingPathComponent("preview image.png")

@@ -350,7 +350,7 @@ enum MessageMarkdownImageResolver {
                 let destination = reference.source
                 let targetURL: URL?
                 if let remoteURL = URL(string: destination),
-                   ["http", "https"].contains(remoteURL.scheme?.lowercased() ?? "") {
+                   ["http", "https", "artifact", "corptie-image"].contains(remoteURL.scheme?.lowercased() ?? "") {
                     targetURL = remoteURL
                 } else {
                     let rawPath: String

@@ -100,3 +100,26 @@ test("a Session cannot read another Session's managed image", async () => {
     { code: "CHAT_IMAGE_FORBIDDEN" }
   );
 });
+
+test("delivered image loads coalesce and queue instead of failing a normal multi-image gallery", async () => {
+  let active = 0, maximum = 0, calls = 0;
+  const releases = [];
+  const service = new ChatResourceService({
+    store: { getSessionItem: (_session, id) => ({ type: 'agentMessage', text: `![image](artifact:${id})`, createdAt: '2026-11-13T00:00:00Z' }),
+      getSession: () => ({ id: 's', workId: 'w' }) },
+    artifacts: { readMessageImage: async () => {
+      calls++; maximum = Math.max(maximum, ++active);
+      await new Promise(resolve => releases.push(resolve)); active--;
+      return { data: PNG };
+    } }
+  });
+  const reference = { sessionId: 's' };
+  const requests = Array.from({length: 8}, (_, i) => service.readMessageResource(reference, `img${i}`, `artifact:img${i}`));
+  requests.push(service.readMessageResource(reference, 'img0', 'artifact:img0'));
+  while (calls < 8 || active > 0) {
+    releases.splice(0).forEach(resolve => resolve());
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  await Promise.all(requests);
+  assert.equal(calls, 8); assert.equal(maximum, 3); assert.equal(service.imageReads.size, 0);
+});
