@@ -17,6 +17,7 @@ public protocol ConversationTimelineItem: Sendable {
     var processEndedAt: String? { get set }
     var timelineHasImages: Bool { get }
     var timelineMessageOrigin: String? { get }
+    var timelineIsLocalSubmission: Bool { get }
 }
 
 public extension ConversationTimelineItem {
@@ -25,6 +26,7 @@ public extension ConversationTimelineItem {
     var collaborationDirection: String? { nil }
     var timelineHasImages: Bool { false }
     var timelineMessageOrigin: String? { nil }
+    var timelineIsLocalSubmission: Bool { false }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
@@ -42,8 +44,11 @@ public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, S
     public let processReplyCompleted: Bool
     /// Whole-reply lifecycle, independent of already closed process segments.
     public let processReplyState: ConversationProcessState?
+    public let processRowIdentity: String?
+    public var processDisclosureID: String { processRowIdentity ?? { if case .process(let turn, _) = kind { return turn }; return id }() }
     public init(kind: Kind, mediaItems: [Item] = [], processReplyCompleted: Bool = false,
-                processReplyState: ConversationProcessState? = nil) {
+                processReplyState: ConversationProcessState? = nil, processRowIdentity: String? = nil) {
+        self.processRowIdentity = processRowIdentity
         self.kind = kind; self.mediaItems = mediaItems; self.processReplyCompleted = processReplyCompleted
         self.processReplyState = processReplyState
     }
@@ -53,7 +58,7 @@ public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, S
         case .message(let item):
             return "message:\(item.id)"
         case .process(let turnId, _):
-            return "process:\(turnId)"
+            return "process:\(processRowIdentity ?? turnId)"
         }
     }
 
@@ -353,6 +358,13 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     func isProcessItem(_ item: Item) -> Bool {
         isDetailProcessItem(item) || (diagnosticIDs.count > 1 && diagnosticIDs.contains(item.id))
     }
+    // A reliable message keeps its ID when its delivery turn is rebound to
+    // a Provider turn. Preserve that identity without changing execution IDs.
+    let processIdentity = userMessages.first.flatMap { item -> String? in
+        guard item.timelineIsLocalSubmission || UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
+            legacyStatus: item.timelineLegacyMessageStatus) != nil else { return nil }
+        return "input:" + item.id
+    }
     let turnStartedAt = userMessages.compactMap(\.createdAt).first
         ?? items.compactMap(\.createdAt).first
     let isTerminalTurn = items.contains(where: {
@@ -387,7 +399,8 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
         }
 
         entries.append(ConversationEntry<Item>(
-            kind: .process(turnId: segmentTurnId, items: segmentItems)
+            kind: .process(turnId: segmentTurnId, items: segmentItems),
+            processRowIdentity: processSegmentIndex == 1 ? processIdentity : nil
         ))
     }
 
@@ -415,13 +428,13 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     // Processing and opted-in pending user feedback can precede visible
     // Provider content. Reuse a process row without rewriting source lifecycle
     // or creating a persisted message/tool step.
-    if lastProcessIndex == nil, !isTerminalTurn, !baseTurnId.isEmpty,
+    if lastProcessIndex == nil, !baseTurnId.isEmpty,
        let input = items.last(where: { item in
            let state = UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
                legacyStatus: item.timelineLegacyMessageStatus)
            let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
-           guard state == .processing || (showsPendingInputAsProcessing && kind == .userMessage
-               && state == .preparing) else { return false }
+           guard (state == .processing && !isTerminalTurn) || (kind == .userMessage
+               && (state != nil || item.timelineIsLocalSubmission)) else { return false }
            return kind == .userMessage || kind == .systemEvent || kind == .automationEvent
                || (kind == .collaborationMessage && item.collaborationDirection?.lowercased() == "inbound")
        }) {
@@ -430,7 +443,16 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
             return item.id == input.id
         }).map { $0 + 1 } ?? 0
         entries.insert(.init(kind: .process(turnId: baseTurnId, items: []),
-                             processReplyState: .running), at: insertion)
+                             processReplyState: {
+                                let state = UserMessageProcessingState(authoritativeValue: input.userMessageStatus,
+                                    legacyStatus: input.timelineLegacyMessageStatus)
+                                if state == .failed || items.contains(where: { ["failed", "error"].contains($0.timelineTurnStatus.lowercased()) }) { return .failed }
+                                if state == .cancelled || items.contains(where: { ["cancelled", "canceled", "interrupted"].contains($0.timelineTurnStatus.lowercased()) }) { return .cancelled }
+                                if isTerminalTurn || state == .consumed { return .completed }
+                                if input.timelineIsLocalSubmission { return .sending }
+                                return state == .processing ? .running : .waiting
+                             }(),
+                             processRowIdentity: processIdentity), at: insertion)
     }
     if !taskChecklists.isEmpty {
         let insertion = entries.lastIndex(where: { $0.isProcessGroup }).map { $0 + 1 }

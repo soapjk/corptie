@@ -1640,6 +1640,7 @@ private struct PadProcessCard: View {
     }
     private var tint: Color {
         switch state {
+        case .sending, .waiting: .secondary
         case .running: .accentColor
         case .completed: .green
         case .failed: .red

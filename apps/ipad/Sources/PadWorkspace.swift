@@ -898,7 +898,7 @@ final class PadWorkspace {
         } else {
             // Receipt identity changes must not move an earlier instruction
             // behind later locally queued instructions.
-            if localID != messageID { items[index] = ClientMessage(id: messageID, text: item.text) }
+            items[index] = ClientMessage(id: messageID, text: item.text, submissionState: .waiting)
             outgoingStates[messageID] = "后端已接收"
         }
         if outgoingMessages[sessionID] != items { outgoingMessages[sessionID] = items }
@@ -2131,7 +2131,7 @@ final class PadWorkspace {
             status = ""
             if !stop, slashCommand == nil, schedule == nil, let deviceID = connection.deviceID {
                 let messageID = ClientSessionAPI.messageID(deviceID: deviceID, requestID: command.requestID)
-                outgoingMessages[id, default: []].append(ClientMessage(id: messageID, text: text.isEmpty ? "图片消息" : text))
+                outgoingMessages[id, default: []].append(ClientMessage(id: messageID, text: text.isEmpty ? "图片消息" : text, submissionState: .sending))
                 outgoingStates[messageID] = "Sending"
                 outgoingRequestIDs[command.requestID] = messageID
                 scrollRequest += 1

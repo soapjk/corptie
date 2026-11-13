@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class SessionTimelineLocalOverlayTests: XCTestCase {
-    func testBusyOrUnacknowledgedSessionKeepsNewInputsQueuedWithoutProcessCards() {
+    func testBusyOrUnacknowledgedSessionKeepsSubmissionCardThroughAcknowledgement() {
         let fixture = ChatPerformanceFixture.make(configuration: .init(turnCount: 1, rawItemCount: 3, longMessageCharacters: 32))
         for busy in [false, true] {
             let overlay = SessionTimelineLocalOverlay()
@@ -11,15 +11,17 @@ final class SessionTimelineLocalOverlayTests: XCTestCase {
             if busy { session.executionStatus = "running" }
             let first = overlay.acknowledge("first", messageID: "first", deliveryID: "first",
                 to: session, residentDetail: fixture.detail, now: fixture.detail.updatedAt, submitting: true)
-            XCTAssertEqual(first.items.last?.status, busy ? "queued" : "processing")
+            XCTAssertEqual(first.items.last?.status, "queued")
             let second = overlay.acknowledge("second", messageID: "second", deliveryID: "second",
                 to: session, residentDetail: first, now: fixture.detail.updatedAt, submitting: true)
             XCTAssertEqual(second.items.last?.status, "queued")
             let queuedEntries = makeChatDisplayEntries(from: second.items.filter { $0.id == "second" })
-            XCTAssertFalse(queuedEntries.contains { $0.isProcessGroup })
+            XCTAssertEqual(queuedEntries.last?.processReplyState, .sending)
             let accepted = overlay.acknowledge("second", messageID: "second", deliveryID: "second",
                 to: session, residentDetail: second, now: fixture.detail.updatedAt)
-            XCTAssertFalse(makeChatDisplayEntries(from: accepted.items.filter { $0.id == "second" }).contains { $0.isProcessGroup })
+            let confirmed = makeChatDisplayEntries(from: accepted.items.filter { $0.id == "second" })
+            XCTAssertEqual(confirmed.last?.processReplyState, .waiting)
+            XCTAssertEqual(confirmed.last?.id, queuedEntries.last?.id)
         }
     }
 
@@ -28,7 +30,7 @@ final class SessionTimelineLocalOverlayTests: XCTestCase {
         let overlay = SessionTimelineLocalOverlay()
         let local = overlay.acknowledge("hello", messageID: "instant", deliveryID: "instant-delivery",
             to: fixture.session, residentDetail: fixture.detail, now: fixture.detail.updatedAt, submitting: true)
-        XCTAssertEqual(local.items.last?.status, "processing")
+        XCTAssertEqual(local.items.last?.status, "queued")
         XCTAssertEqual(local.items.last?.sourceType, "local_submission")
         let projected = makeChatDisplayEntries(from: local.items)
         XCTAssertTrue(projected.last?.isProcessGroup == true)

@@ -188,7 +188,7 @@ struct ConversationNativeRowBuilder {
                     )
                 }
             }
-            let expanded = expandedTurnIds.contains(turnId)
+            let expanded = expandedTurnIds.contains(entry.processDisclosureID)
             if expanded {
                 processSteps = NativeExecutionTimelineProjection.steps(for: items)
                 let processStepsText = NativeExecutionTimelineProjection.plainText(for: processSteps)
@@ -205,7 +205,7 @@ struct ConversationNativeRowBuilder {
             style = .process
             title = ""
             metadata = ""
-            expandableTurnId = turnId
+            expandableTurnId = entry.processDisclosureID
             isExpanded = expanded
             processCount = items.count
             processDuration = executionProcessDurationText(for: items)

@@ -67,9 +67,18 @@ extension PadWorkspace {
         let sessionID = message.displaySessionID
         // Do not reinsert authoritative messages on every retry/foreground resume.
         let authoritative = hasAuthoritativeMessage(id, sessionID: sessionID)
-        if !authoritative, !(outgoingMessages[sessionID] ?? []).contains(where: { $0.id == id }) {
-            outgoingMessages[sessionID, default: []].append(ClientMessage(id: id,
-                text: message.text.isEmpty ? "图片消息" : message.text))
+        if !authoritative {
+            let state: ConversationProcessState = switch message.state {
+            case .accepted: .waiting
+            case .rejected: .failed
+            case .cancelled: .cancelled
+            case .waiting, .blocked: .sending
+            }
+            let projected = ClientMessage(id: id, text: message.text.isEmpty ? "图片消息" : message.text,
+                submissionState: state)
+            if let index = outgoingMessages[sessionID]?.firstIndex(where: { $0.id == id }) {
+                if outgoingMessages[sessionID]?[index] != projected { outgoingMessages[sessionID]?[index] = projected }
+            } else { outgoingMessages[sessionID, default: []].append(projected) }
         }
         if !authoritative, outgoingStates[id] != title { outgoingStates[id] = title }
     }

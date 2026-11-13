@@ -25,6 +25,8 @@ public enum ConversationReplyProgressProjection {
             switch entries[index].kind {
             case .process(_, let items):
                 switch entries[index].processReplyState {
+                case .sending: return "sending"
+                case .waiting: return "waiting"
                 case .running: return "running"
                 case .completed: return "completed"
                 case .failed: return "failed"
@@ -64,11 +66,12 @@ public enum ConversationReplyProgressProjection {
             let latest = ended ? nil : intermediate.last { if case .message = entries[$0].kind { return true }; return false }
             var archived: [Item] = []
             var processID: String?
+            var processIdentity: String?
             for child in intermediate where child != latest {
                 switch entries[child].kind {
                 case .message(let item): archived.append(item)
                 case .process(let id, let items):
-                    if processID == nil { processID = id }
+                    if processID == nil { processID = id; processIdentity = entries[child].processRowIdentity }
                     archived.append(contentsOf: items)
                 }
             }
@@ -84,13 +87,15 @@ public enum ConversationReplyProgressProjection {
                     processReplyCompleted: completed, processReplyState: {
                         if completed { return .completed }
                         switch lastStatus?.lowercased() {
+                        case "sending": return .sending
+                        case "waiting": return .waiting
                         case "failed", "error": return .failed
                         case "cancelled", "canceled", "interrupted": return .cancelled
                         case .some: return .running
                         case nil: return intermediate.compactMap { entries[$0].processReplyState }.last
                             ?? ConversationProcessPresentation.state(for: archived)
                         }
-                    }()))
+                    }(), processRowIdentity: processIdentity))
             }
             if let latest { result.append(entries[latest]) }
             for remaining in segment where !isIntermediate(remaining) && (remaining >= first || isQuestion(remaining)) {
@@ -140,7 +145,8 @@ public enum ConversationReplyProgressProjection {
             let items: [Item]
             switch entry.kind {
             case .message(let item): items = entry.mediaItems.isEmpty ? [item] : entry.mediaItems
-            case .process(_, let value):
+            case .process(let turnID, let value):
+                aliases["process:" + turnID] = entry.id
                 items = value
                 processStates[entry.id] = entry.processReplyState ?? ConversationProcessPresentation.state(for: value)
             }
