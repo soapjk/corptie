@@ -98,3 +98,13 @@ test("explicit model reaches the no-tools reply and structured errors retain saf
     await assert.rejects(setup.probe("/chosen/codex"), error => error.code === code && !error.message.includes("secret"));
   }
 });
+
+test("normal reply passes and initialization failures show stage and redacted cause", async () => {
+  const f = fixture();
+  const make = (initialize, text) => createCodexEnvironmentSetup({ registry: f.registry, environment: () => ({}), prepare: async () => {},
+    createClient: () => ({ initialize, close: async () => {}, request: async () => ({}), runEphemeralPrompt: async () => ({ text }) }) });
+  assert.equal((await make(async () => {}, "你好，连接成功").probe("codex")).ok, true);
+  await assert.rejects(make(async () => {}, "  ").probe("codex"), { code: "PROVIDER_REPLY_INVALID" });
+  await assert.rejects(make(async () => { throw new Error("connection refused Bearer private-token"); }).probe("codex"), error =>
+    error.message.includes("启动程序") && error.message.includes("connection refused") && !error.message.includes("private-token"));
+});
