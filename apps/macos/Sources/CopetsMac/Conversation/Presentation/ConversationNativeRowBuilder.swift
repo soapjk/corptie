@@ -11,6 +11,7 @@ struct ConversationNativeRowBuilder {
     let allowsFork: Bool
     let forkUnavailableReason: String?
     let imageURL: (String) -> URL?
+    var replyQuestions: [String: String] = [:]
     var replyIdentity: ConversationReplyIdentity? = nil
 
     func applyingReplyIdentity(to rows: [AppKitChatTimelineRow], entries: [ChatDisplayEntry]) -> [AppKitChatTimelineRow] {
@@ -168,7 +169,15 @@ struct ConversationNativeRowBuilder {
             processCount = nil
             processDuration = nil
             processStartedAt = nil
-            actions = nativeTimelineActions(for: item)
+            if presentationKind == .agentMessage,
+               let reply = ConversationMessageReply(rawMetadataJSON: item.rawMetadataJSON) {
+                actions = [.init(id: item.id + ":original-question",
+                    label: reply.label(question: replyQuestions[reply.replyToMessageId]),
+                    isDestructive: false, kind: .locateMessage(messageID: reply.replyToMessageId))]
+                    + nativeTimelineActions(for: item)
+            } else {
+                actions = nativeTimelineActions(for: item)
+            }
             isPendingInteraction = (item.type == "approval" || item.type == "choice" || item.type == "userInput")
                 && item.status == "pending"
             showsCollaborationSentStatus = collaboration != nil
@@ -454,6 +463,13 @@ struct ConversationNativeRowBuilder {
         expandedTurnIds: Set<String>
     ) -> Int {
         var hasher = Hasher()
+        if case .message(let item) = entry.kind,
+           let reply = ConversationMessageReply(rawMetadataJSON: item.rawMetadataJSON) {
+            hasher.combine(reply.requestId)
+            hasher.combine(reply.replyToMessageId)
+            hasher.combine(reply.sourceSessionId)
+            hasher.combine(replyQuestions[reply.replyToMessageId])
+        }
         hasher.combine(entry.id)
         hasher.combine(AppLanguageController.shared.languageCode)
         hasher.combine(forkItemID(for: entry))

@@ -318,3 +318,14 @@ test("coordinated input hands off without registering or draining the main queue
   assert.equal(result.requestId,"request");assert.equal(result.queued,false);assert.equal(accepted.length,1);
   assert.equal(calls.some(([name])=>["register","drain"].includes(name)),false);
 });
+
+test("queue claim rechecks coordination before a busy main Session can reject the input", async () => {
+  const claims = [];
+  const { operation } = fixture({ store: { getLogicalSession: () => ({}), getMessageDelivery: () => ({ deliveryId: "delivery" }),
+    listUnsettledSessionTurns: () => assert.fail("main execution cannot block request handoff") },
+    sessionApplicationService: { coordinationRequests: { accepts: () => true,
+      admit: (...args) => { claims.push(args); return { request_id: "request:existing" }; } } } });
+  const result = await operation.sendUnifiedSessionMessage("session", "old queued input", { type: "desktop", messageId: "same" },
+    { fromAgentWorkQueue: true, agentTask: { taskId: "operation", sessionId: "session", source: { deliveryId: "delivery" } } });
+  assert.equal(result.requestId, "request:existing"); assert.equal(claims[0][4].taskId, "operation");
+});

@@ -1,3 +1,4 @@
+import { coordinationDelegation } from "../domain/coordinationDelegation.mjs";
 const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_execution","read_mailbox","read_resource","search_resources"];
 export const COORDINATION_READ_QUERY_SCHEMA={type:"object",additionalProperties:false,
   required:["tool","taskId","sessionId","query","cursor","messageId","offset","limit","targetType","targetId","section"],properties:{
@@ -29,6 +30,7 @@ export class CoordinationReadService {
     if(!root || root.id!==rootTaskId || source.sessionKind!=="worker" || source.workId!==root.work_id
       || root.archived || root.deletion_status || source.archived || source.deletedAt || route?.archived
       || route?.activeBinding?.state!=="active" || route.activeBinding.bindingId!==reference.bindingId)fail("COORDINATION_READ_SCOPE_INVALID");
+    if (root.current_session_id !== source.id && !coordinationDelegation(this.store, route.logicalSessionId)) fail("COORDINATION_READ_SCOPE_INVALID");
     if(!tools.includes(input.tool))fail("COORDINATION_READ_TOOL_UNSUPPORTED");
     if(input.tool==="read_resource" || input.tool==="search_resources") {
       if(!this.contextRead)fail("COORDINATION_RESOURCE_READ_UNAVAILABLE");

@@ -623,6 +623,9 @@ export class ToolHostMaterializationCoordinator {
       this.cancelBinding(logicalSessionId, providerBindingId);
       throw toolError("SESSION_BINDING_TOMBSTONED", "The Session binding is no longer active.", 410);
     }
+    if (binding.delegation?.executionPolicy === "host-coordination") {
+      throw toolError("SESSION_HOST_EXECUTION_ONLY", "Coordination Sessions execute through the restricted host, not ordinary Provider tools.", 403);
+    }
     if (binding.sessionKind === "worker") {
       if (!binding.sessionId || !binding.workId || !binding.taskId) {
         throw toolError("ACTOR_NOT_BOUND", "Worker Session binding is incomplete.", 403);

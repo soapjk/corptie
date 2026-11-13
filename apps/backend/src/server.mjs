@@ -1745,6 +1745,7 @@ sessionApplicationService.coordinationTurns = new CoordinationTurnService({
   })
 });
 const coordinationRequestService = new CoordinationRequestService({ store,
+  forgetQueued: (...args) => forgetRuntimeQueuedWork(...args),
   resolveMessage: async (reference, message) => ({ ...message, images: await Promise.all((message.images ?? []).map(async image => {
     const stored = await chatResourceService.readImage(reference, image.managedPath);
     return { ...image, absolutePath: stored.path, mimeType: stored.mimeType };
@@ -1762,6 +1763,9 @@ workService.assertCoordinationCanEnable = task => sessionApplicationService.coor
 workService.onCoordinationChanged = taskId => {
   sessionApplicationService.coordinationTurns.policyChanged(taskId);
   taskCoordinationService.activateShadow(taskId);
+  const sessionId = store.getTask(taskId)?.current_session_id;
+  const main = sessionId && store.getLogicalSessionByLegacySessionId(sessionId);
+  if (main) coordinationRequestService.migrateQueued(main.logicalSessionId);
 };
 toolHostService.assertExecutionAllowed = input => {
   const id = input.metadata?.logicalSessionId;
@@ -2680,6 +2684,10 @@ function startBackendRuntime() {
   executionChecklistService.retireLegacyContinuations();
   sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
   coordinationRequestService.recover();
+  for (const task of store.selectAll("SELECT current_session_id FROM tasks WHERE coordination_enabled=1 AND archived=0 AND current_session_id IS NOT NULL")) {
+    const main = store.getLogicalSessionByLegacySessionId(task.current_session_id);
+    if (main) coordinationRequestService.migrateQueued(main.logicalSessionId);
+  }
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();

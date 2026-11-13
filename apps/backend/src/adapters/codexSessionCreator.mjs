@@ -19,7 +19,8 @@ async function createCodexProviderSessionNow(input = {}, forkSource = null) {
   activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
   try {
     // Session 必须绑定已有 Agent（用户手动创建）；不静默创建、不注册/覆盖 agent。
-    const collaborationAgentId = input.toolHost?.actorId;
+    const restricted = input.executionPolicy === "host-coordination";
+    const collaborationAgentId = restricted ? input.actorId : input.toolHost?.actorId;
     if (!collaborationAgentId) {
       const error = new Error("A session must be bound to an existing Agent; toolHost.actorId is required.");
       error.code = "AGENT_REQUIRED";
@@ -35,7 +36,8 @@ async function createCodexProviderSessionNow(input = {}, forkSource = null) {
       sandbox: normalizeCodexSandbox(input.sandbox),
       approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
     };
-    const providerThreadOptions = input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(
+    const providerThreadOptions = restricted ? { executionPolicy: "no-tools", dynamicTools: [], environments: [] }
+      : input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(
       collaborationAgentId,
       input.toolHost?.metadata
     );

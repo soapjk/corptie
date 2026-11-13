@@ -166,6 +166,11 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   if (options.fromAgentWorkQueue !== true) {
     return enqueueUserAgentWork(before, message, source, latencyTrace, reference);
   }
+  if (options.agentTask && sessionApplicationService.coordinationRequests?.accepts(reference, source)) {
+    const request = sessionApplicationService.coordinationRequests.admit(reference, message, source,
+      store.getMessageDelivery(source.deliveryId ?? options.agentTask.source?.deliveryId), options.agentTask);
+    return { accepted: true, queued: false, requestId: request.request_id, sessionId: routedSessionId };
+  }
   if (sessionHasActiveRun(before) || store.listUnsettledSessionTurns(routedSessionId).length > 0) {
     const error = new Error("Target Session became busy before queued work started.");
     error.code = "SESSION_BUSY";

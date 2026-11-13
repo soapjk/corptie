@@ -69,12 +69,21 @@ public struct ClientCoordinationRequest: Decodable, Equatable, Identifiable, Sen
     public let messageId: String
     public let status: String
     public let question: String?
+    public let cleanupError: String?
     public let errorMessage: String?
     public let phase: String?
     public var id: String { requestId }
+    public var controlAction: String? {
+        if status == "failed" { return phase == "admitting" ? nil : "retry" }
+        return ["accepted", "queued", "preparing", "running", "waiting"].contains(status) ? "cancel" : nil
+    }
     public var statusLabel: String {
-        switch status {
+        if cleanupError != nil { return status == "cancelled" ? "已取消·清理中" : "资源待清理" }
+        if phase == "queued" { return "等待模型执行位" }
+        return switch status {
         case "accepted": "已接收"
+        case "queued": "排队中"
+        case "completed": "已完成"
         case "preparing": "准备中"
         case "running": "处理中"
         case "waiting": "等待相关结果"
@@ -187,6 +196,11 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 Set(value.items.map(\.id)).count == value.items.count else { throw ClientDetailFailure.invalidGraph }
         case .task(let task):
             let dispatches = task.coordinationDispatches ?? []
+            if let requests = task.coordinationExecution?.requests {
+                guard requests.count <= 100, Set(requests.map(\.id)).count == requests.count,
+                      requests.allSatisfy({ !$0.requestId.isEmpty && !$0.messageId.isEmpty })
+                else { throw ClientDetailFailure.invalidGraph }
+            }
             guard dispatches.count <= 5, Set(dispatches.map(\.id)).count == dispatches.count,
                 actions.filter({ ["task.coordination.update", "task.request.control"].contains($0.operation) }).allSatisfy({
                     $0.target?.resourceType == "task" && $0.target?.id == task.taskId
@@ -235,6 +249,9 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
         switch payload {
         case .coordinationProgress(let value): return base + value.items.count * 8192
         case .task(let value): return base + texts([value.title, value.description, value.acceptanceCriteria, value.verificationCriteria, value.summary.focus, value.summary.progress, value.summary.reason, value.summary.nextAction])
+            + (value.coordinationExecution?.requests ?? []).reduce(0) {
+                $0 + 1024 + texts([$1.question ?? "", $1.errorMessage ?? ""])
+            }
         case .session(let value): return base + texts([value.sessionId, value.workName])
         case .summary(let value): return base + texts([value.text])
         case .work(let value): return base + texts([value.name, value.description])

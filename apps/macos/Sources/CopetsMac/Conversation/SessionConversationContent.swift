@@ -966,7 +966,11 @@ struct SessionConversationSurface: View {
     /// This mutates no SwiftUI state and stores no View, coordinator or callback.
     private func preparedAppKitRows(_ entries: [ChatDisplayEntry], cache: DetailDisplayCache?,
                                    expansionSnapshot: Set<String>? = nil) -> [AppKitChatTimelineRow] {
-        let builder = nativeRowBuilder
+        var builder = nativeRowBuilder
+        builder.replyQuestions = Dictionary(entries.compactMap { entry in
+            guard case .message(let item) = entry.kind, item.type == "userMessage" else { return nil }
+            return (item.id, String((item.presentationText ?? item.text).prefix(180)))
+        }, uniquingKeysWith: { _, latest in latest })
         let expanded = expansionSnapshot ?? expandedProcessTurnIds
         let context = PreparedRowsContext(
             signature: cache?.signature ?? cachedItemsSignature,
@@ -1086,6 +1090,8 @@ struct SessionConversationSurface: View {
                 }
                 await backendClient.reloadSelectedSessionMessages()
             }
+        case .locateMessage(let messageID):
+            navigateToUserMessage(messageID)
         case .forkMessage(let itemID):
             pendingFork = SessionForkSelection(sessionID: sessionId, itemID: itemID)
         case .codexApproval(let option):
@@ -1439,18 +1445,24 @@ struct SessionConversationSurface: View {
         previousRows: [AppKitChatTimelineRow],
         nextEntries: [ChatDisplayEntry]
     ) -> [AppKitChatTimelineRow] {
-        nativeRowBuilder.applyingReplyIdentity(to: reuseCachedAppKitRows(
-            previousEntries: previousEntries, previousRows: previousRows, nextEntries: nextEntries),
+        var builder = nativeRowBuilder
+        builder.replyQuestions = Dictionary(nextEntries.compactMap { entry in
+            guard case .message(let item) = entry.kind, item.type == "userMessage" else { return nil }
+            return (item.id, String((item.presentationText ?? item.text).prefix(180)))
+        }, uniquingKeysWith: { _, latest in latest })
+        return builder.applyingReplyIdentity(to: reuseCachedAppKitRows(
+            previousEntries: previousEntries, previousRows: previousRows, nextEntries: nextEntries, builder: builder),
             entries: nextEntries)
     }
 
     private func reuseCachedAppKitRows(
         previousEntries: [ChatDisplayEntry],
         previousRows: [AppKitChatTimelineRow],
-        nextEntries: [ChatDisplayEntry]
+        nextEntries: [ChatDisplayEntry],
+        builder: ConversationNativeRowBuilder
     ) -> [AppKitChatTimelineRow] {
         guard previousEntries.count == previousRows.count else {
-            return nextEntries.map { appKitRow($0) }
+            return nextEntries.map { appKitRow($0, builder: builder) }
         }
         let previousIdentities = previousRows.map {
             AppKitChatRowReuseIdentity(id: $0.id, contentRevision: $0.contentRevision)
@@ -1458,7 +1470,7 @@ struct SessionConversationSurface: View {
         let nextIdentities = nextEntries.map {
             AppKitChatRowReuseIdentity(
                 id: $0.id,
-                contentRevision: appKitContentRevision($0, expandedTurnIds: expandedProcessTurnIds)
+                contentRevision: builder.appKitContentRevision($0, expandedTurnIds: expandedProcessTurnIds)
             )
         }
         let commonPrefixCount = AppKitChatRowReusePolicy.commonPrefixCount(
@@ -1467,7 +1479,7 @@ struct SessionConversationSurface: View {
         )
         if commonPrefixCount == previousEntries.count,
            nextEntries.count >= previousEntries.count {
-            return previousRows + nextEntries.dropFirst(commonPrefixCount).map { appKitRow($0) }
+            return previousRows + nextEntries.dropFirst(commonPrefixCount).map { appKitRow($0, builder: builder) }
         }
         guard
               let nextTailTurnId = nextEntries.last.map(chatDisplayEntryTurnId),
@@ -1475,9 +1487,9 @@ struct SessionConversationSurface: View {
               let previousTailStart = previousEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
               nextTailStart == previousTailStart,
               zip(nextIdentities[..<nextTailStart], previousIdentities[..<previousTailStart]).allSatisfy(==) else {
-            return nextEntries.map { appKitRow($0) }
+            return nextEntries.map { appKitRow($0, builder: builder) }
         }
-        return Array(previousRows[..<previousTailStart]) + nextEntries[nextTailStart...].map { appKitRow($0) }
+        return Array(previousRows[..<previousTailStart]) + nextEntries[nextTailStart...].map { appKitRow($0, builder: builder) }
     }
 
     private func makeIncrementalTailDisplay(

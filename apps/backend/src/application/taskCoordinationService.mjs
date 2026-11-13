@@ -35,6 +35,8 @@ export class TaskCoordinationService {
       [...keys.map(key => fields[key]), new Date().toISOString(), id]);
     this.store.scheduleSave();
     this.progress.scheduleDispatch(id);
+    const request = previous?.executor_session_id && this.requests?.forShadow(previous.executor_session_id);
+    if (request) this.requests.wakeDependents(request.request_id);
     this.changed(this.get(id)?.parent_task_id);
   }
   receipt(row) {

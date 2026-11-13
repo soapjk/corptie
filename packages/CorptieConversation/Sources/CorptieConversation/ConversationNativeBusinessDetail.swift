@@ -297,14 +297,22 @@ private struct NativeBusinessCard: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             NativeBusinessSummary(summary: value.summary)
-            if let action = command("task.coordination.update", target: value.taskId) {
-                ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false, dispatches: value.coordinationDispatches ?? [], execution: value.coordinationExecution, onRequestControl: { requestId, operation in
-                    if let control = command("task.request.control", target: value.taskId) {
-                        perform(control, ["requestId": .string(requestId), "action": .string(operation)])
+            let modeAction = command("task.coordination.update", target: value.taskId)
+            let requestAction = command("task.request.control", target: value.taskId)
+            if modeAction != nil || value.coordinationExecution != nil {
+                ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false,
+                    canChangeMode: modeAction.map(canCommand) == true,
+                    dispatches: value.coordinationDispatches ?? [], execution: value.coordinationExecution,
+                    onRequestControl: requestAction.map(canCommand) == true ? { requestId, operation in
+                        if let requestAction {
+                            perform(requestAction, ["requestId": .string(requestId), "action": .string(operation)])
+                        }
+                    } : nil) { enabled in
+                        if let modeAction, modeAction.available {
+                            perform(modeAction, ["coordinationEnabled": .bool(enabled)])
+                        }
                     }
-                }) { enabled in
-                    perform(action, ["coordinationEnabled": .bool(enabled)])
-                }.disabled(!action.available)
+                    .id(value.taskId)
             }
             NativeBusinessTextSection(title: "描述", text: value.description)
             NativeBusinessTextSection(title: "验收标准", text: value.acceptanceCriteria)

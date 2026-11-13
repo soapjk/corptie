@@ -213,7 +213,7 @@ struct MacSharedMessageTextCard: View {
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
         row.processStep != nil || row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
-            && (row.actions.isEmpty || (row.nativeStyle == .agent
+            && (row.actions.allSatisfy { if case .locateMessage = $0.kind { return true }; return false } || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
             && !row.showsCollaborationSentStatus
             && (row.images.isEmpty || (row.nativeStyle == .user) || (row.nativeStyle == .agent
