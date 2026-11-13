@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ObjectiveC
 import os
 import QuartzCore
 import SwiftUI
@@ -127,6 +128,12 @@ class MainWindow: NSWindow {
     /// Session keeps accumulating hosting views, so dragging gets slower the
     /// longer the app has been used and stays slow after the turn stops.
     /// Rebuild the loop once after the resize ends instead of on every frame.
+    ///
+    /// This only stops NSWindow's *automatic* rebuild. SwiftUI's FocusBridge
+    /// calls `NSView._recursiveSetDefaultKeyViewLoop` directly from
+    /// `NSHostingView.preferencesDidChange` on every layout pass, bypassing
+    /// `recalculateKeyViewLoop()` entirely. `MainWindowSurfaceContainer` holds
+    /// that walk at the content-view root; see the guard there.
     private var keyViewLoopResizeObserver: NSObjectProtocol?
 
     override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
@@ -381,6 +388,39 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         endResize(for: .liveResize)
+    }
+
+    /// A 3s main-thread sample of a slow drag (production 0.5.132, 17 min
+    /// uptime) spent 92.6% of frames in
+    /// `NSHostingView.layout` → `preferencesDidChange` →
+    /// `FocusBridge.invalidateKeyViewLoop` → `_recursiveSetDefaultKeyViewLoop`.
+    /// Each hosting view re-enters the walk, so its cost multiplies with the
+    /// number of mounted SwiftUI roots. `NSWindow.autorecalculatesKeyViewLoop
+    /// = false` and the `recalculateKeyViewLoop()` guard above cannot stop it:
+    /// FocusBridge sends this NSView entry point itself, once per layout pass.
+    ///
+    /// The content view is always on AppKit's recursion path, so holding the
+    /// walk here cuts off the entire hosting subtree for the duration of a
+    /// gesture without freezing layout, rasterising anything or detaching
+    /// views. `MainWindow` rebuilds the Tab chain exactly once afterwards.
+    @objc(_recursiveSetDefaultKeyViewLoop)
+    nonisolated func suspendKeyViewLoopDuringLiveResize() {
+        MainActor.assumeIsolated {
+            // The resize state also covers full-screen transitions, where
+            // AppKit may not report `inLiveResize` on every layout pass. This
+            // early return is the whole fix: no work at all on a drag frame.
+            guard !resizeState.isLiveResize, !(window?.inLiveResize ?? false) else { return }
+            let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
+            guard let method = class_getInstanceMethod(NSView.self, selector) else { return }
+            // Calling the NSView implementation by IMP is required: sending
+            // the selector to `self` again would re-enter this guard forever.
+            // This path runs only outside a gesture, so the lookup cost is
+            // irrelevant; keeping it local avoids static state in a generic.
+            typealias RecursiveKeyViewLoop = @convention(c) (NSView, Selector) -> Void
+            let callBase = unsafeBitCast(method_getImplementation(method),
+                                         to: RecursiveKeyViewLoop.self)
+            callBase(self, selector)
+        }
     }
 
     private func beginResize(for reason: ResizeReason) {

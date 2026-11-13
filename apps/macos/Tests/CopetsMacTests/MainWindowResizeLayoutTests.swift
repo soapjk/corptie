@@ -74,6 +74,35 @@ struct MainWindowResizeLayoutTests {
         #expect(runtime.contains("self?.recalculateKeyViewLoop()"))
     }
 
+    /// The window-level opt-out above does not survive SwiftUI: a production
+    /// sample taken *during* a drag showed FocusBridge calling
+    /// `NSView._recursiveSetDefaultKeyViewLoop` 96 times from
+    /// `NSHostingView.preferencesDidChange`, with each hosting view re-entering
+    /// the walk. Only an idle sample produced the earlier false negative.
+    /// Holding the walk at the content view cuts off the whole hosting subtree
+    /// for the gesture; the window still pays for one rebuild afterwards.
+    @MainActor
+    @Test
+    func contentViewHoldsFocusBridgeKeyViewLoopWalkDuringLiveResize() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let runtime = try String(contentsOf: root.appendingPathComponent("Application/MainWindowRuntime.swift"), encoding: .utf8)
+        #expect(runtime.contains("@objc(_recursiveSetDefaultKeyViewLoop)"))
+        #expect(runtime.contains("guard !resizeState.isLiveResize"))
+        #expect(runtime.contains("class_getInstanceMethod(NSView.self, selector)"))
+        // Re-sending the selector to self would re-enter the guard forever;
+        // the NSView implementation must be called by IMP instead.
+        #expect(!runtime.contains("perform(NSSelectorFromString"))
+        #expect(runtime.contains("unsafeBitCast(method_getImplementation(method)"))
+
+        let state = MainWindowResizeState()
+        let container = MainWindowSurfaceContainer(rootView: Text("Focus chain"), resizeState: state)
+        #expect(container.responds(to: NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")))
+    }
+
     /// AppKit's implicit animations on layout inputs rewrite the model frame or
     /// constraint constant on every frame. Each write re-solves Auto Layout and
     /// hands the hosted SwiftUI tree a new size proposal, so a 0.2s animation
