@@ -69,3 +69,11 @@ test("known session display changes do not evict cached heavy business ports", a
   cache.invalidate({ resourceType: "sessionMetadata", sessionId: "s" });
   await cache.read(scope, "worktree", identity, { force: false }); assert.equal(calls, 2);
 });
+
+test("request status events invalidate only their Task even without an entity payload", () => {
+  const received = [], router = new DetailBusinessInvalidation({}, change => received.push(change));
+  router.publishEvent("TaskChanged", { taskId: "task:requests", action: "coordination-request" }, null);
+  assert.deepEqual(received, [{ resourceType: "task", taskId: "task:requests" }]);
+  router.publishEvent("TaskChanged", {}, null);
+  assert.equal(received.length, 1);
+});

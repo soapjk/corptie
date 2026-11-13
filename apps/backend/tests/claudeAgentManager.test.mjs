@@ -1600,3 +1600,14 @@ test("selected connection helper reaches foreground, test and isolated backgroun
   await manager.runBackgroundPrompt({ prompt: "test", executionPolicy: "no-tools" });
   assert.equal(requests.at(-1).options.settings, undefined);
 });
+
+test("host coordination Session creation cannot run a prompt or inherit writable tools", async () => {
+  const manager = new ClaudeAgentManager({ query: () => assert.fail("must not run a native turn") });
+  const result = manager.start({ id: "restricted", executionPolicy: "host-coordination", prompt: "write",
+    runtimeOptions: { tools: ["Write"], mcpServers: { private: {} } } });
+  const session = manager.get("restricted");
+  assert.equal(session.initialPrompt, ""); assert.equal(session.sandbox, "read-only");
+  assert.deepEqual(session.runtimeOptions.tools, []); assert.deepEqual(session.runtimeOptions.mcpServers, {});
+  assert.equal(session.runtimeOptions.strictMcpConfig, true);
+  assert.equal((await session.runtimeOptions.canUseTool()).behavior, "deny");
+});

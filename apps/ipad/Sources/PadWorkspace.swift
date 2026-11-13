@@ -689,6 +689,7 @@ final class PadWorkspace {
     private(set) var processSteps: [String: [ConversationExecutionStep]] = [:]
     private(set) var processCommentaryIDs: [String: Set<String>] = [:]
     private(set) var processReplyBounds: [String: ConversationReplyProgressProjection.ReplyBounds] = [:]
+    private(set) var replyQuestions: [String: String] = [:]
     private(set) var timelineRowAliases: [String: String] = [:]
     @ObservationIgnored private var projectedSessionID: String?
     @ObservationIgnored private var projectedMessages: [ClientMessage] = []
@@ -706,7 +707,13 @@ final class PadWorkspace {
     @ObservationIgnored var validatedDeliveryIdentityScope: String?
     @ObservationIgnored var restoredAcknowledgementScope: String?
     var lastTimelineRevision: Int?
+    // A transient contiguous history window; never persisted as the live tail.
+    private(set) var navigationMessages: [ClientMessage]? = nil
+    private var navigationBefore: String?
+    @ObservationIgnored private var navigationEpoch = UUID()
+    var isNavigatingHistory: Bool { navigationMessages != nil }
     var visibleMessages: [ClientMessage] {
+        if let navigationMessages { return navigationMessages }
         let received = Set(messages.map(\.id))
         return Self.merge(messages, (outgoingMessages[selection ?? ""] ?? []).filter { item in
             !received.contains(item.id)
@@ -953,6 +960,10 @@ final class PadWorkspace {
             }
         }
         let tailChanged = !Self.sameDisplayedTail(displayEntries.last, nextEntries.last)
+        let questions = Dictionary(source.filter { $0.type == "userMessage" }.map {
+            ($0.id, String(($0.presentationText ?? $0.text).prefix(180)))
+        }, uniquingKeysWith: { _, latest in latest })
+        if replyQuestions != questions { replyQuestions = questions }
         displayEntries = nextEntries
         displayEntryByID = Dictionary(nextEntries.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         // Keep only current source aliases plus one previous visible generation.
@@ -1050,7 +1061,7 @@ final class PadWorkspace {
         if hasHiddenDisplayHistory {
             return "resident:\(visibleMessageLimit):\(messages.first?.id ?? "empty")"
         }
-        return before
+        return isNavigatingHistory ? navigationBefore : before
     }
 
     @discardableResult
@@ -1227,6 +1238,8 @@ final class PadWorkspace {
         guard persistentTimelineScope != scope else { return }
         if persistentTimelineScope != nil {
             timelineRepository = ClientTimelineRepository(capacity: 48)
+            navigationEpoch = UUID()
+            navigationMessages = nil; navigationBefore = nil
             messages = []; before = nil; lastTimelineRevision = nil; capabilities = nil
             messageRevision += 1
         }
@@ -1463,6 +1476,8 @@ final class PadWorkspace {
         configuringComposer = false
         status = ""
         conversationNotice = ""
+        navigationEpoch = UUID()
+        navigationMessages = nil; navigationBefore = nil
         historyRestorationAnchor = nil
         isLoadingEarlier = false
         visibleMessageLimit = newID.flatMap { visibleMessageLimits[$0] } ?? Self.initialDisplayWeight
@@ -1875,10 +1890,55 @@ final class PadWorkspace {
         return old.map { replacements[$0.id] ?? $0 } + new.filter { !existing.contains($0.id) }
     }
 
+    /// Called only by an explicit navigation click. Latest stream state stays resident.
+    func locateMessage(_ messageID: String, connection: PadConnection) async -> String? {
+        guard let sessionID = selection else { return nil }
+        let epoch = UUID()
+        navigationEpoch = epoch
+        let sourceID = "message:" + messageID
+        let residentRow = resolveTimelineRowID(sourceID) ?? sourceID
+        if displayEntryByID[residentRow] != nil { return residentRow }
+        let scope = authorityScope(connection)
+        let generation = timelineGeneration
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let page = try await api.messages(sessionId: capabilities?.sessionId ?? sessionID, around: messageID)
+            guard !Task.isCancelled, selection == sessionID, navigationEpoch == epoch,
+                  timelineGeneration == generation, authorityScope(connection) == scope else { return nil }
+            return showNavigationWindow(page, target: messageID)
+        } catch {
+            guard !Task.isCancelled, selection == sessionID, navigationEpoch == epoch,
+                  timelineGeneration == generation, authorityScope(connection) == scope else { return nil }
+            reportConversationReadFailure(error, operation: .history)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func showNavigationWindow(_ page: ClientMessagePage, target: String) -> String? {
+        guard page.items.count <= 31, page.items.contains(where: { $0.id == target }),
+              Set(page.items.map(\.id)).count == page.items.count else { return nil }
+        navigationMessages = page.items
+        navigationBefore = page.nextBefore
+        visibleMessageLimit = Self.initialDisplayWeight
+        refreshDisplayEntries()
+        clearConversationReadNotice(.history)
+        let sourceID = "message:" + target
+        return resolveTimelineRowID(sourceID) ?? sourceID
+    }
+
+    func returnToLatestMessages() {
+        navigationEpoch = UUID() // also invalidates a pending explicit around read
+        guard isNavigatingHistory else { return }
+        navigationMessages = nil; navigationBefore = nil
+        visibleMessageLimit = Self.initialDisplayWeight
+        refreshDisplayEntries()
+    }
+
     func loadEarlierMessagesIfNeeded(_ connection: PadConnection) async {
         guard selection != nil, !isLoadingEarlier, !connection.busy else { return }
         if revealEarlierDisplayEntries() { return }
-        guard before != nil else { return }
+        guard (isNavigatingHistory ? navigationBefore : before) != nil else { return }
         isLoadingEarlier = true
         defer { isLoadingEarlier = false }
         await load(connection, older: true)
@@ -1894,6 +1954,8 @@ final class PadWorkspace {
             timelineGeneration += 1
         }
         let generation = timelineGeneration
+        let historyEpoch = navigationEpoch
+        let historyWindow = isNavigatingHistory
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())
             let caps: ClientSessionCapabilities
@@ -1903,6 +1965,7 @@ final class PadWorkspace {
                 caps = try await api.capabilities(sessionId: id)
             }
             guard !Task.isCancelled, selection == id, generation == timelineGeneration,
+                  (!older || navigationEpoch == historyEpoch),
                   authorityScope(connection) == expectedAuthorityScope else { return }
             capabilities = caps
             guard caps.readMessages else {
@@ -1910,11 +1973,18 @@ final class PadWorkspace {
                 if !older { markTimelineAuthoritative(connection, sessionIDs: [id, caps.sessionId]) }
                 return
             }
-            let page = try await api.messages(sessionId: caps.sessionId, before: older ? before : nil)
+            let page = try await api.messages(sessionId: caps.sessionId, before: older ? (historyWindow ? navigationBefore : before) : nil)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration,
+                  (!older || navigationEpoch == historyEpoch),
                   authorityScope(connection) == expectedAuthorityScope else { return }
             clearConversationReadNotice(operation)
-            if older {
+            if older && historyWindow {
+                let anchorID = navigationMessages?.first?.id
+                navigationMessages = Self.merge(page.items, navigationMessages ?? [])
+                navigationBefore = page.nextBefore
+                historyRestorationAnchor = anchorID
+                refreshDisplayEntries()
+            } else if older {
                 let anchorID = messages.first?.id
                 messages = Self.merge(page.items, messages)
                 before = page.nextBefore
@@ -1958,6 +2028,8 @@ final class PadWorkspace {
         }
         commandConfirmation = nil
         timelineGeneration += 1
+        navigationEpoch = UUID()
+        navigationMessages = nil; navigationBefore = nil
         messages = []
         refreshDisplayEntries()
         lastTimelineRevision = nil
@@ -1971,6 +2043,8 @@ final class PadWorkspace {
         configuringComposer = false
         status = ""
         conversationNotice = ""
+        navigationEpoch = UUID()
+        navigationMessages = nil; navigationBefore = nil
         historyRestorationAnchor = nil
         isLoadingEarlier = false
         isLoadingDetail = false

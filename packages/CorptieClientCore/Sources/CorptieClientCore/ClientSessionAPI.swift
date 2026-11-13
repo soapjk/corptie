@@ -75,6 +75,8 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public var processEndedAt: String?
     /// Managed attachments (additive; older backends omit them). Bytes come from `ClientSessionAPI.image`.
     public let images: [ClientMessageImage]
+    public var rawMetadataJSON: String? = nil
+    public var replyAssociation: ConversationMessageReply? = nil
     public var coordinationProgress: ClientCoordinationProgress? = nil
     public let executionPlan: ConversationExecutionPlan?
     public let toolExecution: ConversationToolExecution?
@@ -98,11 +100,14 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         case messageOrigin, automationRunId, automationRunStatus, automationRunError
         case automationTriggerType, automationScheduleType, automationIntervalSeconds, automationConditionCheckIntervalSeconds, automationProcessPollIntervalSeconds
         case automationExpiresAt, systemEventKind, systemEventReason, systemEventSource
-        case coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
+        case rawMetadataJSON, replyAssociation, coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         coordinationProgress = try? container.decodeIfPresent(ClientCoordinationProgress.self, forKey: .coordinationProgress)
+        rawMetadataJSON = try? container.decodeIfPresent(String.self, forKey: .rawMetadataJSON)
+        replyAssociation = ConversationMessageReply(rawMetadataJSON: rawMetadataJSON)
+            ?? (try? container.decodeIfPresent(ConversationMessageReply.self, forKey: .replyAssociation))
         id = try container.decode(String.self, forKey: .id)
         turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
         type = try container.decode(String.self, forKey: .type)
@@ -507,6 +512,16 @@ public struct ClientSessionAPI: Sendable {
         // Message window v2 adds authoritative/supplemental identities. Other
         // API routes retain their own v1 contract.
         return try await read(request, supportedVersions: [1, 2])
+    }
+    /// Explicit history navigation: one bounded window, never a latest-page merge.
+    public func messages(sessionId: String, around messageID: String) async throws -> ClientMessagePage {
+        guard !messageID.isEmpty else { throw ClientConnectionError.invalidResponse }
+        let request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "messages"],
+            query: [URLQueryItem(name: "around", value: messageID)])
+        let page: ClientMessagePage = try await read(request, supportedVersions: [1, 2])
+        guard page.items.count <= 31, Set(page.items.map(\.id)).count == page.items.count,
+              page.items.contains(where: { $0.id == messageID }) else { throw ClientConnectionError.invalidResponse }
+        return page
     }
     public func capabilities(sessionId: String) async throws -> ClientSessionCapabilities {
         try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "capabilities"]))

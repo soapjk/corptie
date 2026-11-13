@@ -1,3 +1,4 @@
+import { coordinationCreationPolicy, coordinationExecutionPolicy } from "../domain/coordinationDelegation.mjs";
 import { DEVELOPMENT_WORKFLOW_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
 import { SessionApplicationService } from "../agent-provider/sessionApplicationService.mjs";
 import { persistProviderSessionProjection, persistSessionModelSelection } from "./providerSessionProjection.mjs";
@@ -25,6 +26,9 @@ export function createSessionApplicationComposition({
 }) {
   const sessionApplicationService = new SessionApplicationService({
     registry: agentProviderRegistry,
+    resolveExecutionPolicy: ({ reference, context }) => reference
+      ? coordinationExecutionPolicy(store, reference.logicalSessionId)
+      : coordinationCreationPolicy(store, context),
     resolveCreationDefaults: (providerId, input) => {
       const runtime = resolveTaskCreationDefaults({ ...input, providerId },
         store.settings?.().newSessionDefaults ?? {}, agentProviderRegistry.defaultProviderId);

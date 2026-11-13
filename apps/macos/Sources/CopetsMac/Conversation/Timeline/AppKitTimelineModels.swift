@@ -53,6 +53,7 @@ struct AppKitChatTimelineRow: Identifiable {
         enum Kind {
             case cancelQueuedMessage(taskID: String)
             case deleteUnreceivedMessage(messageID: String)
+            case locateMessage(messageID: String)
             case forkMessage(itemID: String)
             case codexApproval(CodexApprovalOption)
             case ptyChoice(CodexApprovalOption, choiceID: String)

@@ -66,6 +66,8 @@ export class ClaudeAgentManager {
   }
 
   start(input = {}) {
+    const restricted = input.executionPolicy === "host-coordination";
+    if (restricted) input = { ...input, prompt: "", sandbox: "read-only", approvalPolicy: "never" };
     const id = input.id || randomUUID();
     const createdAt = createdAtFromOrNow();
     const hasInitialPrompt = typeof input.prompt === "string" && input.prompt.trim().length > 0;
@@ -122,6 +124,9 @@ export class ClaudeAgentManager {
         ? { additionalDirectories: input.runtimeWorkspaceRoots }
         : {})
     });
+    if (restricted) session.runtimeOptions = { tools: [], mcpServers: {}, strictMcpConfig: true,
+      settingSources: [], plugins: [], agents: {}, hooks: {},
+      canUseTool: async () => ({ behavior: "deny", message: "Host-managed Session tools are disabled." }) };
     if (typeof input.recoveryContext === "string" && input.recoveryContext.trim()) {
       const current = session.runtimeOptions.systemPrompt;
       const base = current?.type === "preset"

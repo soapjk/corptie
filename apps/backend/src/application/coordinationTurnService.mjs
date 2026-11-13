@@ -141,16 +141,16 @@ export class CoordinationTurnService {
     } catch { return false; }
   }
   state(reference) {
-    if (!this.supported(reference.providerId)) return { status: "unsupported", reason: "当前 Provider 不支持受限协调执行；不会退回普通开发模式。" };
-    const requests = this.requests ? { requests: this.requests.index(reference.logicalSessionId).filter(row => !["completed", "cancelled"].includes(row.status)) } : {};
+    const requests = this.requests ? { requests: this.requests.index(reference.logicalSessionId, null, { activeOnly: true, limit: 100 }) } : {};
+    if (!this.supported(reference.providerId)) return { status: "unsupported", ...requests, reason: "当前 Provider 不支持受限协调执行；不会退回普通开发模式。" };
     if (!this.enabled(reference)) return this.active.has(reference.sessionId)
       ? { status: "pending", ...requests, reason: "当前协调规划结束后恢复普通模式。" } : { status: "off", ...requests, reason: "" };
     const turns = this.store.listUnsettledSessionTurns(reference.sessionId);
     if (turns.some(turn => !turn.turn_id.startsWith("coordination:"))) {
-      return { status: "pending", reason: "等待当前执行结束；后续开发将派发给子任务。" };
+      return { status: "pending", ...requests, reason: "旧执行仍在进行；新输入由请求影子独立处理。" };
     }
     const shadow = this.dispatch.shadow?.forMain(reference.logicalSessionId);
-    return { status: "enforced", ...(this.requests ? { requests: this.requests.index(reference.logicalSessionId).filter(row => !["completed", "cancelled"].includes(row.status)) } : {}), ...(this.dispatch.shadow ? { shadow: this.dispatch.shadow.summary(reference.logicalSessionId) } : {}), reason: this.dispatch.shadow
+    return { status: "enforced", ...(this.requests ? { requests: this.requests.index(reference.logicalSessionId, null, { activeOnly: true, limit: 100 }) } : {}), ...(this.dispatch.shadow ? { shadow: this.dispatch.shadow.summary(reference.logicalSessionId) } : {}), reason: this.dispatch.shadow
       ? `请求影子并行处理输入；汇总影子负责验收和交付${shadow?.last_error ? `，当前需恢复：${shadow.last_error}` : "。"}`
       : "父会话负责讨论、查询与派发，开发由子任务执行。" };
   }
@@ -261,6 +261,8 @@ export class CoordinationTurnService {
     return { contextKey: "coordination-handoff", prompt: render() };
   }
   assertCurrent(reference, original) {
+    if (this.requests?.forShadow(reference.logicalSessionId)) this.requests.assertDelegate(reference.logicalSessionId);
+    if (this.dispatch.shadow?.forShadow(reference.logicalSessionId)) this.dispatch.shadow.assertDelegate(reference.logicalSessionId);
     const current = this.resolveReference(reference.logicalSessionId ?? reference.sessionId);
     const task = this.taskFor(current);
     if (current.bindingId !== reference.bindingId || current.routingVersion !== reference.routingVersion
@@ -350,9 +352,13 @@ export class CoordinationTurnService {
       this.assertCurrent(reference, task);
       const current = this.store.getSession(reference.sessionId);
       this.store.upsertSession({ ...current, activityStatus: label });
+      if (request && ["queued", "planning", "waiting_model", "reading"].includes(stage)) {
+        this.requests.update(request.request_id, { phase: stage });
+        this.requests.publishStatus(request.request_id);
+      }
       this.emitEvent("SessionCoordinationProgress", { turnId, stage, round: planningRound, label }, { sessionId: reference.sessionId });
     };
-    const deadline = this.now() + this.timing.totalMs;
+    let deadline = this.now() + this.timing.totalMs;
     const checkDeadline = () => {
       controller.signal.throwIfAborted();
       if (controller.policyChanged) throw failure("COORDINATION_POLICY_CHANGED", "协调开关在规划期间变化，本轮未继续派发。");
@@ -441,20 +447,32 @@ export class CoordinationTurnService {
       checkDeadline();
       phase = "planning"; planningRound++;
       callBudgetMs = Math.min(this.timing.callMs, deadline - this.now());
-      progress("planning", planningRound === 1 ? "正在规划" : "正在根据查询结果规划");
+      progress("queued", "等待模型执行位");
       const render=()=>JSON.stringify({...payload,readTools:COORDINATION_READ_TOOLS,
         readBudget:{remainingMs:Math.max(0,deadline-this.now()),pageCalls:3},readResults:reads});
       while(Buffer.byteLength(render())>64*1024 && payload.history.length){payload.history.shift();payload.historyTruncated=true;}
+      while (Buffer.byteLength(render()) > 64 * 1024 && payload.requestContext?.conversation?.messages?.length) {
+        const omitted = payload.requestContext.conversation.messages.shift();
+        const first = payload.requestContext.conversation.messages[0];
+        payload.requestContext.olderCursor = { ...payload.requestContext.olderCursor,
+          older: first?.cursor ?? omitted.cursor, hasMore: true };
+        payload.requestContext.conversation.historyTruncated = true;
+      }
+      if (Buffer.byteLength(render()) > 64 * 1024) throw failure("COORDINATION_CONTEXT_TOO_LARGE", "必要上下文超出请求预算；尚未派发，请缩小本次输入范围。");
       const prompt=render();
-      const callStartedAt = this.now();
-      let warning;
-      let result;
-      try {
+      const queuedAt = this.now();
+      let callStartedAt = queuedAt, warning, result;
+      const onStart = () => {
+        callStartedAt = this.now();
+        deadline += callStartedAt - queuedAt;
+        progress("planning", "正在处理请求");
         warning = this.schedule(() => {
           try { progress("waiting_model", "正在等待模型返回，可停止"); } catch { /* The main path checks retirement. */ }
         }, this.timing.warningMs);
         warning?.unref?.();
-        result = await this.planner.run({ purpose: "session-coordination-plan", cwd: session.external?.cwd ?? process.cwd(),
+      };
+      try {
+        result = await this.planner.run({ purpose: "session-coordination-plan", ownerSessionId: ownerId, onStart, cwd: session.external?.cwd ?? process.cwd(),
         priority: shadow || ["mailbox_event", "session_channel"].includes(context.source?.type) ? "background" : "interactive",
         prompt, developerInstructions: `${instructions}\n\n${shadow ? shadowInstructions : this.dispatch.shadow ? mainInstructions : ""}${request ? "\n" + requestInstructions : ""}`, preferredProviderId: reference.providerId,
         preferredModel: session.external?.currentModel ?? null, preferredReasoning: session.external?.currentReasoningLevel ?? null,
@@ -462,7 +480,7 @@ export class CoordinationTurnService {
         images: message?.images ?? [], onText: request ? text => this.requests.preview(request.request_id, text) : undefined,
         outputSchema: COORDINATION_PLAN_SCHEMA, signal: controller.signal, timeoutMs: callBudgetMs });
       } catch (error) {
-        if (error.code === "BACKGROUND_TIMEOUT" || this.now() - callStartedAt >= callBudgetMs) {
+        if (error.code !== "BACKGROUND_QUEUE_TIMEOUT" && (error.code === "BACKGROUND_TIMEOUT" || this.now() - callStartedAt >= callBudgetMs)) {
           checkDeadline();
           throw failure("COORDINATION_MODEL_TIMEOUT", `第 ${planningRound} 轮模型规划超时（本次预算 ${Math.ceil(callBudgetMs / 1000)} 秒）。`);
         }
@@ -555,7 +573,15 @@ export class CoordinationTurnService {
         answer = `子任务安全清理请求已受理；以删除作业的实际状态为准。${deleted.operation?.operationId ?? ""}`;
         }
       }
+      if (plan.kind === "dispatch" && request && this.requests.get(request.request_id).relation === "supplement") {
+        const target = this.requests.get(this.requests.get(request.request_id).related_request_id);
+        const targets = new Set(this.requests.dispatches(target).map(item => item.taskId).filter(Boolean));
+        if (targets.size && plan.items.some(item => item.action !== "send" || !targets.has(item.taskId))) {
+          throw failure("REQUEST_SUPPLEMENT_TARGET_REQUIRED", "补充指令必须发送给原请求的子任务，未创建重复任务。");
+        }
+      }
       if (plan.kind === "dispatch") {
+        this.assertCurrent(reference, task); controller.signal.throwIfAborted();
         phase = "dispatch"; progress("dispatch", "正在受理派发"); admissionStarted = true;
         const admitted = this.dispatch.acceptDispatch({ sessionId: reference.logicalSessionId ?? reference.sessionId,
           providerBindingId: reference.bindingId }, session.agentId, { items: plan.items.map((item, index) => ({

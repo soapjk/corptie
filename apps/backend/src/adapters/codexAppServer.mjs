@@ -1,3 +1,4 @@
+import { codexNoToolsConfig } from "./codexNoToolsPolicy.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { spawn } from "node:child_process";
 import { executeCodexSlashCommand } from "./codexSlashCommands.mjs";
@@ -290,6 +291,15 @@ export class CodexAppServerClient {
 
   async startThread(options = {}) {
     await this.initialize();
+    if (options.executionPolicy === "no-tools") {
+      const configuration = await this.request("config/read", { includeLayers: false, cwd: options.cwd ?? defaultWorkspacePath() });
+      if (!configuration?.config || typeof configuration.config !== "object") {
+        throw Object.assign(new Error("Cannot verify restricted Session configuration."), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" });
+      }
+      options = { ...options, approvalPolicy: "never", sandbox: "read-only", dynamicTools: [], environments: [],
+        config: codexNoToolsConfig(configuration.config.mcp_servers ?? {}),
+        baseInstructions: "This Session is host-managed. Model operations run only through the restricted background executor." };
+    }
     const result = await this.request("thread/start", {
       cwd: options.cwd ?? defaultWorkspacePath(),
       approvalPolicy: options.approvalPolicy ?? "on-request",
