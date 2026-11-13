@@ -20,12 +20,17 @@ struct UnifiedCreationContext {
 final class UnifiedCreationDraft: ObservableObject {
     var context = UnifiedCreationContext()
     var parentTaskID: String?
-    @Published var taskMode: Bool = false
+    var taskMode: Bool { workID != nil }
     @Published var workID: String? = nil
     @Published var roleID: String? = nil
     @Published var providerID: String = ""
     @Published var modelID: String = ""
-    @Published var prompt = ""
+    let editor = ComposerEditorController(draft: ComposerDraftBuffer())
+    // Same buffer as the chat editor; keystrokes do not publish the whole page.
+    var prompt: String {
+        get { editor.draft.text }
+        set { editor.draft.updateFromEditor(newValue) }
+    }
     @Published var busy = false
     @Published var error: String? = nil
     @Published var editingWork = false
@@ -37,10 +42,15 @@ final class UnifiedCreationDraft: ObservableObject {
     @Published var requestID = UUID().uuidString.lowercased()
     @Published var messageID = "message:\(UUID().uuidString.lowercased())"
     @Published var deliveryID = "delivery:\(UUID().uuidString.lowercased())"
+    func selectWork(_ id: String?) {
+        guard !submissionStarted else { return }
+        if workID != id { parentTaskID = nil }
+        workID = id
+    }
     func prepare(_ context: UnifiedCreationContext, parentTaskID: String? = nil) {
         guard prompt.isEmpty, imageURLs.isEmpty, !submissionStarted, !editingWork else { return }
         self.context = context; self.parentTaskID = parentTaskID
-        taskMode = context.workID != nil; workID = context.workID; roleID = context.roleID
+        workID = context.workID; roleID = context.roleID
         providerID = context.providerID ?? ""; modelID = context.modelID ?? ""
     }
 }
@@ -52,10 +62,11 @@ struct UnifiedConversationCreateView: View {
     @ObservedObject private var catalog = BackendClient.shared.modelCatalog
     @ObservedObject private var draftState: UnifiedCreationDraft
     var onSent: () -> Void
-    @FocusState private var inputFocused: Bool
+    @State private var hasSendableText = false
+    @State private var choosingRole = false
     private var context: UnifiedCreationContext { draftState.context }
     private var parentTaskID: String? { draftState.parentTaskID }
-    @Binding private var taskMode: Bool
+    private var taskMode: Bool { draftState.taskMode }
     @Binding private var workID: String?
     @Binding private var roleID: String?
     @Binding private var providerID: String
@@ -75,7 +86,6 @@ struct UnifiedConversationCreateView: View {
 
     init(draft: UnifiedCreationDraft, onSent: @escaping () -> Void) {
         self.draftState = draft; self.onSent = onSent
-        _taskMode = Binding(get: { draft.taskMode }, set: { draft.taskMode = $0 })
         _workID = Binding(get: { draft.workID }, set: { draft.workID = $0 })
         _roleID = Binding(get: { draft.roleID }, set: { draft.roleID = $0 })
         _providerID = Binding(get: { draft.providerID }, set: { draft.providerID = $0 })
@@ -114,7 +124,7 @@ struct UnifiedConversationCreateView: View {
                 VStack(spacing: 0) {
                     HStack { Button { editingWork = false } label: { Label(L10n("返回"), systemImage: "chevron.left") }; Spacer() }.padding()
                     WorkCreateView(isFirstRun: true, dismissOnCreated: false, onCancel: { editingWork = false }, onCreated: { created in
-                        workID = created.id; taskMode = true; editingWork = false; reconcile()
+                        draftState.selectWork(created.id); editingWork = false; reconcile()
                     })
                 }
             } else {
@@ -126,7 +136,6 @@ struct UnifiedConversationCreateView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .interactiveDismissDisabled(busy)
         .task {
-            inputFocused = true
             if !submissionStarted, providerID.isEmpty, context.providerID == nil, let defaults = backend.settingsController.settings?.newSessionDefaults?.taskCreation {
                 providerID = defaults.providerId ?? ""; modelID = defaults.model ?? ""
             }
@@ -136,7 +145,6 @@ struct UnifiedConversationCreateView: View {
             if catalog.agentProviders.isEmpty { await backend.loadProviders() }
             reconcile()
         }
-        .onChange(of: taskMode) { _, _ in reconcile() }
         .onChange(of: workID) { _, _ in reconcile() }
         .onChange(of: client.roles) { _, _ in reconcile() }
         .onChange(of: client.works) { _, _ in reconcile() }
@@ -147,72 +155,148 @@ struct UnifiedConversationCreateView: View {
     }
 
     private var draft: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(spacing: 28) {
             Text(L10n("今天想做什么？"))
-                .font(.system(size: 28, weight: .semibold))
-                .frame(maxWidth: .infinity).padding(.bottom, 24)
-            TextEditor(text: $prompt)
-                .font(WorkbenchTypography.font(for: .composerInput))
-                .focused($inputFocused)
-                .frame(minHeight: 160, idealHeight: 190, maxHeight: 240)
-                .overlay(alignment: .topLeading) {
-                    if prompt.isEmpty { Text(L10n("你想做什么？")).foregroundStyle(.tertiary).padding(12).allowsHitTesting(false) }
+                .font(.system(size: 26, weight: .semibold))
+            VStack(spacing: 0) {
+                ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
+                    creationToolbar
+                } content: {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ComposerInputTextView(controller: draftState.editor,
+                            placeholder: L10n("你想做什么？"),
+                            font: WorkbenchTypography.nativeFont(for: .composerInput),
+                            onSendableTextChange: { hasSendableText = $0 },
+                            onSubmit: { _ in submit() })
+                            .frame(height: 112)
+                            .accessibilityLabel(L10n("你想做什么？"))
+                        if !imageURLs.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(Array(imageURLs.enumerated()), id: \.offset) { index, url in
+                                        Button { imageURLs.remove(at: index) } label: {
+                                            Label(url.lastPathComponent, systemImage: "xmark.circle")
+                                        }.buttonStyle(.plain)
+                                    }
+                                }
+                            }.disabled(submissionStarted)
+                        }
+                    }.padding(.horizontal, 10)
                 }
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
-                .disabled(submissionStarted)
-                .accessibilityLabel(L10n("你想做什么？"))
-            if !imageURLs.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack {
-                        ForEach(Array(imageURLs.enumerated()), id: \.offset) { index, url in
-                            Button { imageURLs.remove(at: index) } label: { Label(url.lastPathComponent, systemImage: "xmark.circle") }
+                creationDestination
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+            }
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 20))
+            if let error {
+                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+            } else if let validation {
+                Text(validation).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear {
+            hasSendableText = draftState.editor.draft.hasSendableText
+            if !submissionStarted {
+                draftState.editor.resumePresentation()
+                draftState.editor.draft.focusRequested = true
+                draftState.editor.focusIfRequested()
+            }
+        }
+        .onChange(of: submissionStarted) { _, started in
+            if started { draftState.editor.suspendPresentation() }
+        }
+        .onDisappear { draftState.editor.suspendPresentation() }
+    }
+
+    private var creationToolbar: some View {
+        HStack(spacing: 12) {
+            Button { choosingImages = true } label: {
+                Image(systemName: "plus").font(.system(size: 16))
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+            }.buttonStyle(.plain).help(L10n("添加图片")).disabled(submissionStarted)
+            Spacer(minLength: 8)
+            Menu {
+                ForEach(providers) { provider in
+                    Button(provider.displayName) { providerID = provider.id; modelID = "" }
+                }
+                Divider()
+                Button(L10n("默认模型")) { modelID = "" }
+                ForEach(catalog.models(for: providerID)) { model in
+                    Button(model.name) { modelID = model.id }
+                }
+                Button(L10n("加载模型列表")) { Task { await backend.loadModels(for: providerID) } }
+            } label: {
+                Text(modelID.isEmpty ? (providers.first { $0.id == providerID }?.displayName ?? L10n("执行引擎")) : modelID)
+                    .lineLimit(1).truncationMode(.middle)
+            }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 176).disabled(submissionStarted)
+            ComposerSendControl(disabled: busy || validation != nil || (!hasSendableText && imageURLs.isEmpty),
+                                busy: busy, action: submit)
+                .keyboardShortcut(.return, modifiers: .command)
+        }
+        .font(WorkbenchTypography.font(for: .composerInput))
+    }
+
+    private var creationDestination: some View {
+        HStack(spacing: 18) {
+            Menu {
+                Button(L10n("聊天")) { draftState.selectWork(nil) }
+                Divider()
+                ForEach(client.works) { value in
+                    Button(value.name) { draftState.selectWork(value.id) }
+                }
+                Divider()
+                Button(L10n("新建 Work")) { editingWork = true }
+            } label: {
+                Label(work?.name ?? L10n("选择 Work"), systemImage: "folder")
+                    .lineLimit(1)
+            }
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 220, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: true)
+            .help(L10n("选择 Work"))
+            Button { choosingRole = true } label: {
+                HStack(spacing: 6) {
+                    if let role = roles.first(where: { $0.roleId == roleID }) {
+                        RoleCardAvatar(role: role, size: 20)
+                        Text(role.name).lineLimit(1).truncationMode(.tail)
+                    } else {
+                        Image(systemName: "person.crop.circle")
+                        Text(L10n("角色"))
+                    }
+                }.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: 180, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: true)
+            .accessibilityLabel(L10n("角色"))
+            .popover(isPresented: $choosingRole) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(roles) { role in
+                            Button {
+                                roleID = role.roleId
+                                choosingRole = false
+                            } label: {
+                                HStack(spacing: 8) {
+                                    RoleCardAvatar(role: role, size: 24)
+                                    Text(role.name).lineLimit(1)
+                                    Spacer(minLength: 12)
+                                    if role.roleId == roleID { Image(systemName: "checkmark") }
+                                }
+                                .padding(8).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
                         }
                     }
-                }.disabled(submissionStarted)
-            }
-            if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
-            else if let validation { Text(validation).font(.caption).foregroundStyle(.secondary) }
-            HStack(spacing: 8) {
-                Button { choosingImages = true } label: { Image(systemName: "paperclip") }
-                    .help(L10n("添加图片")).disabled(submissionStarted)
-                Picker(L10n("Agent"), selection: $roleID) {
-                    Text(L10n("选择 Agent")).tag(String?.none)
-                    ForEach(roles) { Text($0.name).tag(Optional($0.roleId)) }
-                }.labelsHidden().frame(maxWidth: 160).disabled(submissionStarted)
-                Menu {
-                    ForEach(providers) { provider in
-                        Button(provider.displayName) { providerID = provider.id; modelID = "" }
-                    }
-                    Divider()
-                    Button(L10n("默认模型")) { modelID = "" }
-                    ForEach(catalog.models(for: providerID)) { model in Button(model.name) { modelID = model.id } }
-                    Button(L10n("加载模型列表")) { Task { await backend.loadModels(for: providerID) } }
-                } label: {
-                    Text(modelID.isEmpty ? (providers.first { $0.id == providerID }?.displayName ?? L10n("执行引擎")) : modelID).lineLimit(1)
-                }.disabled(submissionStarted)
-                Spacer(minLength: 0)
-                if busy { ProgressView().controlSize(.small) }
-                Button(createdSession == nil ? L10n(taskMode ? "开始任务" : "发送") : L10n("重试发送")) { submit() }
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
-                    .disabled(busy || validation != nil || (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && imageURLs.isEmpty))
-            }
-            HStack {
-                Picker(L10n("类型"), selection: $taskMode) {
-                    Text(L10n("聊天")).tag(false); Text(L10n("任务")).tag(true)
-                }.pickerStyle(.segmented).frame(width: 150)
-                if taskMode {
-                    Menu {
-                        ForEach(client.works) { value in Button(value.name) { workID = value.id } }
-                        Divider()
-                        Button(L10n("新建 Work")) { editingWork = true }
-                    } label: { Label(work?.name ?? L10n("选择 Work"), systemImage: "folder") }
                 }
-                Spacer()
-            }.disabled(submissionStarted)
-        }.padding(20)
+                .frame(width: 240, height: min(320, CGFloat(roles.count) * 44))
+                .padding(8)
+            }
+            Spacer(minLength: 0)
+        }
+        .menuStyle(.borderlessButton)
+        .font(.system(size: 12)).foregroundStyle(.secondary)
+        .disabled(submissionStarted)
     }
 
     private func reconcile() {
@@ -225,7 +309,8 @@ struct UnifiedConversationCreateView: View {
     }
 
     private func submit() {
-        guard !busy, validation == nil, let roleID else { return }
+        guard !busy, validation == nil, let roleID,
+              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !imageURLs.isEmpty else { return }
         busy = true; error = nil; submissionStarted = true
         Task { @MainActor in
             defer { busy = false }

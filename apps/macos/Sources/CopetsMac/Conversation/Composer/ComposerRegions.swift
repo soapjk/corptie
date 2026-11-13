@@ -166,3 +166,26 @@ struct ComposerGlassActionBackground: View {
         }
     }
 }
+
+/// Shared by existing Sessions and the local new-conversation draft.
+struct ComposerSendControl: View {
+    let disabled: Bool
+    let busy: Bool
+    var expandedHitArea = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if busy { ProgressView().controlSize(.small) }
+                else { Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold)) }
+            }
+            .foregroundStyle(disabled ? Color.secondary : Color.white)
+            .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
+            .background(disabled ? Color.primary.opacity(0.06) : Color.accentColor, in: Circle())
+            .contentShape(Circle().inset(by: expandedHitArea ? -8 : 0))
+        }
+        .buttonStyle(.plain).disabled(disabled)
+        .accessibilityLabel(L10n("Send instruction"))
+    }
+}
