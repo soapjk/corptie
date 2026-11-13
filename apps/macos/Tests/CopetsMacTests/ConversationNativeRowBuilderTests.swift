@@ -295,6 +295,23 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertEqual(expanded.indices.filter { expanded[$0].replyIdentity != nil }, [2, 7])
     }
 
+    func testProcessProseSpacingUsesSameReplyBoundaryAndRecomputesReusedRows() throws {
+        let projection = builder() // The layout relation must work without identity metadata.
+        let process = ChatDisplayEntry(kind: .process(turnId: "turn:one", items: [try item([
+            "id": "tool", "type": "mcpToolCall", "presentationRole": NSNull()
+        ])]))
+        let body = ChatDisplayEntry(kind: .message(try item(["id": "body"])))
+        let nextTurn = ChatDisplayEntry(kind: .message(try item(["id": "next", "turnId": "turn:two"])))
+        let entries = [process, body, nextTurn]
+        let rows = projection.applyingReplyIdentity(to: entries.map {
+            projection.nativeAppKitRow($0, expandedTurnIds: [])
+        }, entries: entries)
+        XCTAssertEqual(rows.map(\.followsReplyProcess), [false, true, false])
+        let reused = projection.applyingReplyIdentity(to: [rows[1]], entries: [body])
+        XCTAssertFalse(reused[0].followsReplyProcess)
+        XCTAssertEqual(reused[0].contentRevision, rows[1].contentRevision)
+    }
+
     func testReplyIdentityMovesToEarlierContentWhenHistoryIsPrepended() throws {
         var projection = builder()
         projection.replyIdentity = .init(roleID: "agent:one", name: "Developer", avatarPath: nil)

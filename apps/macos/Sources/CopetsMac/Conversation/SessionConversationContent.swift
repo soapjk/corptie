@@ -108,9 +108,7 @@ struct SessionConversationSurface: View {
     private var hasPinnedChecklist: Bool {
         !showsWelcome && currentChecklist != nil && currentChecklist?.closed != true
     }
-    /// The jump control owns a fixed slot above every other dock element. The
-    /// slot stays while the standard dock is active, so scrolling past the jump
-    /// threshold never changes the dock height or pushes the checklist.
+    /// Eligibility is independent of visibility and quick-message availability.
     private var usesJumpControlSlot: Bool {
         usesComposerJumpToLatest && !showsWelcome
     }
@@ -517,7 +515,7 @@ struct SessionConversationSurface: View {
 
     private var conversationLayout: some View {
         ConversationRegionStack(floating: AnyView(floatingDock),
-            floatingClearanceInset: usesJumpControlSlot ? ComposerQuickMessagesBar.jumpControlSize : 0) {
+            floatingClearanceInset: showsFloatingJumpControl ? ComposerQuickMessagesBar.jumpControlSize + floatingJumpGap : 0) {
             messageViewport
         } accessory: {
             inputDock
@@ -627,9 +625,15 @@ struct SessionConversationSurface: View {
 
     private var floatingDock: some View {
         VStack(spacing: 0) {
-            if usesJumpControlSlot { jumpControlSlot }
+            if showsFloatingJumpControl {
+                if hasPinnedChecklist {
+                    Color.clear.frame(height: ComposerQuickMessagesBar.jumpControlSize + floatingJumpGap)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                } else { jumpControlSlot }
+            }
             if hasPinnedChecklist, let plan = currentChecklist {
-                PinnedExecutionChecklistCard(plan: plan)
+                PinnedExecutionChecklistCard(plan: plan,
+                    jumpControl: showsFloatingJumpControl ? AnyView(jumpControlSlot) : nil)
                     .id(sessionId + ":" + plan.planId)
                     .modifier(WorkbenchReadingLane(compact: compactComposer))
                     .padding(.bottom, 6)
@@ -695,9 +699,10 @@ struct SessionConversationSurface: View {
         }
     }
 
-    /// Fixed-height, centred slot at the top of the dock, above the checklist.
-    /// Only its contents change; the dock frame, the checklist and the quick
-    /// messages never move when the button appears or disappears.
+    private var showsFloatingJumpControl: Bool { usesJumpControlSlot && viewportState.showsJumpToLatest }
+    private var floatingJumpGap: CGFloat { hasPinnedChecklist ? 8 : 0 }
+
+    /// This transparent slot and its gap never reserve transcript clearance.
     private var jumpControlSlot: some View {
         ZStack {
             if viewportState.showsJumpToLatest {

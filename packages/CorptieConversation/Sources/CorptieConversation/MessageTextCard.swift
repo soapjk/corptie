@@ -133,6 +133,7 @@ public struct MessageTextCardMenuConfiguration {
 public struct MessageTextCard<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     public enum Role: Sendable { case user, agent, commentary }
+    private var contentTopInset: CGFloat = MessageCardMetrics.contentInset
     private let role: Role
     private let surfaceRole: ConversationSurfaceRole?
     private let messageID: String
@@ -155,11 +156,13 @@ public struct MessageTextCard<Content: View>: View {
                 actionsAlwaysVisible: Bool, cardWidth: CGFloat? = nil, cardHeight: CGFloat? = nil,
                 status: UserMessageStatusPresentation? = nil, rendersStatusGlow: Bool = true,
                 surfaceRole: ConversationSurfaceRole? = nil, scrollsContent: Bool = false,
+                contentTopInset: CGFloat = MessageCardMetrics.contentInset,
                 copy: @escaping () -> Void, @ViewBuilder content: @escaping () -> Content) {
         self.messageID = messageID; self.role = role; self.timestamp = timestamp; self.showsActions = showsActions
         self.actionsAlwaysVisible = actionsAlwaysVisible
         self.cardWidth = cardWidth; self.cardHeight = cardHeight
         self.status = status
+        self.contentTopInset = max(0, contentTopInset)
         self.rendersStatusGlow = rendersStatusGlow
         self.surfaceRole = surfaceRole
         self.scrollsContent = scrollsContent
@@ -265,7 +268,9 @@ public struct MessageTextCard<Content: View>: View {
     private var cardBody: some View {
         VStack(alignment: role == .user ? .trailing : .leading, spacing: 2) {
             fittedContent
-                .padding(MessageCardMetrics.contentInset)
+                .padding(.horizontal, MessageCardMetrics.contentInset)
+                .padding(.bottom, MessageCardMetrics.contentInset)
+                .padding(.top, contentTopInset)
                 .frame(width: cardWidth, height: cardHeight, alignment: .leading)
                 .modifier(ConversationContentSurface(cornerRadius: 14,
                     tint: background, fallback: background, isMessage: true,

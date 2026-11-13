@@ -276,6 +276,7 @@ struct MacSharedMessageTextCard: View {
                 else {
                     MacOrdinaryMessageCardRegion(messageID: row.id, style: row.nativeStyle,
                         isCommentary: row.isCommentary, surfaceRole: row.contentSurfaceRole,
+                        followsReplyProcess: row.followsReplyProcess,
                         cardWidth: layout.cardWidth, text: layout.attributedText, blocks: layout.richBlocks,
                         imageLayout: layout.imageLayout, images: row.images, actions: row.actions,
                         source: row.scheduledMessageSource,
@@ -290,7 +291,8 @@ struct MacSharedMessageTextCard: View {
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.leading, ReplyLeadingLayout.cardLeading(for: row, skin: skin))
             .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
-            .padding(.vertical, layout.typography.rowInset)
+            .padding(.top, row.followsReplyProcess ? MessageCardMetrics.rowInset : layout.typography.rowInset)
+            .padding(.bottom, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)
                     .frame(width: min(ReplyActionBar.width(for: row), layout.cardWidth - 4), height: 22)
@@ -311,6 +313,7 @@ private struct MacOrdinaryMessageCardRegion: View {
     let style: AppKitChatTimelineRow.NativeStyle
     let isCommentary: Bool
     let surfaceRole: ConversationSurfaceRole
+    let followsReplyProcess: Bool
     let cardWidth: CGFloat
     let text: NSAttributedString
     let blocks: [NativeTimelineLayoutCache.Layout.RichBlock]
@@ -335,7 +338,8 @@ private struct MacOrdinaryMessageCardRegion: View {
             actionsAlwaysVisible: false, cardWidth: cardWidth,
             cardHeight: nil,
             status: presentedMessageStatus, rendersStatusGlow: false,
-            surfaceRole: surfaceRole, scrollsContent: scrollsUserContent, copy: copy) {
+            surfaceRole: surfaceRole, scrollsContent: scrollsUserContent,
+            contentTopInset: followsReplyProcess ? AppKitChatTimelineRow.processProseTopInset : MessageCardMetrics.contentInset, copy: copy) {
             VStack(alignment: .leading, spacing: 0) {
                 if let source = source {
                     Label(source, systemImage: "clock").font(.system(size: 10, weight: .medium))
@@ -839,6 +843,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     func updateLayoutIfContentUnchanged(_ row: AppKitChatTimelineRow, availableWidth: CGFloat) -> Bool {
         guard self.row?.id == row.id, self.row?.contentRevision == row.contentRevision,
               self.row?.replyIdentity == row.replyIdentity,
+              self.row?.followsReplyProcess == row.followsReplyProcess,
               representedImageGeometries == row.imageGeometries else { return false }
         guard measuredWidth != availableWidth || measuredLayout?.typography != row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
             || measuredLayout?.timeSeparatorHeight != (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0) else { return true }
