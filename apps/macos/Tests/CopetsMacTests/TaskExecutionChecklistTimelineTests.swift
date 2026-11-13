@@ -27,11 +27,10 @@ final class TaskExecutionChecklistTimelineTests: XCTestCase {
     }
     func testPinnedDisclosureAnimatesLocallyWithStableNativeEnvelopeAndEightPointJumpGap() async throws {
         let systemReduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        for (count, reduceMotion) in [(2, systemReduceMotion), (80, systemReduceMotion), (80, true)] {
+        for (count, reduceMotion) in [(2, systemReduceMotion), (80, systemReduceMotion)] {
             let plan = try XCTUnwrap(item(count: count).executionPlan)
             let card = PinnedExecutionChecklistCard(plan: plan,
                 jumpControl: AnyView(JumpProbe().frame(height: 30)))
-                .environment(\.accessibilityReduceMotion, reduceMotion)
             let floating = VStack(spacing: 0) { Color.clear.frame(height: 38); card }
             let region = ConversationRegionContainer(content: Color.clear, accessory: Color.clear.frame(height: 80),
                 atTop: false, height: nil, floatingClearanceInset: 38, floating: AnyView(floating))

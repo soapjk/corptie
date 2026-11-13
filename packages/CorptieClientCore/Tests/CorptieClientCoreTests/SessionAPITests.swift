@@ -390,7 +390,11 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
             case ("/client/v1/tasks/task:one/delete", _, "POST"):
                 #expect(body?["mode"] as? String == "force")
                 #expect(body?["acknowledgeDataLoss"] as? Bool == true)
-                #expect(Set(body?.keys.map { $0 } ?? []) == Set(["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss"]))
+                #expect(Set(body?.keys.map { $0 } ?? []) == Set(["requestId", "mode", "deleteWorktree", "artifactDisposition", "acknowledgeDataLoss",
+                    "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration"]))
+                for flag in ["stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration"] {
+                    #expect(body?[flag] as? Bool == false)
+                }
                 #expect(body?["deleteWorktree"] as? Bool == true)
                 json = #"{"schemaVersion":1,"requestId":"delete_12345","sessionId":"","kind":"task_delete","status":"completed","errorCode":null,"updatedAt":"now","entityResult":{"taskId":"task:one","operationId":"op:1","state":"queued"}}"#
             case ("/client/v1/works/work:one/delete", _, "POST"):

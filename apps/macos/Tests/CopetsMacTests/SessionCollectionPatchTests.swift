@@ -15,11 +15,10 @@ struct SessionCollectionPatchTests {
         #expect(lookup.currentSession(for: task) == nil)
         lookup = TaskSessionLookup(sessions: [history, fallback, current])
         #expect(lookup.currentSession(for: task)?.id == "current")
-        current.archived = true
+        current = makeSession(id: "current", sessionKind: .worker, taskId: task.id, archived: true)
         lookup = TaskSessionLookup(sessions: [history, fallback, current])
         #expect(lookup.currentSession(for: task) == nil)
-        current.archived = false
-        current.taskId = "task:other"
+        current = makeSession(id: "current", sessionKind: .worker, taskId: "task:other")
         lookup = TaskSessionLookup(sessions: [history, fallback, current])
         #expect(lookup.currentSession(for: task) == nil)
         task.currentSessionId = nil
