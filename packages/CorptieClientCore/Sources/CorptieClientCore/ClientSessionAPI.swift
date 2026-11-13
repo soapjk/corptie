@@ -176,12 +176,21 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         options = try? container.decodeIfPresent([ClientApprovalOption].self, forKey: .options)
     }
 
-    public init(id: String, text: String) {
+    public init(id: String, text: String, submissionState: ConversationProcessState? = nil) {
         self.id = id; self.text = text; type = "userMessage"
-        turnId = nil; status = nil; createdAt = nil; userMessageStatus = nil; queuePosition = nil
+        turnId = submissionState == nil ? nil : "delivery:local:" + id
+        status = nil; createdAt = nil; queuePosition = nil
+        switch submissionState {
+        case .sending, .waiting: userMessageStatus = "queued"
+        case .running: userMessageStatus = "processing"
+        case .completed: userMessageStatus = "consumed"
+        case .failed: userMessageStatus = "failed"
+        case .cancelled: userMessageStatus = "cancelled"
+        case nil: userMessageStatus = nil
+        }
         queuedMessageTaskId = nil; deletionAvailable = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
-        sourceType = nil; localVisibility = nil; processingError = nil
+        sourceType = submissionState == .sending ? "local_submission" : nil; localVisibility = nil; processingError = nil
         collaborationDirection = nil; collaborationSenderAgentId = nil; collaborationSenderName = nil
         collaborationRecipientAgentId = nil; collaborationRecipientName = nil
         collaborationInitiatorSessionId = nil; collaborationInitiatorSessionTitle = nil; collaborationInitiatorSessionKind = nil
@@ -254,6 +263,7 @@ public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
 }
 extension ClientMessage: ConversationExecutionItem {
     public var timelineLegacyMessageStatus: String? { status }
+    public var timelineIsLocalSubmission: Bool { sourceType == "local_submission" }
     public var timelineHasImages: Bool { !images.isEmpty }
     public var timelineMessageOrigin: String? { messageOrigin }
     public var executionTitle: String { title ?? "" }

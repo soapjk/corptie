@@ -27,7 +27,8 @@ final class UserMessageProcessingStateTests: XCTestCase {
         XCTAssertEqual(item.authoritativeUserMessageState, .queued)
         XCTAssertEqual(item.queuePosition, 2)
         XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(item))), .native)
-        XCTAssertEqual(makeChatDisplayEntries(from: [item]).count, 1)
+        XCTAssertEqual(makeChatDisplayEntries(from: [item]).count, 2)
+        XCTAssertEqual(makeChatDisplayEntries(from: [item]).last?.processReplyState, .waiting)
     }
 
     func testProcessingAndTerminalStatesAreNotInferredFromTimelinePosition() throws {
@@ -46,7 +47,8 @@ final class UserMessageProcessingStateTests: XCTestCase {
         let preparing = item(status: "running", userMessageStatus: "preparing")
         XCTAssertEqual(preparing.authoritativeUserMessageState, .preparing)
         XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(preparing))), .native)
-        XCTAssertEqual(makeChatDisplayEntries(from: [preparing]).count, 1)
+        XCTAssertEqual(makeChatDisplayEntries(from: [preparing]).count, 2)
+        XCTAssertEqual(makeChatDisplayEntries(from: [preparing]).last?.processReplyState, .waiting)
     }
 
     func testUnknownAuthoritativeStateDoesNotFallBackToLegacyQueuedStatus() {

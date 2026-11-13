@@ -76,7 +76,7 @@ struct ResidentSessionPageRoot: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             .modifier(ConversationColumnSurface(.transcript))
         } detail: {
-            SessionAuxiliaryPanel(showsMailbox: $showsMailbox) {
+            Group {
                 if showsMailbox && inputs.activity.isActive {
                     SessionMailboxPanel(sessionID: inputs.scope.sessionID,
                         pendingRevision: "\(inputs.session.mailboxPendingCount ?? 0):\(inputs.session.executionStatus ?? inputs.session.status.rawValue)",
@@ -107,29 +107,6 @@ struct ResidentSessionPageRoot: View {
         .modifier(ConversationSkinHost())
         .environmentObject(layout)
         .environmentObject(backend)
-    }
-}
-
-/// The window header selects the content shown in the existing detail rail.
-/// Only the selected content is mounted, so a hidden mailbox does no work.
-private struct SessionAuxiliaryPanel<Content: View>: View {
-    @Environment(\.detailColumnVisibility) private var visibility
-    @Binding var showsMailbox: Bool
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 0) {
-            Button {
-                showsMailbox = false
-                visibility?.wrappedValue = false
-            } label: {
-                Image(systemName: "xmark").frame(width: 24, height: 24)
-            }
-            .buttonStyle(.plain).help("关闭侧边区域")
-            .accessibilityLabel("关闭侧边区域")
-            .padding(.trailing, 12)
-            content().frame(maxHeight: .infinity, alignment: .top)
-        }
     }
 }
 

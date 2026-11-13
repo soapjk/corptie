@@ -1774,6 +1774,7 @@ typealias UserMessageProcessingState = CorptieClientCore.UserMessageProcessingSt
 
 extension CodexThreadItem: CorptieClientCore.ConversationExecutionItem {
     var timelineLegacyMessageStatus: String? { status }
+    var timelineIsLocalSubmission: Bool { sourceType == "local_submission" }
     var timelineHasImages: Bool { !(images ?? []).isEmpty }
     var timelineMessageOrigin: String? { messageOrigin }
     var executionTitle: String { title }

@@ -1,6 +1,7 @@
 import Foundation
 
 public enum ConversationProcessState: Hashable, Sendable {
+        case sending, waiting
         case running
         case completed
         case failed
@@ -8,6 +9,7 @@ public enum ConversationProcessState: Hashable, Sendable {
 
     public var symbolName: String {
             switch self {
+            case .sending, .waiting: "clock"
             case .running: "ellipsis.circle"
             case .completed: "checkmark.circle.fill"
             case .failed: "exclamationmark.circle.fill"
@@ -39,6 +41,8 @@ public struct ConversationProcessPresentation: Sendable {
                 .replacingOccurrences(of: "s", with: "秒") : value
         }
         switch state {
+        case .sending: return chinese ? "正在发送" : "Sending"
+        case .waiting: return chinese ? "等待执行" : "Waiting to run"
         case .running:
             let currentStep = currentStepTitle.map { " · \($0)" } ?? ""
             if let displayedDuration, !displayedDuration.isEmpty {

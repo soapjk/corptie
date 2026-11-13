@@ -97,19 +97,19 @@ struct ConversationTimelineTests {
         let snapshot = try input(nil, status: "processing")
         for value in [acknowledged, snapshot] {
             let rows = projected([value])
-            #expect(rows.map(\.id) == ["message:input", "process:turn"])
+            #expect(rows.map(\.id) == ["message:input", "process:input:input"])
             #expect(rows.last?.processReplyState == .running)
         }
         let step = try message("step", "commandExecution")
         let populated = projected([snapshot, step])
-        #expect(populated.map(\.id) == ["message:input", "process:turn"])
+        #expect(populated.map(\.id) == ["message:input", "process:input:input"])
         if case .process(_, let items) = populated.last?.kind { #expect(items.map(\.id) == ["step"]) }
         else { Issue.record("Missing populated process") }
-        for authority in ["queued", "preparing", "consumed", "failed", "cancelled", "unknown"] {
+        for authority in ["unknown"] {
             #expect(projected([try input(authority, status: "processing")]).count == 1)
         }
-        #expect(projected([try input(nil, status: "queued")]).count == 1)
-        #expect(projected([try input(nil, status: "processing", turnStatus: "completed")]).count == 1)
+        #expect(projected([try input(nil, status: "queued")]).count == 2)
+        #expect(projected([try input(nil, status: "processing", turnStatus: "completed")]).count == 2)
     }
 
     @Test func pendingInputCanShowImmediateProcessingWithoutChangingExecutionAuthority() throws {
@@ -117,10 +117,10 @@ struct ConversationTimelineTests {
             let value: [String: Any] = ["id": "pending", "type": "userMessage", "text": "request",
                 "turnId": "delivery:pending", "turnStatus": state, "userMessageStatus": state]
             let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
-            #expect(ConversationTimeline.makeEntries(from: [item]).count == 1)
+            #expect(ConversationTimeline.makeEntries(from: [item]).count == 2)
             let immediate = ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true)
             #expect(immediate.last?.isProcessGroup == true)
-            #expect(immediate.last?.processReplyState == .running)
+            #expect(immediate.last?.processReplyState == .waiting)
             #expect(item.userMessageStatus == state)
             #expect(UserMessageStatusPresentation(authoritativeStatus: state, legacyStatus: nil,
                 showsPendingAsProcessing: true)?.kind == .processing)
@@ -130,7 +130,7 @@ struct ConversationTimelineTests {
                 "turnId": "delivery:queued", "turnStatus": "running", "status": "queued"]
             if authoritative { value["userMessageStatus"] = "queued" }
             let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
-            #expect(!ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true).contains { $0.isProcessGroup })
+            #expect(ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true).last?.processReplyState == .waiting)
             let status = UserMessageStatusPresentation(authoritativeStatus: authoritative ? "queued" : nil,
                 legacyStatus: "queued", queuePosition: 3, showsPendingAsProcessing: true)
             #expect(status?.kind == .queued)
@@ -146,6 +146,58 @@ struct ConversationTimelineTests {
                 "presentationRole": role, "collaborationDirection": "inbound"]
             let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
             #expect(!ConversationTimeline.makeEntries(from: [item], showsPendingInputAsProcessing: true).contains { $0.isProcessGroup })
+        }
+    }
+
+    @Test func reliableSubmissionKeepsOneIdentityThroughAcknowledgementExecutionAndReplay() throws {
+        func input(_ state: String, turn: String, local: Bool = false) throws -> ClientMessage {
+            var value: [String: Any] = ["id": "stable", "type": "userMessage", "text": "same text",
+                "turnId": turn, "turnStatus": "inProgress", "userMessageStatus": state]
+            if local { value["sourceType"] = "local_submission" }
+            return try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        func rows(_ items: [ClientMessage]) -> [ConversationEntry<ClientMessage>] {
+            ConversationReplyProgressProjection.entries(ConversationTimeline.makeEntries(from: items))
+        }
+        let submitted = try input("queued", turn: "delivery:one", local: true)
+        let accepted = try input("queued", turn: "delivery:one")
+        let executing = try input("processing", turn: "provider:one")
+        let tool = try message("real-step", "commandExecution", turn: "provider:one", status: "inProgress")
+        let snapshots = [[submitted], [accepted], [executing], [executing, tool], [executing, tool]]
+        let expected: [ConversationProcessState] = [.sending, .waiting, .running, .running, .running]
+        for (index, snapshot) in snapshots.enumerated() {
+            let cards = rows(snapshot).filter(\.isProcessGroup)
+            #expect(cards.count == 1)
+            #expect(cards.first?.id == "process:input:stable")
+            #expect(cards.first?.processDisclosureID == "input:stable")
+            #expect(cards.first?.processReplyState == expected[index])
+        }
+        // A late HTTP acknowledgement cannot replace authoritative execution.
+        #expect(rows([executing, tool]).last?.processReplyState == .running)
+        for (state, presentation) in [("consumed", ConversationProcessState.completed), ("failed", .failed), ("cancelled", .cancelled)] {
+            let card = rows([try input(state, turn: "provider:one")]).last
+            #expect(card?.id == "process:input:stable")
+            #expect(card?.processReplyState == presentation)
+        }
+        let waiting = try JSONDecoder().decode(ClientMessage.self, from: Data(#"{"id":"next","type":"userMessage","text":"same text","turnId":"delivery:next","status":"queued"}"#.utf8))
+        #expect(rows([executing, tool, waiting]).filter(\.isProcessGroup).map(\.id)
+            == ["process:input:stable", "process:input:next"])
+        #expect(ConversationProcessPresentation(state: .sending, count: 0).summary(languageCode: "zh") == "正在发送")
+        #expect(ConversationProcessPresentation(state: .waiting, count: 0).summary(languageCode: "en") == "Waiting to run")
+    }
+
+    @Test func mobileLocalSubmissionUsesTheSameIdentityAndTerminalTurnWinsStaleStatus() throws {
+        for state in [ConversationProcessState.sending, .waiting, .failed, .cancelled] {
+            let local = ClientMessage(id: "mobile", text: "request", submissionState: state)
+            let rows = ConversationReplyProgressProjection.entries(ConversationTimeline.makeEntries(from: [local]))
+            #expect(rows.last?.id == "process:input:mobile")
+            #expect(rows.last?.processReplyState == state)
+        }
+        for (terminal, expected) in [("failed", ConversationProcessState.failed), ("cancelled", .cancelled)] {
+            let data: [String: Any] = ["id": "mobile", "type": "userMessage", "text": "request",
+                "turnId": "real", "turnStatus": terminal, "status": "processing"]
+            let item = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: data))
+            #expect(ConversationTimeline.makeEntries(from: [item]).last?.processReplyState == expected)
         }
     }
 
