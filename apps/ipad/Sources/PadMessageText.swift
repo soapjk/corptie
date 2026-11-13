@@ -24,6 +24,7 @@ struct PadMessageText: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
+        var languageCode: String?
         var text: String?
         var fromUser: Bool?
         var steps: [ConversationExecutionStep]?
@@ -65,14 +66,19 @@ struct PadMessageText: UIViewRepresentable {
         configureTextSelection(view, enabled: isTextSelectionEnabled)
         // Width changes and unrelated workspace updates must not reparse Markdown.
         guard context.coordinator.text != text || context.coordinator.fromUser != fromUser
+            || (steps != nil && context.coordinator.languageCode != context.environment.locale.identifier)
             || context.coordinator.steps != steps || context.coordinator.boundary != boundary else { return }
+        context.coordinator.languageCode = context.environment.locale.identifier
         context.coordinator.text = text
         context.coordinator.fromUser = fromUser
         context.coordinator.steps = steps
         context.coordinator.boundary = boundary
         if let steps {
             context.coordinator.layoutEntry = nil
-            view.attributedText = ExecutionTimelineAttributedText.make(steps: steps)
+            view.attributedText = ExecutionTimelineAttributedText.make(steps: steps, localize: { key in
+                guard context.environment.locale.identifier.lowercased().hasPrefix("zh") else { return key }
+                return ["Subagent started": "子 agent 已启动", "Subagent follow-up sent": "已发送后续指令", "Subagent completed": "子 agent 已完成", "Subagent status unknown": "子 agent 状态待确认"][key] ?? key
+            })
         } else {
             let entry = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent, boundary: boundary)
             context.coordinator.layoutEntry = entry

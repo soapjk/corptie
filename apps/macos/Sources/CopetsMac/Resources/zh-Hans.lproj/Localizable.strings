@@ -2588,3 +2588,11 @@
 "Session configuration mismatch." = "返回的会话配置与请求不一致。";
 
 "Fast mode may use more quota or incur higher charges." = "Fast 模式可能消耗更多额度或产生更高费用。";
+
+"Subagent started" = "子 agent 已启动";
+
+"Subagent follow-up sent" = "已发送后续指令";
+
+"Subagent completed" = "子 agent 已完成";
+
+"Subagent status unknown" = "子 agent 状态待确认";

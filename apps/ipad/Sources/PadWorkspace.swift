@@ -1015,9 +1015,9 @@ final class PadWorkspace {
                 }
             } ?? ConversationProcessPresentation.durationText(for: items, now: now)
             return (entry.id, ConversationProcessPresentation(
-                state: state, count: items.count,
+                state: state, count: ConversationExecutionProjection.displayedCount(for: items),
                 duration: duration,
-                currentStepTitle: currentStepTitle))
+                currentStepTitle: currentStepTitle, subagentCount: ConversationExecutionProjection.subagentCount(for: items)))
         }, uniquingKeysWith: { _, latest in latest })
         activeProcessEntryID = displayEntries.last(where: {
             processPresentations[$0.id]?.state == .running

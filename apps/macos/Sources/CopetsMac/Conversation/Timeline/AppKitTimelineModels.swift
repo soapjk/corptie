@@ -79,6 +79,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let collaborationRoute: NativeCollaborationRoutePresentation?
     let expandableTurnId: String?
     var isExpanded: Bool
+    let processSubagentCount: Int
     let processCount: Int?
     let processDuration: String?
     let processStartedAt: Date?
@@ -126,6 +127,7 @@ struct AppKitChatTimelineRow: Identifiable {
         collaborationRoute: NativeCollaborationRoutePresentation? = nil,
         expandableTurnId: String?,
         isExpanded: Bool,
+        processSubagentCount: Int = 0,
         processCount: Int? = nil,
         processDuration: String? = nil,
         processStartedAt: Date? = nil,
@@ -154,6 +156,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.collaborationRoute = collaborationRoute
         self.expandableTurnId = expandableTurnId
         self.isExpanded = isExpanded
+        self.processSubagentCount = processSubagentCount
         self.processCount = processCount
         self.processDuration = processDuration
         self.processStartedAt = processStartedAt
@@ -187,7 +190,7 @@ struct AppKitChatTimelineRow: Identifiable {
                 ?? processDuration
             : processDuration
         return ConversationProcessPresentation(state: processState, count: processCount ?? 0,
-            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil)
+            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil, subagentCount: processSubagentCount)
             .summary(languageCode: languageCode ?? processLanguageCode ?? "en")
     }
 

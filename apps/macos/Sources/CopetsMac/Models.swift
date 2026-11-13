@@ -1693,6 +1693,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var rawMetadataJSON: String? = nil
     var coordinationProgress: ClientCoordinationProgress? = nil
     var executionPlan: ConversationExecutionPlan? = nil
+    var subagentActivity: ConversationSubagentActivity? = nil
     var toolExecution: ConversationToolExecution? = nil
     var changeSet: ConversationChangeSet? = nil
     var userInput: ConversationUserInput? = nil
