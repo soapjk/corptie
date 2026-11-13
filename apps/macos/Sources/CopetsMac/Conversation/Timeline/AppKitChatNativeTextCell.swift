@@ -425,6 +425,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             processButtonTopConstraint, processButtonBottomConstraint
         ])
         imageStack.arrangedSubviews.forEach { imageStack.removeArrangedSubview($0); $0.removeFromSuperview() }
+        // A revision of the same message retains the reader's text selection.
+        // A reused cell for a different message must start without that selection.
+        let selection = representedRowID == row.id && label.usesNativeTextMenu ? label.selectedRanges : []
         label.endTextSelection()
         renderedRow = row
         renderedWidth = availableWidth
@@ -438,6 +441,14 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         contentConfigurationCount += 1
         updateLinkContext(baseDirectory: baseDirectory)
         label.textStorage?.setAttributedString(layout.attributedText)
+        if !selection.isEmpty {
+            let length = layout.attributedText.length
+            label.selectedRanges = selection.compactMap { value in
+                let range = value.rangeValue
+                guard range.location < length else { return nil }
+                return NSValue(range: NSRange(location: range.location, length: min(range.length, length - range.location)))
+            }
+        }
         rawStatusTextView.string = row.rawStatusText
         apply(layout: layout)
         titleLabel.stringValue = row.title

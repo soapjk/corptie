@@ -41,7 +41,7 @@ struct DetailRailBackdropGeometryTests {
             try await Task.sleep(for: .milliseconds(400))
             host.layoutSubtreeIfNeeded()
         }
-        #expect(DetailRailGeometry.leadingBackdropExtension == 32 - 12)
+        #expect(DetailRailGeometry.leadingBackdropExtension == CGFloat(20))
         #expect(DetailRailGeometry.leadingBackdropExtension <= WorkbenchStyle.readingInset)
         for width in [1400, Columns.minimumDockedWidth, 900, Columns.redockWidth] {
             window.setContentSize(CGSize(width: width, height: 600))
@@ -79,6 +79,7 @@ struct DetailRailBackdropGeometryTests {
         #expect(descendants(host, as: DetailRailBackdropView.self).isEmpty)
         #expect(shell.isHidden)
         #expect(shell.hitTest(shell.convert(CGPoint(x: 100, y: 30), to: shell.superview)) == nil)
-        #expect(abs(try #require(shell.subviews.first?.layer).transform.m41 - DetailRailGeometry.viewportWidth) < 1)
+        let slideLayer = try #require(shell.subviews.first?.layer)
+        #expect(abs(slideLayer.transform.m41 - DetailRailGeometry.viewportWidth) < 1)
     }
 }
