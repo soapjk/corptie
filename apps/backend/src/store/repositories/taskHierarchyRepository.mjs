@@ -310,10 +310,10 @@ export class TaskHierarchyRepository {
       ${mode === "roots" ? "AND parent_task_id IS NULL" : mode === "children" ? "AND parent_task_id=?" : ""}
       ${!includeCompleted ? "AND lifecycle_state<>'done'" : ""}
       ${!includeArchived ? "AND archived=0" : ""}
-      ${terms.length ? `AND (${terms.map(() => "title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
+      ${terms.length ? `AND (${terms.map(() => "title LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
       ${after ? `AND (${rank}>? OR (${rank}=? AND updated_at<?) OR (${rank}=? AND updated_at=? AND id<?))` : ""}
       ORDER BY completion_rank ASC,updated_at DESC,id DESC LIMIT ?`,
-    [workId,...(mode === "children" ? [parentTaskId] : []),...terms.flatMap(t => [t,t]),
+    [workId,...(mode === "children" ? [parentTaskId] : []),...terms,
       ...(after ? [after.rank,after.rank,after.updatedAt,after.rank,after.updatedAt,after.id] : []),count+1]);
     const items = rows.slice(0,count).map(({ completion_rank: _,...row }) => row);
     const parentIDs = [...new Set([...(parentTaskId ? [parentTaskId] : []),...items.map(t=>t.parent_task_id).filter(Boolean)])];

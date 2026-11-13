@@ -235,7 +235,7 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
     private func motionTasks(count: Int, session: TaskSession) -> [CorptieTask] {
         (0..<count).map { index in
             CorptieTask(id: "task:\(index)", workId: "work:motion", title: "Task \(index) with a long title",
-                description: "", acceptanceCriteria: "", priority: "medium", lifecycleState: "in_progress",
+                  priority: "medium", lifecycleState: "in_progress",
                 mainRoleId: "role:motion", currentSessionId: session.id, executionStatus: "idle",
                 acceptanceAssessment: nil, completionSuggestion: nil, createdAt: "", updatedAt: "")
         }
@@ -392,8 +392,8 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         var other = motionTasks(count: 1, session: session)[0]
         other.workId = "work:other"
         // Different IDs across the two Works are required by the inventory contract.
-        other = CorptieTask(id: "task:other", workId: other.workId, title: "Other", description: "",
-            acceptanceCriteria: "", priority: "medium", lifecycleState: "todo", mainRoleId: nil,
+        other = CorptieTask(id: "task:other", workId: other.workId, title: "Other",
+             priority: "medium", lifecycleState: "todo", mainRoleId: nil,
             currentSessionId: nil, executionStatus: nil, createdAt: "", updatedAt: "")
         tasks.append(other)
         func key(_ revision: UInt64, sort: WorkOutlineSort = .standard) -> ConsoleOutlineProjectionKey {
@@ -402,11 +402,11 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         await store.prepare(key: key(1), tasks: tasks, works: [], sessions: [])
         XCTAssertFalse(store.lastComputationUsedMainThread)
         let structureRevision = store.prepared.workRowsByWorkID["work:motion"]?.structureRevision
-        tasks[0].description = "An unrelated description patch"
+        tasks[0].priority = "urgent"
         await store.prepare(key: key(2), tasks: tasks, works: [], sessions: [])
         XCTAssertTrue(store.rebuiltWorkIDs.isEmpty)
         XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.structureRevision, structureRevision)
-        XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.allRows.first?.description, tasks[0].description)
+        XCTAssertEqual(store.prepared.workRowsByWorkID["work:motion"]?.allRows.first?.priority, tasks[0].priority)
         await store.prepare(key: key(3, sort: .name), tasks: tasks, works: [], sessions: [])
         tasks[0].title = "ZZZ"
         await store.prepare(key: key(4, sort: .name), tasks: tasks, works: [], sessions: [])

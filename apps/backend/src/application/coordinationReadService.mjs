@@ -55,10 +55,10 @@ export class CoordinationReadService {
         ...(before?[before.createdAt,before.createdAt,before.id]:[]),limit+1]),limit);
     }else if(input.tool==="read_task"){
       result={task:{id:task.id,parentTaskId:task.parent_task_id??null,title:task.title,
-        description:bounded(task.description,1000),acceptanceCriteria:bounded(task.acceptance_criteria,1000),
+
         state:task.lifecycle_state,executionStatus:task.execution_status,creationState:task.creation_state,
         archived:Boolean(task.archived),deletionStatus:task.deletion_status,sessionId:task.current_session_id},
-        truncated:String(task.description??"").length>1000 || String(task.acceptance_criteria??"").length>1000};
+        truncated:false};
     }else if(input.tool==="read_execution"){
       const session=this.session(root,task,input.sessionId);
       const operation=this.store.getRunningAgentTaskForSession(session.id)

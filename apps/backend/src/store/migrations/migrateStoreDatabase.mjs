@@ -16,7 +16,7 @@ import { ensureCollaborationDirectoryTables } from "./collaborationDirectoryMigr
 import { ensureHubFoundationTables } from "./hubFoundationMigrations.mjs";
 import { migrateSessionAssociationGuards } from "./sessionAssociationMigrations.mjs";
 import { sessionRuntimeSchemaSql, workDomainSchemaSql } from "./index.mjs";
-import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "../taskSchemaMigration.mjs";
+import { migrateTaskDomainV1, migrateTaskGoalRemovalV1, migrateTaskDefinitionRemovalV1 } from "../taskSchemaMigration.mjs";
 import { migrateSshWorkspaces } from "../sshWorkspaceRepository.mjs";
 import { migrateAutomationTimelineV2 } from "./automationTimelineV2.mjs";
 import { migrateMailboxTimeline } from "./mailboxTimelineMigrations.mjs";
@@ -98,6 +98,7 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     ensureColumn("agents", "work_dir", "TEXT");
     ensureColumn("agents", "avatar_path", "TEXT");
     migrateTaskGoalRemovalV1(db);
+    migrateTaskDefinitionRemovalV1(db);
     ensureColumn(
       "agent_operations",
       "channel_delivery_id",

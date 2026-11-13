@@ -240,7 +240,9 @@ struct MacSharedMessageTextCard: View {
             }
             if let identity = row.replyIdentity {
                 MacReplyIdentityHeader(identity: identity, skin: skin)
-                    .padding(.horizontal, ReplyLeadingLayout.contentLeading).padding(.bottom, ReplyIdentityLayout.bottomSpacing)
+                    .padding(.horizontal, ReplyLeadingLayout.contentLeading)
+                    .padding(.top, ReplyIdentityLayout.topSpacing + layout.typography.rowInset)
+                    .padding(.bottom, ReplyIdentityLayout.bottomSpacing)
             }
             Group {
                 if row.processStep != nil, let block = layout.processBlocks.first {
@@ -291,7 +293,7 @@ struct MacSharedMessageTextCard: View {
                 alignment: row.nativeStyle == .user ? .topTrailing : .topLeading)
             .padding(.leading, ReplyLeadingLayout.cardLeading(for: row, skin: skin))
             .padding(.trailing, row.nativeStyle == .user ? ChatBubbleWidthPolicy.userTrailingInset : 2)
-            .padding(.top, row.followsReplyProcess ? MessageCardMetrics.rowInset : layout.typography.rowInset)
+            .padding(.top, row.replyIdentity != nil ? 0 : (row.followsReplyProcess ? MessageCardMetrics.rowInset : layout.typography.rowInset))
             .padding(.bottom, layout.typography.rowInset)
             if row.showsReplyActions {
                 ReplyActions(row: row, copy: copy, performAction: performAction)

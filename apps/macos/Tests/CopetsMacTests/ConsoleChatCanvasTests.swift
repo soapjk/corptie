@@ -44,17 +44,17 @@ struct ConsoleChatCanvasTests {
             generatedAt: "", providerID: nil, model: nil,
             basis: .init(taskRevision: 1, sessionID: "s", timelineRevision: 1), messageSummary: "最新消息摘要")
         #expect(TaskCardSummaryPreview.text(content: content, isCurrent: true,
-            sessionSummary: "会话摘要", description: "任务描述") == "最新消息摘要")
+            sessionSummary: "会话摘要") == "最新消息摘要")
         #expect(TaskCardSummaryPreview.text(content: content, isCurrent: false,
-            sessionSummary: nil, description: "任务描述").hasPrefix("旧摘要 · 待更新 · "))
+            sessionSummary: nil).hasPrefix("旧摘要 · 待更新 · "))
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: "会话摘要", description: "任务描述") == "会话摘要")
+            sessionSummary: "会话摘要") == "会话摘要")
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: " \n", description: "任务描述") == "任务描述")
+            sessionSummary: " \n") == "摘要待生成")
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: nil, description: "") == "摘要待生成")
+            sessionSummary: nil) == "摘要待生成")
         #expect(TaskCardSummaryPreview.text(content: nil, isCurrent: false,
-            sessionSummary: nil, description: String(repeating: "文", count: 500)).count == 101)
+            sessionSummary: String(repeating: "文", count: 500)).count == 101)
     }
 
     @Test func chatLivesInCanvasAndSharesInteractionWithoutAttentionFiltering() throws {

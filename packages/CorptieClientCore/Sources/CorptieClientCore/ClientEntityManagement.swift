@@ -13,9 +13,6 @@ public struct ClientTaskManagement: Decodable, Sendable {
         public let id: String
         public let workId: String
         public let title: String
-        public let description: String
-        public let acceptanceCriteria: String
-        public let verificationCriteria: String
         public let priority: String
         public let lifecycleState: String
         public let archived: Bool
@@ -26,9 +23,6 @@ public struct ClientTaskManagement: Decodable, Sendable {
         case id
         case workId
         case title
-        case description
-        case acceptanceCriteria
-        case verificationCriteria
         case priority
         case lifecycleState
         case archived
@@ -146,9 +140,6 @@ public struct ClientTaskUpdate: Codable, Sendable, Equatable {
     public var title: String?
     public var autoTitleEnabled: Bool?
     public var coordinationEnabled: Bool?
-    public var description: String?
-    public var acceptanceCriteria: String?
-    public var verificationCriteria: String?
     public var priority: String?
     public var mainRoleId: String?
     public init(requestId: String) { self.requestId = requestId }
@@ -158,9 +149,6 @@ public struct ClientTaskUpdate: Codable, Sendable, Equatable {
         case title
         case autoTitleEnabled
         case coordinationEnabled
-        case description
-        case acceptanceCriteria
-        case verificationCriteria
         case priority
         case mainRoleId = "mainAgentId"
     }

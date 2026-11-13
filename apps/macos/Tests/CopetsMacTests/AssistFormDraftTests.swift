@@ -79,8 +79,6 @@ final class AssistFormDraftTests: XCTestCase {
           "formType": "task",
           "fields": {
             "title": "统一帮我写",
-            "description": "一次填写所有字段。",
-            "acceptanceCriteria": "- 可检查\n- 可编辑",
             "priority": "high"
           },
           "providerId": "test-provider"

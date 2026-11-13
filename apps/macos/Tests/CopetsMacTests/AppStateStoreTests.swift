@@ -7,8 +7,8 @@ struct AppStateStoreTests {
     @Test func taskMenuLookupTracksAuthoritativeUpdatesAndRemovalWithoutAnInventoryScan() throws {
         let store = AppStateStore()
         let client = EntityAPIClient(appState: store)
-        var task = CorptieTask(id: "task:menu", workId: "work:menu", title: "Before", description: "",
-            acceptanceCriteria: "", priority: "medium", lifecycleState: "in_progress", mainRoleId: nil,
+        var task = CorptieTask(id: "task:menu", workId: "work:menu", title: "Before",
+             priority: "medium", lifecycleState: "in_progress", mainRoleId: nil,
             currentSessionId: nil, executionStatus: nil, acceptanceAssessment: nil, completionSuggestion: nil,
             createdAt: "2026-11-13T00:00:00Z", updatedAt: "2026-11-13T00:00:00Z")
         var state = ControlPlaneStatePayload.fixture()

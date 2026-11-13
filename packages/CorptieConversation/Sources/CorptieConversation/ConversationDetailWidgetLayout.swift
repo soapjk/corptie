@@ -62,9 +62,10 @@ enum DetailWidgetSizing {
         case .summary(let value): return .fitted(height: base + textHeight(value.text))
         case .work(let value): return .fitted(height: base + textHeight(value.name, lines: 2) + blockHeight(value.description))
         case .task(let value):
-            let definition = blockHeight(value.description) + blockHeight(value.acceptanceCriteria) + blockHeight(value.verificationCriteria)
-            let height = base + textHeight(value.title, lines: 2) + 24 + definition + summaryHeight(value.summary)
-            return .fitted(height: height)
+            // Natural layout owns the final height. The directory estimate must
+            // likewise ignore hidden task definitions, history and metadata.
+            return .fitted(height: 54 + max(16, textHeight(value.summary.focus))
+                + max(16, textHeight(value.summary.progress)) + 30)
         case .provider: return .medium
         case .worktree(let value):
             let detailed = value.tree?.dirty == true || (!value.blockedReason.isEmpty && value.blockedReason != "MAIN_WORKTREE") || value.job != nil

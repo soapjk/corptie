@@ -147,7 +147,7 @@ test('device child requests omit parent version and remain compatible with stale
  const f=await fixture();
  try{
   const parent=f.store.createTask({workId:input.workId,title:'Parent',mainAgentId:input.mainAgentId});
-  f.store.updateTask(parent.id,{description:'Changed description'});
+  f.store.updateTask(parent.id,{});
   const request={...input,parentTaskId:parent.id,requestId:'child_no_version'};
   const created=await f.make().createTask(identity,'session:test',request);assert.equal(created.status,'completed');
   const legacy={...request,requestId:'child_legacy_version',expectedParentResourceVersion:1};

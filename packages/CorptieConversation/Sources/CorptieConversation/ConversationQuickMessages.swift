@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 /// Independent, compact glass chips above the composer. No transcript reads,
 /// per-chip observation, layout animation, or full-width material layer.
 public struct ConversationQuickMessages: View {
+    public static let chipVerticalInset: CGFloat = 3
     #if os(iOS)
     public static let rowHeight: CGFloat = 50
     #else
@@ -50,7 +51,7 @@ public struct ConversationQuickMessages: View {
                     .accessibilityIdentifier("quick-message-\(item.id)")
                 }
             }
-            .padding(.horizontal, 3).padding(.vertical, 3)
+            .padding(.horizontal, 3).padding(.vertical, Self.chipVerticalInset)
     }
 
     private func label(_ item: ClientQuickMessage) -> some View {

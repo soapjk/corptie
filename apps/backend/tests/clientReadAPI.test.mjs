@@ -40,7 +40,7 @@ test("real Store inventory is paginated and excludes private implementation fiel
     for (const suffix of ["One", "Two"]) {
       const work = store.createWork({ id: `work:${suffix}`, name: `Work${suffix}`, contributorAgentIds: [agent.agentId] });
       const task = store.createTask({ id: `task:${suffix}`, workId: work.id, title: `Task${suffix}`,
-        mainAgentId: agent.agentId, description: "PRIVATE_IMPLEMENTATION_MARKER" });
+        mainAgentId: agent.agentId});
       store.createSession({ id: `session:${suffix}`, title: `Session${suffix}`, sessionKind: "worker",
         workId: work.id, taskId: task.id, agentId: agent.agentId, status: "complete", summary: "PRIVATE_IMPLEMENTATION_MARKER" });
     }

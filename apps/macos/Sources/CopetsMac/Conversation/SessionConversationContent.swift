@@ -623,6 +623,15 @@ struct SessionConversationSurface: View {
 
     }
 
+    private static let checklistBottomSpacing: CGFloat = 6
+    /// Match the visible checklist-to-chip gap, accounting for the process
+    /// card's existing exterior row inset. This belongs to the dock clearance,
+    /// so it also survives row reuse, streaming and window resizing.
+    private var checklistTranscriptSpacing: CGFloat {
+        hasPinnedChecklist ? Self.checklistBottomSpacing
+            + ConversationQuickMessages.chipVerticalInset - MessageCardMetrics.rowInset : 0
+    }
+
     private var floatingDock: some View {
         VStack(spacing: 0) {
             if showsFloatingJumpControl {
@@ -637,7 +646,7 @@ struct SessionConversationSurface: View {
                     active: acceptsPresentationUpdates)
                     .id(sessionId + ":" + plan.planId)
                     .modifier(WorkbenchReadingLane(compact: compactComposer))
-                    .padding(.bottom, 6)
+                    .padding(.bottom, Self.checklistBottomSpacing)
             }
             if showsDockQuickMessages {
                 dockQuickMessages
@@ -645,6 +654,7 @@ struct SessionConversationSurface: View {
                     .padding(.bottom, 4)
             }
         }
+        .padding(.top, checklistTranscriptSpacing)
     }
 
     /// Optional chrome occupies zero height when there is nothing to report:
@@ -1043,24 +1053,11 @@ struct SessionConversationSurface: View {
         nativeRowBuilder.forkItemID(for: entry)
     }
 
-    private func processExpansionMetadata(
-        for entry: ChatDisplayEntry,
-        expandedTurnIds: Set<String>
-    ) -> (turnId: String?, isExpanded: Bool) {
-        switch entry.kind {
-        case .process(let turnId, _):
-            return (turnId, expandedTurnIds.contains(turnId))
-        case .message:
-            return (nil, false)
-        }
-    }
-
     private func toggleNativeProcessExpansion(_ turnId: String) {
         // AppKit owns the row geometry. A SwiftUI transition would put hosted
         // content and the enclosing row on different layout clocks.
         setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
     }
-
 
     private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
         guard allowsPageActions else { return }
@@ -1626,6 +1623,5 @@ struct SessionConversationSurface: View {
     private func detailSourceSignature(for _: CodexThreadDetail) -> String {
         appKitDetailRevision
     }
-
 
 }

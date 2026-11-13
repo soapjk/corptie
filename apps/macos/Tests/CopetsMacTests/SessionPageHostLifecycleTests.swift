@@ -77,7 +77,6 @@ import CorptieConversation
     }
 }
 
-
 @MainActor final class SessionPageRenderInputTests: XCTestCase {
     private func session(_ id: String = "page-a", task: String = "task-a") -> TaskSession {
         TaskSession(id: id, title: id, agent: "Fixture", roleId: nil, sessionKind: .worker,
@@ -407,7 +406,7 @@ import CorptieConversation
                         XCTAssertEqual(region.accessory.frame.minY, region.bounds.minY, accuracy: 0.5)
                         XCTAssertEqual(region.content.frame.minY, region.accessory.frame.maxY, accuracy: 0.5,
                             "The transcript viewport must still reach the editor boundary beneath the floating row")
-                        XCTAssertEqual(region.floatingRegionClearance ?? -1, checklist ? 76 : 34, accuracy: 0.5)
+                        XCTAssertEqual(region.floatingRegionClearance ?? -1, checklist ? 84 : 34, accuracy: 0.5)
                         let chips = descendants(quick).filter { abs($0.frame.height - 24) < 0.5 && $0.frame.width > 0 }
                         XCTAssertEqual(chips.count, 8, "Use the actual overflowing eight-chip native row")
                         let chip = try XCTUnwrap(chips.first)
@@ -590,6 +589,257 @@ import CorptieConversation
             }
             XCTAssertTrue(findEditor(host) === editor)
         }
+    }
+
+    func testProcessCollapsePaintedGlyphsStayAboveRealChecklistAndQuickMessages() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream()
+        func item(_ id: String, turn: String, type: String, text: String, status: String) -> CodexThreadItem {
+            .init(id: id, turnId: turn, turnStatus: status, type: type, title: "",
+                text: text, options: nil, status: status, createdAt: nil)
+        }
+        let history = (0..<10).map { item("history-\($0)", turn: "old-\($0)", type: "agentMessage",
+            text: "Earlier message \($0)\nSecond line", status: "completed") }
+        let tools = (0..<12).map { item("tool-\($0)", turn: "collapse-turn", type: "commandExecution",
+            text: "Command \($0)\nExecution detail", status: "inProgress") }
+        let reply = item("collapse-reply", turn: "collapse-turn", type: "agentMessage",
+            text: "我先查看实际消息和执行记录，确认连续输入的处理阶段。\n完整正文必须位于清单上方。", status: "inProgress")
+        timeline.apply(CodexThreadDetail(id: "collapse-thread", title: "Collapse", status: .running,
+            source: nil, connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil,
+            activityStatus: nil, cwd: nil, createdAt: "", updatedAt: "", canSend: true,
+            sendUnavailableReason: nil, capabilities: nil, turnCount: 11, items: history + tools + [reply]))
+        inputs.resume(); await settle()
+        let suite = "process-collapse-dock-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        let scope = ClientQuickMessageCache.scope(host: client.baseURL.absoluteString,
+            taskID: inputs.session.taskId, sessionID: inputs.scope.sessionID)
+        cache.remember((0..<8).map { .init(id: "collapse-chip-\($0)", text: "Quick message \($0)",
+            scope: "task", count: 1) }, for: scope)
+        let host = NSHostingView(rootView: SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs, quickMessageCache: cache))
+        let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 900, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        defer { inputs.retire(); window.orderOut(nil); window.contentView = nil; window.close() }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let fields: [String: Any] = ["schemaVersion": 1, "planId": "checklist:collapse",
+            "taskId": inputs.session.taskId ?? "task-a", "revision": 1, "closed": false,
+            "lifecycle": "active", "completedCount": 0, "updatedAt": "2026-11-13",
+            "steps": [["stepId": "pending", "ordinal": 0, "text": "Check process collapse", "status": "pending"]]]
+        let plan = try JSONDecoder().decode(ConversationExecutionPlan.self,
+            from: JSONSerialization.data(withJSONObject: fields))
+        NotificationCenter.default.post(name: .executionChecklistChanged, object: inputs.session.taskId,
+            userInfo: ["checklist": plan])
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let all = ProcessCollapseGeometryTests.descendants
+        let region = try XCTUnwrap(all(host).compactMap { $0 as? ConversationRegionContainer<AnyView, AnyView> }.first)
+        let table = try XCTUnwrap(all(region.content).compactMap { $0 as? NSTableView }.first)
+        let coordinator = try XCTUnwrap(table.delegate as? AppKitChatTimelineCoordinator)
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        let editor = try XCTUnwrap(findEditor(host))
+        let originalCount = table.numberOfRows
+        coordinator.scrollToTurn("collapse-turn"); await settle()
+        let processCell = try XCTUnwrap(table.view(atColumn: 0, row: 10, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+        processCell.toggleRepresentedProcess()
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        XCTAssertEqual(table.numberOfRows, originalCount + 12)
+        coordinator.jumpToLatest(); try await Task.sleep(for: .milliseconds(350))
+        let button = try XCTUnwrap(all(scroll).compactMap { $0 as? NSButton }
+            .first { $0.identifier?.rawValue == "chat.timeline.process-follow-collapse" })
+        XCTAssertFalse(button.isHidden)
+        button.performClick(nil)
+        for _ in 0..<24 {
+            try await Task.sleep(for: .milliseconds(12))
+            let checklist = try XCTUnwrap(all(region.floatingHost).compactMap { $0 as? NSScrollView }
+                .first { abs($0.bounds.height - 36) < 0.5 })
+            let quick = try XCTUnwrap(all(region.floatingHost).compactMap { $0 as? NSScrollView }
+                .first { abs($0.bounds.height - ConversationQuickMessages.rowHeight) < 0.5 })
+            let opaqueTop = max(checklist.convert(checklist.bounds, to: region).maxY,
+                quick.convert(quick.bounds, to: region).maxY)
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: table.numberOfRows - 1, makeIfNecessary: false))
+            let text = try XCTUnwrap(all(cell).compactMap { $0 as? NSTextView }
+                .first { $0.string.contains("完整正文必须") })
+            let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+            manager.ensureLayout(for: container)
+            let used = manager.usedRect(for: container).offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+            let row = try XCTUnwrap(cell.superview)
+            let paintedRow = try XCTUnwrap(row.layer?.presentation())
+            let paintedRegion = try XCTUnwrap(region.layer?.presentation())
+            let paintedGlyphs = paintedRow.convert(text.convert(used, to: row), to: paintedRegion)
+            XCTAssertGreaterThanOrEqual(paintedGlyphs.minY, opaqueTop + 3.5,
+                "Painted glyphs, not only final layout rects, stay above the real dock")
+            XCTAssertTrue(text.visibleRect.insetBy(dx: -0.5, dy: -0.5).contains(used))
+            XCTAssertFalse((row.layer?.animationKeys() ?? []).contains("position"))
+            XCTAssertTrue(findEditor(host) === editor)
+        }
+        XCTAssertEqual(table.numberOfRows, originalCount)
+        XCTAssertTrue(coordinator.followsLatest)
+    }
+
+    private final class TrackingResizeWindow: NSWindow {
+        var trackingResize = false
+        override var inLiveResize: Bool { trackingResize || super.inLiveResize }
+    }
+
+    func testLatestProcessKeepsMatchingChecklistGapThroughoutNativeResize() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream()
+        let history = (0..<15).map {
+            CodexThreadItem(id: "gap-history-\($0)", turnId: "old-\($0)", turnStatus: "completed",
+                type: "agentMessage", title: "", text: "Earlier message \($0)\nSecond line",
+                options: nil, status: "completed", createdAt: nil)
+        }
+        let submitted = CodexThreadItem(id: "gap-input", turnId: "gap-turn", turnStatus: "inProgress",
+            type: "userMessage", title: "", text: "开始开发", options: nil, status: "processing", createdAt: nil)
+        timeline.apply(CodexThreadDetail(id: "gap-thread", title: "Gap", status: .running,
+            source: nil, connectionStatus: nil, currentModel: nil, currentReasoningLevel: nil,
+            activityStatus: nil, cwd: nil, createdAt: "", updatedAt: "", canSend: true,
+            sendUnavailableReason: nil, capabilities: nil, turnCount: 16, items: history + [submitted]))
+        inputs.resume(); await settle()
+        let suite = "process-gap-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = ClientQuickMessageCache(defaults: defaults)
+        let scope = ClientQuickMessageCache.scope(host: client.baseURL.absoluteString,
+            taskID: inputs.session.taskId, sessionID: inputs.scope.sessionID)
+        cache.remember((0..<3).map { .init(id: "gap-chip-\($0)", text: "开始开发 \($0)", scope: "task", count: 1) }, for: scope)
+        let host = NSHostingView(rootView: SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs, quickMessageCache: cache))
+        let window = TrackingResizeWindow(contentRect: .init(x: -10000, y: -10000, width: 900, height: 700),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        defer { inputs.retire(); window.orderOut(nil); window.contentView = nil; window.close() }
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        let fields: [String: Any] = ["schemaVersion": 1, "planId": "checklist:gap",
+            "taskId": inputs.session.taskId ?? "task-a", "revision": 1, "closed": false,
+            "lifecycle": "active", "completedCount": 0, "updatedAt": "2026-11-13",
+            "steps": [["stepId": "pending", "ordinal": 0, "text": "集中验证并重建 Development", "status": "pending"]]]
+        let plan = try JSONDecoder().decode(ConversationExecutionPlan.self, from: JSONSerialization.data(withJSONObject: fields))
+        NotificationCenter.default.post(name: .executionChecklistChanged, object: inputs.session.taskId,
+            userInfo: ["checklist": plan])
+        await settle(); host.layoutSubtreeIfNeeded(); await settle()
+        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+        let region = try XCTUnwrap(all(host).compactMap { $0 as? ConversationRegionContainer<AnyView, AnyView> }.first)
+        let table = try XCTUnwrap(all(region.content).compactMap { $0 as? IntrinsicHeightTableView }.first)
+        let coordinator = try XCTUnwrap(table.delegate as? AppKitChatTimelineCoordinator)
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        let editor = try XCTUnwrap(findEditor(host))
+        coordinator.jumpToLatest(); await settle()
+        let last = table.numberOfRows - 1
+        let cell = try XCTUnwrap(table.view(atColumn: 0, row: last, makeIfNecessary: true) as? AppKitSharedMessageTextCell)
+        XCTAssertEqual(table.numberOfRows, history.count + 2, "The submitted user message must have its zero-step process row")
+        func assertGap(presentation: Bool = false) throws {
+            let checklist = try XCTUnwrap(all(region.floatingHost).compactMap { $0 as? NSScrollView }
+                .first { abs($0.bounds.height - 36) < 0.5 })
+            let quick = try XCTUnwrap(all(region.floatingHost).compactMap { $0 as? NSScrollView }
+                .first { abs($0.bounds.height - ConversationQuickMessages.rowHeight) < 0.5 })
+            let chip = try XCTUnwrap(all(quick).first { abs($0.frame.height - 24) < 0.5 && $0.frame.width > 0 })
+            let checklistFrame = checklist.convert(checklist.bounds, to: region)
+            let chipGap = checklistFrame.minY - chip.convert(chip.bounds, to: region).maxY
+            let processFrame = table.convert(table.rect(ofRow: last), to: region)
+            // A shared process card has exactly one exterior row inset below its painted surface.
+            var processBottom = processFrame.minY + MessageCardMetrics.rowInset
+            if presentation {
+                let rowView = try XCTUnwrap(table.rowView(atRow: last, makeIfNecessary: false))
+                let layer = try XCTUnwrap(rowView.layer), painted = try XCTUnwrap(layer.presentation())
+                processBottom -= painted.frame.minY - rowView.frame.minY
+                XCTAssertFalse((layer.animationKeys() ?? []).contains("position"))
+            }
+            XCTAssertEqual(chipGap, 9, accuracy: 0.5)
+            XCTAssertEqual(processBottom - checklistFrame.maxY, chipGap, accuracy: 1,
+                "The process must clear the actual checklist frame before another queue turn")
+            XCTAssertEqual((scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.maxY, 0, accuracy: 0.5)
+        }
+        try assertGap()
+        window.trackingResize = true
+        let commits = region.rootCommitCount, reloads = table.fullReloadCount, configurations = cell.contentConfigurationCount
+        for size in [CGSize(width: 900, height: 680), .init(width: 740, height: 650),
+                     .init(width: 560, height: 620), .init(width: 340, height: 580),
+                     .init(width: 341, height: 579), .init(width: 560, height: 620),
+                     .init(width: 900, height: 700), .init(width: 1233, height: 720)] {
+            window.setContentSize(size); host.layoutSubtreeIfNeeded()
+            try assertGap()
+            for _ in 0..<3 {
+                try await Task.sleep(for: .milliseconds(12))
+                try assertGap(presentation: true)
+            }
+            XCTAssertEqual(region.rootCommitCount, commits)
+            XCTAssertEqual(table.fullReloadCount, reloads)
+            XCTAssertEqual(cell.contentConfigurationCount, configurations)
+            XCTAssertTrue(findEditor(host) === editor)
+        }
+        window.trackingResize = false
+        NotificationCenter.default.post(name: NSWindow.didEndLiveResizeNotification, object: window)
+        host.layoutSubtreeIfNeeded(); await settle()
+        try assertGap(presentation: true)
+    }
+
+    func testWorkColumnAnimationRetainsRealTranscriptAndMarkedComposer() async throws {
+        _ = NSApplication.shared
+        let (inputs, _, client, timeline) = makeInputs(richToolbar: true)
+        client.markBackendConnectedFromSessionStream()
+        timeline.apply(detail(200)); inputs.resume(); await settle()
+        let suite = "work-column-animation-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let page = SessionConversationSurface(sessionId: inputs.scope.sessionID,
+            presentationCache: SessionPresentationCache(), composerDraftRepository: ComposerDraftRepository(),
+            backendClient: client, showsHeader: false, renderInputs: inputs)
+        let split = ConsoleSplitController(mode: .workOutline, sidebar: Text("Work"), detail: page, defaults: defaults)
+        split.reduceMotionOverride = false
+        let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 1400, height: 800),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentViewController = split; window.orderBack(nil)
+        // Setting a root controller lets AppKit adopt its initial ideal size.
+        // Supply the containing window's real size after attaching the split.
+        window.setContentSize(.init(width: 1400, height: 800))
+        defer { inputs.retire(); window.orderOut(nil); window.contentViewController = nil; window.close() }
+        await settle(); split.view.layoutSubtreeIfNeeded(); await settle()
+        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+        let region = try XCTUnwrap(all(split.view).compactMap { $0 as? ConversationRegionContainer<AnyView, AnyView> }.first)
+        let table = try XCTUnwrap(all(region.content).compactMap { $0 as? IntrinsicHeightTableView }.first)
+        let coordinator = try XCTUnwrap(table.delegate as? AppKitChatTimelineCoordinator)
+        let scroll = try XCTUnwrap(table.enclosingScrollView)
+        let editor = try XCTUnwrap(findEditor(split.view))
+        window.makeFirstResponder(editor)
+        editor.setMarkedText("正在输入", selectedRange: .init(location: 4, length: 0),
+            replacementRange: .init(location: NSNotFound, length: 0))
+        coordinator.jumpToLatest(); await settle()
+        let text = editor.string, selection = editor.selectedRange(), marked = editor.markedRange()
+        print("WORK_COLUMN_BEFORE window=\(window.frame) split=\(split.view.frame) region=\(region.frame) scroll=\(scroll.frame) clip=\(scroll.contentView.bounds) document=\(scroll.documentView?.frame ?? .zero) follows=\(coordinator.followsLatest)")
+        XCTAssertGreaterThan(scroll.bounds.height, 200)
+        XCTAssertEqual((scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.maxY, 0, accuracy: 0.5)
+        let roots = region.rootCommitCount, splitRoots = split.detailRootCommitCount, reloads = table.fullReloadCount
+        let resizeCommits = coordinator.resizeLayoutCommitCount, resets = coordinator.sdkRowResetCount
+        var samples = 0
+        for collapsed in [true, false, true, false] {
+            split.setWorkColumnCollapsed(collapsed)
+            for _ in 0..<25 {
+                try await Task.sleep(for: .milliseconds(12))
+                samples += 1
+                XCTAssertTrue(findEditor(split.view) === editor)
+                XCTAssertTrue(window.firstResponder === editor)
+                XCTAssertEqual(editor.string, text)
+                XCTAssertEqual(editor.selectedRange(), selection)
+                XCTAssertEqual(editor.markedRange(), marked)
+                XCTAssertEqual(region.rootCommitCount, roots)
+                XCTAssertEqual(split.detailRootCommitCount, splitRoots)
+                XCTAssertEqual(table.fullReloadCount, reloads)
+                XCTAssertEqual((scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.maxY, 0, accuracy: 0.5)
+            }
+            XCTAssertEqual(split.splitViewItems[0].isCollapsed, collapsed)
+            XCTAssertNil(split.workColumnAnimationTarget)
+        }
+        let stableSyncs = coordinator.documentHeightSyncCount
+        for _ in 0..<16 { split.view.layoutSubtreeIfNeeded() }
+        XCTAssertEqual(coordinator.documentHeightSyncCount, stableSyncs)
+        print("WORK_COLUMN_ANIMATION samples=\(samples) roots=\(region.rootCommitCount - roots) reloads=\(table.fullReloadCount - reloads) resizeCommits=\(coordinator.resizeLayoutCommitCount - resizeCommits) rowResets=\(coordinator.sdkRowResetCount - resets)")
     }
 
     func testRealToolbarWidthChangesKeepMarkedTextDuringNativeLiveResize() async throws {

@@ -22,12 +22,6 @@ export const sessionIdSchema = id("session", "Stable logical Session identity (s
 export const workIdSchema = id("work", "Stable Work identity (work: ID).");
 
 export const taskFieldsSchema = Object.freeze({
-  description: { type: "string", description: "Detailed Task scope and constraints." },
-  acceptance_criteria: {
-    type: "string",
-    description: "Human-readable acceptance criteria. Completion still requires the dedicated acceptance workflow."
-  },
-  verification_criteria: { type: "string", description: "Evidence required to verify the current Task revision." },
   priority: { type: "string", enum: [...TASK_PRIORITIES] },
   lifecycle_state: { type: "string", enum: [...TASK_LIFECYCLE_STATES] },
   main_agent_id: { ...agentIdSchema, type: ["string", "null"] }
@@ -37,9 +31,6 @@ export const taskPatchSchema = Object.freeze({
   type: "object",
   properties: {
     title: { type: "string", minLength: 1 },
-    description: taskFieldsSchema.description,
-    acceptanceCriteria: taskFieldsSchema.acceptance_criteria,
-    verificationCriteria: taskFieldsSchema.verification_criteria,
     priority: { type: "string", enum: [...TASK_PRIORITIES] },
     lifecycleState: { type: "string", enum: [...TASK_LIFECYCLE_STATES] },
     mainAgentId: { type: ["string", "null"], description: agentIdSchema.description },

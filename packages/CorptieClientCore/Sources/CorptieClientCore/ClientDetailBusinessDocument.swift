@@ -36,9 +36,6 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
     public let taskId: String
     public let title: String
     public let status: String
-    public let description: String
-    public let acceptanceCriteria: String
-    public let verificationCriteria: String
     public let resourceRevision: String
     public let summary: ClientDetailBusinessTaskSummary
     public var parentTaskId: String? = nil
@@ -191,8 +188,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 actions.filter({ ["task.coordination.update", "task.request.control"].contains($0.operation) }).allSatisfy({
                     $0.target?.resourceType == "task" && $0.target?.id == task.taskId
                 }) else { throw ClientDetailFailure.invalidGraph }
-            guard !task.taskId.isEmpty, [task.title, task.status, task.description, task.acceptanceCriteria,
-                task.verificationCriteria, task.resourceRevision].allSatisfy({ validText($0) }),
+            guard !task.taskId.isEmpty, [task.title, task.status, task.resourceRevision].allSatisfy({ validText($0) }),
                 actions.filter({ $0.kind == "navigation" }).allSatisfy({ action in
                     (action.operation == "editor.open" && action.target?.resourceType == "task" && action.target?.id == task.taskId)
                     || (action.operation == "resource.open" && action.target?.resourceType == "session"
@@ -234,7 +230,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
         let base = 2048 + actions.count * 2048
         switch payload {
         case .coordinationProgress(let value): return base + value.items.count * 8192
-        case .task(let value): return base + texts([value.title, value.description, value.acceptanceCriteria, value.verificationCriteria, value.summary.focus, value.summary.progress, value.summary.reason, value.summary.nextAction])
+        case .task(let value): return base + texts([value.title, value.summary.focus, value.summary.progress, value.summary.reason, value.summary.nextAction])
         case .session(let value): return base + texts([value.sessionId, value.workName])
         case .summary(let value): return base + texts([value.text])
         case .work(let value): return base + texts([value.name, value.description])

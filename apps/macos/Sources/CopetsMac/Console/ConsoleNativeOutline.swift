@@ -117,12 +117,16 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
                 structure: $0.structureRevision, data: $0.dataRevision, collapsible: $0.allowsCollapse) }
             if !initial, let stamp = parent.presentation, stamp == lastPresentation,
                shape == lastShape, lastDarkAppearance == parent.darkAppearance { return }
+            let animatesChatRows = !initial && !parent.reduceMotion
+                && lastPresentation?.showsAllChats != parent.presentation?.showsAllChats
             lastPresentation = parent.presentation; lastShape = shape; lastDarkAppearance = parent.darkAppearance
             let oldRoots = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
             let rootIDsChanged = roots.map(\.id) != parent.groups.map(\.id)
             var changedChildren: [Node] = []
+            var previousChildren: [String: [String]] = [:]
             roots = parent.groups.map { group in
                 let node = oldRoots[group.id] ?? Node(id: group.id)
+                previousChildren[node.id] = node.children.map(\.id)
                 let oldChildren = Dictionary(uniqueKeysWithValues: node.children.map { ($0.id, $0) })
                 let children = group.rows.map { row in
                     let child = oldChildren[row.id] ?? Node(id: row.id)
@@ -141,7 +145,23 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
                 outline.reloadData()
             } else {
                 for node in changedChildren where outline.isItemExpanded(node) {
-                    outline.reloadItem(node, reloadChildren: true)
+                    let before = previousChildren[node.id] ?? []
+                    let after = node.children.map(\.id)
+                    let oldIDs = Set(before), newIDs = Set(after)
+                    if animatesChatRows, node.id == "assistant",
+                       before.filter({ newIDs.contains($0) }) == after.filter({ oldIDs.contains($0) }) {
+                        NSAnimationContext.runAnimationGroup { context in
+                            context.duration = 0.18
+                            outline.beginUpdates()
+                            outline.removeItems(at: IndexSet(before.indices.filter { !newIDs.contains(before[$0]) }),
+                                inParent: node, withAnimation: .slideUp)
+                            outline.insertItems(at: IndexSet(after.indices.filter { !oldIDs.contains(after[$0]) }),
+                                inParent: node, withAnimation: .slideDown)
+                            outline.endUpdates()
+                        }
+                    } else {
+                        outline.reloadItem(node, reloadChildren: true)
+                    }
                 }
             }
             func reconcile(_ node: Node) {

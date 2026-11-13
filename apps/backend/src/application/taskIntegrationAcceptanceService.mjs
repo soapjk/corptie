@@ -44,7 +44,7 @@ export class TaskIntegrationAcceptanceService {
     }
     const current=this.store.getTask(taskId);
     if(!current) throw fail("TASK_NOT_FOUND","Task not found",404);
-    const scope={taskRevision:current.revision,criteria:current.acceptance_criteria,verification:current.verification_criteria,
+    const scope={taskRevision:current.revision,
       bindingRevision:root.binding.binding_revision,children:children.filter(child=>!["no_changes","history_only"].includes(child.changeState))};
     const {children:excludedChildren,...rootScope}=scope;
     return {schemaVersion:1,acceptancePolicyVersion:2,parentTaskId:taskId,parentWorktreeId:root.binding.worktree_id,parentHeadOid,parentTreeOid,taskRevision:task.revision,
@@ -165,7 +165,7 @@ export class TaskIntegrationAcceptanceService {
       if(current.parentHeadOid!==snapshot.parentHeadOid || current.parentTreeOid!==snapshot.parentTreeOid
         || current.taskRevision!==snapshot.taskRevision || (snapshot.acceptancePolicyVersion!==2 && current.hierarchyRevision!==snapshot.hierarchyRevision)
         || current.bindingRevision!==snapshot.bindingRevision || current.rootScopeHash!==snapshot.rootScopeHash
-        || assessment.criteriaSnapshot!==String(latest.acceptance_criteria ?? "").trim()) throw fail("INTEGRATION_ACCEPTANCE_STALE");
+        || assessment.taskRevision!==Number(latest.revision)) throw fail("INTEGRATION_ACCEPTANCE_STALE");
       const hasUnintegratedChildren=current.children.some(child=>!child.includedInParent);
       // A receipt continues to describe its frozen tested code. New pending
       // child work is a separate delivery blocker, not retroactive test failure.

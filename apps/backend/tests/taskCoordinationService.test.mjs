@@ -285,7 +285,7 @@ test("creation does not fence parent description changes", async t => {
     const result = original(input);
     if (!injected) {
       injected = true;
-      queueMicrotask(() => f.workService.updateTask(f.parent.id, { description: "Changed plan" }));
+      queueMicrotask(() => f.workService.updateTask(f.parent.id, { }));
     }
     return result;
   };
@@ -1283,7 +1283,7 @@ for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`cros
  const repeated=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[same]});
  assert.equal(repeated.dispatches[0].dispatchId,id);assert.equal(repeated.dispatches[0].reused,true);
  const changed=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{...same,idempotencyKey:'third-turn',
-  creation:{...same.creation,description:'补充新的实现范围'}}]});
+  creation:{...same.creation,priority:'urgent'}}]});
  assert.equal(changed.dispatches[0].dispatchId,id);assert.equal(changed.dispatches[0].definitionChanged,true);
  assert.match(changed.dispatches[0].reuseMessage,/未覆盖/);
  assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM task_coordination_dispatches WHERE parent_task_id=?',[f.parent.id]).n,1);
@@ -1438,7 +1438,6 @@ test('late completion reports cannot overwrite the latest instruction summary fo
  assert.equal(snapshot.items[0].summary,'正在处理后续工作');
 });
 
-
 test("large dispatches use one existing progress batch and admit each item without waiting for startup",async t=>{
   const f=await fixture(t);
   const receipt=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:Array.from({length:23},(_,i)=>f.item(`chunk-${i}`))});
@@ -1447,7 +1446,6 @@ test("large dispatches use one existing progress batch and admit each item witho
   for(const row of receipt.dispatches) await f.coordinator.runDispatch(row.dispatchId);
   assert.equal(f.starts.length,23);
 });
-
 
 for (const provider of ['codex-app-server','claude-sdk']) test(`saved continuation resumes reads and dispatches only once (${provider})`,async t=>{
  let clock=0;
@@ -1629,7 +1627,6 @@ for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
     assert.equal(f.starts.length, 2);
   });
 }
-
 
 test('ten minutes of busy/batch/cancel telemetry creates no parent conversation or mailbox work',async t=>{
  const f=await fixture(t);

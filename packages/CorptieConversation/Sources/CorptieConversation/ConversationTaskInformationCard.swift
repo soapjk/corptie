@@ -136,12 +136,8 @@ public struct ConversationTaskSummaryView: View {
 
 public struct ConversationTaskInformationCard<Actions: View>: View {
     public let summary: ConversationTaskSummary?
-    public let description: String
-    public let acceptance: String
     public let title: String
     public let summaryTitle: String
-    public let descriptionTitle: String
-    public let acceptanceTitle: String
     public let expandLabel: String
     public let collapseLabel: String
     public let showsWhenEmpty: Bool
@@ -160,9 +156,8 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     private let actions: Actions
     @State private var isExpanded = false
 
-    public init(summary: ConversationTaskSummary?, description: String?, acceptance: String?,
+    public init(summary: ConversationTaskSummary?,
                 title: String = "Task 信息", summaryTitle: String = "当前摘要",
-                descriptionTitle: String = "描述", acceptanceTitle: String = "验收标准",
                 expandLabel: String = "展开",
                 collapseLabel: String = "收起", showsWhenEmpty: Bool = false,
                 autoTitleEnabled: Bool? = nil, autoTitleLabel: String = "自动更新 Task 标题",
@@ -175,12 +170,8 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                 deliveryAPI: (@MainActor () async throws -> ClientTaskHierarchyAPI)? = nil,
                 @ViewBuilder actions: () -> Actions) {
         self.summary = summary
-        self.description = description ?? ""
-        self.acceptance = acceptance ?? ""
         self.title = title
         self.summaryTitle = summaryTitle
-        self.descriptionTitle = descriptionTitle
-        self.acceptanceTitle = acceptanceTitle
         self.expandLabel = expandLabel
         self.collapseLabel = collapseLabel
         self.showsWhenEmpty = showsWhenEmpty
@@ -198,8 +189,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
     }
 
     public var body: some View {
-        if showsWhenEmpty || summary != nil || ConversationTaskDefinition.hasContent(
-            description: description, acceptance: acceptance) {
+        if showsWhenEmpty || summary != nil {
             ConversationDetailModuleCard(title: title, systemImage: "checklist", headerActions: { actions }) {
                 VStack(alignment: .leading, spacing: 14) {
                     if let hierarchy, hierarchy.childCount > 0 {
@@ -216,9 +206,6 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                             .id(deliveryTaskID)
                     }
                     if isExpanded {
-                        ConversationTaskDefinition(description: description, acceptance: acceptance,
-                            descriptionTitle: descriptionTitle, acceptanceTitle: acceptanceTitle,
-                            expandLabel: expandLabel, collapseLabel: collapseLabel)
                         if let autoTitleEnabled, let onAutoTitleChange {
                             Toggle(autoTitleLabel, isOn: Binding(
                                 get: { autoTitleEnabled }, set: { onAutoTitleChange($0) }
@@ -226,8 +213,7 @@ public struct ConversationTaskInformationCard<Actions: View>: View {
                             .disabled(autoTitleUpdating)
                         }
                     }
-                    if ConversationTaskDefinition.hasContent(description: description, acceptance: acceptance)
-                        || (autoTitleEnabled != nil && onAutoTitleChange != nil) {
+                    if autoTitleEnabled != nil && onAutoTitleChange != nil {
                         Button { isExpanded.toggle() } label: {
                             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                                 .font(.caption.weight(.semibold))

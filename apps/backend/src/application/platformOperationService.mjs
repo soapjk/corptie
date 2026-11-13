@@ -285,13 +285,16 @@ export class PlatformOperationService {
   }
 
   async #collaboration(args, binding) {
-    assertKnown(args, ["action", "session_id", "work_id", "agent_id", "task_id", "resource_version", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations",
+    assertKnown(args, ["action", "session_id", "work_id", "agent_id", "task_id", "resource_version", "title", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations",
       "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"]);
     if (!this.collaborationCore) throw coded("PLATFORM_COLLABORATION_UNAVAILABLE", "Collaboration platform service is unavailable.");
     switch (required(args.action, "action")) {
       case "discover_sessions": return { sessions: this.store.listSessions().filter((session) => !session.deletedAt).filter((session) => !args.work_id || session.workId === args.work_id).filter((session) => !args.agent_id || session.agentId === args.agent_id).map((session) => sessionDescriptor(this.store, session)) };
       case "get_session": return sessionDescriptor(this.store, found(resolveSession(this.store, required(args.session_id, "session_id")), "SESSION_NOT_FOUND"));
       case "create_task": {
+        if (Object.hasOwn(args, "acceptance_criteria")) {
+          throw coded("INVALID_INPUT", "Task definition fields have been removed.", 400);
+        }
         const authorization = this.#authorizeTaskCreation(args, binding);
         const workId = required(args.work_id, "work_id");
         found(this.store.getWork(workId), "WORK_NOT_FOUND");
@@ -301,8 +304,6 @@ export class PlatformOperationService {
           taskInput: {
             workId,
             title: required(args.title, "title"),
-            description: args.description ?? "",
-            acceptanceCriteria: array(args.acceptance_criteria).join("\n"),
             priority: args.priority ?? "medium",
             mainAgentId: agentId
           },

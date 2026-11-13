@@ -20,12 +20,12 @@ function setup(kind = "worker") {
   return { session, task, work, store, service };
 }
 
-test("Task definitions use existing components, preserve verification criteria and redact store metadata", () => {
+test("Task definitions use existing components, omit retired definition fields and redact store metadata", () => {
   const { service } = setup(), document = service.snapshot("legacy");
   validateDetailContract(document, "Document");
   const task = document.cards.find(card => card.id === "task-information");
-  assert.deepEqual(task.data, { taskId: "task", title: "Task", description: "Description", acceptance: "Acceptance", verification: "Verification" });
-  assert.equal(task.nodes.find(node => node.id === "definition").kind, "disclosure");
+  assert.deepEqual(task.data, { taskId: "task", title: "Task" });
+  assert.equal(task.nodes.some(node => node.id === "definition"), false);
   assert.doesNotMatch(JSON.stringify(document), /SECRET|rawMetadata|credentials/);
   validateDetailV2Envelope(service.v2Snapshot("legacy"), "State");
 });
@@ -53,7 +53,7 @@ test("Task updates replace only Task data; unrelated token events reuse module/c
   session.updatedAt = "new token"; session.status = "running";
   service.invalidate({ resourceType: "session", sessionId: "logical:sample" });
   assert.strictEqual(service.snapshot("legacy"), before);
-  task.description = "New description";
+  task.title = "New description";
   service.invalidate({ resourceType: "task", taskId: "task" });
   const next = service.snapshot("legacy");
   assert.deepEqual(detailPatch(before, next).upsertCards.map(card => card.id), ["task-information"]);
@@ -78,22 +78,22 @@ test("optional Work bindings advance template revisions and do not regress on la
 
 test("module input comparison is bounded and retains trees when non-display facts change", () => {
   const scope = { session: { sessionKind: "worker" }, logicalSessionId: "logical:sample",
-    task: { id: "task", description: "x".repeat(100000) } };
+    task: { id: "task", title: "x".repeat(100000) } };
   const first = projectBusinessModules(scope, ["task"]);
-  assert.equal(first.get("task").cards[0].data.description.length, 16000);
-  scope.task.revision = 99; scope.task.description += "invisible suffix";
+  assert.equal(first.get("task").cards[0].data.title.length, 16000);
+  scope.task.revision = 99; scope.task.title += "invisible suffix";
   const second = projectBusinessModules(scope, ["task"], first);
   assert.strictEqual(second.get("task"), first.get("task"));
 });
 
 test("scoped dependency hints only project affected modules; explicit refresh reads current facts", () => {
   const { service, task, work } = setup(), before = service.snapshot("legacy");
-  task.description = "Updated"; work.name = "Not invalidated yet";
+  task.title = "Updated"; work.name = "Not invalidated yet";
   service.invalidate({ resourceType: "task", taskId: "different-task" });
   assert.strictEqual(service.snapshot("legacy", { invalidatedOnly: true }), before);
   service.invalidate({ resourceType: "task", taskId: "task" });
   const delivered = service.snapshot("legacy", { invalidatedOnly: true });
-  assert.equal(delivered.cards[1].data.description, "Updated");
+  assert.equal(delivered.cards[1].data.title, "Updated");
   assert.strictEqual(delivered.cards[0], before.cards[0]);
   const refreshed = service.snapshot("legacy");
   assert.equal(refreshed.cards[0].data.workName, "Not invalidated yet");
@@ -121,12 +121,12 @@ test("module caches isolate server/account/principal/catalog and clear only the 
 
 test("provider invalidation preserves unrelated cards; binding metadata rechecks facts", () => {
   const { service, task } = setup(), before = service.snapshot("legacy");
-  task.description = "Updated during binding change";
+  task.title = "Updated during binding change";
   service.invalidate({ resourceType: "provider", sessionId: "logical:sample" });
-  assert.equal(service.snapshot("legacy", { invalidatedOnly: true }).cards[1].data.description, "Description");
+  assert.equal(service.snapshot("legacy", { invalidatedOnly: true }).cards[1].data.title, "Task");
   service.invalidate({ resourceType: "sessionMetadata", sessionId: "logical:sample" });
   const next = service.snapshot("legacy", { invalidatedOnly: true });
-  assert.equal(next.cards[1].data.description, task.description);
+  assert.equal(next.cards[1].data.title, task.title);
   assert.strictEqual(next.cards[0], before.cards[0]);
 });
 
@@ -166,7 +166,7 @@ test("late authentication failure clears cached facts, and a new consumer reads 
   await delay(10);
   assert.equal(response.destroyed, true);
   assert.equal(service.cache.size, 0);
-  task.description = "Fresh after reconnect";
+  task.title = "Fresh after reconnect";
   const next = new Response();
   try {
     service.events.attach(next, () => identity, "legacy");

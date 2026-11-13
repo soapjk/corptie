@@ -79,19 +79,19 @@ test("ordinary Worker creates and replays a child without platform administratio
     assert.equal(created.startupStatus, "ready");
     assert.equal(f.starts.length, 1);
     assert.equal(f.starts[0].dispatchInitialTurn, false);
-    f.store.updateTask(f.root.id, { description: "Parent_changed_after_creation" });
+    f.store.updateTask(f.root.id, { });
     const replay = await f.service.createTaskAndSession(f.source, f.agent.agentId, input);
     assert.equal(replay.task.id, created.task.id); assert.equal(f.starts.length, 1);
     const renewed = await f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, ...f.evidence() });
     assert.equal(renewed.task.id, created.task.id);
     assert.equal(f.store.getTaskCreationOrigin(created.task.id).creationContextMessageId, null);
     assert.equal(f.store.getTaskCreationOrigin(created.task.id).creatorSessionId,"session:source");
-    f.store.updateTask(created.task.id, { title: "Automatically_updated_title", description: "Updated_task_scope" });
+    f.store.updateTask(created.task.id, { title: "Automatically_updated_title"});
     assert.equal((await f.service.createTaskAndSession(f.source, f.agent.agentId, input)).task.id, created.task.id);
     assert.equal(f.starts.length, 1);
     assert.equal(replay.task.creation_intent_json, undefined);
     await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, parentTaskId: null, expectedParentResourceVersion: undefined }), { code: "IDEMPOTENCY_CONFLICT" });
-    await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, description: "Other" }), { code: "IDEMPOTENCY_CONFLICT" });
+    await assert.rejects(f.service.createTaskAndSession(f.source, f.agent.agentId, { ...input, title: "Other" }), { code: "IDEMPOTENCY_CONFLICT" });
   });
 });
 
@@ -219,7 +219,7 @@ test("child tool schema and HTTP adapter preserve parent and exact authenticated
   const validate = new Ajv({ strict: false }).compile(tool.inputSchema);
   const wire = { title: input.title, agent_id: input.agentId, parent_task_id: input.parentTaskId,
     expected_parent_resource_version: input.expectedParentResourceVersion,
-    idempotency_key: input.idempotencyKey, verification_criteria: "Run tests" };
+    idempotency_key: input.idempotencyKey};
   assert.equal(validate(wire), true);
   const bad = { ...wire }; delete bad.expected_parent_resource_version; assert.equal(validate(bad), true);
   const client = { post: (path, body) => new Promise(resolve => {
@@ -231,7 +231,7 @@ test("child tool schema and HTTP adapter preserve parent and exact authenticated
   const result = await callCollaborationDynamicTool(client, tool.name, wire);
   assert.equal(result.status, 201, JSON.stringify(result.body));
   assert.equal(result.body.task.parentTaskId, f.root.id);
-  assert.equal(result.body.task.verification_criteria, "Run tests");
+  assert.equal(Object.hasOwn(result.body.task, "verification_criteria"), false);
   assert.equal(f.starts.length, 1);
 });
 
@@ -307,14 +307,13 @@ function batchInput(f, count = 3, prefix = "batch") {
   return { parentTaskId: f.root.id, expectedParentResourceVersion: f.store.getTask(f.root.id).resource_version,
     ...f.evidence(f.source, "请创建子任务来分工，具体数量你决定"),
     items: Array.from({ length: count }, (_, index) => ({ title: `Child_${prefix}_${index}`, agentId: f.agent.agentId,
-      idempotencyKey: `${prefix}:${index}`, verificationCriteria: "Run_tests" })) };
+      idempotencyKey: `${prefix}:${index}`})) };
 }
 
 test("batch schema, dynamic tool and HTTP endpoint create multiple children in one request", async t => {
   const f = await fixture(t), input = batchInput(f), definition = collaborationDynamicTools.find(tool => tool.name === "corptie_collaboration_tasks_create_batch");
   const wire = { parent_task_id: input.parentTaskId, expected_parent_resource_version: input.expectedParentResourceVersion,
-    items: input.items.map(item => ({ title: item.title, agent_id: item.agentId, idempotency_key: item.idempotencyKey,
-      verification_criteria: item.verificationCriteria })) };
+    items: input.items.map(item => ({ title: item.title, agent_id: item.agentId, idempotency_key: item.idempotencyKey})) };
   const validate = new Ajv({ strict: false }).compile(definition.inputSchema);
   assert.equal(validate(wire), true);
   assert.equal(validate({ ...wire, items: [] }), false);
@@ -331,7 +330,7 @@ test("batch schema, dynamic tool and HTTP endpoint create multiple children in o
   const created = await callCollaborationDynamicTool(client, definition.name, wire);
   assert.equal(created.status, 200, JSON.stringify(created.body));
   assert.equal(created.body.succeeded, 3); assert.equal(f.starts.length, 3); assert.equal(requests, 1);
-  assert.ok(created.body.results.every(result => result.result.task.verification_criteria === "Run_tests"));
+  assert.ok(created.body.results.every(result => !Object.hasOwn(result.result.task, "verification_criteria")));
   const before = f.store.listTasks().length;
   const denied = await client.post("/internal/collaboration/tasks/batch", { ...input, items: Array(11).fill(input.items[0]) });
   assert.equal(denied.status, 400);
@@ -401,7 +400,7 @@ test("batch partial startup failure retries the same child without restarting su
   assert.equal(retry.succeeded, 1); assert.equal(retry.results[0].result.task.id, failure.error.creationRecovery.taskId);
   assert.equal(f.starts.length, 3); assert.equal(f.store.listTasks().length, 4);
   const changed = await f.service.createChildTasksBatch(f.source, f.agent.agentId, { ...input,
-    items: [{ ...input.items[0], description: "Changed_definition" }] });
+    items: [{ ...input.items[0], title: "Changed_definition" }] });
   assert.equal(changed.results[0].error.code, "IDEMPOTENCY_CONFLICT");
   assert.equal(f.starts.length, 3);
 });
@@ -413,7 +412,7 @@ for (const provider of ['codex-app-server','claude-sdk','openclacky']) test(`chi
  f.store.assertParentForCreate=input=>{
   const result=original(input);
   if(++checked===1) queueMicrotask(()=>{
-   f.workService.updateTask(f.root.id,{title:'Renamed_parent',description:'New parent description',acceptanceCriteria:'Updated criteria',priority:'low'});
+   f.workService.updateTask(f.root.id,{title:'Renamed_parent',priority:'low'});
    f.store.db.run('UPDATE tasks SET user_summary_json=?,resource_version=resource_version+1 WHERE id=?',['{"state":"stale"}',f.root.id]);
    f.store.createTask({workId:f.work.id,title:'Concurrent_sibling',parentTaskId:f.root.id});
   });

@@ -17,16 +17,12 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
     assert.equal(store.db.all("PRAGMA table_info(task_snapshots)").some((column) => column.name === "goal"), false);
     const agent = store.createAgent({ name: "Revision worker", role: "independentContributor" });
     const work = store.createWork({
-      name: "Continuous work",
+      name: "Continuous_work",
       contributorAgentIds: [agent.agentId]
     });
     const task = store.createTask({
       workId: work.id,
-      title: "First problem",
-      description: "Finish the first problem",
-      acceptanceCriteria: "First result accepted",
-      verificationCriteria: "First test passes"
-    });
+      title: "First_problem"});
     store.upsertSession({
       id: "session:task-revision",
       title: "Task conversation",
@@ -48,7 +44,7 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
     }
     assert.throws(() => store.reviseTask(task.id, {
       expectedRevision: 1, createdBySessionId: "session:task-revision",
-      next: { description: "Finish the first problem" }
+      next: { }
     }), { code: "TASK_REVISION_EMPTY" });
     assert.equal(store.getTask(task.id).revision, 1);
     assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM task_snapshots WHERE task_id=?", [task.id]).count, 0);
@@ -65,7 +61,7 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
     for (const sourceMessageId of ["missing", "revision-automation", "revision-assistant"]) {
       assert.throws(() => store.reviseTask(task.id, {
         expectedRevision: 1, createdBySessionId: "session:task-revision", sourceMessageId,
-        next: { description: "An unauthorized definition" }
+        next: { }
       }), { code: "TASK_REVISION_SOURCE_INVALID" });
     }
 
@@ -73,21 +69,17 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
       expectedRevision: 1,
       sourceMessageId: "revision-user",
       createdBySessionId: "session:task-revision",
-      executionSummary: "First problem completed.",
+      executionSummary: "First_problem completed.",
       completionEvidence: [{ kind: "test", value: "passed" }],
       next: {
-        title: "Second problem",
-        description: "Finish the second problem",
-        acceptanceCriteria: "Second result accepted",
-        verificationCriteria: "Second test passes"
-      }
+        title: "Second_problem"}
     });
 
-    assert.equal(result.task.title, "Second problem");
+    assert.equal(result.task.title, "Second_problem");
     assert.equal(result.task.revision, 2);
     assert.equal(result.task.lifecycle_state, "in_progress");
     assert.equal(result.task.current_snapshot_id, result.snapshot.id);
-    assert.equal(result.snapshot.title, "First problem");
+    assert.equal(result.snapshot.title, "First_problem");
     assert.equal(result.snapshot.version, 1);
     assert.equal(result.snapshot.sourceMessageId, "user-message:revision-user");
     assert.deepEqual(result.snapshot.completionEvidence, [{ kind: "test", value: "passed" }]);
@@ -99,7 +91,7 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
       () => store.reviseTask(task.id, {
         expectedRevision: 1,
         createdBySessionId: "session:task-revision",
-        next: { title: "Stale rewrite" }
+        next: { title: "Stale_rewrite" }
       }),
       (error) => error.code === "TASK_REVISION_CONFLICT"
     );

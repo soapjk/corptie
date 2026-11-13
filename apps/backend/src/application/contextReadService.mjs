@@ -97,9 +97,7 @@ export class ContextReadService {
       truncated: page.hasMore };
     } else if (section === "definition") {
       const fields = [
-        ["description", "description"],
-        ["acceptanceCriteria", "acceptance_criteria"],
-        ["verificationCriteria", "verification_criteria"]
+        ["title", "title"]
       ];
       const fieldIndex = Number(position?.inner?.fieldIndex ?? 0);
       const offset = Number(position?.inner?.offset ?? 0);
@@ -152,7 +150,7 @@ export class ContextReadService {
     if (type === "task") {
       const page = this.store.listTaskPage({ workId, query, cursor: position, limit });
       return { ...page, items: page.items.map((task) => ({ resourceType: "task", resourceId: task.id,
-        workId, title: bounded(task.title, 120), summary: bounded(task.description, 300),
+        workId, title: bounded(task.title, 120), summary: bounded(task.title, 300),
         revision: task.revision ?? null, updatedAt: task.updated_at, readLocator: { target_type: "task", target_id: task.id, section: "definition" } })) };
     }
     if (type === "session") return this.#sessionPage(workId, query, position, limit);
@@ -225,9 +223,6 @@ export class ContextReadService {
     if (type === "work") return this.#workOverview(value);
     if (type === "task") return { resourceType: "task", resourceId: value.id,
       workId: value.work_id, title: bounded(value.title, 160),
-      description: bounded(value.description, 1200),
-      ...(section === "definition" ? { acceptanceCriteria: bounded(value.acceptance_criteria, 1200),
-        verificationCriteria: bounded(value.verification_criteria, 1200) } : {}),
       lifecycleState: value.lifecycle_state, revision: value.revision ?? null, updatedAt: value.updated_at };
     if (type === "session") return { resourceType: "session", resourceId: value.id,
       logicalSessionId: value.logicalSessionId, workId: value.workId, taskId: value.taskId,

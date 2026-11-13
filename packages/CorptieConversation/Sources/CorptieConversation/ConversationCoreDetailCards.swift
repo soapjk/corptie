@@ -1,24 +1,6 @@
 import SwiftUI
 import CorptieClientCore
 
-public struct ConversationSessionInformationCard: View {
-    public let sessionID: String
-    public let workName: String?
-
-    public init(sessionID: String, workName: String? = nil) {
-        self.sessionID = sessionID
-        self.workName = workName
-    }
-
-    public var body: some View {
-        ConversationDetailModuleCard(title: "会话信息", systemImage: "info.circle") {
-            Text(sessionID).font(.caption.monospaced()).lineLimit(1)
-                .truncationMode(.middle).textSelection(.enabled)
-            if let workName, !workName.isEmpty { Text(workName).lineLimit(2) }
-        }
-    }
-}
-
 public struct ConversationChatSummaryCard: View {
     public let summary: String?
 

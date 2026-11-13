@@ -351,7 +351,7 @@ struct UnifiedConversationCreateView: View {
                 else if taskMode {
                     guard let workID, let task = await client.createCorptieTask(
                         id: "task:\(requestID)", workId: workID, title: "新任务_\(requestID.prefix(6))",
-                        description: nil, mainRoleId: roleID, providerId: providerID,
+                        mainRoleId: roleID, providerId: providerID,
                         model: modelID.isEmpty ? nil : modelID, parentTaskId: parentTaskID),
                           let currentID = task.currentSessionId,
                           let prepared = backend.sessions.first(where: { $0.id == currentID }) else {

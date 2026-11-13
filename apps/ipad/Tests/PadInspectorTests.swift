@@ -72,12 +72,12 @@ struct PadInspectorTests {
         #expect(store.sections["references"] == nil)
     }
     @Test func taskDefinitionFromPushRetainsAllVisibleFields() throws {
-        let value = try JSONDecoder().decode(ClientInspectorSnapshot.self, from: Data(#"{"schemaVersion":1,"sessionId":"s","resolvedSessionId":"s","workId":"w","taskId":"t","taskDefinition":{"description":"Scope","acceptanceCriteria":"Accepted","verificationCriteria":"Verified"},"summary":null,"workDescription":null,"environment":{},"sections":{},"errors":{}}"#.utf8))
+        let value = try JSONDecoder().decode(ClientInspectorSnapshot.self, from: Data(#"{"schemaVersion":1,"sessionId":"s","resolvedSessionId":"s","workId":"w","taskId":"t","taskDefinition":{"title":"Task","priority":"high"},"summary":null,"workDescription":null,"environment":{},"sections":{},"errors":{}}"#.utf8))
         let store = PadInspectorStore()
         store.apply(value, sessionID: "s")
-        #expect(store.snapshot?.taskDefinition?["description"].text == "Scope")
-        #expect(store.snapshot?.taskDefinition?["acceptanceCriteria"].text == "Accepted")
-        #expect(store.snapshot?.taskDefinition?["verificationCriteria"].text == "Verified")
+        #expect(store.snapshot?.taskDefinition?["description"].text == nil)
+        #expect(store.snapshot?.taskDefinition?["acceptanceCriteria"].text == nil)
+        #expect(store.snapshot?.taskDefinition?["verificationCriteria"].text == nil)
     }
 
     @Test func taskDetailAlwaysUsesTheSharedInformationCard() throws {

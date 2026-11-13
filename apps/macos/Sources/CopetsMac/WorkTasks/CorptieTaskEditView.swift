@@ -9,14 +9,10 @@ struct CorptieTaskEditView: View {
     let onSaved: () -> Void
 
     @State private var title: String
-    @State private var detail: String
-    @State private var acceptanceCriteria: String
-    @State private var verificationCriteria: String
     @State private var mainRoleID: String
     @State private var priority: String
     @State private var status: String
     @State private var showStatusConfirm = false
-    @State private var assistRoleId: String?
     @State private var saveError: String?
     @State private var updateTaskId = "task.update:\(UUID().uuidString.lowercased())"
 
@@ -24,9 +20,6 @@ struct CorptieTaskEditView: View {
         self.task = task
         self.onSaved = onSaved
         _title = State(initialValue: task.title)
-        _detail = State(initialValue: task.description)
-        _acceptanceCriteria = State(initialValue: task.acceptanceCriteria)
-        _verificationCriteria = State(initialValue: task.verificationCriteria)
         _mainRoleID = State(initialValue: task.mainRoleId ?? "")
         _priority = State(initialValue: task.priority)
         _status = State(initialValue: task.lifecycleState)
@@ -46,41 +39,6 @@ struct CorptieTaskEditView: View {
                 EntityNameValidationMessage(value: title)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(L10n("描述"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedRoleId: $assistRoleId, context: "工作项标题：\(title)")
-                    Spacer()
-                }
-                TextEditor(text: $detail)
-                    .font(.body)
-                    .frame(height: 90)
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(L10n("验收标准"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedRoleId: $assistRoleId, context: "工作项标题：\(title)；描述：\(detail)")
-                    Spacer()
-                }
-                TextEditor(text: $acceptanceCriteria)
-                    .font(.body)
-                    .frame(height: 90)
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L10n("验证标准")).font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: $verificationCriteria).font(.body).frame(height: 90)
-                    .accessibilityLabel(L10n("验证标准"))
-            }
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("Role")).font(.caption).foregroundStyle(.secondary)
                 Picker("Role", selection: $mainRoleID) {
@@ -208,8 +166,6 @@ struct CorptieTaskEditView: View {
             guard await client.updateCorptieTask(
                 taskId: task.id,
                 title: title == task.title ? nil : title,
-                description: detail.trimmingCharacters(in: .whitespacesAndNewlines),
-                acceptanceCriteria: acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines),
                 priority: priority,
                 lifecycleState: status
             ) != nil else {
@@ -259,9 +215,6 @@ struct CorptieTaskEditView: View {
     private func startPersistBackground(completionSubmission: CorptieTaskCompletionSubmission? = nil) {
         let requestTitle = trimmedTitle
         let requestTitlePatch = title == task.title ? nil : title
-        let requestDescription = detail.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestAcceptanceCriteria = acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestVerificationCriteria = verificationCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestMainAgentID = mainRoleID == (task.mainRoleId ?? "") ? nil : mainRoleID
         let requestPriority = priority
         let requestStatus = status
@@ -272,9 +225,6 @@ struct CorptieTaskEditView: View {
         ) {
             if let latest = await client.task(id: task.id),
                latest.title == requestTitle,
-               latest.description == requestDescription,
-               latest.acceptanceCriteria == requestAcceptanceCriteria,
-               latest.verificationCriteria == requestVerificationCriteria,
                requestMainAgentID == nil || latest.mainRoleId == requestMainAgentID,
                latest.priority == requestPriority,
                latest.lifecycleState == requestStatus {
@@ -288,9 +238,6 @@ struct CorptieTaskEditView: View {
             guard await client.updateCorptieTask(
                 taskId: task.id,
                 title: requestTitlePatch,
-                description: requestDescription,
-                acceptanceCriteria: requestAcceptanceCriteria,
-                verificationCriteria: requestVerificationCriteria,
                 priority: requestPriority,
                 lifecycleState: targetsCompleted ? nil : requestStatus,
                 mainRoleId: requestMainAgentID
