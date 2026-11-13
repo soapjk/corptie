@@ -229,7 +229,7 @@ struct UnifiedConversationCreateView: View {
     }
 
     private var creationToolbar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             Button { choosingImages = true } label: {
                 Image(systemName: "plus").font(.system(size: 16))
                     .frame(width: 28, height: 28).contentShape(Rectangle())
@@ -256,10 +256,24 @@ struct UnifiedConversationCreateView: View {
                 }
                 Button(L10n("加载模型列表")) { Task { await backend.loadModels(for: providerID) } }
             } label: {
-                Text((ComposerServiceTier.isFast(draftState.serviceTier) ? "⚡ " : "") + (modelID.isEmpty ? (providers.first { $0.id == providerID }?.displayName ?? L10n("执行引擎")) : modelID))
-                    .lineLimit(1).truncationMode(.middle)
-            }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 176).disabled(submissionStarted)
+                HStack(spacing: 4) {
+                    if let icon = ProviderBrandIcon.image(for: providerID, providers: providers) {
+                        Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
+                            .frame(width: 14, height: 14).accessibilityHidden(true)
+                    } else {
+                        Image(systemName: "cpu").frame(width: 14, height: 14).accessibilityHidden(true)
+                    }
+                    if ComposerServiceTier.isFast(draftState.serviceTier) {
+                        Image(systemName: "bolt.fill").accessibilityLabel("Fast")
+                    }
+                    Text(modelID.isEmpty ? (selectedProvider?.displayName ?? L10n("执行引擎")) : modelID)
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: 176)
+                        .fixedSize(horizontal: true, vertical: true)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                }
+            }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .fixedSize().disabled(submissionStarted)
             ComposerSendControl(disabled: busy || validation != nil || (!hasSendableText && imageURLs.isEmpty),
                                 busy: busy, action: submit)
                 .keyboardShortcut(.return, modifiers: .command)
