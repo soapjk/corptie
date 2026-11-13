@@ -2703,7 +2703,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 h.scrollView.isHidden = true
                 h.coordinator.setPresentationActive(false)
             }
-            reply.nativeText = full; reply.copyText = full; reply.contentRevision += 1
+            let identity = reply.replyIdentity
+            reply = row(id: reply.id, revision: reply.contentRevision + 1, text: full, showsHeader: false)
+            reply.replyIdentity = identity
             let next = row(id: "retained-next-user", text: "Next user message", nativeStyle: .user, showsHeader: false)
             h.coordinator.apply(rows: history + [reply, next])
             if hidden {
@@ -2761,7 +2763,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let position = try XCTUnwrap(published)
         h.scrollView.isHidden = true
         h.coordinator.setPresentationActive(false)
-        reply.nativeText = full; reply.copyText = full; reply.contentRevision += 1
+        reply = row(id: reply.id, revision: reply.contentRevision + 1, text: full, showsHeader: false)
         h.coordinator.apply(rows: before + [reply] + after + [row(id: "anchor-new", text: "New message", showsHeader: false)])
         h.coordinator.setPresentationActive(true)
         h.scrollView.isHidden = false; h.scrollView.needsLayout = true
@@ -2781,7 +2783,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let original = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
         let resets = h.coordinator.sdkRowResetCount
         let reloads = (h.tableView as? IntrinsicHeightTableView)?.fullReloadCount
-        reply.nativeText += " more words"; reply.copyText = reply.nativeText; reply.contentRevision += 1
+        reply = row(id: reply.id, revision: reply.contentRevision + 1, text: reply.nativeText + " more words", showsHeader: false)
         h.coordinator.apply(rows: [reply, row(id: "structural-plain-user", text: "Next", nativeStyle: .user, showsHeader: false)])
         await settlePositionPublication()
         XCTAssertTrue(h.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) === original)

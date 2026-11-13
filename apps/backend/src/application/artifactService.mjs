@@ -1,3 +1,4 @@
+import { messageImageBytes } from "./messageImageBytes.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, link, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -1410,6 +1411,45 @@ export class ArtifactService {
       }
     }
     return { artifactId, ok: results.every((item) => item.ok), versions: results };
+  }
+
+  // Called only behind the authenticated, exact-message resource route. This
+  // is a read-only preview, not an export or an Agent ownership mutation.
+  async readMessageImage({ sessionId, artifactId, version, contentHash, messageCreatedAt }) {
+    const authorize = () => {
+      const artifact = this.store.getArtifact(artifactId);
+      const currentSession = this.store.getSession(sessionId);
+      if (!artifact || artifact.status === "revoked" || !currentSession || currentSession.deletedAt
+          || (artifact.workId ? artifact.workId !== currentSession.workId
+            : ![currentSession.id, currentSession.logicalSessionId].filter(Boolean).includes(artifact.boundSessionId))) {
+        throw artifactError("MESSAGE_IMAGE_UNAVAILABLE", "Message image is unavailable.", 404);
+      }
+      return artifact;
+    };
+    authorize();
+    if (version == null) {
+      // Legacy unversioned links bind to the immutable version available when
+      // that reply was written, never to a later published image.
+      if (!messageCreatedAt || !Number.isFinite(Date.parse(messageCreatedAt))) {
+        throw artifactError("MESSAGE_IMAGE_VERSION_REQUIRED", "Image version is unavailable.", 404);
+      }
+      version = this.store.selectOne(
+        "SELECT version FROM artifact_versions WHERE artifact_id=? AND created_at<=? ORDER BY version DESC LIMIT 1",
+        [artifactId, messageCreatedAt])?.version;
+    }
+    const selected = version == null ? null : this.store.getArtifactVersion(artifactId, version);
+    if (!selected?.storageKey || (contentHash != null && selected.contentHash !== contentHash)
+        || selected.byteLength <= 0 || selected.byteLength > 16 * 1024 * 1024
+        || !["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "image/svg+xml"].includes(selected.mimeType)) {
+      throw artifactError("MESSAGE_IMAGE_UNAVAILABLE", "Message image is unavailable.", 404);
+    }
+    // Reuse the existing bounded immutable-content integrity reader.
+    const page = await this.#readPinnedPage(selected, { offset: 0, limit: selected.byteLength, format: "base64" });
+    authorize();
+    if (page.nextOffset != null) throw artifactError("MESSAGE_IMAGE_UNAVAILABLE", "Image is incomplete.", 409);
+    const image = messageImageBytes(Buffer.from(page.content, "base64"), selected.mimeType);
+    return { ...image, fileName: `image.${image.mimeType === "image/jpeg" ? "jpg" : image.mimeType.split("/")[1]}`,
+      artifactId, version: selected.version, contentHash: selected.contentHash };
   }
 
   async downloadForUser(contextInput, artifactId, input = {}) {

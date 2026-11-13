@@ -1,3 +1,5 @@
+import { messageImageBytes } from "./messageImageBytes.mjs";
+
 function tool(name, description, properties = {}, required = [], executionEffect = "write") {
   return Object.freeze({
     type: "function", name, description, executionEffect, deferLoading: false,
@@ -45,8 +47,9 @@ export const artifactDynamicTools = Object.freeze([
     artifact_id: artifactId, version, content_hash: contentHash,
     path: { type: "string", minLength: 1, pattern: "^artifacts/.+", description: "Must start with artifacts/, e.g. artifacts/report.pdf, within project .corptie/artifacts/. No absolute paths or parent traversal." }
   }, ["artifact_id", "version", "content_hash", "path"]),
-  tool("corptie_artifact_create", "Create an Artifact using runtime-bound ownership: assistantChat defaults to its own Session, Worker to its Task, Work Chat to its Work. Workers may also create Work-scoped Artifacts. Other owners' Artifacts are read-only; creation uses a Session-scoped idempotency key.", {
+  tool("corptie_artifact_create", "Create an Artifact using runtime-bound ownership: assistantChat defaults to its own Session, Worker to its Task, Work Chat to its Work. Workers may also create Work-scoped Artifacts. Other owners' Artifacts are read-only; creation uses a Session-scoped idempotency key. To deliver an image to the user, include ![description](artifact:ID?version=VERSION&hash=CONTENT_HASH) in the final reply using the returned immutable version/hash. Tool image inspection alone is not image delivery; preserve PNG/JPEG bytes rather than wrapping screenshots in SVG.", {
     title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },
+    content_encoding: { type: "string", enum: ["utf-8", "base64"], description: "Use base64 for original raster image bytes, bounded to 16 MiB decoded; default utf-8 preserves document creation." },
     visibility: { type: "string", enum: ["work_private", "task_private", "session_private", "repository_tracked"] },
     bound_task_id: { type: "string" }, bound_session_id: { type: "string" },
     repository_locator: { type: "string" }, confirmed_repository_tracked: { type: "boolean" },
@@ -141,7 +144,7 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
       categoryPrefix: args.category_prefix, tags: args.tags
     });
     case "corptie_artifact_create": return service.create(context, {
-      title: args.title, summary: args.summary, content: args.content, visibility: args.visibility,
+      title: args.title, summary: args.summary, content: artifactCreateContent(args), visibility: args.visibility,
       boundTaskId: args.bound_task_id, boundSessionId: args.bound_session_id,
       repositoryLocator: args.repository_locator, confirmedRepositoryTracked: args.confirmed_repository_tracked,
       mimeType: args.mime_type, approvalStatus: args.approval_status,
@@ -182,4 +185,16 @@ export function authorizeArtifactDynamicTool({ tool, metadata } = {}) {
     "corptie_artifact_update_metadata", "corptie_artifact_publish_version", "corptie_artifact_reference",
     "corptie_artifact_revoke_reference", "corptie_artifact_delete", "corptie_artifact_restore"].includes(tool)) return true;
   return metadata.sessionKind === "workChat";
+}
+
+function artifactCreateContent(args) {
+  if (args.content_encoding == null || args.content_encoding === "utf-8") return args.content;
+  const invalid = () => Object.assign(new Error("Invalid raster image content."), { code: "ARTIFACT_IMAGE_INPUT_INVALID", statusCode: 400 });
+  if (args.content_encoding !== "base64" || typeof args.content !== "string"
+      || args.content.length > 22369624 || !/^[A-Za-z0-9+/]+={0,2}$/.test(args.content)
+      || !["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic"].includes(args.mime_type)) throw invalid();
+  const bytes = Buffer.from(args.content, "base64");
+  if (!bytes.length || bytes.length > 16 * 1024 * 1024 || bytes.toString("base64") !== args.content) throw invalid();
+  messageImageBytes(bytes, args.mime_type);
+  return bytes;
 }
