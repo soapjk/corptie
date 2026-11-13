@@ -314,3 +314,21 @@ test("same-key failed cleanup resumes once, preserves intent and skips removed W
     assert.equal(transfers, 2);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
+
+test('a new client request key resumes the same failed operation when disposal options match', async () => {
+  const f = await fixture();
+  try {
+    f.deletion.removeWorktree = async () => { throw Object.assign(new Error('partial cleanup'), { code: 'TEST_PARTIAL' }); };
+    f.deletion.inspectWorktree = async () => ({ status: 'available', repositoryId: 'repo', worktree: { worktreeId: 'tree', path: '/test/child', branchName: 'task/child', mergedIntoMain: true } });
+    const first = await f.deletion.request('task:delete', { idempotencyKey: 'client:first' }, localUser);
+    await f.deletion.inFlight.get(first.operation.operationId);
+    assert.equal(f.deletion.getOperation(first.operation.operationId).state, 'failed');
+    let receivedOperation;
+    f.deletion.inspectWorktree = async (_taskId, operation) => { receivedOperation = operation; return { status: 'none', worktree: null }; };
+    const retry = await f.deletion.request('task:delete', { idempotencyKey: 'client:retry' }, localUser);
+    assert.equal(retry.operation.operationId, first.operation.operationId);
+    assert.equal(receivedOperation.operationId, first.operation.operationId);
+    await f.deletion.inFlight.get(retry.operation.operationId);
+    assert.equal(f.deletion.getOperation(retry.operation.operationId).state, 'succeeded');
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});

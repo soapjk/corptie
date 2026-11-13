@@ -3,6 +3,12 @@ import Testing
 @testable import CorptieMac
 
 struct CorptieTaskDeletionInteractionTests {
+    @Test func recoveryPlanDecodesWithoutWeakeningTheBlocker() throws {
+        let data = Data(#"{"taskId":"task:one","status":"blocked","retryable":true,"associatedSessionCount":1,"recoveryAvailable":true,"risks":[],"blockers":[{"code":"TASK_DELETE_SCOPE_INVALID","message":"目标已被替换"}]}"#.utf8)
+        let plan = try JSONDecoder().decode(CorptieTaskDeletionPlan.self, from: data)
+        #expect(plan.recoveryAvailable == true)
+        #expect(plan.blockers.first?.code == "TASK_DELETE_SCOPE_INVALID")
+    }
     @Test func forceDeletionUsesRiskConfirmationWithoutTextEntry() throws {
         let desktop = try warRoomSource("WorkTasks/TaskDeletionConfirmation.swift")
         let package = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

@@ -137,7 +137,7 @@ test("metadata failure leaves an explicit retryable state after Worktree removal
   });
   await assert.rejects(
     service.delete("task:one", { mode: "safe" }),
-    (error) => error.code === "SQLITE_BUSY" && /可安全重试/.test(error.message)
+    (error) => error.code === "SQLITE_BUSY" && /请重新检查后继续清理/.test(error.message)
   );
   assert.ok(getItem().deletion_worktree_removed_at);
   assert.equal(calls.at(-1)[0], "mark");
@@ -221,7 +221,7 @@ test("Session deletion failure stops before Worktree cleanup and remains retryab
 
   await assert.rejects(
     service.delete("task:one", { mode: "safe" }),
-    (error) => error.code === "PROVIDER_UNAVAILABLE" && /可安全重试/.test(error.message)
+    (error) => error.code === "PROVIDER_UNAVAILABLE" && /请重新检查后继续清理/.test(error.message)
   );
   assert.equal(getItem().deletion_worktree_removed_at, null);
   assert.deepEqual(calls.map(([name]) => name), ["mark", "mark"]);
@@ -331,4 +331,22 @@ test("integration blockers expose the exact occupying job and cancellation actio
     {id:"job:one",phase:"merging",action:"cancelIntegration",canResolve:true});
   await assert.rejects(f.service.delete("task:one",{cancelIntegration:true}),{code:"ACTIVE_WORKTREE_INTEGRATION_JOB"});
   assert.equal(f.calls.some(([name])=>name==="remove"),false);
+});
+
+
+test("failed deletion retains the dispatch fence", () => {
+  const store = { getTask: () => ({ deletion_status: "delete_failed" }) };
+  assert.equal(worktreeDispatchBlocker(store, { logicalSession: { taskId: "task:one" } }).reason, "TASK_DELETION_IN_PROGRESS");
+});
+
+test("detached background work blocks even when the Session turn is complete", async () => {
+  const f = fixture({ inspection: { status: "available", worktree: { path: "/work", worktreeId: "tree", mergedIntoMain: true } } });
+  let stopped = false;
+  f.service.backgroundWork = {
+    inspect: async () => ({ processes: stopped ? [] : [{ pid: 123 }], canStop: true }),
+    stop: async () => { stopped = true; }, cancelWakeups: () => {}
+  };
+  assert.equal((await f.service.inspect("task:one")).blockers[0].code, "TASK_BACKGROUND_WORK_RUNNING");
+  await assert.rejects(f.service.delete("task:one"), { code: "TASK_BACKGROUND_WORK_RUNNING" });
+  assert.equal((await f.service.delete("task:one", { stopRunning: true })).ok, true);
 });

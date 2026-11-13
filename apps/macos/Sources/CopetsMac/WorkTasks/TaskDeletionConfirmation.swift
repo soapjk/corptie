@@ -85,8 +85,8 @@ struct CorptieTaskDeletionConfirmationView: View {
                 riskList(title: L10n("可能丢失的内容"), risks: plan.risks, color: .orange)
             }
 
-            if plan.blockers.contains(where: { $0.code == "SESSION_BUSY" }) {
-                Toggle(L10n("停止正在运行的会话后删除"), isOn: $options.stopRunning)
+            if plan.blockers.contains(where: { ["SESSION_BUSY", "TASK_BACKGROUND_WORK_RUNNING"].contains($0.code) }) {
+                Toggle(L10n("停止关联会话和后台工作后删除"), isOn: $options.stopRunning)
             }
             if plan.blockers.contains(where: { $0.code == "START_IN_PROGRESS" }) {
                 Toggle(L10n("中断启动后删除"), isOn: $options.cancelStartup)
@@ -104,7 +104,7 @@ struct CorptieTaskDeletionConfirmationView: View {
             HStack {
                 Spacer()
                 Button(L10n("取消"), role: .cancel, action: onCancel)
-                Button(L10n("删除"), role: .destructive) {
+                Button(L10n(plan.recoveryAvailable == true ? "继续清理" : "删除"), role: .destructive) {
                     onDelete(true, deleteWorktree, artifactDisposition, options)
                 }.disabled(!effectiveBlockers.isEmpty)
             }

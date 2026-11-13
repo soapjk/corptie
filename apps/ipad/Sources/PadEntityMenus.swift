@@ -638,8 +638,8 @@ struct PadDeleteTaskSheet: View {
         }
 
         Section("删除选项") {
-            if plan.blockers.contains(where: { $0.code == "SESSION_BUSY" }) {
-                Toggle("停止正在运行的会话后删除", isOn: $deletionOptions.stopRunning)
+            if plan.blockers.contains(where: { ["SESSION_BUSY", "TASK_BACKGROUND_WORK_RUNNING"].contains($0.code) }) {
+                Toggle("停止关联会话和后台工作后删除", isOn: $deletionOptions.stopRunning)
             }
             if plan.blockers.contains(where: { $0.code == "START_IN_PROGRESS" }) {
                 Toggle("中断启动后删除", isOn: $deletionOptions.cancelStartup)
@@ -667,7 +667,7 @@ struct PadDeleteTaskSheet: View {
         }
 
         Section {
-            Button("删除 Task", role: .destructive) { executeDeletion(plan: plan, force: true) }
+            Button(plan.recoveryAvailable == true ? "继续清理" : "删除 Task", role: .destructive) { executeDeletion(plan: plan, force: true) }
                 .disabled(submitting || commands.isBusy || !blockers.isEmpty)
         }
     }

@@ -1,3 +1,4 @@
+import { createTaskDeletionBackgroundWork } from "./taskDeletionBackgroundWork.mjs";
 import { TaskDeletionService } from "./taskDeletionService.mjs";
 import { TaskExecutionOrchestrator } from "./taskExecutionOrchestrator.mjs";
 
@@ -9,6 +10,7 @@ export function createTaskExecutionComposition({
 }) {
   const taskDeletionService = new TaskDeletionService({
     store,
+    backgroundWork: createTaskDeletionBackgroundWork({ store }),
     cancelStartup: cancelTaskStartup,
     cleanupExecutionSpaces: cleanupTaskExecutionSpaces,
     cancelIntegration: cancelTaskIntegration,
@@ -29,7 +31,7 @@ export function createTaskExecutionComposition({
       }
       for (const work of store.listAgentTasksForSession?.(sessionId, { statuses: ["running"] }) ?? []) store.updateAgentTask(work.taskId, { status: "cancelled", cancellation: { actor: "task_deletion", reason: "TASK_DELETED" } });
     },
-    inspectWorktree: (taskId) => inspectTaskWorktree(taskId),
+    inspectWorktree: (taskId, operation) => inspectTaskWorktree(taskId, operation),
     removeWorktree: (input) => removeTaskDeletionWorktree(input),
     deleteSession: async (sessionId, context) => {
       const result = await sessionApplicationService.deleteSessionForTaskDeletion(sessionId, context);
