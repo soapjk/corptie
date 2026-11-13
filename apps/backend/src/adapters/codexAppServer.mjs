@@ -123,9 +123,17 @@ export class CodexAppServerClient {
     });
   }
 
-  async initialize() {
+  initialize() {
+    if (!this.accountAuthentication) return this.transport.initialize();
+    const initialization = this.#initializeWithAuthentication();
+    // Keep startup failures visible to callers that await initialization and
+    // prevent a detached caller from producing an unhandled rejection.
+    initialization.catch(() => {});
+    return initialization;
+  }
+
+  async #initializeWithAuthentication() {
     await this.transport.initialize();
-    if (!this.accountAuthentication) return;
     const generation = this.transport.activeProcessGeneration;
     if (this.authenticatedGeneration === generation) return;
     if (this.authenticationPending?.generation === generation) return this.authenticationPending.promise;

@@ -42,7 +42,6 @@ test("automatic inventory adopts exactly the tested program; failed candidates a
   assert.equal(row.program.mode, "auto");
   assert.equal(row.program.model, "test-model");
   assert.equal(f.service.command(provider.id, () => "wrong"), second);
-  await f.service.validateRuntimeProgram(provider.id, second);
   const saved = structuredClone(f.service.state);
   provider.probe = async () => { throw new Error("candidate failed"); };
   assert.equal((await f.service.check({ providerId: provider.id, path: f.binary })).checkState, "failed");
@@ -52,7 +51,16 @@ test("automatic inventory adopts exactly the tested program; failed candidates a
   assert.deepEqual(f.service.state, saved);
   assert.equal(f.probes.length, 1);
   await writeFile(second, "#!/bin/sh\n# upgraded\nexit 0\n");
-  await assert.rejects(f.service.validateRuntimeProgram(provider.id, second), { code: "PROVIDER_PROGRAM_CHANGED" });
+  const upgraded = (await f.service.status()).providers[0];
+  assert.equal(upgraded.checkState, "unknown");
+  assert.equal(upgraded.enabled, true);
+  assert.equal(f.service.command(provider.id, () => "wrong"), second);
+  assert.deepEqual(f.service.state, saved);
+
+  provider.probe = async () => ({ ok: true });
+  const rechecked = await f.service.check({ providerId: provider.id, path: second, selectionMode: "auto" });
+  assert.equal(rechecked.checkState, "available");
+  assert.notEqual(f.service.state.providers[provider.id].probe.fingerprint, saved.providers[provider.id].probe.fingerprint);
 });
 
 test("cancelled or different-model probes never commit obsolete results", async t => {

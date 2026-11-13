@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { isAbsolute } from "node:path";
 import { createInterface } from "node:readline";
+import { executableFingerprint } from "../utils/externalCommand.mjs";
 import { nowIso } from "../utils/timestamps.mjs";
 
 /// Owns exactly one app-server generation and its outstanding RPC requests.
@@ -10,7 +12,6 @@ export class CodexStdioTransport {
     this.args = options.args ?? ["app-server", "--listen", "stdio://"];
     this.env = options.env ?? process.env;
     this.spawnProcess = options.spawnProcess ?? spawn;
-    this.validateCommand = options.validateCommand;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
     // Process bootstrap may be slower than an ordinary RPC during app launch.
     this.initializationTimeoutMs = options.initializationTimeoutMs ?? 30000;
@@ -53,7 +54,10 @@ export class CodexStdioTransport {
   async #initializeProcess(generation) {
     const env = typeof this.env === "function" ? this.env() : this.env;
     const command = typeof this.command === "function" ? this.command() : this.command;
-    if (this.validateCommand) await this.validateCommand(command);
+    // Compare only within this startup. A package upgrade can replace the
+    // file at the selected path between app-server generations.
+    const absoluteCommand = isAbsolute(command);
+    const fingerprint = absoluteCommand ? await executableFingerprint(command) : null;
     if (generation !== this.processGeneration) throw new Error("Codex program selection was superseded.");
     const child = this.spawnProcess(command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -112,7 +116,9 @@ export class CodexStdioTransport {
         }
       }, this.initializationTimeoutMs);
       this.runtimeUserAgent = initialized?.userAgent ?? null;
-      if (this.validateCommand) await this.validateCommand(command);
+      if (absoluteCommand && await executableFingerprint(command) !== fingerprint) {
+        throw Object.assign(new Error("执行程序在启动期间发生变化，请重试。"), { code: "PROVIDER_PROGRAM_CHANGED" });
+      }
       if (this.activeProcessGeneration !== generation || this.process !== child) {
         throw new Error("Codex app-server initialization was superseded by a newer process generation.");
       }

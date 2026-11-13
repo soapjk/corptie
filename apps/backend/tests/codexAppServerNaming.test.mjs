@@ -92,6 +92,7 @@ test("a detached Codex initialization timeout cannot become an unhandled rejecti
   const onUnhandled = (error) => unhandled.push(error);
   process.on("unhandledRejection", onUnhandled);
   const client = new CodexAppServerClient({
+    accountAuthentication: async () => assert.fail("startup must finish before authentication"),
     initializationTimeoutMs: 10,
     spawnProcess: () => fakeCodexProcess({ respond: false })
   });

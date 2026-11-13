@@ -888,7 +888,6 @@ const codexRuntime = createCodexEnvironmentRuntime({
     return logical?.activeBinding?.providerId === "codex-app-server" ? logical.activeThreadId : null;
   },
   command: codexAppServerCommand,
-  validateCommand: (path) => firstRunSetup.validateRuntimeProgram("codex-app-server", path),
   onNotification: (message, profile) => {
     if (message.method === "account/updated" && profile?.profileId === codexEnvironmentRegistry.current.profileId
       && codexRuntime.runningPrograms().some(program => program.profileId === profile.profileId && program.initialized)) {
