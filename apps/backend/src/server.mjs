@@ -7,6 +7,8 @@ import { worktreeDispatchBlocker } from "./application/worktreeExecutionBarrier.
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
+import { ShadowSessionService } from "./application/shadowSessionService.mjs";
+import { ChildTaskReclamationService } from "./application/childTaskReclamationService.mjs";
 import { CoordinationTurnService } from "./application/coordinationTurnService.mjs";
 import { SessionChannelMailboxService } from "./collaboration/sessionChannelMailboxService.mjs";
 import http from "node:http";
@@ -536,6 +538,9 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   },
   changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
   validateExternal: (row, authorization) => {
+    if (authorization.purpose === "shadow_decision") return taskCoordinationService.shadow.validateDecision(row, authorization);
+    if (authorization.purpose === "shadow_request") return taskCoordinationService.shadow.validateRequest(row, authorization);
+    if (authorization.purpose === "shadow_delivery_blocked") return taskCoordinationService.shadow.validateDeliveryEvent(row, authorization);
     if (authorization.checklistTaskId) {
       throw Object.assign(new Error("Legacy checklist continuation retired"), { code: "CHECKLIST_CONTINUATION_RETIRED" });
     }
@@ -1721,7 +1726,11 @@ const {
   }
 });
 taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
+const shadowSessionService = new ShadowSessionService({ store, emitEvent,
+  createSession: (...args) => createSessionThroughApplication(...args) });
+sessionChannelService.resolveDelegatedRecipient = envelope => shadowSessionService.channelRecipient(envelope);
 taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService, emitEvent,
+  shadow: shadowSessionService,
   mailbox: sessionMailbox, deletion: taskDeletionService,
   changed: taskId => { if (taskId) emitEvent("TaskChanged", { taskId, action: "coordination-state",
     entity: { ...store.getTask(taskId), coordinationDispatches: store.listTaskCoordinationDispatches(taskId) } }); } });
@@ -1736,7 +1745,10 @@ sessionApplicationService.coordinationTurns = new CoordinationTurnService({
   })
 });
 workService.assertCoordinationCanEnable = task => sessionApplicationService.coordinationTurns.assertCanEnable(task);
-workService.onCoordinationChanged = taskId => sessionApplicationService.coordinationTurns.policyChanged(taskId);
+workService.onCoordinationChanged = taskId => {
+  sessionApplicationService.coordinationTurns.policyChanged(taskId);
+  taskCoordinationService.activateShadow(taskId);
+};
 toolHostService.assertExecutionAllowed = input => {
   const id = input.metadata?.logicalSessionId;
   if (id && input.executionEffect !== "read" && sessionApplicationService.coordinationTurns.enabled(requireSessionReference(id))) {
@@ -1799,6 +1811,16 @@ childTaskDeliveryService = new ChildTaskDeliveryService({store,gitWorkspaces,job
   artifactService,deletionService:taskDeletionService,prepareProtection:path=>gitCommitProtection.resolve(path),onEvent:emitEvent});
 taskCompletionService.childDelivery = childTaskDeliveryService;
 workService.childTaskDeliveryService = childTaskDeliveryService;
+shadowSessionService.deliverChild = taskId => childTaskDeliveryService.requestShadowDelivery(taskId);
+childTaskDeliveryService.onShadowBlocked = operation => {
+  try { shadowSessionService.deliveryBlocked(operation, sessionMailbox); }
+  catch (error) { console.warn(`[shadow-delivery-report] ${error.code ?? error.message}`); }
+};
+const childTaskReclamationService = new ChildTaskReclamationService({ store, resources: chatResourceService });
+childTaskDeliveryService.reclaimChild = taskId => childTaskReclamationService.schedule(taskId);
+worktreeIntegrationJobService.authorizeShadowDelivery = id => {
+  try { return childTaskDeliveryService.assertAuthority(id).actor.type === "shadow_session"; } catch { return false; }
+};
 workService.taskCompletionService = taskCompletionService;
 const {
   syncSessionChannelDeliveriesIntoAgentWorkQueue,

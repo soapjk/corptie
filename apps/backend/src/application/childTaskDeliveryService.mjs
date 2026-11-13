@@ -67,6 +67,17 @@ export class ChildTaskDeliveryService {
     return [...ids].sort().map(id=>this.store.getArtifact(id));
   }
   recordApproval(approval,snapshot,actor) { return this.repository.createFromApproval(approval,snapshot,actor); }
+  async requestShadowDelivery(taskId) {
+    const review = this.store.selectOne("SELECT * FROM coordination_shadow_reclamation WHERE task_id=?", [taskId]);
+    if (!review || review.phase !== "delivery") throw failure("SHADOW_REVIEW_REQUIRED", "缺少影子会话的技术验收记录。");
+    const existing = this.store.selectOne("SELECT operation_id FROM child_task_delivery_operations WHERE approval_operation_id=?", [review.report_id + ":" + taskId]);
+    if (existing) { this.wake(existing.operation_id); return this.repository.getOperation(existing.operation_id); }
+    const snapshot = await this.prepareVersion(taskId);
+    const operation = this.repository.createFromApproval({ operationId: review.report_id + ":" + taskId }, snapshot,
+      { type: "shadow_session", id: review.shadow_session_id });
+    this.wake(operation.operationId);
+    return operation;
+  }
   assertChildIdle(taskId) {
     for(const session of this.store.listSessionsByTask(taskId)) {
       if(sessionHasActiveRun(session) || this.store.getSessionRuntimeBlocker?.(session.id,{includeQueued:true})) {
@@ -176,6 +187,16 @@ export class ChildTaskDeliveryService {
   }
   assertAuthority(id) {
     const operation=this.repository.getOperation(id), approval=operation && this.store.getTaskCompletionOperation(operation.approvalOperationId);
+    if (operation?.actor?.type === "shadow_session" && ["running", "waiting"].includes(operation.state)) {
+      const review = this.store.selectOne(`SELECT r.* FROM coordination_shadow_reclamation r
+        JOIN coordination_shadow_sessions sh ON sh.shadow_session_id=r.shadow_session_id
+        JOIN coordination_shadow_reports report ON report.report_id=r.report_id
+        WHERE r.task_id=? AND r.shadow_session_id=? AND sh.parent_task_id=?`, [operation.taskId, operation.actor.id, operation.parentTaskId]);
+      const latestDispatchId = this.store.selectOne("SELECT dispatch_id FROM task_coordination_dispatches WHERE target_task_id=? ORDER BY created_at DESC,dispatch_id DESC LIMIT 1", [operation.taskId])?.dispatch_id ?? null;
+      if (review && `${review.report_id}:${operation.taskId}` === operation.approvalOperationId
+        && (JSON.parse(review.recovery_json).latestDispatchId ?? null) === latestDispatchId) return operation;
+      throw failure("SHADOW_REVIEW_CHANGED", "影子验收依据已变化，等待重新核对。");
+    }
     if(!operation || !["running","waiting"].includes(operation.state) || approval?.result!=="succeeded"
       || approval.details?.childDelivery?.taskId!==operation.taskId) throw failure("CHILD_DELIVERY_APPROVAL_INVALID","自动收尾凭据已失效。");
     return operation;
@@ -258,12 +279,16 @@ export class ChildTaskDeliveryService {
         operation=await this.ensureCleanup(operation);
         if (!operation) return this.repository.getOperation(id);
       }
-      return this.advance(operation,{state:"completed",phase:"completed",progress:{...operation.progress,completedAt:new Date().toISOString()}});
+      const completed = this.advance(operation,{state:"completed",phase:"completed",progress:{...operation.progress,completedAt:new Date().toISOString()}});
+      if (operation.actor.type === "shadow_session") await this.reclaimChild?.(operation.taskId);
+      return completed;
     } catch(error) {
       operation=this.repository.getOperation(id);
       if (operation?.state === "superseded") return operation;
-      return this.advance(operation,{state:error.code==="TASK_HIERARCHY_BUSY" ? "waiting" : "blocked",
+      const failed = this.advance(operation,{state:error.code==="TASK_HIERARCHY_BUSY" ? "waiting" : "blocked",
         errorCode:error.code ?? "CHILD_DELIVERY_FAILED",errorMessage:String(error.message).slice(0,1000)});
+      if (failed.state === "blocked" && failed.actor.type === "shadow_session") this.onShadowBlocked?.(failed);
+      return failed;
     }
   }
   retry(id) {
@@ -282,6 +307,16 @@ export class ChildTaskDeliveryService {
   }
   async recover() {
     for(const operation of this.repository.listRecoverableOperations()) void this.wake(operation.operationId);
+    for (const row of this.store.selectAll(`SELECT r.task_id FROM coordination_shadow_reclamation r
+      JOIN tasks t ON t.id=r.task_id WHERE t.deletion_status='deleted'`)) {
+      await this.reclaimChild?.(row.task_id);
+    }
+    for (const row of this.store.selectAll(`SELECT r.task_id FROM coordination_shadow_reclamation r
+      JOIN tasks t ON t.id=r.task_id WHERE COALESCE(t.deletion_status,'')<>'deleted' AND r.phase='delivery'
+      AND NOT EXISTS(SELECT 1 FROM child_task_delivery_operations d WHERE d.child_task_id=r.task_id)`)) {
+      try { await this.requestShadowDelivery(row.task_id); }
+      catch (error) { console.warn(`[shadow-delivery-recovery] ${error.code ?? error.message}`); }
+    }
   }
   onRuntimeEvent(type,payload) {
     if(type==="TaskChanged" && payload?.action==="child-delivery-state") return;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { messageImageGeometry, IMAGE_GEOMETRY_HEADER_LIMIT } from "./messageImageGeometry.mjs";
 import { readMessageResource } from "./messageResources.mjs";
 import { constants } from "node:fs";
-import { access, copyFile, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readFile, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, resolve, sep } from "node:path";
 
 export const CHAT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
@@ -119,6 +119,24 @@ export class ChatResourceService {
       if (error?.code !== "ENOENT") throw error;
     });
     return { removed: true };
+  }
+
+  async reclaimDeletedTask(taskId) {
+    const task = this.store.selectOne("SELECT parent_task_id,deletion_status FROM tasks WHERE id=?", [taskId]);
+    if (!task || task.deletion_status !== "deleted" || !task.parent_task_id) {
+      throw resourceError("CHAT_RESOURCE_RECLAMATION_SCOPE_INVALID", "Only a deleted child Task owns this cleanup.", 409);
+    }
+    const directory = this.#safePath(`chat-resources/tasks/${safeSegment(taskId, "task")}`);
+    // rm does not follow the final symlink. Verify the parent as well: an
+    // externally replaced managed directory must not reach another data root.
+    const parent = await realpath(join(directory, ".." )).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (parent && parent !== resolve(this.environmentRoot, "chat-resources", "tasks")) {
+      throw resourceError("CHAT_RESOURCE_RECLAMATION_SCOPE_INVALID", "Managed resource root changed.", 409);
+    }
+    await rm(directory, { recursive: true, force: true });
   }
 
   async copyForkMetadata(value, source, target, cache = new Map()) {

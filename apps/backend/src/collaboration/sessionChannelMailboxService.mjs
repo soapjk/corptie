@@ -117,6 +117,7 @@ export class SessionChannelMailboxService {
   candidates(deliveryId, operationId = null) {
     const head = this.service.getDeliveryEnvelope(deliveryId);
     if (!head) return [];
+    const destination = this.service.resolveDeliveryRoute(deliveryId);
     const barrier = operationId ? this.store.selectOne(`SELECT MIN(created_at) AS cutoff FROM agent_operations
       WHERE session_id=(SELECT session_id FROM agent_operations WHERE task_id=?)
       AND status='queued' AND kind!='collaboration'
@@ -136,7 +137,10 @@ export class SessionChannelMailboxService {
       .sort((a, b) => a.sequence - b.sequence)
       .map(row => this.service.getDeliveryEnvelope(row.delivery_id))
       .filter(item => {
-        try { this.service.resolveDeliveryRoute(item.delivery.deliveryId); return true; }
+        try {
+          const route = this.service.resolveDeliveryRoute(item.delivery.deliveryId);
+          return route.providerSessionId === destination.providerSessionId && route.bindingId === destination.bindingId;
+        }
         catch { return false; }
       });
   }

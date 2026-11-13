@@ -1,4 +1,33 @@
 export function migrateTaskCoordination({ db, ensureColumn }) {
+  // Separate executor ownership from the Task's interactive current Session.
+  // No transcript archive is created by these recovery/control records.
+  db.run(`CREATE TABLE IF NOT EXISTS coordination_shadow_sessions (
+    main_session_id TEXT PRIMARY KEY, parent_task_id TEXT NOT NULL,
+    shadow_session_id TEXT UNIQUE, state TEXT NOT NULL DEFAULT 'pending',
+    scope_json TEXT NOT NULL, requirement_revision INTEGER NOT NULL DEFAULT 0,
+    processed_revision INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS coordination_shadow_parent ON coordination_shadow_sessions(parent_task_id);
+  CREATE TABLE IF NOT EXISTS coordination_shadow_reports (
+    report_id TEXT PRIMARY KEY, main_session_id TEXT NOT NULL,
+    shadow_session_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+    requirement_revision INTEGER NOT NULL, body TEXT NOT NULL,
+    decision_json TEXT, created_at TEXT NOT NULL,
+    UNIQUE(shadow_session_id,source_turn_id)
+  );
+  CREATE INDEX IF NOT EXISTS coordination_shadow_report_main ON coordination_shadow_reports(main_session_id,created_at);
+  CREATE TABLE IF NOT EXISTS coordination_shadow_requests (
+    request_id TEXT PRIMARY KEY, main_session_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+    body TEXT NOT NULL, source_json TEXT NOT NULL, mailbox_message_id TEXT,
+    created_at TEXT NOT NULL, UNIQUE(main_session_id,source_turn_id)
+  );
+  CREATE TABLE IF NOT EXISTS coordination_shadow_reclamation (
+    task_id TEXT PRIMARY KEY, main_session_id TEXT NOT NULL,
+    shadow_session_id TEXT NOT NULL, report_id TEXT NOT NULL,
+    phase TEXT NOT NULL, recovery_json TEXT NOT NULL,
+    last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  );`);
   for (const column of ["sender_operation_id", "sender_turn_id", "sender_provider_session_id", "sender_binding_id"]) {
     ensureColumn("session_collaboration_messages", column, "TEXT");
   }

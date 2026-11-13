@@ -272,6 +272,15 @@ export function createSessionApplicationComposition({
         approvalPolicy: input.approvalPolicy,
         sandbox: input.sandbox
       });
+      if (context.source === "coordination-shadow" && context.shadowOwnerSessionId && logical) {
+        const delegation = store.selectOne("SELECT * FROM coordination_shadow_sessions WHERE main_session_id=?", [context.shadowOwnerSessionId]);
+        if (!delegation || delegation.parent_task_id !== context.taskId || delegation.shadow_session_id) {
+          throw Object.assign(new Error("Shadow creation no longer owns this reservation."), { code: "SHADOW_RESERVATION_CHANGED" });
+        }
+        store.db.run("UPDATE coordination_shadow_sessions SET shadow_session_id=?,state='ready',updated_at=? WHERE main_session_id=? AND shadow_session_id IS NULL",
+          [logical.logicalSessionId, new Date().toISOString(), context.shadowOwnerSessionId]);
+        store.scheduleSave();
+      }
       return logical ? {
         sessionId: logical.legacySessionId,
         logicalSessionId: logical.logicalSessionId,

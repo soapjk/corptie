@@ -46,7 +46,7 @@ export function createTaskExecutionComposition({
         { kind: "parent_task_deletion", operationId, actorId: actor.id, workId: task.work_id }, task.id, disposition);
       const delivery=actor?.type==="child_delivery" ? workService.childTaskDeliveryService.assertAuthority(actor.id) : null;
       return artifactService.disposeBoundArtifactsForTaskDeletion({
-        kind:"local_user",actorId:delivery?.actor.id ?? actor?.id,workId:task.work_id,
+        kind:delivery?.actor.type === "shadow_session" ? "child_delivery" : "local_user",actorId:delivery?.actor.id ?? actor?.id,workId:task.work_id,
         ...(delivery ? {childDeliveryOperationId:delivery.operationId,
           revalidateUser:()=>workService.childTaskDeliveryService.assertAuthority(delivery.operationId)} : {})
       },task.id,disposition);

@@ -606,8 +606,9 @@ export class WorktreeIntegrationJobService {
     const row=this.store.selectOne("SELECT * FROM child_task_delivery_operations WHERE operation_id=?",[operation.operationId]);
     if(!row || row.state!=="running" || row.phase!=="code") throw new WorktreeIntegrationJobError("CHILD_DELIVERY_APPROVAL_INVALID","No active approved child delivery.",403);
     const snapshot=JSON.parse(row.snapshot_json), approval=this.store.getTaskCompletionOperation(row.approval_operation_id);
-    if(approval?.result!=="succeeded" || approval.taskId!==row.child_task_id || approval.details?.childDelivery?.taskId!==row.child_task_id
-      || !snapshot.git) throw new WorktreeIntegrationJobError("CHILD_DELIVERY_APPROVAL_INVALID","Approval does not bind this child version.",403);
+    const shadowReview = JSON.parse(row.actor_json).type === "shadow_session" && this.authorizeShadowDelivery?.(operation.operationId) === true;
+    if((!shadowReview && (approval?.result!=="succeeded" || approval.taskId!==row.child_task_id || approval.details?.childDelivery?.taskId!==row.child_task_id))
+      || !snapshot.git) throw new WorktreeIntegrationJobError("CHILD_DELIVERY_APPROVAL_INVALID","Delivery evidence does not bind this child version.",403);
     const key=`child-delivery:${operation.operationId}:merge:${snapshot.git.headOid}`;
     const prior=this.store.getWorktreeIntegrationJobByIdempotencyKey(snapshot.git.repositoryId,key);
     if(prior) return this.get(prior.id);

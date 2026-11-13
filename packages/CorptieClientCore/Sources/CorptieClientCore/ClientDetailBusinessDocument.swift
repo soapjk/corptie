@@ -52,6 +52,7 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
 public struct ClientCoordinationExecution: Decodable, Equatable, Sendable {
     public let status: String
     public let reason: String
+    public var shadow: ClientShadowCoordination? = nil
     public var statusLabel: String {
         switch status {
         case "off": "已关闭"
@@ -59,6 +60,27 @@ public struct ClientCoordinationExecution: Decodable, Equatable, Sendable {
         case "enforced": "强协调已启用"
         case "unsupported": "当前运行环境不支持"
         default: "执行限制尚未验证"
+        }
+    }
+}
+public struct ClientShadowCoordination: Decodable, Equatable, Sendable {
+    public let sessionId: String?
+    public let status: String
+    public let lastReportAt: String?
+    public let pendingDecisions: Int
+    public let reports: [Report]
+    public struct Report: Decodable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let text: String
+        public let createdAt: String
+    }
+    public var statusLabel: String {
+        switch status {
+        case "running": "影子会话处理中"
+        case "paused": "影子会话已暂停"
+        case "failed": "影子会话需恢复"
+        case "waiting": "等待子任务结果"
+        default: "影子会话空闲"
         }
     }
 }

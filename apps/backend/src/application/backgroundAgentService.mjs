@@ -26,7 +26,7 @@ export class BackgroundAgentService {
     // Provider belongs to the invoking Session/background operation, never to the Agent resource bundle.
     this.resolveProviderId = options.resolveProviderId ?? null;
     this.isEnabled = options.isEnabled ?? (() => true);
-    this.queue = options.queue ?? new BackgroundOperationQueue();
+    this.queue = options.queue ?? new BackgroundOperationQueue({ interactiveReserve: 1 });
     this.activeControllers = new Map();
     this.activePurposes = new Map();
     if (!this.registry) throw new TypeError("BackgroundAgentService requires an Agent Provider Registry.");
