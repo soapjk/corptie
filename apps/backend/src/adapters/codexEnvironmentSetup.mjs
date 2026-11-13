@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAppServerClient } from "./codexAppServer.mjs";
 import { importCorptieCodexAuthentication } from "../runtime/corptieCodexRuntime.mjs";
-import { PROVIDER_PROBE_PROMPT } from "../agent-provider/providers/providerReplyProbe.mjs";
+import { logError, safeErrorMessage } from "../utils/errorDiagnostics.mjs";
+import { PROVIDER_PROBE_PROMPT, replyIsValid } from "../agent-provider/providers/providerReplyProbe.mjs";
 
 export function createCodexEnvironmentSetup({ registry, environment, prepare, runtimeOptions,
   canImport = () => true, createClient = (options) => new CodexAppServerClient(options),
@@ -27,24 +28,28 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
     const client = createClient({ command: path, env: environment(profile, path), initializationTimeoutMs: 5000 });
     const abort = () => { void client.close(); };
     const cwd = await mkdtemp(join(tmpdir(), "corptie-codex-check-"));
+    let stage = "启动程序";
     try {
       signal?.throwIfAborted();
       signal?.addEventListener("abort", abort, { once: true });
       await client.initialize();
+      stage = "读取登录状态";
       const account = await client.request("account/read", { refreshToken: false });
       if (account?.requiresOpenaiAuth === true && !account.account) {
         throw Object.assign(new Error("此 Codex 环境尚未登录，请在 Codex 官方 CLI 或 App 中登录后重新检测。"), { code: "PROVIDER_LOGIN_REQUIRED" });
       }
+      stage = "等待模型回复";
       const reply = await client.runEphemeralPrompt({ prompt: PROVIDER_PROBE_PROMPT, cwd,
         executionPolicy: "no-tools", permissionProfile: "read-only", model: model || undefined,
         rejectModelReroute: true, timeoutMs: 30_000, signal });
-      if (reply.text?.trim() !== "CORPTIE_OK") throw Object.assign(new Error("未收到有效回复，请重新检测。"), { code: "PROVIDER_REPLY_INVALID" });
+      if (!replyIsValid(reply.text)) throw Object.assign(new Error("未收到有效回复，请重新检测。"), { code: "PROVIDER_REPLY_INVALID" });
       signal?.throwIfAborted();
       if (fingerprint !== await registry.fingerprint(profile)) {
         throw Object.assign(new Error("Codex 配置在检测期间已变更，请重新检测。"), { code: "PROVIDER_CONFIGURATION_CHANGED" });
       }
       return { ok: true, environment: profile, environmentFingerprint: fingerprint, effectiveModel: reply.model ?? (model || null) };
     } catch (error) {
+      logError("provider.setup.probe", error, { providerId: "codex", stage });
       // RPC/provider text can contain sensitive configuration. Expose only our
       // known actionable errors, never a raw transport/model diagnostic.
       if (["PROVIDER_LOGIN_REQUIRED", "PROVIDER_REPLY_INVALID", "PROVIDER_CONFIGURATION_CHANGED"].includes(error.code)) throw error;
@@ -69,7 +74,7 @@ export function createCodexEnvironmentSetup({ registry, environment, prepare, ru
       if (error.code === "BACKGROUND_TIMEOUT") throw Object.assign(new Error("检测超时，请重试。"), { code: "PROVIDER_CHECK_TIMEOUT" });
       if (error.code === "BACKGROUND_MODEL_REROUTED") throw Object.assign(new Error("检测模型被服务端切换，不能确认原模型可用。"), { code: "PROVIDER_MODEL_REROUTED" });
       if (signal?.aborted) throw new Error("检测已取消。");
-      throw Object.assign(new Error("Codex 连接或回复检测失败，请检查程序版本、网络和所选环境的配置。"), { code: "PROVIDER_CONNECTION_FAILED" });
+      throw Object.assign(new Error(`${stage}失败：${safeErrorMessage(error) || "未提供错误原因"}`), { code: "PROVIDER_CONNECTION_FAILED" });
     } finally {
       signal?.removeEventListener("abort", abort);
       await client.close();

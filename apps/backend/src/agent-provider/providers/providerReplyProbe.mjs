@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { environmentForCommand } from "../../utils/externalCommand.mjs";
 
 export const PROVIDER_PROBE_PROMPT = "Reply with exactly CORPTIE_OK. Do not use tools or read files.";
-const replyIsValid = (text) => typeof text === "string" && text.trim() === "CORPTIE_OK";
+export const replyIsValid = (text) => typeof text === "string" && text.trim().length > 0;
 
 // These adapters use the selected CLI in a fresh empty directory. They never
 // create a product Session or attach the user's Work, messages or tools.

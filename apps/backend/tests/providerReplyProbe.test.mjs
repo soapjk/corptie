@@ -48,3 +48,12 @@ test("subprocess timeout and cancellation terminate the probe", async () => {
   controller.abort();
   await assert.rejects(pending, { code: "PROBE_CANCELLED" });
 });
+
+for (const [name, create, events] of cases) {
+  test(`${name}: ordinary non-token assistant text passes, whitespace does not`, async () => {
+    const output = JSON.stringify(events).replaceAll('CORPTIE_OK', 'Hello, connection is working.');
+    const rows = JSON.parse(output);
+    assert.deepEqual(await create({ execute: async () => rows.map(row => JSON.stringify(row)).join('\n') })('/provider'), { ok: true });
+    await assert.rejects(create({ execute: async () => rows.map(row => JSON.stringify(row).replaceAll('Hello, connection is working.', '   ')).join('\n') })('/provider'));
+  });
+}

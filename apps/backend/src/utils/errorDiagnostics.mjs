@@ -121,3 +121,8 @@ export function logError(scope, error, context = {}) {
       ...(suppressed ? { repeatedFailures: suppressed } : {}) }));
   } catch { /* Logging must never change the failure it observes, including sink failures. */ }
 }
+
+// Bounded diagnostics for explicit user-triggered setup failures; no stack or payload.
+export function safeErrorMessage(error) {
+  return read(error, "name") === "SyntaxError" ? "响应格式无法解析" : text(read(error, "message"))?.slice(0, 500);
+}
