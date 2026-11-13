@@ -48,12 +48,13 @@ test("a Provider with no Sessions still schedules a state publication", () => {
 test("execution waits explain the queue without disabling admission or mutating stored Session state", () => {
   const logical = { repositoryId: "repo", activeWorkspaceId: "tree", logicalSessionId: "logical", activeBinding: { bindingId: "binding" } };
   const job = { id: "job", status: "running", details: { plan: { orchestration: {}, reservedWorktreeIds: ["tree"] } } };
+  const session = { id: "session", status: "complete", deliveryStatus: "queued", activityStatus: null };
   const store = { listSessions: () => [], getLogicalSessionByLegacySessionId: () => logical,
+    getSession: (id) => id === session.id ? session : null,
     getLatestWorktreeIntegrationJob: () => job, getSessionToolCatalogMaterialization: () => null };
   const { decorateSessionForClient } = createSessionReadinessProjection({ store,
     agentProviderRegistry: { descriptors: () => [], resolveId: () => null },
     readBindingProbe: () => null, readFallbackBindingReadiness: () => null });
-  const session = { id: "session", status: "complete", deliveryStatus: "queued", activityStatus: null };
   const waiting = decorateSessionForClient(session);
   assert.equal(waiting.executionWait.jobId, "job");
   assert.equal(waiting.activityStatus, waiting.executionWait.message);
