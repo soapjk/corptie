@@ -829,8 +829,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             hasPendingFollow = false
         }
         let shouldFollowAfterUpdate = pendingProcessCollapseRowID == nil
-            && (pendingRestorePosition?.followsLatest ?? (rows.isEmpty
-                ? followedLatestBeforeUpdate : (hasPendingFollow || isViewportNearBottom())))
+            && (pendingRestorePosition?.followsLatest ?? (pendingInitialScrollToBottom || (rows.isEmpty
+                ? followedLatestBeforeUpdate : (hasPendingFollow || isViewportNearBottom()))))
         // Native layout can resolve during the mutation. Commit physical
         // reader intent first so an old SwiftUI follow value cannot win.
         followsLatest = shouldFollowAfterUpdate

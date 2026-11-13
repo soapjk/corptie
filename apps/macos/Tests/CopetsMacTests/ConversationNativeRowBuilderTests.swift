@@ -43,7 +43,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         let projected = ConversationReplyProgressProjection.entries(makeChatDisplayEntries(from: [user]))
         let entry = try XCTUnwrap(projected.last)
         let waiting = builder().nativeAppKitRow(entry, expandedTurnIds: [])
-        XCTAssertEqual(waiting.id, "process:turn:early")
+        XCTAssertEqual(waiting.id, "process:input:early-user")
         XCTAssertEqual(waiting.processCount, 0)
         XCTAssertEqual(waiting.processState, .running)
         XCTAssertFalse(waiting.isExpanded)

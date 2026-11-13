@@ -579,8 +579,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.coordinator.applySearchTarget(rowID: "reading-20", revision: 1)
             await settleMainQueue()
             XCTAssertEqual(harness.tableView.selectedRow, 20)
+            let maximumY = max(0, (harness.scrollView.documentView?.frame.height ?? 0)
+                - harness.scrollView.contentView.bounds.height)
             XCTAssertEqual(harness.scrollView.contentView.bounds.minY,
-                harness.tableView.rect(ofRow: 20).minY - 10, accuracy: 1)
+                min(maximumY, harness.tableView.rect(ofRow: 20).minY - 10), accuracy: 1)
         }
     }
 
@@ -2113,9 +2115,13 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
             styleMask: [.borderless], backing: .buffered, defer: false
         )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        host.sizingOptions = []
         window.contentView = host
+        window.orderBack(nil)
         window.layoutIfNeeded()
-        await settleMainQueue()
+        await settlePositionPublication()
         window.layoutIfNeeded()
         await settleMainQueue()
 
