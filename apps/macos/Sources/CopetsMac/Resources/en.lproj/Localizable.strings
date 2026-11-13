@@ -2238,3 +2238,7 @@
 "Session configuration mismatch." = "Session configuration mismatch.";
 
 "Fast mode may use more quota or incur higher charges." = "Fast mode may use more quota or incur higher charges.";
+
+"Installed globally. Enable with @ or the Session abilities card." = "Installed globally. Enable with @ or the Session abilities card.";
+"Install globally; enable in a Session with @ or its abilities card." = "Install globally; enable in a Session with @ or its abilities card.";
+"Install a Server, then enable it in a Session." = "Install a Server, then enable it in a Session.";

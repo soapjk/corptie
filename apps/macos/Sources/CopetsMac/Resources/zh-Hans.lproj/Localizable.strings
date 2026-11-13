@@ -2588,3 +2588,7 @@
 "Session configuration mismatch." = "返回的会话配置与请求不一致。";
 
 "Fast mode may use more quota or incur higher charges." = "Fast 模式可能消耗更多额度或产生更高费用。";
+
+"Installed globally. Enable with @ or the Session abilities card." = "全局安装 · 在会话中通过 @ 或右侧能力卡片开启";
+"Install globally; enable in a Session with @ or its abilities card." = "全局安装；在会话中通过 @ 或能力卡片开启。";
+"Install a Server, then enable it in a Session." = "安装 MCP 后，在会话中按需开启。";

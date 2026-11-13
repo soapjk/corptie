@@ -18,13 +18,18 @@ extension ComposerMentionCatalog {
             let workLabel: String
 
             var detail: String {
-                kind == .work ? workLabel : workName.map { "Session · Work: \($0)" } ?? "Session"
+                switch kind {
+                case .work: workLabel
+                case .session: workName.map { "Session · Work: \($0)" } ?? "Session"
+                case .skill: "Skill"
+                case .mcp: "MCP"
+                }
             }
         }
 
         private let entries: [Entry]
 
-        public init(works: [Work], sessions: [Session], workLabel: String = "Work") throws {
+        public init(works: [Work], sessions: [Session], workLabel: String = "Work", abilities: [Ability] = []) throws {
             let groups = Dictionary(grouping: sessions, by: { $0.workId ?? "" })
             let workIDs = Set(works.map(\.id))
             var entries: [Entry] = []
@@ -42,6 +47,11 @@ extension ComposerMentionCatalog {
             for (offset, session) in sessions.enumerated() {
                 if offset.isMultiple(of: 128) { try Task.checkCancellation() }
                 if !workIDs.contains(session.workId ?? "") { append(session, workName: nil) }
+            }
+            for ability in abilities where ability.kind == .skill || ability.kind == .mcp {
+                try Task.checkCancellation()
+                entries.append(Entry(id: ability.kind.rawValue + ":" + ability.id, targetID: ability.id,
+                    name: ability.name, kind: ability.kind, workName: nil, workLabel: workLabel))
             }
             self.entries = entries
         }

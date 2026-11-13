@@ -62,7 +62,7 @@ export async function acceptReliableMessage(api, identity, targetId, input, auth
       || (!input.text.trim() && !images.length)
       || !Array.isArray(mentions) || mentions.length > 8 || mentions.some(mention => !mention
         || Object.keys(mention).some(key => !["targetType", "targetId", "displayName"].includes(key))
-        || !["work", "session"].includes(mention.targetType)
+        || !["work", "session", "skill", "mcp"].includes(mention.targetType)
         || typeof mention.targetId !== "string" || !mention.targetId.trim() || mention.targetId.length > 200
         || typeof mention.displayName !== "string" || !mention.displayName || mention.displayName.length > 200)) {
     throw deviceError("INVALID_MESSAGE", 400);

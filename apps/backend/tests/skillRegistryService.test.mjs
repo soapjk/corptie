@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SessionAbilityPreferences } from "../src/application/sessionAbilityPreferences.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
 import { callSkillDynamicTool } from "../src/application/skillDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -1044,34 +1045,66 @@ test("Skill installation reports invalid directories, missing markers, and incom
   }
 });
 
-test("Skill search and load are limited to the authenticated Agent's assignments", async () => {
+test("installed Skills require explicit Session activation regardless of Role assignments", async () => {
   const value = await fixture();
   try {
-    const skill = await value.service.register({
-      sourceType: "local",
-      source: value.source,
-      sourceSubpath: "skills/investrace"
+    const skill = await value.service.register({ sourceType: "local", source: value.source,
+      sourceSubpath: "skills/investrace" });
+    const role = value.store.createAgent({ name: "Investor", provider: "codex-app-server" });
+    const other = value.store.createAgent({ name: "Other", provider: "claude-sdk" });
+    value.store.setAgentRegistrySkills(role.agentId, [skill.skillId]);
+    value.store.getLogicalSession = id => ({ logicalSessionId: id, legacySessionId: id });
+    value.store.getSession = id => ({ id, agentId: id === "logical:first" ? role.agentId : other.agentId });
+    const preferences = new SessionAbilityPreferences({ store: value.store, registry: { list: () => [] } });
+    value.service.sessionAbilityPreferences = preferences;
+    const search = reference => callSkillDynamicTool(value.service, {
+      actorId: other.agentId, tool: "corptie_skill_search", arguments: { intent: "investrace" },
+      metadata: { logicalSessionId: reference }
     });
-    const assigned = value.store.createAgent({ name: "Investor", provider: "codex-app-server" });
-    const unassigned = value.store.createAgent({ name: "Other", provider: "codex-app-server" });
-    value.store.setAgentRegistrySkills(assigned.agentId, [skill.skillId]);
-
-    const search = await callSkillDynamicTool(value.service, {
-      actorId: assigned.agentId,
-      tool: "corptie_skill_search",
-      arguments: { intent: "你能不能使用investrace" }
-    });
-    assert.equal(search.found, true);
-    assert.equal(search.candidates[0].skillId, skill.skillId);
-
-    const loaded = await value.service.loadForAgent(assigned.agentId, skill.skillId);
+    assert.equal((await search("logical:first")).found, false);
+    assert.deepEqual(await value.service.skillsForAgent(role.agentId), []);
+    await assert.rejects(value.service.loadForAgent(role.agentId, skill.skillId, "logical:first"),
+      { code: "SESSION_CAPABILITY_DISABLED" });
+    preferences.update("logical:second", { expectedResourceVersion: 0, requestId: "activate",
+      kind: "skill", id: skill.skillId, disabled: false });
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(other.agentId), []);
+    assert.equal((await search("logical:second")).candidates[0].skillId, skill.skillId);
+    const loaded = await value.service.loadForAgent(other.agentId, skill.skillId, "logical:second");
     assert.equal(loaded.name, "investrace");
     assert.match(loaded.content, /Investrace instructions/);
+    assert.equal((await search("logical:first")).found, false);
+    preferences.update("logical:second", { expectedResourceVersion: 1, requestId: "disable",
+      kind: "skill", id: skill.skillId, disabled: true });
+    await assert.rejects(value.service.loadForAgent(other.agentId, skill.skillId, "logical:second"),
+      { code: "SESSION_CAPABILITY_DISABLED" });
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
 
-    await assert.rejects(
-      value.service.loadForAgent(unassigned.agentId, skill.skillId),
-      (error) => error.code === "SKILL_NOT_ASSIGNED"
-    );
+test("unassigned compound Skill MCP configuration follows explicit Session activation", async () => {
+  const value = await fixture();
+  try {
+    const source = join(value.source, "compound-session");
+    await mkdir(source);
+    await writeFile(join(source, "SKILL.md"), "---\nname: compound-session\ndescription: Session compound workflow\n---\nInstructions");
+    await writeFile(join(source, ".mcp.json"), JSON.stringify({
+      mcpServers: { remote: { type: "http", url: "https://example.test/mcp" } }
+    }));
+    const skill = await value.service.register({ sourceType: "local", source });
+    const role = value.store.createAgent({ name: "Unassigned", provider: "claude-sdk" });
+    value.store.getLogicalSession = id => ({ logicalSessionId: id, legacySessionId: id });
+    value.store.getSession = id => ({ id, agentId: role.agentId });
+    const preferences = new SessionAbilityPreferences({ store: value.store, registry: { list: () => [] } });
+    value.service.sessionAbilityPreferences = preferences;
+    const configs = reference => value.service.mcpServersForAgent(role.agentId, "second",
+      { sessionReference: reference });
+    assert.deepEqual(await configs("logical:first"), {});
+    preferences.activateMentions("logical:first", [{ targetType: "skill", targetId: skill.skillId }]);
+    assert.equal((await configs("logical:first")).remote.url, "https://example.test/mcp");
+    assert.deepEqual(await configs("logical:second"), {});
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(role.agentId), []);
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });
@@ -1187,7 +1220,7 @@ test("partial runtime cleanup failure is audited, returns failure, and restores 
   }
 });
 
-test("active assigned Sessions block deletion before any runtime cleanup", async () => {
+test("active enabled Sessions block deletion while inactive legacy Role links do not", async () => {
   const value = await fixture();
   try {
     const skill = await value.service.register({
@@ -1203,6 +1236,14 @@ test("active assigned Sessions block deletion before any runtime cleanup", async
       status: "running"
     });
 
+    value.store.createLogicalSessionRoute({ logicalSessionId: "logical:active-skill", legacySessionId: session.id,
+      providerThreadId: "active-skill", providerSessionId: session.id, providerId: "codex-app-server",
+      boundCwd: value.directory, sessionName: "Active_skill" });
+    assert.equal(value.service.deletionImpact(skill.skillId).canDelete, true);
+    const logical = value.store.getLogicalSessionByLegacySessionId(session.id);
+    value.store.db.run(`INSERT INTO session_ability_activations
+      (logical_session_id, enabled_skills_json, enabled_mcps_json) VALUES (?, ?, '[]')`,
+      [logical.logicalSessionId, JSON.stringify([skill.skillId])]);
     const impact = value.service.deletionImpact(skill.skillId);
     assert.equal(impact.canDelete, false);
     assert.equal(impact.activeSessions[0].sessionId, session.id);

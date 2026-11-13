@@ -1,4 +1,4 @@
-// User preferences only: never grants capabilities or changes Role assignments.
+// User-owned Session activation. Installation and legacy Role links never activate abilities.
 export class SessionAbilityPreferences {
   constructor({ store, registry }) {
     this.store = store;
@@ -18,16 +18,25 @@ export class SessionAbilityPreferences {
     const { logical } = this.resolve(reference);
     const row = this.store.selectOne(
       "SELECT * FROM session_ability_preferences WHERE logical_session_id = ?", [logical.logicalSessionId]);
-    return { logicalSessionId: logical.logicalSessionId,
-      disabledSkillIds: row ? JSON.parse(row.disabled_skills_json) : [],
-      disabledMcpServerIds: row ? JSON.parse(row.disabled_mcps_json) : [],
+    const active = this.store.selectOne(
+      "SELECT * FROM session_ability_activations WHERE logical_session_id = ?", [logical.logicalSessionId]);
+    const enabledSkillIds = active ? JSON.parse(active.enabled_skills_json) : [];
+    const enabledMcpServerIds = active ? JSON.parse(active.enabled_mcps_json) : [];
+    return { logicalSessionId: logical.logicalSessionId, enabledSkillIds, enabledMcpServerIds,
+      disabledSkillIds: this.store.listRegistrySkills().map(s => s.skillId).filter(id => !enabledSkillIds.includes(id)),
+      disabledMcpServerIds: this.registry.list().map(s => s.serverId).filter(id => !enabledMcpServerIds.includes(id)),
       resourceVersion: row?.resource_version ?? 0 };
   }
 
   isDisabled(reference, kind, id) {
-    if (!reference) return false;
-    const value = this.preferences(reference);
-    return (kind === "skill" ? value.disabledSkillIds : value.disabledMcpServerIds).includes(id);
+    if (!reference) return true;
+    const { logical } = this.resolve(reference);
+    const active = this.store.selectOne(
+      "SELECT * FROM session_ability_activations WHERE logical_session_id = ?", [logical.logicalSessionId]);
+    if (!active) return true;
+    const value = { enabledSkillIds: JSON.parse(active.enabled_skills_json),
+      enabledMcpServerIds: JSON.parse(active.enabled_mcps_json) };
+    return !(kind === "skill" ? value.enabledSkillIds : value.enabledMcpServerIds).includes(id);
   }
 
   assertEnabled(reference, kind, id) {
@@ -39,16 +48,38 @@ export class SessionAbilityPreferences {
   inspect(reference) {
     const { session } = this.resolve(reference);
     const value = this.preferences(reference);
-    const skills = (this.store.listRegistrySkillsForAgent(session.agentId) ?? []).map(skill => ({
+    const skills = (this.store.listRegistrySkills() ?? []).map(skill => ({
       id: skill.skillId, name: skill.manifestName || skill.name, kind: "skill",
       disabled: value.disabledSkillIds.includes(skill.skillId), available: true
     }));
-    const mcps = this.registry.listForAgent(session.agentId).map(id => this.registry.get(id)).filter(Boolean)
+    const mcps = this.registry.list()
       .map(server => ({ id: server.serverId, name: server.name, kind: "mcp",
         disabled: value.disabledMcpServerIds.includes(server.serverId), available: server.enabled === true }));
     return { ...value, roleId: session.agentId, abilities: [...skills, ...mcps],
       application: { enforcement: "server", provider: "next_turn", historyRetracted: false,
-        nativeSkillDirectoryIsolation: "unsupported" } };
+        nativeSkillDirectoryIsolation: "gateway_only" } };
+  }
+
+  activateMentions(reference, mentions = []) {
+    // Only called by user message admission; never exposed as an Agent tool.
+    const targets = mentions.filter(m => ["skill", "mcp"].includes(m.targetType));
+    if (!targets.length) return;
+    return this.store.runInTransaction(() => {
+      const installed = this.inspect(reference).abilities;
+      for (const target of targets) {
+        if (!installed.some(a => a.kind === target.targetType && a.id === target.targetId && a.available)) {
+          throw failure("CAPABILITY_NOT_AVAILABLE", "Mentioned capability is not installed or available.", 403);
+        }
+      }
+      let changed = false;
+      for (const target of targets) {
+        if (!this.isDisabled(reference, target.targetType, target.targetId)) continue;
+        this.update(reference, { expectedResourceVersion: this.preferences(reference).resourceVersion,
+          requestId: `mention:${crypto.randomUUID()}`, kind: target.targetType, id: target.targetId, disabled: false });
+        changed = true;
+      }
+      return changed ? { preferences: this.inspect(reference) } : null;
+    });
   }
 
   update(reference, input) {
@@ -78,21 +109,26 @@ export class SessionAbilityPreferences {
         throw failure("RESOURCE_VERSION_CONFLICT", "Session ability preferences changed. Reload and retry.", 409);
       }
       if (!input.reset && !current.abilities.some(item => item.kind === input.kind && item.id === input.id)) {
-        throw failure("CAPABILITY_NOT_ASSIGNED", "Capability is not assigned to this Session's Role.", 403);
+        throw failure("CAPABILITY_NOT_INSTALLED", "Capability is not installed.", 403);
       }
-      const skills = new Set(input.reset ? [] : current.disabledSkillIds);
-      const mcps = new Set(input.reset ? [] : current.disabledMcpServerIds);
+      const skills = new Set(input.reset ? [] : current.enabledSkillIds);
+      const mcps = new Set(input.reset ? [] : current.enabledMcpServerIds);
       if (!input.reset) {
         const values = input.kind === "skill" ? skills : mcps;
-        if (input.disabled) values.add(input.id); else values.delete(input.id);
+        if (input.disabled) values.delete(input.id); else values.add(input.id);
       }
+      this.store.db.run(`INSERT INTO session_ability_activations
+        (logical_session_id, enabled_skills_json, enabled_mcps_json) VALUES (?, ?, ?)
+        ON CONFLICT(logical_session_id) DO UPDATE SET enabled_skills_json=excluded.enabled_skills_json,
+        enabled_mcps_json=excluded.enabled_mcps_json`,
+      [sessionId, JSON.stringify([...skills].sort()), JSON.stringify([...mcps].sort())]);
       const now = new Date().toISOString();
       this.store.db.run(`INSERT INTO session_ability_preferences
         (logical_session_id, disabled_skills_json, disabled_mcps_json, resource_version, updated_at)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT(logical_session_id) DO UPDATE SET
         disabled_skills_json=excluded.disabled_skills_json, disabled_mcps_json=excluded.disabled_mcps_json,
         resource_version=excluded.resource_version, updated_at=excluded.updated_at`,
-      [sessionId, JSON.stringify([...skills].sort()), JSON.stringify([...mcps].sort()), current.resourceVersion + 1, now]);
+      [sessionId, JSON.stringify(current.abilities.filter(a => a.kind === "skill" && !skills.has(a.id)).map(a => a.id).sort()), JSON.stringify(current.abilities.filter(a => a.kind === "mcp" && !mcps.has(a.id)).map(a => a.id).sort()), current.resourceVersion + 1, now]);
       const receipt = { preferences: this.inspect(reference), requestId: input.requestId,
         idempotentReplay: false, previousResourceVersion: current.resourceVersion, updatedAt: now };
       this.store.db.run(`INSERT INTO session_ability_preference_receipts
