@@ -48,7 +48,7 @@ export function createSessionCreationOperation({
             agentId: context.actorId ?? null
           })
         : createdSession;
-      emitEvent("SessionStarted", {
+      if (context.source !== "coordination-shadow") emitEvent("SessionStarted", {
         session,
         provider: providerId,
         source: { type: context.source ?? "application" }

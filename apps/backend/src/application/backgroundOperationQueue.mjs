@@ -1,11 +1,14 @@
 // Provider-neutral scheduling. Running slots are released only when the
 // underlying execution settles, never merely because its caller cancels.
 export class BackgroundOperationQueue {
-  constructor({ concurrency = 2, maxPending = 64 } = {}) {
+  constructor({ concurrency = 2, maxPending = 64, interactiveReserve = 0 } = {}) {
     if (!Number.isInteger(concurrency) || concurrency < 1) throw new TypeError("Invalid background concurrency.");
+    if (!Number.isInteger(interactiveReserve) || interactiveReserve < 0) throw new TypeError("Invalid interactive reserve.");
     this.concurrency = concurrency;
     this.maxPending = maxPending;
     this.running = 0;
+    this.runningBackground = 0;
+    this.interactiveReserve = Math.min(Math.max(0, interactiveReserve), concurrency - 1);
     this.pending = [];
     this.closed = false;
   }
@@ -32,9 +35,11 @@ export class BackgroundOperationQueue {
 
   drain() {
     while (!this.closed && this.running < this.concurrency && this.pending.length) {
+      if (this.pending[0].priority < 1 && this.runningBackground >= this.concurrency - this.interactiveReserve) break;
       const entry = this.pending.shift();
       entry.signal?.removeEventListener("abort", entry.onAbort);
       this.running += 1;
+      if (entry.priority < 1) this.runningBackground += 1;
       Promise.resolve().then(() => {
         entry.signal?.throwIfAborted();
         return entry.operation();
@@ -43,6 +48,7 @@ export class BackgroundOperationQueue {
         return result;
       }).then(entry.resolve, entry.reject).finally(() => {
         this.running -= 1;
+        if (entry.priority < 1) this.runningBackground -= 1;
         this.drain();
       });
     }

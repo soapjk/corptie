@@ -12,6 +12,8 @@ import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { SessionMailboxService } from "../src/application/sessionMailboxService.mjs";
 import { createSessionCollaborationComposition } from "../src/application/sessionCollaborationComposition.mjs";
 import { TaskCoordinationService } from "../src/application/taskCoordinationService.mjs";
+import { ShadowSessionService } from "../src/application/shadowSessionService.mjs";
+import { ChildTaskReclamationService } from "../src/application/childTaskReclamationService.mjs";
 import { createTaskExecutionComposition } from "../src/application/taskExecutionComposition.mjs";
 import { buildTaskCoordinationContext } from "../src/application/workSessionContext.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "../src/collaboration/collaborationDynamicTools.mjs";
@@ -35,6 +37,109 @@ import { createCollaborationTimelinePresentation } from "../src/collaboration/co
 import { CoordinationReadService } from "../src/application/coordinationReadService.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
+
+test("shadow creation is singleflight, preserves the interactive binding and publishes without waking it", async t => {
+  for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(providerId, async t => {
+    const f = await fixture(t, providerId);
+    f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
+    let creations = 0;
+    const events = [];
+    const shadows = new ShadowSessionService({ store: f.store, emitEvent: (...args) => events.push(args),
+      createSession: async (provider, input) => {
+        assert.equal(provider, providerId); assert.equal(input.sessionKind, "worker"); creations++;
+        const meta = f.open("shadow", f.parent.id, { deferTaskProjection: true });
+        return f.store.getSession(meta.sessionId);
+      } });
+    const [first, second] = await Promise.all([shadows.ensure("logical:parent"), shadows.ensure("logical:parent")]);
+    assert.equal(creations, 1); assert.equal(first.shadow_session_id, second.shadow_session_id);
+    assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+    assert.equal(f.store.assertLogicalWorkSessionBinding(first.shadow_session_id).taskId, f.parent.id);
+    assert.ok(!f.store.listSessions().some(session => session.id === "provider:shadow"));
+    const before = f.store.getSession(f.source.sessionId).status;
+    const report = shadows.publish({ shadowId: first.shadow_session_id, turnId: "review-one", revision: 0, body: "已完成技术核对，准备交付。" });
+    assert.equal(shadows.publish({ shadowId: first.shadow_session_id, turnId: "review-one", revision: 0, body: "已完成技术核对，准备交付。" }).report_id, report.report_id);
+    assert.equal(events.length, 1);
+    assert.equal(f.store.getSession(f.source.sessionId).status, before);
+    assert.equal(f.store.listAgentTasksForSession(f.source.sessionId).length, 0);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM session_mailbox_messages").count, 0);
+    shadows.revise("logical:parent");
+    assert.throws(() => shadows.publish({ shadowId: first.shadow_session_id, turnId: "stale-review", revision: 0, body: "旧结论" }), { code: "SHADOW_REQUIREMENT_CHANGED" });
+    f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+    assert.throws(() => shadows.assertDelegate(first.shadow_session_id), { code: "SHADOW_OWNER_UNAVAILABLE" });
+  });
+});
+
+test("reenabling coordination recovers an unqueued shadow request exactly once", async t => {
+  const f = await fixture(t);
+  f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
+  const shadow = new ShadowSessionService({ store: f.store,
+    createSession: async () => f.store.getSession(f.open("resumed_shadow", f.parent.id, { deferTaskProjection: true }).sessionId) });
+  f.coordinator.shadow = shadow;
+  shadow.reserve("logical:parent");
+  f.store.db.run(`INSERT INTO coordination_shadow_requests
+    (request_id,main_session_id,source_turn_id,body,source_json,created_at) VALUES(?,?,?,?,?,?)`,
+    ["request:resume", "logical:parent", "turn:cleanup", "清理已完成子任务", "{}", new Date().toISOString()]);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  f.coordinator.activateShadow(f.parent.id);
+  await nextTick();
+  assert.equal(shadow.forMain("logical:parent").shadow_session_id, null);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+  f.coordinator.activateShadow(f.parent.id);
+  await nextTick(); await nextTick();
+  const request = f.store.selectOne("SELECT * FROM coordination_shadow_requests WHERE request_id=?", ["request:resume"]);
+  assert.ok(request.mailbox_message_id);
+  f.coordinator.activateShadow(f.parent.id);
+  await nextTick();
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM session_mailbox_messages WHERE source_id=?", ["request:resume"]).count, 1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM session_mailbox_messages WHERE recipient_session_id=?", ["logical:parent"]).count, 0);
+});
+
+test("shadow delegation rejects an unrelated child and preserves original channel identities", async t => {
+  const f = await fixture(t);
+  f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
+  const shadows = new ShadowSessionService({ store: f.store, createSession: async () => f.store.getSession(f.open("shadow_route", f.parent.id, { deferTaskProjection: true }).sessionId) });
+  const delegate = await shadows.ensure("logical:parent");
+  const child = f.child("Delegated_child"); f.open("delegated_child", child.id);
+  const envelope = { message: { recipientSessionId: "logical:parent", senderSessionId: "logical:delegated_child" } };
+  assert.equal(shadows.channelRecipient(envelope), delegate.shadow_session_id);
+  assert.equal(envelope.message.recipientSessionId, "logical:parent");
+  const other = f.store.createTask({ workId: f.work.id, title: "Independent", mainAgentId: f.role.agentId });
+  f.open("independent", other.id);
+  assert.equal(shadows.channelRecipient({ message: { ...envelope.message, senderSessionId: "logical:independent" } }), null);
+  const report = shadows.publish({ shadowId: delegate.shadow_session_id, turnId: "review", revision: 0, body: "核对结果" });
+  await assert.rejects(shadows.deliver({ shadowId: delegate.shadow_session_id, taskId: other.id, reportId: report.report_id, evidence: ["unknown"] }), { code: "SHADOW_CHILD_OUTSIDE_SCOPE" });
+  await assert.rejects(shadows.deliver({ shadowId: delegate.shadow_session_id, taskId: child.id, reportId: report.report_id, evidence: ["unknown"] }), { code: "SHADOW_REVIEW_EVIDENCE_INVALID" });
+});
+
+test("child reclamation erases transcript payloads and its recovery record while retaining the parent report", async t => {
+  const f = await fixture(t);
+  const child = f.child("Reclaim_child"), childMeta = f.open("reclaim_child", child.id);
+  historyItem(f, childMeta.sessionId, "child-private", "private child transcript");
+  historyItem(f, f.source.sessionId, "parent-result", "independent final result");
+  f.store.enqueueAgentTask({ taskId: "reclaimed-work", sessionId: childMeta.sessionId, agentId: f.role.agentId,
+    kind: "user", priority: 50, text: "private tool instruction", source: { private: "payload" } });
+  const now = new Date().toISOString();
+  f.store.db.run("INSERT INTO session_events(event_id,session_id,sequence,type,payload_json,created_at) VALUES(?,?,1,'agent.reply',?,?)",
+    ["private-event", childMeta.sessionId, JSON.stringify({ text: "private transcript event" }), now]);
+  f.store.db.run(`INSERT INTO coordination_shadow_reclamation
+    (task_id,main_session_id,shadow_session_id,report_id,phase,recovery_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+    [child.id, "logical:parent", "logical:shadow", "parent-result", "delivery", "{}", now, now]);
+  const removed = [];
+  const reclamation = new ChildTaskReclamationService({ store: f.store, resources: { reclaimDeletedTask: async id => removed.push(id) } });
+  await assert.rejects(reclamation.reclaim(child.id), { code: "CHILD_RECLAMATION_NOT_READY" });
+  f.store.deleteSession(childMeta.sessionId);
+  f.store.markTaskDeletion(child.id, "deleting");
+  f.store.finalizeTaskDeletion(child.id);
+  await reclamation.reclaim(child.id);
+  assert.deepEqual(removed, [child.id]);
+  assert.equal(f.store.getAgentTask("reclaimed-work").text, "");
+  assert.equal(f.store.getSessionItem(childMeta.sessionId, "child-private"), null);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_events WHERE session_id=?", [childMeta.sessionId]).n, 0);
+  assert.equal(f.store.getSessionItem(f.source.sessionId, "parent-result").text, "independent final result");
+  assert.equal(f.store.selectOne("SELECT 1 FROM coordination_shadow_reclamation WHERE task_id=?", [child.id]), null);
+  await reclamation.reclaim(child.id);
+  assert.equal(removed.length, 1);
+});
 test("repository dispatch records remain valid in native Task detail on every Provider", async t => {
   for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
     const f = await fixture(t, provider);
@@ -81,9 +186,9 @@ async function fixture(t, providerId = "codex-app-server", durable = false) {
   const role = store.createAgent({ name: "Worker", role: "independentContributor" });
   const work = workService.createWork({ name: "Coordination", contributorAgentIds: [role.agentId] });
   const parent = store.createTask({ workId: work.id, title: "Parent", mainAgentId: role.agentId });
-  const open = (name, taskId) => {
+  const open = (name, taskId, options = {}) => {
     const id = `provider:${name}`;
-    store.createSession({ id, agentId: role.agentId, title: name, provider: providerId, workId: work.id, taskId, sessionKind: "worker" });
+    store.createSession({ id, agentId: role.agentId, title: name, provider: providerId, workId: work.id, taskId, sessionKind: "worker", ...options });
     store.createLogicalSessionRoute({ logicalSessionId: `logical:${name}`, legacySessionId: id,
       providerThreadId: name, providerSessionId: id, providerId, boundCwd: "/tmp", sessionName: name });
     core.bindSession({ agentId: role.agentId, sessionId: id });
@@ -291,6 +396,31 @@ test("completion reports wait for parent, batch results through mailbox, and nev
   f.coordinator.flushReports();
   assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 1);
   for (const row of receipt.dispatches) assert.notEqual(f.store.getTask(f.coordinator.get(row.dispatchId).target_task_id).lifecycle_state, "done");
+});
+
+test("shadow receives child results while main is running without occupying the main queue", async t => {
+  const f = await fixture(t);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+  const shadow = new ShadowSessionService({ store: f.store,
+    createSession: async () => f.store.getSession(f.open("report_shadow", f.parent.id, { deferTaskProjection: true }).sessionId) });
+  f.coordinator.shadow = shadow;
+  const delegate = await shadow.ensure("logical:parent");
+  const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("shadow_result")] });
+  const id = receipt.dispatches[0].dispatchId;
+  await f.coordinator.runDispatch(id);
+  const row = f.coordinator.get(id);
+  const operation = f.store.updateAgentTask(row.operation_id, { status: "completed", targetTurnId: "result-turn" });
+  f.store.upsertTimelineItemProjection(operation.sessionId, { id: "shadow-child-final", turnId: "result-turn",
+    type: "agentMessage", text: "技术结果", status: "completed", createdAt: new Date().toISOString() });
+  f.store.db.run("UPDATE sessions SET status='running' WHERE id=?", [f.source.sessionId]);
+  f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: operation });
+  f.coordinator.flushReports();
+  const messages = f.store.selectAll("SELECT * FROM session_mailbox_messages WHERE recipient_session_id=?", [delegate.shadow_session_id]);
+  assert.equal(messages.length, 1);
+  assert.equal(JSON.parse(messages[0].authorization_json).purpose, "shadow_report");
+  f.coordinator.validateMailbox(messages[0], JSON.parse(messages[0].authorization_json));
+  assert.equal(f.store.listAgentTasksForSession(f.source.sessionId).length, 0);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 0);
 });
 
 test("user messages outrank parent reports even at the claim boundary", async t => {

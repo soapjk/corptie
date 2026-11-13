@@ -577,7 +577,12 @@ export class SessionRouteRepository {
       error.code = "WORK_SESSION_BINDING_INVALID";
       throw error;
     }
-    if (task.current_session_id !== session.id) {
+    const shadow = this.selectOne(`SELECT sh.main_session_id FROM coordination_shadow_sessions sh
+      JOIN logical_sessions main ON main.logical_session_id=sh.main_session_id
+      WHERE sh.shadow_session_id=? AND sh.parent_task_id=? AND sh.state='ready'
+        AND main.legacy_session_id=? AND main.archived=0 AND main.deleted_at IS NULL`,
+      [logicalSessionId, task.id, task.current_session_id]);
+    if (task.current_session_id !== session.id && !shadow) {
       const error = new Error(
         `Task ${task.id} points to ${task.current_session_id ?? "no Session"}, not active Worker Session ${session.id}.`
       );

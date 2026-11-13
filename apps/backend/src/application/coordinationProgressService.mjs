@@ -115,13 +115,13 @@ export class CoordinationProgressService {
     this.schedule(batch.batch_id);
   }
   reportDispatches(source){
-    if(source?.type!=='mailbox_event'||source.coordinationPurpose!=='parent_report')return null;
+    if(source?.type!=='mailbox_event'||!['parent_report','shadow_report'].includes(source.coordinationPurpose))return null;
     return source.mailboxMessageId
       ? this.store.selectAll('SELECT dispatch_id FROM task_coordination_dispatches WHERE report_message_id=?',[source.mailboxMessageId]).map(row=>row.dispatch_id)
       : typeof source.coordinationDispatchId==='string'?[source.coordinationDispatchId]:[];
   }
   reportBatch(source,parentSessionId){
-    if(source?.type==='mailbox_event' && source.coordinationPurpose==='parent_report' && typeof source.coordinationDispatchId==='string'){
+    if(source?.type==='mailbox_event' && ['parent_report','shadow_report'].includes(source.coordinationPurpose) && typeof source.coordinationDispatchId==='string'){
       const row=this.store.selectOne('SELECT progress_batch_id,source_session_id FROM task_coordination_dispatches WHERE dispatch_id=?',[source.coordinationDispatchId]);
       return row?.source_session_id===parentSessionId?row.progress_batch_id??null:null;
     }

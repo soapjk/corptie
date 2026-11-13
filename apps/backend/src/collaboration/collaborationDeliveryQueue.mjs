@@ -32,6 +32,7 @@ export function createCollaborationDeliveryQueue({
       try {
         route = sessionChannelService.resolveDeliveryRoute(delivery.deliveryId);
       } catch (error) {
+        if (["SHADOW_SESSION_PREPARING", "SHADOW_MODE_DISABLED"].includes(error.code)) continue;
         sessionChannelService.updateDelivery(delivery.deliveryId, {
           status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
         });

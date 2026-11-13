@@ -8,6 +8,21 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+test("background shadow work cannot occupy the reserved interactive slot", async () => {
+  const queue = new BackgroundOperationQueue({ concurrency: 2, interactiveReserve: 1 });
+  const gate = deferred(), entered = deferred();
+  const order = [];
+  const first = queue.run(() => { entered.resolve(); return gate.promise; });
+  await entered.promise;
+  const second = queue.run(() => { order.push("shadow-two"); });
+  await queue.run(() => { order.push("user"); }, { priority: 1 });
+  assert.deepEqual(order, ["user"]);
+  gate.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["user", "shadow-two"]);
+  assert.equal(queue.runningBackground, 0);
+});
+
 test("interactive pending work runs first without exceeding concurrency", async () => {
   const queue = new BackgroundOperationQueue({ concurrency: 1 });
   const gate = deferred();

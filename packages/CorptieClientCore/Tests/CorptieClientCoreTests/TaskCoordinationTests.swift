@@ -3,6 +3,14 @@ import Testing
 @testable import CorptieClientCore
 
 struct TaskCoordinationTests {
+    @Test func shadowStateIsIndependentOfInteractiveExecution() throws {
+        let payload = #"{"status":"enforced","reason":"后台协调","shadow":{"sessionId":"logical:shadow","status":"running","lastReportAt":"2026-11-13T03:00:00Z","pendingDecisions":1,"reports":[{"id":"report:1","text":"交付结果","createdAt":"2026-11-13T03:00:00Z"}]}}"#
+        let execution = try JSONDecoder().decode(ClientCoordinationExecution.self, from: Data(payload.utf8))
+        #expect(execution.status == "enforced")
+        #expect(execution.shadow?.statusLabel == "影子会话处理中")
+        #expect(execution.shadow?.pendingDecisions == 1)
+        #expect(execution.shadow?.reports.first?.id == "report:1")
+    }
     @Test func modeDefaultsOffAndDispatchStateDecodesWithoutChangingAcceptance() throws {
         let legacy = #"{"id":"task:1","title":"T","workId":"work:1","lifecycleState":"active","executionStatus":"idle","updatedAt":"now"}"#
         let previous = try JSONDecoder().decode(ClientTask.self, from: Data(legacy.utf8))

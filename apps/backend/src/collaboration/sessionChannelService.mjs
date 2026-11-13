@@ -597,7 +597,8 @@ export class SessionChannelService {
     if (envelope.channel.status !== "active") {
       throw channelError("CHANNEL_NOT_ACTIVE", `Channel ${envelope.channel.channelId} is ${envelope.channel.status}.`, 409);
     }
-    const logical = this.#requireActiveLogicalSession(envelope.message.recipientSessionId, "recipientSessionId");
+    const delegatedRecipient = this.resolveDelegatedRecipient?.(envelope);
+    const logical = this.#requireActiveLogicalSession(delegatedRecipient ?? envelope.message.recipientSessionId, "recipientSessionId");
     return {
       sessionId: logical.logicalSessionId,
       providerSessionId: logical.legacySessionId,

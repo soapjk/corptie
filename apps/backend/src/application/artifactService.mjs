@@ -133,6 +133,15 @@ export class ArtifactService {
   }
 
   context(input = {}) {
+    if (input.kind === "child_delivery") {
+      if (typeof input.revalidateUser !== "function") throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Delivery authority is required.", 403);
+      const operation = input.revalidateUser();
+      if (operation?.operationId !== input.childDeliveryOperationId || operation.actor?.type !== "shadow_session") throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Delivery authority changed.", 403);
+      return { kind: "child_delivery", actorId: operation.actor.id, sessionId: operation.actor.id,
+        workId: operation.workId, taskId: operation.parentTaskId, childTaskId: operation.taskId,
+        artifactIds: operation.snapshot.artifacts.map(item => item.artifactId),
+        childDeliveryOperationId: operation.operationId, revalidateUser: input.revalidateUser };
+    }
     if (input.kind === "parent_task_deletion") return this.#parentDeletionContext(input);
     if (input.kind === "platform_admin") {
       const binding = resolvePlatformAdminSession(this.store, input);
@@ -1012,7 +1021,8 @@ export class ArtifactService {
     if (context.kind === "assistantChat" && (taskId || sessionId !== context.sessionId)) {
       throw artifactError("ARTIFACT_REFERENCE_TARGET_FORBIDDEN", "Chat Sessions may create References only for themselves.", 403);
     }
-    if (!["worker", "assistantChat"].includes(context.kind)) this.#assertManager(context);
+    if (context.kind === "child_delivery" && (taskId !== context.taskId || sessionId)) throw artifactError("ARTIFACT_REFERENCE_TARGET_FORBIDDEN", "Delivery references belong to the parent Task.", 403);
+    if (!["worker", "assistantChat", "child_delivery"].includes(context.kind)) this.#assertManager(context);
     const task = taskId ? this.store.getTask(taskId) : null;
     if (taskId && (!task || task.work_id !== context.workId)) {
       throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Artifact references cannot cross Work boundaries.", 403);
@@ -1131,7 +1141,7 @@ export class ArtifactService {
     revalidate();
     if(!operation.snapshot.artifacts.some(item=>item.artifactId===pin.artifactId)
       || operation.snapshot.parentTaskId!==operation.parentTaskId) throw artifactError("ARTIFACT_WRITE_FORBIDDEN","Artifact is outside the accepted delivery.",403);
-    const context={kind:"local_user",actorId:operation.actor.id,workId:operation.workId,
+    const context={kind:operation.actor.type === "shadow_session" ? "child_delivery" : "local_user",actorId:operation.actor.id,workId:operation.workId,
       revalidateUser:revalidate,childDeliveryOperationId:operation.operationId};
     const receipt=await this.transferOwnership(context,pin.artifactId,{scope:"task",taskId:operation.parentTaskId,
       expectedResourceVersion:pin.resourceVersion,idempotencyKey:`child-delivery:${operation.operationId}:${pin.artifactId}`});
@@ -2077,6 +2087,9 @@ export class ArtifactService {
   }
 
   #canManageArtifact(context, artifact) {
+    if (context.kind === "child_delivery") return artifact.workId === context.workId && context.artifactIds.includes(artifact.artifactId)
+      && (artifact.scope === "task" && [context.childTaskId, context.taskId].includes(artifact.boundTaskId)
+        || artifact.scope === "session" && this.store.getSession(artifact.boundSessionId)?.taskId === context.childTaskId);
     if (context.kind === "assistantChat") return artifact.scope === "session" && artifact.boundSessionId === context.sessionId;
     if (artifact.workId !== context.workId) return false;
     if (context.kind === "parent_task_deletion") return context.artifactIds.includes(artifact.artifactId);
@@ -2089,6 +2102,7 @@ export class ArtifactService {
   }
 
   #assertCanManageReference(context, reference) {
+    if (context.kind === "child_delivery" && context.artifactIds.includes(reference.artifactId) && reference.taskId === context.taskId) return;
     if (["local_user", "platform_admin"].includes(context.kind)) return;
     if (context.kind === "workChat" && reference.workId === context.workId) return;
     if (context.kind === "assistantChat" && reference.sessionId === context.sessionId) return;
@@ -2115,11 +2129,13 @@ export class ArtifactService {
   }
 
   #canRead(context, artifact, relatedTaskIds = null) {
+    if (context.kind === "child_delivery") return this.#canManageArtifact(context, artifact);
     return artifact.status !== "revoked"
       && ["assistantChat", "workChat", "worker", "local_user", "platform_admin"].includes(context.kind);
   }
 
   #canAuthorizeReference(context, artifact) {
+    if (context.kind === "child_delivery") return this.#canManageArtifact(context, artifact);
     if (artifact.status === "revoked") return false;
     if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
