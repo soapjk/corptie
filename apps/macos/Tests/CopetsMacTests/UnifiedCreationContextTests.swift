@@ -17,4 +17,26 @@ final class UnifiedCreationContextTests: XCTestCase {
         XCTAssertNil(UnifiedCreationContext.resolve(session: nil, workID: nil).workID)
         XCTAssertEqual(UnifiedCreationContext.resolve(session: try session(work: "current"), workID: nil).workID, "current")
     }
+    @MainActor func testDraftPreservesContentAndRetryIdentityAcrossNavigation() {
+        let draft = UnifiedCreationDraft()
+        draft.prepare(.init(workID: "a", roleID: "agent", providerID: "provider", modelID: "model"))
+        draft.prompt = "Keep this message"
+        let request = draft.requestID
+        draft.prepare(.init(workID: "b"))
+        XCTAssertEqual(draft.workID, "a")
+        XCTAssertEqual(draft.prompt, "Keep this message")
+        XCTAssertEqual(draft.requestID, request)
+        draft.prompt = ""
+        draft.submissionStarted = true
+        draft.prepare(.init(workID: "b"))
+        XCTAssertEqual(draft.workID, "a")
+    }
+    @MainActor func testEmptyDraftCanAdoptNewNavigationContext() {
+        let draft = UnifiedCreationDraft()
+        draft.prepare(.init(workID: "a"))
+        XCTAssertTrue(draft.taskMode)
+        draft.prepare(.init())
+        XCTAssertFalse(draft.taskMode)
+        XCTAssertNil(draft.workID)
+    }
 }

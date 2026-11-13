@@ -16,40 +16,82 @@ struct UnifiedCreationContext {
     }
 }
 
+@MainActor
+final class UnifiedCreationDraft: ObservableObject {
+    var context = UnifiedCreationContext()
+    var parentTaskID: String?
+    @Published var taskMode: Bool = false
+    @Published var workID: String? = nil
+    @Published var roleID: String? = nil
+    @Published var providerID: String = ""
+    @Published var modelID: String = ""
+    @Published var prompt = ""
+    @Published var busy = false
+    @Published var error: String? = nil
+    @Published var editingWork = false
+    @Published var choosingImages = false
+    @Published var imageURLs: [URL] = []
+    @Published var importedImages: [ChatImageReference] = []
+    @Published var createdSession: TaskSession? = nil
+    @Published var submissionStarted = false
+    @Published var requestID = UUID().uuidString.lowercased()
+    @Published var messageID = "message:\(UUID().uuidString.lowercased())"
+    @Published var deliveryID = "delivery:\(UUID().uuidString.lowercased())"
+    func prepare(_ context: UnifiedCreationContext, parentTaskID: String? = nil) {
+        guard prompt.isEmpty, imageURLs.isEmpty, !submissionStarted, !editingWork else { return }
+        self.context = context; self.parentTaskID = parentTaskID
+        taskMode = context.workID != nil; workID = context.workID; roleID = context.roleID
+        providerID = context.providerID ?? ""; modelID = context.modelID ?? ""
+    }
+}
+
 /// A local draft until submission. Creation and delivery retain separate retry identities.
 struct UnifiedConversationCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backend = BackendClient.shared
     @ObservedObject private var catalog = BackendClient.shared.modelCatalog
-    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var draftState: UnifiedCreationDraft
+    var onSent: () -> Void
     @FocusState private var inputFocused: Bool
-    let context: UnifiedCreationContext
-    var parentTaskID: String? = nil
-    @State private var taskMode: Bool
-    @State private var workID: String?
-    @State private var roleID: String?
-    @State private var providerID: String
-    @State private var modelID: String
-    @State private var prompt = ""
-    @State private var busy = false
-    @State private var error: String?
-    @State private var editingWork = false
-    @State private var choosingImages = false
-    @State private var imageURLs: [URL] = []
-    @State private var importedImages: [ChatImageReference] = []
-    @State private var createdSession: TaskSession?
-    @State private var submissionStarted = false
-    @State private var requestID = UUID().uuidString.lowercased()
-    @State private var messageID = "message:\(UUID().uuidString.lowercased())"
-    @State private var deliveryID = "delivery:\(UUID().uuidString.lowercased())"
+    private var context: UnifiedCreationContext { draftState.context }
+    private var parentTaskID: String? { draftState.parentTaskID }
+    @Binding private var taskMode: Bool
+    @Binding private var workID: String?
+    @Binding private var roleID: String?
+    @Binding private var providerID: String
+    @Binding private var modelID: String
+    @Binding private var prompt: String
+    @Binding private var busy: Bool
+    @Binding private var error: String?
+    @Binding private var editingWork: Bool
+    @Binding private var choosingImages: Bool
+    @Binding private var imageURLs: [URL]
+    @Binding private var importedImages: [ChatImageReference]
+    @Binding private var createdSession: TaskSession?
+    @Binding private var submissionStarted: Bool
+    @Binding private var requestID: String
+    @Binding private var messageID: String
+    @Binding private var deliveryID: String
 
-    init(context: UnifiedCreationContext, parentTaskID: String? = nil) {
-        self.context = context; self.parentTaskID = parentTaskID
-        _taskMode = State(initialValue: context.workID != nil)
-        _workID = State(initialValue: context.workID)
-        _roleID = State(initialValue: context.roleID)
-        _providerID = State(initialValue: context.providerID ?? "")
-        _modelID = State(initialValue: context.modelID ?? "")
+    init(draft: UnifiedCreationDraft, onSent: @escaping () -> Void) {
+        self.draftState = draft; self.onSent = onSent
+        _taskMode = Binding(get: { draft.taskMode }, set: { draft.taskMode = $0 })
+        _workID = Binding(get: { draft.workID }, set: { draft.workID = $0 })
+        _roleID = Binding(get: { draft.roleID }, set: { draft.roleID = $0 })
+        _providerID = Binding(get: { draft.providerID }, set: { draft.providerID = $0 })
+        _modelID = Binding(get: { draft.modelID }, set: { draft.modelID = $0 })
+        _prompt = Binding(get: { draft.prompt }, set: { draft.prompt = $0 })
+        _busy = Binding(get: { draft.busy }, set: { draft.busy = $0 })
+        _error = Binding(get: { draft.error }, set: { draft.error = $0 })
+        _editingWork = Binding(get: { draft.editingWork }, set: { draft.editingWork = $0 })
+        _choosingImages = Binding(get: { draft.choosingImages }, set: { draft.choosingImages = $0 })
+        _imageURLs = Binding(get: { draft.imageURLs }, set: { draft.imageURLs = $0 })
+        _importedImages = Binding(get: { draft.importedImages }, set: { draft.importedImages = $0 })
+        _createdSession = Binding(get: { draft.createdSession }, set: { draft.createdSession = $0 })
+        _submissionStarted = Binding(get: { draft.submissionStarted }, set: { draft.submissionStarted = $0 })
+        _requestID = Binding(get: { draft.requestID }, set: { draft.requestID = $0 })
+        _messageID = Binding(get: { draft.messageID }, set: { draft.messageID = $0 })
+        _deliveryID = Binding(get: { draft.deliveryID }, set: { draft.deliveryID = $0 })
     }
 
     private var work: Work? { client.works.first { $0.id == workID } }
@@ -79,11 +121,13 @@ struct UnifiedConversationCreateView: View {
                 draft
             }
         }
-        .frame(width: 580, height: editingWork ? 640 : 420)
+        .frame(maxWidth: 760)
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .interactiveDismissDisabled(busy)
         .task {
             inputFocused = true
-            if context.providerID == nil, let defaults = backend.settingsController.settings?.newSessionDefaults?.taskCreation {
+            if !submissionStarted, providerID.isEmpty, context.providerID == nil, let defaults = backend.settingsController.settings?.newSessionDefaults?.taskCreation {
                 providerID = defaults.providerId ?? ""; modelID = defaults.model ?? ""
             }
             reconcile()
@@ -104,27 +148,16 @@ struct UnifiedConversationCreateView: View {
 
     private var draft: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text(L10n("新建")).font(.title3.bold())
-                Spacer()
-                Button(L10n("取消")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)
-            }
-            HStack {
-                Picker(L10n("类型"), selection: $taskMode) {
-                    Text(L10n("聊天")).tag(false); Text(L10n("任务")).tag(true)
-                }.pickerStyle(.segmented).frame(width: 150)
-                if taskMode {
-                    Menu {
-                        ForEach(client.works) { value in Button(value.name) { workID = value.id } }
-                        Divider()
-                        Button(L10n("新建 Work")) { editingWork = true }
-                    } label: { Label(work?.name ?? L10n("选择 Work"), systemImage: "folder") }
-                }
-                Spacer()
-            }.disabled(submissionStarted)
+            Text(L10n("今天想做什么？"))
+                .font(.system(size: 28, weight: .semibold))
+                .frame(maxWidth: .infinity).padding(.bottom, 24)
             TextEditor(text: $prompt)
                 .font(WorkbenchTypography.font(for: .composerInput))
                 .focused($inputFocused)
+                .frame(minHeight: 160, idealHeight: 190, maxHeight: 240)
+                .overlay(alignment: .topLeading) {
+                    if prompt.isEmpty { Text(L10n("你想做什么？")).foregroundStyle(.tertiary).padding(12).allowsHitTesting(false) }
+                }
                 .scrollContentBackground(.hidden)
                 .padding(8)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -166,6 +199,19 @@ struct UnifiedConversationCreateView: View {
                     .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
                     .disabled(busy || validation != nil || (prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && imageURLs.isEmpty))
             }
+            HStack {
+                Picker(L10n("类型"), selection: $taskMode) {
+                    Text(L10n("聊天")).tag(false); Text(L10n("任务")).tag(true)
+                }.pickerStyle(.segmented).frame(width: 150)
+                if taskMode {
+                    Menu {
+                        ForEach(client.works) { value in Button(value.name) { workID = value.id } }
+                        Divider()
+                        Button(L10n("新建 Work")) { editingWork = true }
+                    } label: { Label(work?.name ?? L10n("选择 Work"), systemImage: "folder") }
+                }
+                Spacer()
+            }.disabled(submissionStarted)
         }.padding(20)
     }
 
@@ -205,7 +251,7 @@ struct UnifiedConversationCreateView: View {
                 }
                 try await submitMessage(to: session)
                 backend.acceptCreatedSession(session)
-                dismiss()
+                onSent()
             } catch { self.error = error.localizedDescription }
         }
     }
