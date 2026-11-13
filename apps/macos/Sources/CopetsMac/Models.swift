@@ -69,6 +69,8 @@ struct ConversationMention: Identifiable, Codable, Equatable, Sendable {
     enum TargetType: String, Codable, Sendable {
         case work
         case session
+        case skill
+        case mcp
     }
 
     let targetType: TargetType

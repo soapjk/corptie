@@ -16,7 +16,7 @@ function tool(name, description, properties, required = []) {
 export const skillDynamicTools = Object.freeze([
   tool(
     "corptie_skill_search",
-    "Search only the Skills assigned to the current Corptie Agent. Returns compact metadata; call corptie_skill_load before following a Skill's instructions.",
+    "Search only the Skills explicitly enabled in the current Corptie Session. Returns compact metadata; call corptie_skill_load before following a Skill's instructions.",
     {
       intent: {
         type: "string",
@@ -28,7 +28,7 @@ export const skillDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_skill_load",
-    "Load the complete SKILL.md instructions for one Skill returned by corptie_skill_search. Access is restricted to Skills assigned to the current Agent.",
+    "Load the complete SKILL.md instructions for one Skill returned by corptie_skill_search. Access is restricted to Skills explicitly enabled in the current Session.",
     {
       skill_id: {
         type: "string",

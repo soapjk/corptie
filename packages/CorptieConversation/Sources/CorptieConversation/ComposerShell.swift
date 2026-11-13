@@ -104,7 +104,7 @@ public enum ComposerModelLabel {
 
 /// One row of the @-mention menu. `id` is the mention identity (`type:targetId`).
 public struct ComposerMentionSuggestion: Identifiable, Equatable, Sendable {
-    public enum Kind: Sendable { case work, session }
+    public enum Kind: String, Sendable { case work, session, skill, mcp }
     public let id: String
     public let kind: Kind
     public let targetId: String
@@ -116,23 +116,38 @@ public struct ComposerMentionSuggestion: Identifiable, Equatable, Sendable {
         self.targetId = targetId
         self.displayName = displayName
         self.detail = detail
-        id = (kind == .work ? "work" : "session") + ":" + targetId
+        id = kind.rawValue + ":" + targetId
     }
 
-    public var symbol: String { kind == .work ? "briefcase" : "bubble.left.and.bubble.right" }
+    public var symbol: String {
+        switch kind {
+        case .work: "briefcase"
+        case .session: "bubble.left.and.bubble.right"
+        case .skill: "shippingbox"
+        case .mcp: "point.3.connected.trianglepath.dotted"
+        }
+    }
 }
 
 /// Candidate ordering and filtering of the desktop composer: every Work, each
 /// followed by its sessions; sessions outside any Work last; already-mentioned
 /// targets and the current session excluded; at most `maximumMentions` active.
 public enum ComposerMentionCatalog {
+    public struct Ability: Sendable, Equatable {
+        public let id: String
+        public let name: String
+        public let kind: ComposerMentionSuggestion.Kind
+        public init(id: String, name: String, kind: ComposerMentionSuggestion.Kind) {
+            self.id = id; self.name = name; self.kind = kind
+        }
+    }
     public struct Work: Sendable { public let id: String; public let name: String
         public init(id: String, name: String) { self.id = id; self.name = name } }
     public struct Session: Sendable { public let id: String; public let title: String; public let workId: String?
         public init(id: String, title: String, workId: String?) { self.id = id; self.title = title; self.workId = workId } }
 
     public static func suggestions(works: [Work], sessions: [Session], currentSessionID: String,
-                                   activeMentionIDs: Set<String>, query: String) -> [ComposerMentionSuggestion] {
+                                   activeMentionIDs: Set<String>, query: String, abilities: [Ability] = []) -> [ComposerMentionSuggestion] {
         guard activeMentionIDs.count < ComposerShellMetrics.maximumMentions else { return [] }
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let available = sessions.filter { $0.id != currentSessionID }
@@ -148,6 +163,10 @@ public enum ComposerMentionCatalog {
             all.append(contentsOf: (byWork[work.id] ?? []).map { session($0, workName: work.name) })
         }
         all.append(contentsOf: available.filter { !workIDs.contains($0.workId ?? "") }.map { session($0, workName: nil) })
+        all.append(contentsOf: abilities.filter { $0.kind == .skill || $0.kind == .mcp }.map {
+            ComposerMentionSuggestion(kind: $0.kind, targetId: $0.id, displayName: $0.name,
+                detail: $0.kind == .skill ? "Skill" : "MCP")
+        })
         return all.filter { candidate in
             !activeMentionIDs.contains(candidate.id)
                 && (needle.isEmpty

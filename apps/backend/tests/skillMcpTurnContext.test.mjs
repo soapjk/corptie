@@ -26,15 +26,15 @@ test("summary reads only exact Agent assignment metadata, never runtime config",
   const store = {
     getAgent: id => id === "agent:allowed",
     selectAll: (sql, params) => {
-      assert.deepEqual(params, ["agent:allowed", "agent:allowed"]);
-      assert.match(sql, /WHERE assignment.agent_id = \?/);
+      assert.deepEqual(params, []);
+      assert.doesNotMatch(sql, /agent_skill_links|agent_mcp_assignments/);
       assert.match(sql, /LIMIT 13/);
       return [{id:"skill:1", kind:"skill", name:"investrace", enabled:1}, { id:"mcp:1", kind:"mcp", name:"tradude", enabled:0 }];
     }
   };
   assert.deepEqual(assignedCapabilitySummary(store, "agent:other"), []);
   assert.deepEqual(assignedCapabilitySummary(store, "agent:allowed"), [
-    {id:"skill:1", kind:"skill", name:"investrace", enabled:true},
+    {id:"skill:1", kind:"skill", name:"investrace", enabled:false},
     {id:"mcp:1", kind:"mcp", name:"tradude", enabled:false}
   ]);
 });

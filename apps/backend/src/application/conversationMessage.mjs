@@ -61,8 +61,8 @@ function normalizeConversationMention(value) {
     throw invalidMessage("Each message mention must be an object.");
   }
   const targetType = typeof value.targetType === "string" ? value.targetType.trim() : "";
-  if (!new Set(["work", "session"]).has(targetType)) {
-    throw invalidMessage("Message mentions support only Work or Session targets.");
+  if (!new Set(["work", "session", "skill", "mcp"]).has(targetType)) {
+    throw invalidMessage("Message mentions support Work, Session, Skill or MCP targets.");
   }
   const targetId = typeof value.targetId === "string" ? value.targetId.trim() : "";
   if (!targetId || targetId.length > 200) {

@@ -58,11 +58,11 @@ test("Session MCP availability reports route and gateway failures without raw tr
   await assert.rejects(() => failing.inspect("missing"), { code: "SESSION_NOT_FOUND" });
 });
 
-test("Session MCP availability distinguishes an assigned Skill whose MCP descriptor resolves to no Server", async () => {
+test("Session MCP availability distinguishes an enabled Skill whose MCP descriptor resolves to no Server", async () => {
   const service = new McpSessionAvailabilityService({ store: fakeStore({
-    listRegistrySkillsForAgent: () => [{ skillId: "skill:investrace", name: "investrace",
+    listRegistrySkills: () => [{ skillId: "skill:investrace", name: "investrace",
       mcpDescriptorSubpath: ".mcp.json" }]
-  }), gateway: {
+  }), preferences: { isDisabled: () => false }, gateway: {
     availability: async () => ({ catalogVersion: "v1", servers: [] })
   } });
   const result = await service.inspect("投资大师_Session");
@@ -120,4 +120,29 @@ test("Session MCP availability query accepts names without placing them in a pat
     } }) });
   assert.equal(status, 200);
   assert.equal(body.availability.logicalSessionId, "logical:old");
+});
+
+
+test("Session diagnostics ignore Role assignments and report only activated installed MCPs", async () => {
+  const enabled = new Set();
+  const service = new McpSessionAvailabilityService({ store: fakeStore({
+    listRegistrySkills: () => [{ skillId: "skill:global", name: "Global Skill", mcpDescriptorSubpath: ".mcp.json" }],
+    listRegistrySkillsForAgent: () => { throw new Error("must not inspect Role assignments"); }
+  }), registry: {
+    list: () => [{ serverId: "mcp:global", name: "Global MCP", enabled: true }],
+    listForAgent: () => { throw new Error("must not inspect Role assignments"); }
+  }, preferences: { isDisabled: (reference, kind, id) => {
+    assert.equal(reference, logical.logicalSessionId);
+    return !enabled.has(`${kind}:${id}`);
+  } }, gateway: { availability: async () => ({ catalogVersion: "v1", servers: [] }) } });
+  const disabled = await service.inspect("投资大师_Session");
+  assert.equal(disabled.status, "no_mcp_assigned");
+  assert.deepEqual(disabled.declaredSkills, []);
+  assert.deepEqual(disabled.standaloneAssignments, []);
+  enabled.add("skill:skill:global");
+  enabled.add("mcp:mcp:global");
+  const active = await service.inspect("投资大师_Session");
+  assert.equal(active.status, "assigned_mcp_unresolved");
+  assert.equal(active.declaredSkills[0].skillId, "skill:global");
+  assert.equal(active.standaloneAssignments[0].serverId, "mcp:global");
 });

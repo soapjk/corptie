@@ -351,7 +351,7 @@ struct RoleManagementView: View {
                     .keyboardShortcut(.cancelAction).accessibilityLabel(L10n("Close Skills"))
                 }
             }.padding(.horizontal, 16).frame(minHeight: 60)
-            Text(L10n("Shared registry. Assign registered skills in role details."))
+            Text(L10n("Installed globally. Enable with @ or the Session abilities card."))
                 .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 16).padding(.bottom, 8)

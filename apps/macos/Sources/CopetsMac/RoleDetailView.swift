@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Agent 详情页：承载 Profile、已安装 Skill、操作和 Memory。
+// Role 详情页：承载 Profile、操作和 Memory。
 // 从侧栏 Agent 右键「打开详情」进入（sheet 弹窗）。
 
 struct RoleDetailView: View {
@@ -12,9 +12,6 @@ struct RoleDetailView: View {
     @State private var name: String
     @State private var detail: String
     @State private var systemPrompt: String
-    @State private var selectedSkillIds: Set<String>
-    @State private var showSkillPicker = false
-    @State private var showMcpManager = false
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
@@ -26,7 +23,6 @@ struct RoleDetailView: View {
         _name = State(initialValue: agent.name)
         _detail = State(initialValue: agent.description)
         _systemPrompt = State(initialValue: agent.systemPrompt)
-        _selectedSkillIds = State(initialValue: Set(agent.skillIds ?? []))
     }
 
     var body: some View {
@@ -83,24 +79,7 @@ struct RoleDetailView: View {
                 router.openSession(session.id, source: .createdSession)
             }
         }
-        .sheet(isPresented: $showSkillPicker) {
-            RoleSkillPickerView(skills: client.skills, selectedSkillIds: selectedSkillIds) { selection in
-                selectedSkillIds = selection
-            }
-        }
-        .sheet(isPresented: $showMcpManager) {
-            McpManagementView(roles: [agent], initialRoleId: agent.roleId)
-        }
-        .task {
-            await client.refreshSkills()
-            await client.refreshRoles()
-            if let latest = client.roles.first(where: { $0.roleId == agent.roleId }) {
-                selectedSkillIds = Set(latest.skillIds ?? [])
-            }
-        }
-        .onChange(of: client.skills.map(\.skillId)) { _, availableSkillIds in
-            selectedSkillIds.formIntersection(availableSkillIds)
-        }
+
     }
 
     // MARK: - 头部
@@ -196,22 +175,7 @@ struct RoleDetailView: View {
                 } trailing: {
                     AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)；描述：\(detail)")
                 }
-                RoleInstalledSkillsView(
-                    skills: client.skills,
-                    selectedSkillIds: $selectedSkillIds,
-                    isEnabled: true,
-                    onAdd: { showSkillPicker = true }
-                )
-                field("MCP") {
-                    HStack {
-                        Text(L10n("Manage MCP assignments, tool permissions, and credentials for this role."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button(L10n("Manage MCP")) { showMcpManager = true }
-                            .accessibilityIdentifier("role-manage-mcp")
-                    }
-                }
+
             }
             if let saveError {
                 Text(saveError)
@@ -256,8 +220,7 @@ struct RoleDetailView: View {
                             roleId: agent.roleId,
                             name: name == agent.name ? nil : name,
                             description: detail,
-                            systemPrompt: systemPrompt,
-                            skillIds: Array(selectedSkillIds)
+                            systemPrompt: systemPrompt
                         )
                     }
                     isSaving = false

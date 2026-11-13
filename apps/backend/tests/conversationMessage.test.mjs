@@ -52,3 +52,10 @@ test("structured messages reject unmanaged image paths", () => {
     { code: "INVALID_MESSAGE" }
   );
 });
+
+test("installed ability mentions retain exact Skill and MCP identity", () => {
+  for (const targetType of ["skill", "mcp"]) {
+    const mention = { targetType, targetId: `${targetType}:one`, displayName: "One" };
+    assert.deepEqual(normalizeConversationMessage({ text: "use this", mentions: [mention] }).mentions, [mention]);
+  }
+});
