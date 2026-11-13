@@ -56,8 +56,7 @@ export class ShadowSessionService {
       FROM coordination_shadow_reports WHERE main_session_id=? ORDER BY created_at DESC,report_id DESC LIMIT 3`, [mainId]);
     const pendingDecisions = this.store.selectOne(`SELECT COUNT(*) AS count FROM coordination_shadow_reports
       WHERE main_session_id=? AND decision_json IS NOT NULL AND json_extract(decision_json,'$.answerMessageId') IS NULL`, [mainId]).count;
-    return { sessionId: row.shadow_session_id, status: task?.coordination_enabled !== 1 ? "paused"
-      : row.last_error ? "failed" : !session ? "waiting" : ["running", "blocked"].includes(session.status) ? "running" : "idle",
+    return { sessionId: row.shadow_session_id, status: row.last_error ? "failed" : !session ? "waiting" : ["running", "blocked"].includes(session.status) ? "running" : "idle",
       lastReportAt: reports[0]?.createdAt ?? null, pendingDecisions, reports };
   }
   owner(mainId) {
@@ -66,7 +65,7 @@ export class ShadowSessionService {
     const task = session?.taskId && this.store.getTask(session.taskId);
     if (!session || session.archived || session.deletedAt || logical.archived || logical.activeBinding?.state !== "active"
       || !task || task.archived || task.deletion_status || task.current_session_id !== session.id
-      || task.coordination_enabled !== 1) fail("SHADOW_OWNER_UNAVAILABLE");
+      || task.coordination_enabled !== 1 && !this.forMain(mainId)) fail("SHADOW_OWNER_UNAVAILABLE");
     return { logical, session, task };
   }
   reserve(mainId) {
@@ -128,10 +127,7 @@ export class ShadowSessionService {
     const child = sender?.taskId && this.store.getTask(sender.taskId);
     if (!parent || parent.current_session_id !== main.id || child?.parent_task_id !== parent.id || child.work_id !== parent.work_id) return null;
     const row = this.forMain(mainId);
-    if (parent.coordination_enabled !== 1) {
-      if (row) fail("SHADOW_MODE_DISABLED");
-      return null;
-    }
+    if (parent.coordination_enabled !== 1 && !row) return null;
     if (!row?.shadow_session_id) {
       this.ensure(mainId).catch(error => console.warn(`[coordination-shadow] ${error.code ?? error.message}`));
       fail("SHADOW_SESSION_PREPARING");

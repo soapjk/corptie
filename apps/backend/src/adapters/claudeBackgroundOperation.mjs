@@ -1,3 +1,4 @@
+import { makeClaudeUserMessage } from "./claudeMessageInput.mjs";
 import { assistantText } from "./claudeMessageProjection.mjs";
 import {
   claudeSecretValues, claudeRuntimeEnvironment, claudeSdkResultError, normalizeClaudeProviderError
@@ -28,8 +29,9 @@ export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, envi
     let latestText = "";
     let operation;
     try {
+      const userMessage = input.images?.length ? await makeClaudeUserMessage(input.prompt, input.images) : null;
       operation = queryFactory({
-        prompt: input.prompt,
+        prompt: userMessage ? (async function* () { yield userMessage; })() : input.prompt,
         options: {
           cwd: input.cwd,
           persistSession: false,
@@ -45,6 +47,7 @@ export async function runClaudeBackgroundPrompt(input = {}, { queryFactory, envi
         abortController.signal.throwIfAborted();
         if (message?.type === "assistant") {
           latestText = assistantText(message.message) || latestText;
+          input.onText?.(latestText);
         }
         if (message?.type === "result") {
           const failure = claudeSdkResultError(message, {

@@ -440,6 +440,13 @@ function enqueueUserAgentWork(session, input, source, latencyTrace = null, refer
   catch { console.warn("[memory-topic] optional scheduling unavailable"); }
   delete persistedSource.clientReceipt;
   const task = created.task;
+  if (reference && sessionApplicationService.coordinationRequests?.accepts(reference, source)) {
+    const request = sessionApplicationService.coordinationRequests.admit(reference, message, persistedSource,
+      store.getMessageDelivery(deliveryId), task);
+    if (created.outbox) publishProviderEventOutbox([created.outbox]);
+    return { accepted: true, queued: false, queuePosition: 0, sessionId: session.id,
+      requestId: request.request_id, task: store.getAgentTask(task.taskId) };
+  }
   registerRuntimeQueuedWork(session.id, task.taskId);
   const queuePosition = runtimeQueuePosition(session.id, task.taskId);
   const reportAsQueued = shouldReportAgentWorkQueued({

@@ -136,7 +136,8 @@ export class BackgroundAgentService {
       historyPolicy: "hidden",
       signal: input.signal,
       executionPolicy: input.executionPolicy ?? "legacy",
-      outputSchema: input.outputSchema ?? null
+      outputSchema: input.outputSchema ?? null,
+      images: input.images ?? [], onText: input.onText
     });
     this.onOperationEvent("BackgroundAgentStarted", {
       operationId,

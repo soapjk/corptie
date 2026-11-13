@@ -12,6 +12,7 @@ import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { SessionMailboxService } from "../src/application/sessionMailboxService.mjs";
 import { createSessionCollaborationComposition } from "../src/application/sessionCollaborationComposition.mjs";
 import { TaskCoordinationService } from "../src/application/taskCoordinationService.mjs";
+import { CoordinationRequestService } from "../src/application/coordinationRequestService.mjs";
 import { ShadowSessionService } from "../src/application/shadowSessionService.mjs";
 import { ChildTaskReclamationService } from "../src/application/childTaskReclamationService.mjs";
 import { createTaskExecutionComposition } from "../src/application/taskExecutionComposition.mjs";
@@ -65,7 +66,7 @@ test("shadow creation is singleflight, preserves the interactive binding and pub
     shadows.revise("logical:parent");
     assert.throws(() => shadows.publish({ shadowId: first.shadow_session_id, turnId: "stale-review", revision: 0, body: "旧结论" }), { code: "SHADOW_REQUIREMENT_CHANGED" });
     f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
-    assert.throws(() => shadows.assertDelegate(first.shadow_session_id), { code: "SHADOW_OWNER_UNAVAILABLE" });
+    assert.equal(shadows.assertDelegate(first.shadow_session_id).main_session_id, "logical:parent");
   });
 });
 
@@ -223,6 +224,21 @@ async function fixture(t, providerId = "codex-app-server", durable = false) {
   return { store, role, core, workService, parent, work, source, open, starts, collaboration, mailbox, coordinator, item, child,
     hold(promise) { unblock = promise; }, fail(code) { failure = code; } };
 }
+
+test("ordinary coordination context exposes useful children without an extra planning phase or an empty index", () => {
+  const task = { id: "task:parent", coordination_enabled: 0 };
+  const empty = buildTaskCoordinationContext(task, { children: [], dispatches: [] });
+  assert.match(empty, /autonomously delegate/);
+  assert.match(empty, /No explicit user request to create children is needed/);
+  assert.match(empty, /do not add a separate planning model call/);
+  assert.doesNotMatch(empty, /Current bounded child\/dispatch index/);
+  const populated = buildTaskCoordinationContext(task, { children: [{ id: "task:existing", title: "已有工作" }], dispatches: [] });
+  assert.match(populated, /task:existing/);
+  assert.match(populated, /Reuse a suitable existing child/);
+  const pending = buildTaskCoordinationContext(task, { children: [], dispatches: [{ dispatchId: "dispatch:pending", status: "preparing" }] });
+  assert.match(pending, /dispatch:pending/);
+  assert.match(pending, /Inspect existing pending receipts/);
+});
 
 test("mode defaults off, root user update persists without revising the definition; child cannot enable", async t => {
   const f = await fixture(t);
@@ -1735,3 +1751,147 @@ test('current execution view reports live operation instead of stale Task comple
  assert.equal(service.page('logical:parent',batch.batch_id).items.length,0);
  assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM coordination_progress_assignments WHERE batch_id=?',[batch.batch_id]).n,2);
  });
+
+async function requestFixture(t, providerId = "codex-app-server") {
+  const f = await fixture(t, providerId);
+  f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
+  const reference = id => {
+    const route = f.store.getLogicalSession(id) ?? f.store.getLogicalSessionByLegacySessionId(id);
+    return { logicalSessionId: route.logicalSessionId, sessionId: route.legacySessionId,
+      bindingId: route.activeBinding.bindingId, routingVersion: route.routingVersion, providerId,
+      metadata: { session: f.store.getSession(route.legacySessionId) } };
+  };
+  let planner = async input => ({ text: JSON.stringify({kind:"discussion",reply:"回答",items:[]}) });
+  const events = [], deleted = [];
+  const turns = new CoordinationTurnService({ store:f.store, dispatch:f.coordinator, resolveReference:reference,
+    registry:{ supports:()=>true, get:()=>({descriptor:{metadata:{backgroundExecutionPolicies:["no-tools"],backgroundImages:true}}}) },
+    planner:{run: input => planner(input)}, emitEvent:(type,payload,scope)=>events.push({type,payload,scope}) });
+  const requests = new CoordinationRequestService({ store:f.store, turns, resolveReference:reference,
+    buildContext:async()=>({prompt:"existing canonical context"}),
+    createSession:async (_provider,input,context)=>{
+      const meta=f.open(context.requestId.replace(/[^a-zA-Z0-9]/g,"_"),f.parent.id,{deferTaskProjection:true});
+      f.store.db.run("UPDATE coordination_requests SET shadow_session_id=? WHERE request_id=?",[f.store.getLogicalSessionByLegacySessionId(meta.sessionId).logicalSessionId,context.requestId]);
+      return f.store.getSession(meta.sessionId);
+    },
+    deleteSession:async id=>{deleted.push(id); const ref=reference(id); f.store.upsertSession({...f.store.getSession(ref.sessionId),archived:true});},
+    emitEvent:(type,payload,scope)=>events.push({type,payload,scope}) });
+  turns.requests=requests; f.coordinator.requests=requests;
+  return {...f, requests,turns,events,deleted,reference, setPlanner:fn=>{planner=fn;},
+    admit:text=>requests.admit(reference("logical:parent"),{text,images:[]},{type:"desktop",messageId:text})};
+}
+
+test("independent request Sessions answer concurrently without locking the main Session", async t => {
+  for (const provider of ["codex-app-server","claude-sdk","openclacky"]) await t.test(provider, async t => {
+    const f=await requestFixture(t,provider);
+    let release; const firstGate=new Promise(resolve=>{release=resolve;});
+    f.setPlanner(async input=>{
+      const payload=JSON.parse(input.prompt);
+      assert.ok(payload.requestContext.conversation.instructions);
+      if(payload.message==="first") await firstGate;
+      return {text:JSON.stringify({kind:"discussion",reply:`answer ${payload.message}`,items:[]})};
+    });
+    const first=f.admit("first"), second=f.admit("second");
+    await f.requests.running.get(second.request_id);
+    assert.equal(f.requests.get(first.request_id).status,"running");
+    assert.equal(f.requests.get(second.request_id).status,"completed");
+    assert.equal(f.store.getTask(f.parent.id).current_session_id,f.source.sessionId);
+    assert.equal(f.store.listUnsettledSessionTurns(f.source.sessionId).length,0);
+    await Promise.all([...f.requests.reclaiming.values()]);
+    assert.equal(f.requests.get(second.request_id).context_json,null);
+    release(); await f.requests.running.get(first.request_id);
+    await Promise.all([...f.requests.reclaiming.values()]);
+    assert.equal(f.requests.get(first.request_id).status,"completed");
+    assert.equal(f.events.filter(e=>e.type==="SessionCoordinationCompleted" && e.scope?.sessionId===f.source.sessionId).length,2);
+  });
+});
+
+test("request identity deduplicates admission and cancellation is scoped to one request", async t => {
+  const f=await requestFixture(t); let releases=[];
+  f.setPlanner(input=>new Promise((resolve,reject)=>{
+    releases.push(()=>resolve({text:JSON.stringify({kind:"discussion",reply:"done",items:[]})}));
+    input.signal.addEventListener("abort",()=>reject(Object.assign(new Error("stopped"),{code:"ABORTED"})),{once:true});
+  }));
+  const one=f.admit("one"), two=f.admit("two");
+  assert.equal(f.admit("one").request_id,one.request_id);
+  await nextTick(); await nextTick();
+  await assert.rejects(f.requests.cancel("logical:unrelated",one.request_id),{code:"REQUEST_NOT_FOUND"});
+  await f.requests.cancel("logical:parent",one.request_id);
+  assert.equal(f.requests.get(one.request_id).status,"cancelled");
+  assert.equal(f.requests.get(two.request_id).status,"running");
+  for(const release of releases)release();
+  await Promise.all([...f.requests.running.values()]);
+  await Promise.all([...f.requests.reclaiming.values()]);
+});
+
+test("request dependency releases execution and resumes only after the referenced result", async t => {
+  const f=await requestFixture(t); let release;
+  const gate=new Promise(resolve=>{release=resolve;}); let firstId;
+  f.setPlanner(async input=>{
+    const payload=JSON.parse(input.prompt);
+    if(payload.message==="first"){await gate;return {text:JSON.stringify({kind:"discussion",reply:"base result",items:[]})};}
+    const dependency=payload.requestContext.dependency;
+    return {text:JSON.stringify({kind:"discussion",reply:dependency?.status==="completed"?"derived result":"",
+      items:[],requestRelation:{kind:"depends_on",requestId:firstId}})};
+  });
+  const first=f.admit("first"); firstId=first.request_id;
+  const second=f.admit("second"); await f.requests.running.get(second.request_id);
+  assert.equal(f.requests.get(second.request_id).status,"waiting");
+  release(); await f.requests.running.get(first.request_id); await nextTick();
+  await f.requests.running.get(second.request_id);
+  assert.equal(f.requests.get(second.request_id).status,"completed");
+  await Promise.all([...f.requests.reclaiming.values()]);
+});
+
+test("request recovery reconciles a published reply without replaying execution", async t => {
+  const f=await requestFixture(t);
+  const request=f.admit("recover reply");
+  await f.requests.running.get(request.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  f.requests.update(request.request_id,{status:"running",phase:"admitting"});
+  let executions=0;
+  f.setPlanner(async()=>{executions++;throw new Error("must not replay");});
+  f.requests.recover();
+  await Promise.all([...f.requests.reclaiming.values()]);
+  assert.equal(f.requests.get(request.request_id).status,"completed");
+  assert.equal(executions,0);
+});
+
+test("request recovery does not replay an uncertain dispatch", async t => {
+  const f=await requestFixture(t);
+  const request=f.admit("uncertain");
+  await f.requests.running.get(request.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  f.requests.update(request.request_id,{status:"running",phase:"admitting",response_item_id:null});
+  f.requests.recover();
+  assert.equal(f.requests.get(request.request_id).error_code,"REQUEST_OUTCOME_UNCERTAIN");
+  await assert.rejects(f.requests.retry("logical:parent",request.request_id),{code:"REQUEST_OUTCOME_UNCERTAIN"});
+});
+
+test("request preview and final answer share identity and temporary context is purged", async t => {
+  const f=await requestFixture(t);
+  f.setPlanner(async input=>{
+    input.onText?.('{"kind":"discussion","reply":"partial');
+    return {text:JSON.stringify({kind:"discussion",reply:"partial complete",items:[]})};
+  });
+  const request=f.admit("preview");
+  await f.requests.running.get(request.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  const rows=f.store.selectAll("SELECT id,text FROM session_items WHERE session_id=? AND id=?",[f.source.sessionId,`${request.request_id}:reply`]);
+  assert.equal(rows.length,1);assert.equal(rows[0].text,"partial complete");
+  assert.equal(f.requests.get(request.request_id).message_json,null);
+  assert.equal(f.requests.get(request.request_id).context_json,null);
+});
+
+test("request dispatch remains owned by the interactive Session after the temporary executor is reclaimed", async t => {
+  const f=await requestFixture(t);
+  f.setPlanner(async()=>({text:JSON.stringify({kind:"dispatch",reply:"已派发",items:[{action:"create",taskId:null,title:"Request_child",text:"Execute isolated instruction",agentId:f.role.agentId}]})}));
+  const request=f.admit("implement");
+  await f.requests.running.get(request.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  const row=f.requests.get(request.request_id);
+  assert.equal(row.status,"completed",row.error_message);
+  const dispatch=f.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE executor_session_id=?",[row.shadow_session_id]);
+  assert.ok(dispatch);assert.equal(dispatch.source_session_id,"logical:parent");
+  assert.equal(JSON.parse(row.dispatch_json)[0].dispatchId,dispatch.dispatch_id);
+  assert.equal(f.store.getTask(f.parent.id).current_session_id,f.source.sessionId);
+});

@@ -582,7 +582,11 @@ export class SessionRouteRepository {
       WHERE sh.shadow_session_id=? AND sh.parent_task_id=? AND sh.state='ready'
         AND main.legacy_session_id=? AND main.archived=0 AND main.deleted_at IS NULL`,
       [logicalSessionId, task.id, task.current_session_id]);
-    if (task.current_session_id !== session.id && !shadow) {
+    const request = this.selectOne(`SELECT r.request_id FROM coordination_requests r
+      JOIN logical_sessions main ON main.logical_session_id=r.main_session_id
+      WHERE r.shadow_session_id=? AND r.parent_task_id=? AND main.legacy_session_id=?
+        AND main.archived=0 AND main.deleted_at IS NULL`, [logicalSessionId, task.id, task.current_session_id]);
+    if (task.current_session_id !== session.id && !shadow && !request) {
       const error = new Error(
         `Task ${task.id} points to ${task.current_session_id ?? "no Session"}, not active Worker Session ${session.id}.`
       );

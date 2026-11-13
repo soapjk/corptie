@@ -7,6 +7,7 @@ const confirmed = { const: true };
  * Missing authorization/revision/execute ports make a command unavailable.
  */
 export const DETAIL_ACTION_OPERATIONS = Object.freeze({
+  "task.request.control": { kind: "command", targetTypes: ["task"], confirmation: "none", fields: { ...object({ requestId: string(512, 1), action: { enum: ["cancel", "retry"] } }), required: ["requestId", "action"] } },
   "task.coordination.update": { kind: "command", targetTypes: ["task"], confirmation: "none", fields: { ...object({ coordinationEnabled: { type: "boolean" } }), required: ["coordinationEnabled"] } },
   "detail.refresh": { kind: "read", targetTypes: ["session"], fields: object({}) },
   "detail.collection.page": { kind: "read", targetTypes: ["session"], fields: { ...object({ collectionName: string(64, 1), cursor: string(512, 1) }), required: ["collectionName"] } },

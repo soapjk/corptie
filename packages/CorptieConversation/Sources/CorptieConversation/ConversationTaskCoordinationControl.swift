@@ -8,14 +8,16 @@ public struct ConversationTaskCoordinationControl: View {
     public let onChange: (Bool) -> Void
     public let dispatches: [ClientTaskCoordinationDispatch]
     public let execution: ClientCoordinationExecution?
+    public var onRequestControl: ((String, String) -> Void)?
     @State private var reportsExpanded = false
     private var explanation: String {
         if let reason = execution?.reason, !reason.isEmpty { return reason }
         return "开发由子任务执行，当前会话负责讨论与派发；关闭后已派发任务仍会继续。"
     }
-    public init(enabled: Bool, updating: Bool = false, dispatches: [ClientTaskCoordinationDispatch] = [], execution: ClientCoordinationExecution? = nil, onChange: @escaping (Bool) -> Void) {
+    public init(enabled: Bool, updating: Bool = false, dispatches: [ClientTaskCoordinationDispatch] = [], execution: ClientCoordinationExecution? = nil, onRequestControl: ((String, String) -> Void)? = nil, onChange: @escaping (Bool) -> Void) {
         self.enabled = enabled; self.updating = updating; self.onChange = onChange
         self.execution = execution
+        self.onRequestControl = onRequestControl
         self.dispatches = Array(dispatches.prefix(5))
     }
     public var body: some View {
@@ -28,6 +30,26 @@ public struct ConversationTaskCoordinationControl: View {
             }
             Text(explanation)
                 .font(.caption).foregroundStyle(.secondary)
+            if let requests = execution?.requests, !requests.isEmpty {
+                ForEach(requests) { request in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(request.question ?? "请求").lineLimit(2)
+                            if let error = request.errorMessage {
+                                Text(error).foregroundStyle(.secondary).lineLimit(3)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        Text(request.statusLabel).foregroundStyle(.secondary)
+                        if let onRequestControl, request.status != "failed" || request.phase != "admitting" {
+                            Button(request.status == "failed" ? "重试" : "停止") {
+                                onRequestControl(request.requestId, request.status == "failed" ? "retry" : "cancel")
+                            }.buttonStyle(.borderless)
+                            .accessibilityLabel("\(request.status == "failed" ? "重试" : "停止")此请求")
+                        }
+                    }.font(.caption)
+                }
+            }
             if let shadow = execution?.shadow {
                 HStack(spacing: 8) {
                     Text(shadow.statusLabel)

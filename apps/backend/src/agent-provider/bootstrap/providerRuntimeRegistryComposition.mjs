@@ -104,6 +104,7 @@ export function createProviderRuntimeRegistryComposition({
         signal: input.signal,
         executionPolicy: input.executionPolicy,
         outputSchema: input.outputSchema,
+        images: input.images, onText: input.onText,
         permissionProfile: input.permissionProfile,
         developerInstructions: input.developerInstructions,
         threadSource: input.purpose

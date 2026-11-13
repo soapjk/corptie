@@ -79,7 +79,14 @@ export class TaskCoordinationService {
     this.scheduleReports();
   }
   acceptDispatch(metadata, actorId, input, progressContext = {}) {
-    const scope = this.collaboration.coordinationScope(metadata, actorId);
+    let scope = this.collaboration.coordinationScope(metadata, actorId);
+    const requestOwner = this.requests?.forShadow(scope.logicalSessionId);
+    const executorSessionId = scope.logicalSessionId;
+    if (requestOwner) {
+      this.requests.assertDelegate(scope.logicalSessionId);
+      const main = this.store.getLogicalSession(requestOwner.main_session_id);
+      scope = this.collaboration.coordinationScope({ sessionId: main.logicalSessionId, providerBindingId: main.activeBinding.bindingId }, actorId);
+    }
     const delegation = this.shadow?.forShadow(scope.logicalSessionId);
     if (delegation) this.shadow.assertDelegate(scope.logicalSessionId, "dispatch_children");
     const progressScope = delegation ? { ...scope, logicalSessionId: delegation.main_session_id } : scope;
@@ -120,6 +127,7 @@ export class TaskCoordinationService {
           (dispatch_id,source_session_id,parent_task_id,source_role_id,idempotency_key,request_json,runtime_json,mode_at_admission,target_task_id,created_at,updated_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?)`, [id, scope.logicalSessionId, scope.session.taskId, actorId, request.idempotencyKey,
           JSON.stringify(request), JSON.stringify(runtime), scope.parent.coordination_enabled === 1 ? 1 : 0, request.taskId ?? null, now, now]);
+        if (requestOwner) this.store.db.run("UPDATE task_coordination_dispatches SET executor_session_id=? WHERE dispatch_id=?", [executorSessionId, id]);
         rows.push(this.get(id));
         if (request.action === "send") amendments.push({ id, taskId: request.taskId, text: request.text.slice(0, 2400) });
       }
@@ -379,7 +387,7 @@ export class TaskCoordinationService {
     for (const group of groups.values()) {
       let recipientSessionId = group[0].source_session_id;
       const logical = this.store.getLogicalSession(recipientSessionId), session = logical && this.store.getSession(logical.legacySessionId);
-      const useShadow = this.shadow && this.store.getTask(group[0].parent_task_id)?.coordination_enabled === 1;
+      const useShadow = this.shadow && (this.store.getTask(group[0].parent_task_id)?.coordination_enabled === 1 || this.shadow.forMain(recipientSessionId) || this.shadow.forShadow(recipientSessionId));
       if (!useShadow && this.shadow && (this.shadow.forMain(recipientSessionId) || this.shadow.forShadow(recipientSessionId))) continue;
       if (useShadow) {
         const delegation = this.shadow.forShadow(recipientSessionId) ?? this.shadow.forMain(recipientSessionId);

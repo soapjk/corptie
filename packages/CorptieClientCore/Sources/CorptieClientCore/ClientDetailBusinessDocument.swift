@@ -52,6 +52,7 @@ public struct ClientDetailBusinessTask: Decodable, Equatable, Sendable {
 public struct ClientCoordinationExecution: Decodable, Equatable, Sendable {
     public let status: String
     public let reason: String
+    public var requests: [ClientCoordinationRequest]? = nil
     public var shadow: ClientShadowCoordination? = nil
     public var statusLabel: String {
         switch status {
@@ -60,6 +61,26 @@ public struct ClientCoordinationExecution: Decodable, Equatable, Sendable {
         case "enforced": "强协调已启用"
         case "unsupported": "当前运行环境不支持"
         default: "执行限制尚未验证"
+        }
+    }
+}
+public struct ClientCoordinationRequest: Decodable, Equatable, Identifiable, Sendable {
+    public let requestId: String
+    public let messageId: String
+    public let status: String
+    public let question: String?
+    public let errorMessage: String?
+    public let phase: String?
+    public var id: String { requestId }
+    public var statusLabel: String {
+        switch status {
+        case "accepted": "已接收"
+        case "preparing": "准备中"
+        case "running": "处理中"
+        case "waiting": "等待相关结果"
+        case "failed": "处理失败"
+        case "cancelled": "已停止"
+        default: status
         }
     }
 }
@@ -157,7 +178,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 (action.target?.id.count ?? 1000) <= 512,
                 action.kind == "navigation" && ["resource.open", "editor.open"].contains(action.operation)
                 || action.kind == "read" && ["detail.collection.page", "artifact.content"].contains(action.operation)
-                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update"].contains(action.operation)
+                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control"].contains(action.operation)
             else { throw ClientDetailFailure.invalidGraph }
         }
         switch payload {
@@ -167,7 +188,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
         case .task(let task):
             let dispatches = task.coordinationDispatches ?? []
             guard dispatches.count <= 5, Set(dispatches.map(\.id)).count == dispatches.count,
-                actions.filter({ $0.operation == "task.coordination.update" }).allSatisfy({
+                actions.filter({ ["task.coordination.update", "task.request.control"].contains($0.operation) }).allSatisfy({
                     $0.target?.resourceType == "task" && $0.target?.id == task.taskId
                 }) else { throw ClientDetailFailure.invalidGraph }
             guard !task.taskId.isEmpty, [task.title, task.status, task.description, task.acceptanceCriteria,

@@ -24,7 +24,7 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
       }
     })]);
     const service = createSessionApplicationComposition({
-      store: { getSession: () => session, assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
+      store: { selectAll: () => [], getSession: () => session, assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
         getTask: () => task, getWork: () => ({ id: "work:one", name: "Work" }), selectOne: () => null,
         getSessionToolCatalogMaterialization: () => null },
       agentProviderRegistry: registry, sessionBindingRepository: { resolve: () => reference },
@@ -52,7 +52,7 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     }, { createSession: async input => { calls.push([id, input]); return { id: `new:${calls.length}` }; },
       forkSession: async input => { calls.push([id, input]); return { id: `fork:${calls.length}` }; } })));
     const service = createSessionApplicationComposition({
-      store: { settings: () => ({ newSessionDefaults: { taskCreation: saved } }) }, agentProviderRegistry: registry,
+      store: { selectAll: () => [], settings: () => ({ newSessionDefaults: { taskCreation: saved } }) }, agentProviderRegistry: registry,
       sessionBindingRepository: { resolve: () => null }, emitEvent: () => {}
     });
     for (const [kind, source] of [["assistantChat", "agent"], ["worker", "entity"], ["worker", "mcp"],
@@ -86,7 +86,7 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     let capabilities = [{ id:"skill:one", kind:"skill", name:"investrace" }];
     let revision = "assigned:1";
     const service = createSessionApplicationComposition({
-      store: { getSession: () => session }, agentProviderRegistry: {},
+      store: { selectAll: () => [], getSession: () => session }, agentProviderRegistry: {},
       toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
         { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
       ]) }),
@@ -124,7 +124,7 @@ function fixture() {
   const session = { id: "session:1", title: "stored", agentId: "agent:1", sessionKind: "worker" };
   const reference = { sessionId: session.id, logicalSessionId: "logical:1", bindingId: "new", providerId: "test" };
   const service = createSessionApplicationComposition({
-    store: {
+    store: { selectAll: () => [],
       getSession: () => session,
       runInTransaction: (operation) => operation(),
       rerouteUnsentMessageDelivery: (...args) => calls.push(["reroute", ...args]),
@@ -207,7 +207,7 @@ test("Worker message context injects bounded selected references after authorita
   const reference = { sessionId: session.id, logicalSessionId: "logical:one", bindingId: "binding:one" };
   const calls = [];
   const service = createSessionApplicationComposition({
-    store: {
+    store: { selectAll: () => [],
       getSession: () => session,
       assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
       getTask: () => task,
@@ -248,7 +248,7 @@ test("Worker message context retains user-saved Global preferences independently
   const globalRecall = { id: "recall:global", mode: "always_on",
     memories: [{ id: "memory:global", content: "Run one combined test pass after development." }] };
   const service = createSessionApplicationComposition({
-    store: { getSession: () => session,
+    store: { selectAll: () => [], getSession: () => session,
       assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
       getTask: () => task, getWork: () => ({ id: "work:one", name: "Work one" }),
       selectOne: () => null, getSessionToolCatalogMaterialization: () => null },
@@ -275,7 +275,7 @@ test("Work Chat message context also includes references already allowed by its 
   const session = { id: "session:work-chat", sessionKind: "workChat", workId: "work:one" };
   const reference = { sessionId: session.id, logicalSessionId: "logical:work-chat" };
   const service = createSessionApplicationComposition({
-    store: { getSession: () => session },
+    store: { selectAll: () => [], getSession: () => session },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
     workChatContextService: { build: () => ({ prompt: "Work snapshot: authoritative scope" }) },
     resolveContextReferences: async () => ({ prompt: "Reference: selected document" }),
@@ -293,7 +293,7 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
   const reference = { sessionId: session.id, logicalSessionId: "logical:work-memory" };
   const statuses = [];
   const service = createSessionApplicationComposition({
-    store: { getSession: () => session },
+    store: { selectAll: () => [], getSession: () => session },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
     toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
       { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
@@ -316,7 +316,7 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
 
 test("tool preparation warnings are presented as nonblocking system notices", () => {
   const events = [];
-  const service = createSessionApplicationComposition({ store: {}, agentProviderRegistry: {},
+  const service = createSessionApplicationComposition({ store: { selectAll: () => [],}, agentProviderRegistry: {},
     sessionBindingRepository: { resolve: () => null }, emitEvent: (...args) => events.push(args) });
   service.observeLifecycle({ type: "SessionToolPreparationWarning", sessionId: "session:one",
     bindingId: "binding:one", turnId: "turn:one", errorCode: "TOOL_MATERIALIZATION_OUTCOME_UNKNOWN" });
@@ -341,7 +341,7 @@ for (const providerId of ['codex-app-server', 'claude-code', 'openclacky']) {
       const task = { id: session.taskId, title: 'Required task', description: 'Keep required scope',
         work_id: session.workId, revision: 1, resource_version: 1, lifecycle_state: 'in_progress' };
       let classificationCalls = 0, sends = 0;
-      const store = { getSession: () => session, getSessionMemoryTopics: () => null,
+      const store = { selectAll: () => [], getSession: () => session, getSessionMemoryTopics: () => null,
         getLogicalSessionByLegacySessionId: () => null, getRuntimeState: () => null,
         assertLogicalWorkSessionBinding: () => ({ taskId: task.id }),
         getTask: () => task, getWork: () => ({ id: session.workId, name: 'Required Work' }),
@@ -384,7 +384,7 @@ test('required references and skill capability reads overlap without dropping ei
   let releaseReferences, releaseCapabilities, referenceStarted = false, capabilityStarted = false;
   const session = { id: 'parallel', sessionKind: 'assistantChat', agentId: 'agent:one' };
   const service = createSessionApplicationComposition({
-    store: { getSession: () => session }, agentProviderRegistry: {}, sessionBindingRepository: {},
+    store: { selectAll: () => [], getSession: () => session }, agentProviderRegistry: {}, sessionBindingRepository: {},
     resolveContextReferences: async () => { referenceStarted = true; await new Promise(resolve => { releaseReferences = resolve; });
       return { prompt: 'Required reference survives' }; },
     resolveAssignedCapabilities: async () => { capabilityStarted = true; await new Promise(resolve => { releaseCapabilities = resolve; });

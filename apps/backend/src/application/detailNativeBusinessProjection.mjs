@@ -63,6 +63,8 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
     // user action after the desktop updateTask wiring was repaired.
     if (editors) actions.push({ id: "task-coordination-setting", kind: "command", operation: "task.coordination.update",
       label: { fallback: "协调模式" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
+    if (editors && data.coordinationExecution?.requests?.length) actions.push({ id: "task-request-control", kind: "command", operation: "task.request.control",
+      label: { fallback: "管理请求" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
     if (scope.parentSessionId) actions.push(nav("resource.open", "session", scope.parentSessionId, "打开父任务"));
     cards.push(card("task-information", "taskInfo", data, actions));
     if(task.coordinationProgress) cards.push({id:"coordination-progress",kind:"coordinationProgress",version:1,

@@ -1,4 +1,15 @@
 export function migrateTaskCoordination({ db, ensureColumn }) {
+  db.run(`CREATE TABLE IF NOT EXISTS coordination_requests (
+    request_id TEXT PRIMARY KEY, main_session_id TEXT NOT NULL, parent_task_id TEXT NOT NULL,
+    message_id TEXT NOT NULL, delivery_id TEXT, operation_id TEXT, shadow_session_id TEXT UNIQUE,
+    attempt INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'accepted', phase TEXT NOT NULL DEFAULT 'reading',
+    message_json TEXT, source_json TEXT, config_json TEXT, context_json TEXT, context_cursor TEXT,
+    related_request_id TEXT, relation TEXT, dependency_id TEXT, response_item_id TEXT,
+    dispatch_json TEXT, error_code TEXT, error_message TEXT, cleanup_error TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE(main_session_id,message_id));
+    CREATE INDEX IF NOT EXISTS coordination_request_pending ON coordination_requests(status,created_at);
+    CREATE INDEX IF NOT EXISTS coordination_request_main ON coordination_requests(main_session_id,created_at);`);
   // Separate executor ownership from the Task's interactive current Session.
   // No transcript archive is created by these recovery/control records.
   db.run(`CREATE TABLE IF NOT EXISTS coordination_shadow_sessions (
@@ -52,6 +63,7 @@ export function migrateTaskCoordination({ db, ensureColumn }) {
   CREATE INDEX IF NOT EXISTS task_coordination_parent ON task_coordination_dispatches(parent_task_id,created_at);
   CREATE INDEX IF NOT EXISTS task_coordination_operation ON task_coordination_dispatches(operation_id) WHERE operation_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS task_coordination_pending ON task_coordination_dispatches(status,report_message_id);`);
+  ensureColumn("task_coordination_dispatches", "executor_session_id", "TEXT");
   ensureColumn("task_coordination_dispatches", "report_generation", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("task_coordination_dispatches", "progress_batch_id", "TEXT");
   ensureColumn("task_coordination_dispatches", "source_turn_id", "TEXT");
