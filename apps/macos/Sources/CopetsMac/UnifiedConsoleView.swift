@@ -217,7 +217,7 @@ struct UnifiedConsoleView: View {
             guard let sessionID,
                   let session = backendClient.sessions.first(where: { $0.id == sessionID })
                     ?? backendClient.archivedSessions.first(where: { $0.id == sessionID }) else { return }
-            if !creationDraft.busy { showNewSessionCreation = false }
+            showNewSessionCreation = false
             synchronizeConsoleSelection(with: session)
             Self.recordSessionId(session.id, category: SessionCategory(session: session))
             if sidebarState.isSelected {
@@ -1187,7 +1187,9 @@ struct UnifiedConsoleView: View {
     @ViewBuilder var sessionConversation: some View {
         if showNewSessionCreation {
             if sidebarState.isSelected {
-                UnifiedConversationCreateView(draft: creationDraft) {
+                UnifiedConversationCreateView(draft: creationDraft) { session, followup in
+                    composerDraftRepository.draft(for: session.id).updateFromEditor(followup)
+                    backendClient.acceptCreatedSession(session)
                     showNewSessionCreation = false
                     creationDraft = UnifiedCreationDraft()
                 }

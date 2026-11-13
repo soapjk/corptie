@@ -56,15 +56,16 @@ final class SessionUsageClient: SessionUsageServing {
     ) -> SessionUsageResponse? {
         guard let payload = data.data(using: .utf8),
               let event = try? JSONDecoder().decode(SessionUsageEventEnvelope.self, from: payload),
-              sessionID == event.payload.sessionId else { return nil }
-        let account = current?.account ?? CodexAccountUsage(
-            available: nil, provider: "codex", model: nil,
-            rateLimits: nil, rateLimitsByLimitId: nil
-        )
+              sessionID == event.payload.sessionId,
+              let current,
+              event.payload.providerId == current.account.provider,
+              event.payload.model == current.account.model else { return nil }
         let usage = SessionUsageResponse(
-            account: account, context: event.payload.context,
-            accountFresh: current?.accountFresh,
-            resetForecast: current?.resetForecast
+            account: current.account, context: event.payload.context,
+            accountFresh: current.accountFresh,
+            accountLoadFailed: current.accountLoadFailed,
+            contextLoadFailed: false,
+            resetForecast: current.resetForecast
         )
         remember(usage, for: event.payload.sessionId)
         return usage

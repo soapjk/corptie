@@ -66,6 +66,7 @@ final class SessionPageRenderInputs {
     private(set) var workspaceRecovery: WorkspaceRecoveryStatus?
     private(set) var projectStatus: ProjectWorktreeStatusResponse?
     private(set) var usage: SessionUsageResponse?
+    private(set) var usageLoadState: UsageLoadState = .loading
     private(set) var restart: SessionRestartActivity?
     private(set) var providers: [AgentProviderDescriptor] = []
     private(set) var models: [CodexModel] = []
@@ -306,6 +307,7 @@ final class SessionPageRenderInputs {
             let source = backend.supplementaryDataController
             workspaceRecovery = source.workspaceRecoveryStatus; projectStatus = source.selectedProjectWorktreeStatus
             usage = source.selectedSessionUsage
+            usageLoadState = source.usageLoadState
         }
         if changes.contains(.commands) {
             let source = backend.sessionCommandController

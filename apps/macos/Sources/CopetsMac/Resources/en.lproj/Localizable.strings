@@ -2238,3 +2238,61 @@
 "Session configuration mismatch." = "Session configuration mismatch.";
 
 "Fast mode may use more quota or incur higher charges." = "Fast mode may use more quota or incur higher charges.";
+
+"用量加载失败" = "Usage could not be loaded";
+
+"用量加载中…" = "Loading usage…";
+
+"上下文：尚未开始" = "Context: not started";
+
+"上下文：暂无数据" = "Context: no data";
+
+"额度：暂无数据" = "Quota: no data";
+
+"额度：不支持" = "Quota: unsupported";
+
+"额度：刷新失败" = "Quota: refresh failed";
+
+"上下文：尚未开始 · 额度：暂无数据" = "Context: not started · Quota: no data";
+
+"用量：暂无数据" = "Usage: no data";
+
+"上下文：不支持" = "Context: unsupported";
+
+"上下文：加载失败" = "Context: load failed";
+
+"上下文：加载中…" = "Context: loading…";
+
+"额度：加载中…" = "Quota: loading…";
+
+"最近记录的额度" = "Last recorded quota";
+
+"准备发送" = "Preparing to send";
+
+"正在创建任务并准备工作区和执行引擎…" = "Creating the task and preparing its workspace and provider…";
+
+"正在创建会话并准备执行引擎…" = "Creating the conversation and preparing its provider…";
+
+"工作区已就绪，正在创建会话…" = "Workspace ready; creating the session…";
+
+"会话已创建，正在绑定执行引擎…" = "Session created; binding the provider…";
+
+"正在启用执行引擎…" = "Activating the provider…";
+
+"正在应用权限…" = "Applying permissions…";
+
+"正在应用运行模式…" = "Applying execution mode…";
+
+"正在确认首条消息…" = "Confirming the first message…";
+
+"消息已接收" = "Message accepted";
+
+"创建结果未确认，重试将查询原操作，不会重新创建。" = "Creation is unconfirmed. Retry checks the original operation without creating another conversation.";
+
+"操作未确认，请重试原操作。" = "Operation unconfirmed. Retry the original operation.";
+
+"准备期间可继续起草，完成后发送" = "Draft your next message while preparing";
+
+"重试原操作" = "Retry original operation";
+
+"进入会话" = "Open conversation";

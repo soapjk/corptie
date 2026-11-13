@@ -208,6 +208,15 @@ struct SessionMessageComposerSurface: View {
                 .frame(maxWidth: .infinity)
                 .opacity(ComposerCreationTransition.shared.concealedSessionID == sessionId ? 0 : 1)
                 .background(ComposerTransitionAnchor(sessionID: sessionId))
+                ComposerStatusSurface(sessionID: sessionId, status: status, isReady: isReady,
+                    notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onChange(of: "\(session?.external?.provider ?? ""):\(session?.external?.currentModel ?? "")") { _, _ in
+                        guard acceptsPresentationUpdates, backendClient.selectedSession?.id == sessionId else { return }
+                        backendClient.usageController.invalidateConfiguration()
+                        Task { await backendClient.usageController.loadUsage(for: sessionId) }
+                    }
+
             }
             if isImportingImages {
                 HStack(spacing: 6) {
@@ -323,8 +332,6 @@ struct SessionMessageComposerSurface: View {
                 if let session {
                     SessionComposerPermissionControl(session: session, backend: backendClient, enabled: allowsActions && !sendingMessage)
                 }
-                ComposerStatusSurface(sessionID: sessionId, status: status, isReady: isReady,
-                    notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs)
                 Spacer(minLength: 0)
             }
             ComposerActionSurface(showsModel: allowsModelSwitch && canSwitchModel,
