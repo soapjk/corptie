@@ -15,7 +15,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
     toolHostService, sessionToolMetadata, handleCollaborationRoutes, handleArtifactHttpRequest, artifactService,
     handleBenchmarkHttpRequest, benchmarkControlPlane, handleCodeTaskObservabilityHttpRequest, turnObservability, handleSshWorkspaceHttpRequest,
-    getSshWorkspaceServices, handleMcpRegistryHttpRequest, mcpRegistryService, mcpSessionAvailabilityService, sessionAbilityPreferences, emitEvent,
+    getSshWorkspaceServices, handleMcpRegistryHttpRequest, mcpRegistryService, mcpSessionAvailabilityService, sessionAbilityPreferences, computerUsePreset, emitEvent,
     handleEntityRoutes, handleDshHttpRequest, sessionApplicationService, listGatewaySessions, readStoredSessionConversation,
     readStoredSessionTimeline, now, createSessionThroughApplication, publishDshPromptStart, sendUnifiedSessionMessage,
     publishDshPromptFailure, handleBackendHealthHttpRequest, projectCodeIndexStore, projectCodeRunIsolationPort, projectCodeApplicationService,
@@ -163,7 +163,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     || url.pathname === "/mcp-availability"
     || /^\/agents\/[^/]+\/mcp-servers(?:\/[^/]+)?$/.test(url.pathname)
     || /^\/sessions\/[^/]+\/mcp-availability$/.test(url.pathname)) {
-    handleMcpRegistryHttpRequest({ request, response, url, service: mcpRegistryService,
+    handleMcpRegistryHttpRequest({ request, response, url, service: mcpRegistryService, computerUsePreset,
       availabilityService: mcpSessionAvailabilityService,
       onChanged: (type, payload) => emitEvent(type, payload) }).catch((error) => {
       if (!response.headersSent) sendJson(response, 500, { code: "MCP_MANAGEMENT_FAILED", error: error.message });

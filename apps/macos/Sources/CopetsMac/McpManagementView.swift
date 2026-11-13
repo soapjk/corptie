@@ -153,6 +153,32 @@ private struct McpVerificationEnvelope: Decodable {
     struct Verification: Decodable { let toolCount: Int; let toolNames: [String] }
     let verification: Verification
 }
+
+private struct ComputerUsePresetEnvelope: Decodable {
+    struct Runtime: Decodable {
+        let status: String
+        let message: String?
+    }
+    struct Configuration: Decodable {
+        let name: String
+        let transport: String
+        let command: String
+        let args: [String]
+        let cwd: String?
+        let env: [String: String]
+        let runtimeProfile: String?
+
+        var installationConfig: [String: Any] {
+            var result: [String: Any] = ["name": name, "transport": transport,
+                                        "command": command, "args": args, "env": env]
+            if let cwd { result["cwd"] = cwd }
+            if let runtimeProfile { result["runtimeProfile"] = runtimeProfile }
+            return result
+        }
+    }
+    let runtime: Runtime
+    let config: Configuration?
+}
 private struct McpPackageDiscoveryEnvelope: Decodable {
     struct Discovery: Decodable {
         struct Candidate: Decodable, Identifiable {
@@ -325,6 +351,19 @@ private final class McpManagementModel: ObservableObject {
             return result.verification
         } catch {
             errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func detectComputerUse() async -> ComputerUsePresetEnvelope? {
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let result = try await request("mcp-servers/computer-use", as: ComputerUsePresetEnvelope.self)
+            errorMessage = nil
+            return result
+        } catch {
+            if !Task.isCancelled { errorMessage = error.localizedDescription }
             return nil
         }
     }
@@ -1228,6 +1267,7 @@ private struct McpInstallView: View {
     @State private var verification: McpVerificationEnvelope.Verification?
     @State private var verificationFingerprint: String?
     @State private var installMode = "direct"
+    @State private var computerUsePreset: ComputerUsePresetEnvelope?
     @State private var packageSourceType = "local"
     @State private var packageSource = ""
     @State private var packageDiscovery: McpPackageDiscoveryEnvelope.Discovery?
@@ -1262,6 +1302,9 @@ private struct McpInstallView: View {
     }
 
     private var config: [String: Any] {
+        if installMode == "computerUse" {
+            return computerUsePreset?.config?.installationConfig ?? [:]
+        }
         var result: [String: Any]
         if transport == "stdio" {
             result = ["name": name, "transport": transport, "command": command,
@@ -1281,6 +1324,10 @@ private struct McpInstallView: View {
     }
 
     private var isValid: Bool {
+        if installMode == "computerUse" {
+            guard let config = computerUsePreset?.config else { return false }
+            return config.transport == "stdio" && config.command.hasPrefix("/")
+        }
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty,
               validMcpCredentials(credentialRows, transport: transport) else { return false }
         return transport == "stdio"
@@ -1294,8 +1341,12 @@ private struct McpInstallView: View {
             Picker("安装方式", selection: $installMode) {
                 Text("直接连接").tag("direct")
                 Text("MCP 包").tag("package")
+                Text("Computer Use").tag("computerUse")
             }
-            if installMode == "package" {
+            .disabled(model.isWorking)
+            if installMode == "computerUse" {
+                computerUseSetup
+            } else if installMode == "package" {
                 Picker("包来源", selection: Binding(
                     get: { packageSourceType },
                     set: { packageSourceType = $0; packageDiscovery = nil;
@@ -1454,6 +1505,38 @@ private struct McpInstallView: View {
         .padding(20)
         .frame(width: 540)
         .accessibilityLabel("安装独立 MCP Server")
+    }
+
+    private var computerUseSetup: some View {
+        Section("官方 Computer Use") {
+            Text("使用本机已安装的官方运行环境。检测只检查依赖，不读取应用内容，也不会修改系统权限。")
+                .font(.caption).foregroundStyle(.secondary)
+            Button(computerUsePreset == nil ? "检测运行环境" : "重新检测运行环境") {
+                computerUsePreset = nil
+                Task { computerUsePreset = await model.detectComputerUse() }
+            }
+            .disabled(model.isWorking)
+            .accessibilityLabel("检测官方 Computer Use 运行环境")
+            if model.isWorking {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("正在检测或安装 Computer Use")
+            }
+            if let preset = computerUsePreset {
+                if preset.config != nil {
+                    Text("依赖已找到，实际操作仍需应用授权。")
+                    Text("安装后可在角色的 MCP 列表中分配，并在 Session 能力面板中管理。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(preset.runtime.message ?? "官方运行环境尚不可用（\(preset.runtime.status)）。")
+                        .foregroundStyle(.secondary)
+                }
+                if preset.config != nil, let message = preset.runtime.message {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("屏幕录制和辅助功能权限需通过官方 App 与 macOS 设置完成。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

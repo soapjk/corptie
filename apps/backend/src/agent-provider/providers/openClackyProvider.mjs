@@ -63,6 +63,7 @@ export function createOpenClackyProvider(manager, options = {}) {
     protocolVersion: "corptie-bridge-v1",
     runtime: { lifecycle: "managed" },
     metadata: {
+      computerUse: { supported: false, experimental: true, reason: "Native image results and official Computer Use context are not supported by this bridge." },
       // This transport has no declared automatic-compaction notification.
       // Periodically refresh the baseline in addition to lifecycle invalidation.
       sessionContextDelivery: { mode: "append", maxDeltaTurns: 8 },

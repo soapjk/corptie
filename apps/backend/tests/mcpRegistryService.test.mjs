@@ -19,6 +19,26 @@ test("MCP verification rejects a null or array configuration as client input", a
   await assert.rejects(() => service.verify([]), { code: "INVALID_INPUT", statusCode: 400 });
 });
 
+test("desktop protocol profile persists across assignment and direct configuration edits", async () => {
+  const { directory, store, service } = await fixture();
+  service.verify = async input => ({ ...input, toolCount: 1, toolNames: ["js"] });
+  try {
+    const role = store.createAgent({ name: "Desktop role", provider: "codex-app-server" });
+    const profile = "official-computer-use-mcp/v1";
+    const installed = await service.register({ name: "Desktop", transport: "stdio", command: process.execPath,
+      args: ["fixture.mjs"], cwd: directory, runtimeProfile: profile });
+    assert.equal(installed.runtimeProfile, profile);
+    assert.equal(service.list()[0].runtimeProfile, profile);
+    await service.setAssignment(role.agentId, installed.serverId, true);
+    assert.equal(Object.values(service.serversForAgent(role.agentId))[0].runtimeProfile, profile);
+    const updated = await service.updateConfig(installed.serverId, { expectedConfigRevision: installed.configRevision, name: "Renamed" });
+    assert.equal(updated.runtimeProfile, profile);
+    const remote = await service.updateConfig(installed.serverId, { expectedConfigRevision: updated.configRevision,
+      transport: "http", url: "https://example.test/mcp" });
+    assert.equal(remote.runtimeProfile, null);
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("browser origins cannot call local MCP management or Session diagnostics", async () => {
   const calls = [];
   for (const [method, path] of [

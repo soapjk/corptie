@@ -1,3 +1,4 @@
+import { connectCodexComputerUseRuntime } from "../../adapters/codexComputerUseRuntime.mjs";
 import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 import {
   AGENT_PROVIDER_CAPABILITIES,
@@ -26,6 +27,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
     aliases: ["codex"],
     runtime: { lifecycle: "managed" },
     metadata: {
+      computerUse: { supported: true, experimental: true, reason: "", transport: "session-mcp", nativeImages: true },
       ...(options.metadata ?? {}),
       sessionContextDelivery: { mode: "append", maxDeltaTurns: 32 },
       bindingReadiness: { version: 1, reconciliation: typeof operations.readinessEpoch === "function"
@@ -88,12 +90,14 @@ export function createCodexAppServerProvider(operations, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
+      AGENT_PROVIDER_CAPABILITIES.COMPUTER_USE_RUNTIME,
       AGENT_PROVIDER_CAPABILITIES.SKILL_LAZY_LOAD,
       AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES,
       AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE
     ]
   }, {
     ...operations,
+    connectComputerUseRuntime: operations.connectComputerUseRuntime ?? connectCodexComputerUseRuntime,
     probeToolSchemaCapabilities: operations.probeToolSchemaCapabilities
       ?? (() => CODEX_TOOL_SCHEMA_CAPABILITIES)
   });

@@ -1,3 +1,4 @@
+import { connectCodexComputerUseRuntime } from "../../adapters/codexComputerUseRuntime.mjs";
 import { createAgentProviderRuntimeRegistry } from "./agentProviderBootstrap.mjs";
 import { createOpenClackyProvider } from "../providers/openClackyProvider.mjs";
 import { persistedProviderWorkspaceProof } from "../providerWorkspaceBindingService.mjs";
@@ -5,7 +6,7 @@ import { confirmOrRestoreCodexToolPlan } from "../../application/codexToolPlanCo
 import { appliedToolMaterializationReceipt } from "../toolSchemaCapabilities.mjs";
 
 export function createProviderRuntimeRegistryComposition({
-  store, claudeProviderRuntime, codexRuntime, openClackyManager,
+  store, claudeProviderRuntime, codexRuntime, openClackyManager, codexCommand,
   openClackyToolHostAttachment, applyOpenClackyToolPlanAtTurnBoundary,
   switchOpenClackyProviderWorkspace, prepareCodexProviderSessionInput,
   createCodexProviderSession, forkCodexSession, resumeCodexProviderSession,
@@ -31,6 +32,8 @@ export function createProviderRuntimeRegistryComposition({
   return createAgentProviderRuntimeRegistry({
     claudeProvider: claudeProviderRuntime,
     codexOperations: {
+      connectComputerUseRuntime: (config, options) => connectCodexComputerUseRuntime(config,
+        { ...options, ...(codexCommand ? { command: codexCommand } : {}) }),
       prepareSessionInput: prepareCodexProviderSessionInput,
       createSession: createCodexProviderSession,
       forkSession: forkCodexSession,

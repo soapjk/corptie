@@ -135,7 +135,7 @@ export class AgentProviderRegistry {
     const { provider, method } = this.requireCapability(providerId, capability);
     const policy = this.executionPolicy;
     const startsExecution = new Set(["session.create", "session.fork", "session.restart", "conversation.send",
-      "conversation.send.image", "background.prompt", "conversation.command"]);
+      "conversation.send.image", "background.prompt", "conversation.command", "tools.computerUse.runtime"]);
     if (policy && startsExecution.has(capability)) {
       policy.assertAllowed(provider.descriptor.id);
       return Promise.resolve().then(() => policy.prepare?.(provider.descriptor.id, capability, args)).then(() => {

@@ -1,3 +1,6 @@
+import { McpInteractionBroker } from "./application/mcpInteractionBroker.mjs";
+import { computerUseBridgePreset, computerUseBridgeFingerprint } from "./application/computerUseBridge.mjs";
+import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig } from "./application/computerUseGatewayPolicy.mjs";
 import { InitialMessageTitleService } from "./application/initialMessageTitleService.mjs";
 import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
@@ -30,7 +33,8 @@ import { createCodexNotificationReceiver } from "./adapters/codexNotificationRec
 import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
 import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
 import { createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { CodexEnvironmentRegistry } from "./runtime/codexEnvironmentRegistry.mjs";
 import { createCodexEnvironmentRuntime } from "./agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
 import { createCodexEnvironmentSetup } from "./adapters/codexEnvironmentSetup.mjs";
@@ -618,13 +622,15 @@ const taskSessionProjection = createTaskSessionProjection({
   emitEvent, sessionWithLogicalWorkspace
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
+let settleMcpTurn = () => {};
 const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
   store, emitEvent, sessionMailbox,
   recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
   settleEntityTaskFromSession, collaborationCore,
   continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
   continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args),
-  resumeWorkAfterTransition, scheduleAgentWorkDrain
+  resumeWorkAfterTransition, scheduleAgentWorkDrain,
+  onTurnSettled: (entry) => settleMcpTurn(entry)
 });
 const assistantService = new AssistantService({
   store,
@@ -700,7 +706,36 @@ function mcpAssignmentRevisionForAgent(agentId) {
 }
 const sessionAbilityPreferences = new SessionAbilityPreferences({ store, registry: mcpRegistryService });
 skillRegistryService.sessionAbilityPreferences = sessionAbilityPreferences;
+const mcpInteractions = new McpInteractionBroker({ store, emitEvent });
+const computerUsePreset = () => computerUseBridgePreset({ dataDir: store.dataDir });
+
 const skillMcpGateway = new SkillMcpGateway({
+  connectComputerUseServer: (config, context, onElicitation) => agentProviderRegistry.invoke(
+    context.providerId, AGENT_PROVIDER_CAPABILITIES.COMPUTER_USE_RUNTIME, config, { onElicitation }),
+  onElicitation: (input) => mcpInteractions.request(input),
+  computerUseSupport: (input) => agentProviderRegistry.get(input.providerId ?? input.metadata?.providerId)
+    .descriptor.metadata.computerUse?.supported === true,
+  executionContext: (input) => {
+    const metadata = input.metadata ?? {};
+    if (!metadata.logicalSessionId) return metadata;
+    const logical = store.getLogicalSession(metadata.logicalSessionId);
+    const binding = logical?.activeBinding;
+    const session = logical?.legacySessionId && store.getSession(logical.legacySessionId);
+    if (!session || binding?.state !== "active" || binding.bindingId !== metadata.providerBindingId) {
+      throw Object.assign(new Error("MCP Session binding changed."), { code: "MCP_INTERACTION_STALE" });
+    }
+    const turnId = session.external?.activeTurnId ?? session.rawStatus?.activeTurnId
+      ?? store.listUnsettledSessionTurns(session.id).at(-1)?.turn_id;
+    const providerSessionId = binding.providerSessionId ?? logical.activeThreadId;
+    const native = input.providerRequestMeta?.["x-codex-turn-metadata"];
+    if (native && (native.thread_id !== providerSessionId || native.turn_id !== turnId)) {
+      throw Object.assign(new Error("MCP native call correlation is stale."), { code: "MCP_INTERACTION_STALE" });
+    }
+    return { ...metadata, turnId, providerSessionId,
+      ...(native ? { requestMetadata: { "x-codex-turn-metadata": {
+        thread_id: native.thread_id, turn_id: native.turn_id, call_id: native.call_id
+      } } } : {}) };
+  },
   onRuntimeEvent: (event) => mcpRegistryService.recordRuntimeEvent(event),
   resolveServers: async ({ actorId, providerId, context }) => {
     const reference = context.logicalSessionId ?? context.sessionId;
@@ -708,6 +743,17 @@ const skillMcpGateway = new SkillMcpGateway({
       ...await skillRegistryService.mcpServersForAgent(actorId, providerId, { isolateFailures: true, sessionReference: reference }),
       ...mcpRegistryService.serversForAgent(actorId)
     };
+    // Official JS hosts retain state: isolate their home by the actual Session binding.
+    for (const config of Object.values(servers)) {
+      if (!isComputerUseMcpConfig(config)) continue;
+      if (isComputerUseBridgeConfig(config)) config.observationRevision = await computerUseBridgeFingerprint(config);
+      const identity = createHash("sha256").update(`${reference}:${context.providerBindingId ?? context.bindingId}`).digest("hex");
+      const home = join(store.dataDir, "computer-use", "sessions", identity);
+      await mkdir(home, { recursive: true });
+      config.env = isNativeComputerUseMcpConfig(config) ? { ...config.env, CODEX_HOME: home } : config.env;
+      config.cwd = home;
+      config.isolatedEnv = true;
+    }
     return Object.fromEntries(Object.entries(servers).filter(([, config]) =>
       !config.serverId || !sessionAbilityPreferences.isDisabled(reference, "mcp", config.serverId)));
   },
@@ -729,6 +775,13 @@ const skillMcpGateway = new SkillMcpGateway({
   },
   resolveRevision: mcpAssignmentRevisionForAgent
 });
+settleMcpTurn = ({ event, logicalRoute, session }) => {
+  const logicalId = logicalRoute?.logicalSessionId ?? store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId;
+  if (!logicalId) return;
+  mcpInteractions.cancelSession(logicalId, event.turnId);
+  void skillMcpGateway.endTurn(logicalId, event.turnId, event.type === "turn.cancelled" ? "Interrupt" : "Stop")
+    .catch(error => logError("mcp.turn-ended", error));
+};
 const mcpSessionAvailabilityService = new McpSessionAvailabilityService({
   store, gateway: skillMcpGateway, registry: mcpRegistryService
 });
@@ -1129,6 +1182,7 @@ const gitHubPushes = new GitHubPushManager({
   ensureCommitGate: ensureRepositoryArtifactCommitHook
 });
 const agentProviderRegistry = createProviderRuntimeRegistryComposition({
+  codexCommand: codexAppServerCommand,
   store, claudeProviderRuntime, codexRuntime, openClackyManager,
   openClackyToolHostAttachment, applyOpenClackyToolPlanAtTurnBoundary,
   switchOpenClackyProviderWorkspace, prepareCodexProviderSessionInput,
@@ -1463,7 +1517,12 @@ observeSessionContextEvent = (context) => sessionApplicationService.observeSessi
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
+  mcpInteractions,
   onInterruptRequested: (entry) => {
+    mcpInteractions.cancelSession(entry.logicalSessionId, entry.turnId, { revokeGrants: true });
+    skillMcpGateway.cancelSession(entry.logicalSessionId, entry.turnId);
+    if (entry.turnId) void skillMcpGateway.endTurn(entry.logicalSessionId, entry.turnId, "Interrupt")
+      .catch(error => logError("mcp.interrupt", error));
     if (entry.turnId) turnExecutionProbe?.request(entry);
   }
 });
@@ -2444,6 +2503,7 @@ const backendHttpPorts = Object.freeze({
   get getSshWorkspaceServices() { return getSshWorkspaceServices; },
   get handleMcpRegistryHttpRequest() { return handleMcpRegistryHttpRequest; },
   get mcpRegistryService() { return mcpRegistryService; },
+  get computerUsePreset() { return computerUsePreset; },
   get mcpSessionAvailabilityService() { return mcpSessionAvailabilityService; },
   get sessionAbilityPreferences() { return sessionAbilityPreferences; },
   get emitEvent() { return emitEvent; },
@@ -2754,7 +2814,7 @@ const shutdownBackend = createBackendShutdown({
 
 function shutdown() {
   worktreeAutoFollowService?.stop();
-  return codexAccounts.close().finally(() => shutdownBackend());
+  return skillMcpGateway.close().finally(() => codexAccounts.close()).finally(() => shutdownBackend());
 }
 
 process.on("SIGINT", () => void shutdown());
