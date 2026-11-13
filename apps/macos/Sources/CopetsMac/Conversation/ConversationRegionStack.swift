@@ -34,7 +34,7 @@ struct ConversationRegionStack<Content: View, Accessory: View>: NSViewRepresenta
         // constraints, so hold the newest roots until the gesture ends.
         view.applyRoots(content: AnyView(content().environment(\.self, environment)),
                         accessory: accessoryRoot(),
-                        overlap: accessoryOverlap, floating: floating.map { AnyView($0.environment(\.self, environment)) })
+                        overlap: accessoryOverlap, floatingClearanceInset: floatingClearanceInset, floating: floating.map { AnyView($0.environment(\.self, environment)) })
     }
     static func dismantleNSView(_ view: ConversationRegionContainer<AnyView, AnyView>, coordinator: ()) {
         view.discardPendingRoots()
@@ -80,8 +80,9 @@ final class ConversationWidthBoundHost<Content: View>: NSHostingView<Conversatio
 final class ConversationRegionContainer<Content: View, Accessory: View>: NSView, ConversationFloatingRegion {
     let content: NSHostingView<Content>
     let accessory: ConversationWidthBoundHost<Accessory>
-    let floatingHost: NSHostingView<AnyView>
+    let floatingHost: ConversationFloatingHost
     private var pendingFloating: AnyView?
+    private var pendingFloatingClearanceInset: CGFloat?
     private var hasFloating = false
     /// Only the opaque rows need reserved transcript space. The transparent
     /// jump-control slot floats over message text; reserving it produces a
@@ -90,6 +91,13 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
         hasFloating ? max(0, floatingHost.frame.height - floatingClearanceInset) : nil
     }
     var floatingClearanceDidLayout: ((CGFloat) -> Void)?
+    private var lastPublishedClearance: CGFloat?
+    private func publishFloatingClearance() {
+        guard let height = floatingRegionClearance,
+              lastPublishedClearance != height else { return }
+        lastPublishedClearance = height
+        floatingClearanceDidLayout?(height)
+    }
     private var contentBottom: NSLayoutConstraint?
     /// `NSWindow.inLiveResize` is not settable outside AppKit; tests drive the
     /// same branch through this seam.
@@ -98,7 +106,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
     private var pendingContent: Content?
     private var pendingAccessory: Accessory?
     private var observesLiveResizeEnd = false
-    private let floatingClearanceInset: CGFloat
+    private var floatingClearanceInset: CGFloat
     private(set) var rootCommitCount = 0
     var hasPendingRoots: Bool { pendingContent != nil || pendingAccessory != nil }
     init(content: Content, accessory: Accessory, atTop: Bool, height: CGFloat?, overlap: CGFloat = 0,
@@ -106,7 +114,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
         self.floatingClearanceInset = floatingClearanceInset
         self.content = NSHostingView(rootView: content)
         self.accessory = ConversationWidthBoundHost(content: accessory)
-        floatingHost = NSHostingView(rootView: floating ?? AnyView(EmptyView().frame(height: 0)))
+        floatingHost = ConversationFloatingHost(rootView: floating ?? AnyView(EmptyView().frame(height: 0)))
         hasFloating = floating != nil
         floatingHost.isHidden = floating == nil
         super.init(frame: .zero)
@@ -120,6 +128,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
                 host.trailingAnchor.constraint(equalTo: trailingAnchor)
             ])
         }
+        floatingHost.didResize = { [weak self] in self?.publishFloatingClearance() }
         floatingHost.safeAreaRegions = []
         floatingHost.sizingOptions = [.intrinsicContentSize]
         floatingHost.setContentHuggingPriority(.required, for: .vertical)
@@ -157,16 +166,18 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
     /// hosted SwiftUI trees still reflow on every frame. Only the *content*
     /// roots are held, so text keeps wrapping live while no view hierarchy is
     /// rebuilt until the gesture ends.
-    func applyRoots(content: Content, accessory: Accessory, overlap: CGFloat, floating: AnyView? = nil) {
+    func applyRoots(content: Content, accessory: Accessory, overlap: CGFloat, floatingClearanceInset: CGFloat? = nil, floating: AnyView? = nil) {
         setAccessoryOverlap(overlap)
         guard holdsRootUpdates else {
             discardPendingRoots()
+            if let floatingClearanceInset { self.floatingClearanceInset = floatingClearanceInset }
             commitRoots(content: content, accessory: accessory, floating: floating)
             return
         }
         pendingContent = content
         pendingAccessory = accessory
         pendingFloating = floating
+        pendingFloatingClearanceInset = floatingClearanceInset
         guard !observesLiveResizeEnd, let window else { return }
         NotificationCenter.default.addObserver(self, selector: #selector(liveResizeDidEnd),
             name: NSWindow.didEndLiveResizeNotification, object: window)
@@ -183,6 +194,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
             return
         }
         let floating = pendingFloating
+        if let inset = pendingFloatingClearanceInset { floatingClearanceInset = inset }
         discardPendingRoots()
         commitRoots(content: content, accessory: accessory, floating: floating)
     }
@@ -195,6 +207,7 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
         pendingContent = nil
         pendingAccessory = nil
         pendingFloating = nil
+        pendingFloatingClearanceInset = nil
     }
 
     private func commitRoots(content: Content, accessory: Accessory, floating: AnyView? = nil) {
@@ -210,7 +223,18 @@ final class ConversationRegionContainer<Content: View, Accessory: View>: NSView,
         super.layout()
         // Floating controls can change height without resizing the viewport.
         // Publish only the native frame, after sibling constraints have settled.
-        if let height = floatingRegionClearance { floatingClearanceDidLayout?(height) }
+        publishFloatingClearance()
     }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+}
+
+/// Height changes inside SwiftUI do not necessarily lay out the native parent.
+/// Observe the final native frame directly, without writing measurement state.
+final class ConversationFloatingHost: NSHostingView<AnyView> {
+    var didResize: (() -> Void)?
+    override func setFrameSize(_ newSize: NSSize) {
+        let old = frame.size
+        super.setFrameSize(newSize)
+        if old != frame.size { didResize?() }
+    }
 }

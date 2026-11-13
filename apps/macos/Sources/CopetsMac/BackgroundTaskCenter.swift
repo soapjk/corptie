@@ -223,6 +223,9 @@ struct BackgroundTaskStatusBar: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                // Let text absorb the available width before laying out actions,
+                // so the close button keeps only the card's fixed trailing inset.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1)
 
@@ -282,7 +285,6 @@ struct BackgroundTaskStatusBar: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)

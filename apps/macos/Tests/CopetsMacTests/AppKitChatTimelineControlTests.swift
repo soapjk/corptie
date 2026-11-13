@@ -7,6 +7,66 @@ import CorptieConversation
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testProcessToProseGeometryAndSelectionAcrossStreamingCollapseAndBoundaryChanges() async throws {
+        for skin in ConversationSkin.allCases {
+            for shared in [true, false] {
+                let h = makeHarness(followsLatest: false, useSharedTextCards: shared,
+                    height: 700, useSharedProcessCards: true)
+                h.coordinator.updateSkin(skin)
+                var body = row(id: "process-body", text: "我会把锁定页修正打成独立版本。", showsHeader: false)
+                body.followsReplyProcess = true
+                func process(_ expanded: Bool) -> AppKitChatTimelineRow {
+                    var row = AppKitChatTimelineRow(id: "process", contentRevision: expanded ? 1 : 0,
+                        nativeText: "Command inProgress", copyText: "Command inProgress", nativeStyle: .process,
+                        title: "", metadata: "", expandableTurnId: "turn", isExpanded: expanded,
+                        processCount: 5, processDuration: "51s", processState: .running,
+                        processCurrentStepTitle: "Command inProgress", showsHeader: false)
+                    row.replyIdentity = .init(roleID: "role", name: "梁子", avatarPath: nil)
+                    return row
+                }
+                for expanded in [false, true, false] {
+                    h.coordinator.apply(rows: [process(expanded), body])
+                    await settlePositionPublication()
+                    h.window.layoutIfNeeded()
+                    let cell = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true))
+                    let text = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
+                    let textFrame = text.convert(text.bounds, to: h.tableView)
+                    // Process chrome ends one exterior row inset before its row ends.
+                    let cardBottom = h.tableView.rect(ofRow: 0).maxY - MessageCardMetrics.rowInset
+                    let gap = textFrame.minY - cardBottom
+                    XCTAssertEqual(gap, 8, accuracy: 1,
+                        "Process and prose retain a compact positive gap")
+                    let manager = try XCTUnwrap(text.layoutManager)
+                    let container = try XCTUnwrap(text.textContainer)
+                    manager.ensureLayout(for: container)
+                    let firstGlyph = manager.boundingRect(forGlyphRange: NSRange(location: 0, length: 1), in: container)
+                    print("PROCESS_PROSE_GEOMETRY skin=\(skin) shared=\(shared) expanded=\(expanded) frameGap=\(gap) glyphGap=\(gap + firstGlyph.minY + text.textContainerOrigin.y)")
+                    text.setSelectedRange(NSRange(location: 1, length: 4))
+                    h.coordinator.apply(rows: [process(!expanded), body])
+                    await settlePositionPublication()
+                    let retainedCell = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true))
+                    XCTAssertTrue(textView(in: retainedCell, identifier: "chat.timeline.body") === text)
+                    XCTAssertEqual(text.selectedRange(), NSRange(location: 1, length: 4))
+                    body.nativeText += "继续处理"
+                    body.contentRevision += 1
+                    h.coordinator.apply(rows: [process(expanded), body])
+                    await settlePositionPublication()
+                    XCTAssertEqual(text.string, body.nativeText)
+                    XCTAssertTrue(text.isSelectable)
+                }
+                // Same content revision, different reply boundary: restore ordinary spacing.
+                body.followsReplyProcess = false
+                h.coordinator.apply(rows: [process(false), body])
+                await settlePositionPublication()
+                let cell = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true))
+                let text = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
+                let restored = text.convert(text.bounds, to: h.tableView).minY
+                    - (h.tableView.rect(ofRow: 0).maxY - MessageCardMetrics.rowInset)
+                XCTAssertEqual(restored, 2 + skin.typography(for: .assistant).rowInset + 10, accuracy: 1)
+            }
+        }
+    }
+
     func testPlainStreamingAppendRetainsContainerMenuAndCoalescesLayout() async throws {
         let h = makeHarness(followsLatest: true, useSharedTextCards: true)
         var text = "A streaming reply"

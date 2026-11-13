@@ -20,6 +20,10 @@ enum ReplyIdentityLayout {
 }
 
 struct AppKitChatTimelineRow: Identifiable {
+    /// Prose immediately following the process card in the same reply.
+    var followsReplyProcess = false
+    // With the two exterior row insets and table spacing this leaves ~8pt.
+    static let processProseTopInset: CGFloat = 5
     var processParentID: String? = nil
     var processStep: NativeExecutionTimelineStep? = nil
     var hasVirtualProcessChildren = false
@@ -462,6 +466,7 @@ enum SDKRowContainerResetPolicy {
               previous.title == next.title, previous.metadata == next.metadata,
               previous.showsHeader == next.showsHeader, previous.isExpanded == next.isExpanded,
               previous.showsReplyActions == next.showsReplyActions,
+              previous.followsReplyProcess == next.followsReplyProcess,
               (previous.replyIdentity == nil) == (next.replyIdentity == nil),
               previous.images.isEmpty, next.images.isEmpty,
               previous.actions.isEmpty, next.actions.isEmpty,

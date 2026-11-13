@@ -62,8 +62,11 @@ struct ConversationChecklistDockProjection {
 /// A sibling of the message scroller, so reading history cannot hide it.
 struct PinnedExecutionChecklistCard: View {
     let plan: ConversationExecutionPlan
+    var jumpControl: AnyView? = nil
     @State private var width: CGFloat = 300
     @State private var expanded = false
+    @State private var retainsExpandedEnvelope = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func height(plan: ConversationExecutionPlan, width: CGFloat, expanded: Bool) -> CGFloat {
         guard expanded else { return 36 }
@@ -74,10 +77,16 @@ struct PinnedExecutionChecklistCard: View {
     }
 
     var body: some View {
+        let expandedHeight = expanded || retainsExpandedEnvelope
+            ? Self.height(plan: plan, width: width, expanded: true) : 36
+        let animation: Animation? = reduceMotion ? nil : .easeInOut(duration: 0.2)
         ScrollView(.vertical) {
             if let taskID = plan.taskId {
                 DesktopExecutionChecklistContent(plan: plan, taskID: taskID, width: width - 20,
-                    isExpanded: expanded, onToggleExpansion: { expanded.toggle() }, compact: true)
+                    isExpanded: expanded, onToggleExpansion: {
+                        retainsExpandedEnvelope = !reduceMotion
+                        expanded.toggle()
+                    }, compact: true)
                     .padding(.horizontal, 10).padding(.vertical, 8)
             }
         }
@@ -85,7 +94,25 @@ struct PinnedExecutionChecklistCard: View {
         .frame(maxWidth: 780)
         .onGeometryChange(for: CGFloat.self) { max(148, $0.size.width) } action: { width = $0 }
         .platformGlassSurface(in: RoundedRectangle(cornerRadius: 14, style: .continuous), variant: .regular)
+        .overlay(alignment: .top) {
+            if let jumpControl {
+                jumpControl.offset(y: -(ComposerQuickMessagesBar.jumpControlSize + 8))
+            }
+        }
+        .animation(animation, value: expanded)
+        // Native ideal size changes only at expansion start / collapse end.
+        // The interpolated card stays bottom-aligned inside that safe envelope.
+        .frame(height: expanded || retainsExpandedEnvelope ? expandedHeight : 36, alignment: .bottom)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task(id: expanded) {
+            guard !expanded, retainsExpandedEnvelope else { return }
+            if !reduceMotion { try? await Task.sleep(for: .milliseconds(200)) }
+            guard !Task.isCancelled else { return }
+            retainsExpandedEnvelope = false
+        }
+        .onChange(of: reduceMotion) { _, reduced in
+            if reduced { retainsExpandedEnvelope = false }
+        }
         .accessibilityIdentifier("conversation.pinned-execution-checklist")
     }
 }

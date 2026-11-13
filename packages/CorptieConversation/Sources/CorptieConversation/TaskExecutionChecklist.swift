@@ -56,6 +56,7 @@ public struct TaskExecutionChecklist: View {
     }
     private var isCompact: Bool { compactSummary != nil }
     private var isClosed: Bool { plan.closed == true }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var expanded: Bool { isExpanded ?? showsAll }
     private var columns: Int { Self.columns(for: width) }
     private var grid: [GridItem] { Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: columns) }
@@ -79,7 +80,9 @@ public struct TaskExecutionChecklist: View {
                     Button {
                         if let onToggleExpansion { onToggleExpansion() } else { showsAll.toggle() }
                     } label: {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: expanded)
                             .frame(width: 18, height: 20).contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("task-execution-checklist.disclosure")

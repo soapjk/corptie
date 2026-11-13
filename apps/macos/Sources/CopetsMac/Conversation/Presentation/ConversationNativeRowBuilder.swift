@@ -18,8 +18,10 @@ struct ConversationNativeRowBuilder {
         var result = rows
         // Reused prefix rows may already have a header. Recompute ownership
         // without changing content revisions or invalidating text caches.
-        for index in result.indices { result[index].replyIdentity = nil }
-        guard let replyIdentity else { return result }
+        for index in result.indices {
+            result[index].replyIdentity = nil
+            result[index].followsReplyProcess = false
+        }
         var hasReply = false
         var activeTurnID: String?
         for index in entries.indices {
@@ -38,6 +40,10 @@ struct ConversationNativeRowBuilder {
             let newTurn = !hasReply || (!turnID.isEmpty && activeTurnID != nil && activeTurnID != turnID)
             if newTurn {
                 result[index].replyIdentity = replyIdentity
+            } else if index > 0, case .process = entries[index - 1].kind,
+                      result[index].contentSurfaceRole == .assistant,
+                      result[index].nativeStyle == .agent {
+                result[index].followsReplyProcess = true
             }
             hasReply = true
             if !turnID.isEmpty { activeTurnID = turnID }

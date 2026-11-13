@@ -110,7 +110,7 @@ struct ResidentSessionPageRoot: View {
     }
 }
 
-/// Local tabs share the existing detail rail and its outer background.
+/// The window header selects the content shown in the existing detail rail.
 /// Only the selected content is mounted, so a hidden mailbox does no work.
 private struct SessionAuxiliaryPanel<Content: View>: View {
     @Environment(\.detailColumnVisibility) private var visibility
@@ -118,24 +118,16 @@ private struct SessionAuxiliaryPanel<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Picker("侧边区域", selection: $showsMailbox) {
-                    Label("信箱", systemImage: "tray").tag(true)
-                    Label("详情", systemImage: "sidebar.right").tag(false)
-                }
-                .pickerStyle(.segmented).labelsHidden().controlSize(.small)
-                Button {
-                    showsMailbox = false
-                    visibility?.wrappedValue = false
-                } label: {
-                    Image(systemName: "xmark").frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain).help("关闭侧边区域")
-                .accessibilityLabel("关闭侧边区域")
+        VStack(alignment: .trailing, spacing: 0) {
+            Button {
+                showsMailbox = false
+                visibility?.wrappedValue = false
+            } label: {
+                Image(systemName: "xmark").frame(width: 24, height: 24)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            Divider()
+            .buttonStyle(.plain).help("关闭侧边区域")
+            .accessibilityLabel("关闭侧边区域")
+            .padding(.trailing, 12)
             content().frame(maxHeight: .infinity, alignment: .top)
         }
     }
