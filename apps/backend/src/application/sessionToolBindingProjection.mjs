@@ -14,7 +14,8 @@ export function createSessionToolBindingProjection({ store, prepareDesiredReplac
       sessionId: session?.id ?? null,
       logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
       providerBindingId: logical?.activeBinding?.bindingId ?? null,
-      providerId: logical?.activeBinding?.providerId ?? null
+      providerId: logical?.activeBinding?.providerId ?? null,
+      providerSessionId: logical?.activeBinding?.providerSessionId ?? logical?.activeThreadId ?? null
     };
   }
 

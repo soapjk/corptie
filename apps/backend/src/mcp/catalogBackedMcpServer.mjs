@@ -2,6 +2,7 @@ import { logError } from "../utils/errorDiagnostics.mjs";
 import { randomUUID } from "node:crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { normalizeMcpToolResult } from "../application/toolResultContent.mjs";
 
 export function createCatalogBackedMcpServer(options = {}) {
   if (!options.client) throw new TypeError("Catalog-backed MCP requires an authenticated backend client.");
@@ -63,7 +64,7 @@ export function createCatalogBackedMcpServer(options = {}) {
         && ["applying", "applied"].includes(result?.status)) {
         await checkRevision();
       }
-      return normalizeToolResult(result);
+      return normalizeMcpToolResult(result);
     } catch (error) {
       logError("catalog-mcp.call", error);
       return {
@@ -112,13 +113,5 @@ function toMcpDefinition(definition) {
     description: definition.description ?? "",
     inputSchema: definition.inputSchema,
     ...(definition.annotations ? { annotations: definition.annotations } : {})
-  };
-}
-
-function normalizeToolResult(result) {
-  if (Array.isArray(result?.content)) return result;
-  return {
-    content: [{ type: "text", text: JSON.stringify(result ?? {}) }],
-    ...(result && typeof result === "object" ? { structuredContent: result } : {})
   };
 }

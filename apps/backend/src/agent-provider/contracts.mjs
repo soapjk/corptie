@@ -52,6 +52,7 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   ACCOUNT_USAGE_READ: "usage.account.read",
   SESSION_USAGE_READ: "usage.session.read",
   TOOL_HOST_ATTACH: "tools.attach",
+  COMPUTER_USE_RUNTIME: "tools.computerUse.runtime",
   SKILL_LAZY_LOAD: "agent.skills.lazyLoad",
   SKILL_MCP_DEPENDENCIES: "agent.skills.mcpDependencies",
   TURN_CHANGES_MANAGE: "turn.changes.manage"
@@ -102,6 +103,7 @@ export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
   [AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ]: "readAccountUsage",
   [AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ]: "readSessionUsage",
   [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]: "attachTools",
+  [AGENT_PROVIDER_CAPABILITIES.COMPUTER_USE_RUNTIME]: "connectComputerUseRuntime",
   [AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE]: "manageTurnChanges"
 });
 

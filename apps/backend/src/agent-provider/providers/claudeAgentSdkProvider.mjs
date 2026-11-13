@@ -55,6 +55,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ]
     },
     metadata: {
+      computerUse: { supported: true, experimental: true, reason: "", transport: "session-mcp", nativeImages: true },
       sessionContextDelivery: { mode: "append", maxDeltaTurns: 32 },
       bindingReadiness: { version: 1, reconciliation: "unsupported", runtimeEpoch: true },
       backgroundPermissionProfiles: ["read-only"],

@@ -1,4 +1,5 @@
 import { codexNoToolsConfig } from "./codexNoToolsPolicy.mjs";
+import { codexMcpRequestMetadata } from "./codexMcpRequestMetadata.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { spawn } from "node:child_process";
 import { executeCodexSlashCommand } from "./codexSlashCommands.mjs";
@@ -17,6 +18,7 @@ export {
 import { codexUserInputItem, codexUserInputResponse, normalizeCodexUserInputRequest } from "./codexUserInput.mjs";
 import { structuredRequest, structuredResponse } from "../application/structuredInteraction.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
+import { codexDynamicToolResult } from "../application/toolResultContent.mjs";
 import { createCodexBackgroundOperations } from "./codexBackgroundOperations.mjs";
 import {
   providerContractHashFromReceipt,
@@ -1071,12 +1073,10 @@ export class CodexAppServerClient {
       const value = await this.onDynamicToolCall({
         ...params,
         agentId,
-        metadata: this.dynamicToolMetadataByThread.get(params.threadId) ?? null
+        metadata: this.dynamicToolMetadataByThread.get(params.threadId) ?? null,
+        providerRequestMeta: codexMcpRequestMetadata(params)
       });
-      await this.respondToServerRequest(message.id, {
-        contentItems: [{ type: "inputText", text: JSON.stringify(value, null, 2) }],
-        success: true
-      });
+      await this.respondToServerRequest(message.id, codexDynamicToolResult(value));
     } catch (error) {
       logError("codex-app-server.dynamic-tool", error, { requestId: message.id });
       await this.respondToServerRequest(message.id, {

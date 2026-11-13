@@ -1,3 +1,4 @@
+import { COMPUTER_USE_BRIDGE_PROFILE } from "./computerUseBridge.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { createMcpCredentialMigration } from "./mcpCredentialMigration.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -56,7 +57,7 @@ export class McpRegistryService {
       SELECT server_id, name, url, transport, command, args_json, cwd, enabled, tool_count, verified_at,
              last_checked_at, last_check_status, last_error_code, observed_tool_names_json,
              source_kind, source_locator, source_revision, package_root, package_hash, descriptor_path,
-             config_revision,
+             config_revision, runtime_profile,
              credential_ref, credential_names_json,
              created_at, updated_at,
              (SELECT COUNT(*) FROM agent_mcp_assignments a WHERE a.server_id = s.server_id) AS assignment_count
@@ -69,7 +70,7 @@ export class McpRegistryService {
       SELECT server_id, name, url, transport, command, args_json, cwd, enabled, tool_count, verified_at,
              last_checked_at, last_check_status, last_error_code, observed_tool_names_json,
              source_kind, source_locator, source_revision, package_root, package_hash, descriptor_path,
-             config_revision,
+             config_revision, runtime_profile,
              credential_ref, credential_names_json,
              created_at, updated_at,
              (SELECT COUNT(*) FROM agent_mcp_assignments a WHERE a.server_id = s.server_id) AS assignment_count
@@ -553,14 +554,14 @@ export class McpRegistryService {
        enabled, tool_count, verified_at, last_checked_at, last_check_status,
        observed_tool_names_json, source_kind, source_locator, source_revision, package_root,
        package_hash, descriptor_path, credential_ref, credential_names_json, install_request_id,
-       created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       created_at, updated_at, runtime_profile)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [serverId, verified.name, verified.url ?? "", verified.transport, verified.command ?? null,
       JSON.stringify(verified.args ?? []), verified.cwd ?? null, verified.toolCount, now, now,
       JSON.stringify(verified.toolNames), metadata.sourceKind ?? "direct", metadata.sourceLocator ?? null,
       metadata.sourceRevision ?? null, metadata.packageRoot ?? null, metadata.packageHash ?? null,
       metadata.descriptorPath ?? null, metadata.credentialRef ?? null,
-      JSON.stringify(metadata.credentialNames ?? []), metadata.installRequestId ?? null, now, now]);
+      JSON.stringify(metadata.credentialNames ?? []), metadata.installRequestId ?? null, now, now, verified.runtimeProfile ?? null]);
     this.store.scheduleSave();
     this.#recordRuntimeEventBestEffort({ serverId, stage: "tools-list", status: "success",
       toolCount: verified.toolCount });
@@ -603,6 +604,7 @@ export class McpRegistryService {
     const credentials = input.clearCredentials ? null : replacementCredentials ?? retainedCredentials;
     const candidate = transport === "stdio"
       ? { name: input.name ?? current.name, transport,
+        runtimeProfile: sameTransport ? current.runtimeProfile : null,
         command: input.command ?? (sameTransport ? current.command : undefined),
         args: input.args ?? (sameTransport ? current.args : undefined),
         cwd: input.cwd ?? (sameTransport ? current.cwd : undefined),
@@ -625,13 +627,13 @@ export class McpRegistryService {
           command = ?, args_json = ?, cwd = ?, tool_count = ?, verified_at = ?,
           last_checked_at = ?, last_check_status = 'available', last_error_code = NULL,
           observed_tool_names_json = ?, credential_ref = ?, credential_names_json = ?,
-          config_revision = config_revision + 1,
+          config_revision = config_revision + 1, runtime_profile = ?,
           updated_at = ? WHERE server_id = ? AND config_revision = ?`,
         [verified.name, verified.url ?? "", verified.transport, verified.command ?? null,
           JSON.stringify(verified.args ?? []), verified.cwd ?? null, verified.toolCount,
           now, now, JSON.stringify(verified.toolNames), credentialRef,
           JSON.stringify(Object.keys(credentials?.[transport === "stdio" ? "env" : "headers"] ?? {})),
-          now, serverId, current.configRevision]);
+          verified.runtimeProfile ?? null, now, serverId, current.configRevision]);
         if (this.store.db.getRowsModified() !== 1) {
           throw registryError("MCP_CONFIG_STALE", "MCP Server configuration changed during verification.", 409);
         }
@@ -965,7 +967,7 @@ export class McpRegistryService {
   serversForAgent(agentId) {
     if (!this.store.getAgent(agentId)) return {};
     const rows = this.store.selectAll(`
-      SELECT s.server_id, s.name, s.url, s.transport, s.command, s.args_json, s.cwd,
+      SELECT s.server_id, s.name, s.url, s.transport, s.command, s.args_json, s.cwd, s.runtime_profile,
              s.verified_at, s.credential_ref, a.credential_ref AS assignment_credential_ref,
              a.credential_revision, a.tool_allowlist_json
       FROM mcp_server_registry s
@@ -986,10 +988,10 @@ export class McpRegistryService {
       return [serverKey(row.server_id), row.transport === "stdio"
         ? { serverId: row.server_id, type: "stdio", command: row.command, args: JSON.parse(row.args_json), cwd: row.cwd,
           env: { ...isolatedStdioEnv(), ...(credentials?.env ?? {}) }, isolatedEnv: true,
-          displayName: row.name, observationRevision: row.verified_at,
+          displayName: row.name, observationRevision: row.verified_at, runtimeProfile: row.runtime_profile,
           credentialVersion: `${selectedRef ?? "none"}:${this.secretStore.revision?.() ?? 0}`, toolAllowlist, unavailableCode }
         : { serverId: row.server_id, type: row.transport, url: row.url, headers: credentials?.headers,
-          displayName: row.name, observationRevision: row.verified_at,
+          displayName: row.name, observationRevision: row.verified_at, runtimeProfile: row.runtime_profile,
           credentialVersion: `${selectedRef ?? "none"}:${this.secretStore.revision?.() ?? 0}`, toolAllowlist, unavailableCode }];
     }));
   }
@@ -1013,6 +1015,9 @@ async function normalizedConfig(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw registryError("INVALID_INPUT", "MCP Server configuration must be an object.", 400);
   }
+  if (input.runtimeProfile != null && (input.runtimeProfile !== COMPUTER_USE_BRIDGE_PROFILE || input.transport !== "stdio")) {
+    throw registryError("MCP_RUNTIME_PROFILE_INVALID", "Unsupported desktop MCP runtime profile.", 400);
+  }
   const name = typeof input.name === "string" ? input.name.trim() : "";
   const transport = ["sse", "http", "stdio"].includes(input.transport) ? input.transport : null;
   if (!name || name.length > 120 || !transport) {
@@ -1035,7 +1040,8 @@ async function normalizedConfig(input = {}) {
       logError("mcp-registry.local-command", error);
       throw registryError("MCP_COMMAND_INVALID", "Local MCP executable or working directory is unavailable.", 400);
     }
-    return { name, transport, command, args, cwd, ...(env ? { env } : {}) };
+    return { name, transport, command, args, cwd, ...(env ? { env } : {}),
+      ...(input.runtimeProfile ? { runtimeProfile: input.runtimeProfile } : {}) };
   }
   if (input.command != null || input.args != null || input.cwd != null || input.env != null) {
     throw registryError("INVALID_INPUT", "Remote MCP configuration cannot include a local command.", 400);
@@ -1189,7 +1195,7 @@ function presentServer(row) {
     transport: row.transport, enabled: Boolean(row.enabled), toolCount: row.tool_count,
     command: row.command, args: JSON.parse(row.args_json ?? "[]"), cwd: row.cwd,
     verifiedAt: row.verified_at, assignmentCount: row.assignment_count,
-    configRevision: row.config_revision,
+    configRevision: row.config_revision, runtimeProfile: row.runtime_profile ?? null,
     lastCheckedAt: row.last_checked_at, lastCheckStatus: row.last_check_status,
     lastErrorCode: row.last_error_code, observedToolNames: JSON.parse(row.observed_tool_names_json ?? "[]"),
     sourceKind: row.source_kind, sourceLocator: row.source_locator, sourceRevision: row.source_revision,
