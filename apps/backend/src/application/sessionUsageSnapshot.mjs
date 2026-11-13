@@ -24,6 +24,8 @@ export async function loadSessionUsageSnapshot({
   return {
     account: loadedAccount ?? fallbackAccount,
     accountFresh: loadedAccount !== null,
+    accountLoadFailed: accountResult.status === "rejected" && accountResult.reason?.code !== "CAPABILITY_UNSUPPORTED",
+    contextLoadFailed: contextResult.status === "rejected",
     context: contextResult.status === "fulfilled" ? contextResult.value ?? null : null,
     resetForecast
   };

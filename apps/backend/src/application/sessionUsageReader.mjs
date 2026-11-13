@@ -20,6 +20,7 @@ export function createSessionUsageReader({
     const storedContext = store.getSessionContextUsage(sessionId);
     const contextMatchesRoute = storedContext
       && storedContext.providerId === providerId
+      && (storedContext.model ?? null) === model
       && (!storedContext.bindingId || !route?.bindingId || storedContext.bindingId === route.bindingId);
     const storedProviderModel = store.getProviderModelUsage(providerId, model);
     const fallbackAccount = storedProviderModel?.account ?? {

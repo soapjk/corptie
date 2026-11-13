@@ -79,6 +79,21 @@ export function handleSessionTimelineHttpRequest({
     return true;
   }
 
+  // Drafts have no Session context. Read only the existing provider/model quota
+  // snapshot; opening a composer must never start a Provider runtime.
+  if (request.method === "GET" && url.pathname === "/provider-model-usage") {
+    const provider = url.searchParams.get("provider");
+    const model = url.searchParams.get("model") || null;
+    if (!provider) {
+      sendJson(response, 400, { error: "Provider is required." });
+    } else {
+      const account = store.getProviderModelUsage(provider, model)?.account
+        ?? { available: null, provider, model };
+      sendJson(response, 200, { account, context: null, accountFresh: false });
+    }
+    return true;
+  }
+
   const sessionUsageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
   if (request.method === "GET" && sessionUsageMatch) {
     const sessionId = decodeURIComponent(sessionUsageMatch[1]);

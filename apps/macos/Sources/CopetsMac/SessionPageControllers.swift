@@ -51,6 +51,7 @@ final class SessionSupplementaryDataController: ObservableObject {
     }
     @Published private(set) var selectedSessionID: String?
     @Published var selectedSessionUsage: SessionUsageResponse?
+    @Published var usageLoadState: UsageLoadState = .loading
     var contextReferencesSessionID: String?
     @Published var selectedContextReferences: [SessionContextReference] = []
     @Published var isLoadingContextReferences = false

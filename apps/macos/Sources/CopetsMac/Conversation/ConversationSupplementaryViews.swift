@@ -90,6 +90,10 @@ struct OrphanedWorkspaceRecoveryView: View {
 struct ChatUsageBar: View {
     let sessionID: String
     let usage: SessionUsageResponse?
+    var loadState: UsageLoadState = .ready
+    var isDraft = false
+    var accountSupported: Bool? = nil
+    var contextSupported: Bool? = nil
     @State private var isResetNoticePresented = false
     @State private var bankedResetState: BankedResetState = .idle
 
@@ -101,68 +105,83 @@ struct ChatUsageBar: View {
     }
 
     var body: some View {
-        if let usage {
-            HStack(alignment: .center, spacing: 10) {
-                if let context = usage.context,
-                   let remaining = context.remainingTokens,
-                   let window = context.contextWindow, window > 0 {
-                    let used = SessionUsagePolicy.contextUsed(usedTokens: context.usedTokens,
-                        contextWindow: window, remainingTokens: remaining)
-                    let usedPercent = SessionUsagePolicy.contextUsedPercent(reported: context.usedPercent,
-                        used: used, contextWindow: window)
-                    ConversationComposerUsageSlot {
-                        SessionUsageItem(
-                            icon: "text.alignleft",
-                            value: "\(L10n("Context used")) \(SessionUsagePolicy.percent(usedPercent))%",
-                            progress: usedPercent / 100,
-                            color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
-                            numericValue: used
-                        )
-                    }
-                    .help("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(window)) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
-                    .accessibilityLabel("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(window)) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
-                    .accessibilityIdentifier("conversation-usage-context")
-                }
-                if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account),
-                   let remainingPercent = SessionUsagePresentation.remainingRateLimitPercent(window) {
-                    // Quota details are supported by the usage data, not a Provider identifier.
-                    Button {
-                        isResetNoticePresented.toggle()
-                    } label: {
-                        ConversationComposerUsageSlot {
-                            SessionUsageItem(
-                                icon: "bolt.fill",
-                                value: "\(L10n("Quota remaining")) \(SessionUsagePolicy.percent(remainingPercent))%",
-                                progress: remainingPercent / 100,
-                                color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
-                            )
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
-                    .accessibilityLabel("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
-                    .accessibilityIdentifier("conversation-usage-quota")
-                    .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
-                        resetNoticePopover(usage: usage, window: window)
-                    }
-                    .task(id: "\(sessionID):\(isResetNoticePresented)") {
-                        guard isResetNoticePresented else {
-                            bankedResetState = .idle
-                            return
-                        }
-                        bankedResetState = .loading
-                        let refreshed = await BackendClient.shared.usageController.refreshFreshAccount(for: sessionID)
-                        guard !Task.isCancelled else { return }
-                        if let refreshed {
-                            bankedResetState = .ready(refreshed.account.rateLimitResetCredits)
-                        } else {
-                            bankedResetState = .failed
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 2) {
+            if loadState == .failed || usage?.accountLoadFailed == true || usage?.contextLoadFailed == true {
+                Text(L10n("用量加载失败")).foregroundStyle(.secondary)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 6) { usageItems }
+                VStack(alignment: .leading, spacing: 2) { usageItems }
+            }
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .lineLimit(2)
+        .task(id: "\(sessionID):\(isResetNoticePresented)") {
+            guard !isDraft, isResetNoticePresented else {
+                bankedResetState = .idle
+                return
+            }
+            bankedResetState = .loading
+            let refreshed = await BackendClient.shared.usageController.refreshFreshAccount(for: sessionID)
+            guard !Task.isCancelled else { return }
+            if let refreshed {
+                bankedResetState = .ready(refreshed.account.rateLimitResetCredits)
+            } else {
+                bankedResetState = .failed
+            }
+        }
+        .onChange(of: usage?.account.model) { _, _ in isResetNoticePresented = false }
+        .onChange(of: usage?.account.provider) { _, _ in isResetNoticePresented = false }
+    }
+
+    @ViewBuilder
+    private var usageItems: some View {
+        if !isDraft, contextSupported != false, let context = usage?.context?.displayValues {
+            ConversationComposerUsageSlot {
+                SessionUsageItem(
+                    icon: "text.alignleft",
+                    value: "\(L10n("Context used")) \(SessionUsagePolicy.percent(context.percent))%",
+                    progress: context.percent / 100,
+                    color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: context.percent)),
+                    numericValue: context.used
+                )
+            }
+            .help("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(context.used)) / \(SessionUsagePolicy.exactTokens(context.window))")
+            .accessibilityLabel("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(context.used)) / \(SessionUsagePolicy.exactTokens(context.window))")
+            .accessibilityIdentifier("conversation-usage-context")
+        } else {
+            Text(L10n(isDraft ? "上下文：尚未开始" : UsagePlaceholderPolicy.key(
+                context: true, supported: contextSupported, loading: usage == nil && loadState == .loading,
+                failed: loadState == .failed || usage?.contextLoadFailed == true)))
+                .foregroundStyle(.secondary)
+        }
+        if accountSupported != false, let usage,
+           let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account),
+           let remainingPercent = SessionUsagePresentation.remainingRateLimitPercent(window) {
+            Button {
+                isResetNoticePresented.toggle()
+            } label: {
+                ConversationComposerUsageSlot {
+                    SessionUsageItem(
+                        icon: "bolt.fill",
+                        value: "\(L10n("Quota remaining")) \(SessionUsagePolicy.percent(remainingPercent))%",
+                        progress: remainingPercent / 100,
+                        color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
+                    )
                 }
             }
-            .font(.system(size: 9, weight: .semibold))
-            .lineLimit(2)
+            .buttonStyle(.plain)
+            .help(isDraft ? L10n("最近记录的额度") : "\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+            .accessibilityLabel("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+            .accessibilityIdentifier("conversation-usage-quota")
+            .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
+                resetNoticePopover(usage: usage, window: window)
+            }
+        } else {
+            Text(L10n(UsagePlaceholderPolicy.key(context: false, supported: accountSupported,
+                loading: usage == nil && loadState == .loading,
+                failed: loadState == .failed || usage?.accountLoadFailed == true)))
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -218,4 +237,14 @@ struct ChatUsageBar: View {
         date.formatted(date: .abbreviated, time: .shortened)
     }
 
+}
+
+/// Text states are deliberately separate from numerical data; unknown never means zero.
+enum UsagePlaceholderPolicy {
+    static func key(context: Bool, supported: Bool?, loading: Bool, failed: Bool) -> String {
+        if supported == false { return context ? "上下文：不支持" : "额度：不支持" }
+        if failed { return context ? "上下文：加载失败" : "额度：刷新失败" }
+        if loading { return context ? "上下文：加载中…" : "额度：加载中…" }
+        return context ? "上下文：暂无数据" : "额度：暂无数据"
+    }
 }

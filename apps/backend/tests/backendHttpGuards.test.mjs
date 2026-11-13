@@ -36,7 +36,7 @@ test("local directory diagnosis is preview-readable but repairs remain forbidden
 
 test("preview permits only the existing read surfaces and denies writes even on readable paths", () => {
   for (const path of ["/health", "/settings", "/settings/task-creation", "/first-run", "/events", "/sessions", "/search", "/state/snapshot", "/state/changes", "/state/events",
-    "/session-timelines/revisions", "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
+    "/session-timelines/revisions", "/provider-model-usage?provider=fixture&model=model-a", "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
     "/automations", "/scheduled-tasks", "/scheduled-session-tasks", "/scene-templates", "/scenes",
     "/sessions/id/stored-snapshot", "/sessions/id/timeline/window", "/sessions/id/fork", "/sessions/id/images", "/sessions/id/quick-messages",
     "/sessions/id/detail", "/sessions/id/detail/events", "/sessions/id/detail/capabilities", "/sessions/id/detail/receipts/request-1234",
