@@ -71,6 +71,7 @@ struct ConversationNativeRowBuilder {
         let metadata: String
         let expandableTurnId: String?
         let isExpanded: Bool
+        var processSubagentCount = 0
         var processCount: Int?
         var processDuration: String?
         var processStartedAt: Date?
@@ -216,7 +217,8 @@ struct ConversationNativeRowBuilder {
             metadata = ""
             expandableTurnId = entry.processDisclosureID
             isExpanded = expanded
-            processCount = items.count
+            processSubagentCount = ConversationExecutionProjection.subagentCount(for: items)
+            processCount = ConversationExecutionProjection.displayedCount(for: items)
             processDuration = executionProcessDurationText(for: items)
             processState = entry.processReplyState
                 ?? (entry.processReplyCompleted ? .completed : projectedProcessState(for: items))
@@ -260,6 +262,7 @@ struct ConversationNativeRowBuilder {
             collaborationRoute: collaborationRoute,
             expandableTurnId: expandableTurnId,
             isExpanded: isExpanded,
+            processSubagentCount: processSubagentCount,
             processCount: processCount,
             processDuration: processDuration,
             processStartedAt: processStartedAt,

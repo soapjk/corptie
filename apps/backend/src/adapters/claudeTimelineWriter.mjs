@@ -88,13 +88,17 @@ export function createClaudeTimelineWriter({ maxItems, emitProviderEvent }) {
     let originalInput = message?.description ?? null;
     try { originalInput = JSON.parse(previous?.rawMetadataJSON)?.toolExecution?.input ?? originalInput; }
     catch { /* The first update can have no previous structured metadata. */ }
-    const rawMetadataJSON = withToolExecutionMetadata(
+    let rawMetadataJSON = withToolExecutionMetadata(
       previous?.rawMetadataJSON ?? providerRawMetadataJSON("claude-sdk", { taskId }, { source: "normalized_item" }),
       toolExecutionForItem({ id, type: "mcpToolCall", title, status }, {
         input: originalInput,
         result: terminal ? message?.summary ?? message?.patch?.error ?? text : null
       })
     );
+    rawMetadataJSON = JSON.stringify({ ...JSON.parse(rawMetadataJSON), subagentActivity: {
+      schemaVersion: 1, activityId: id, childId: taskId, name: title,
+      event: terminal ? "completed" : "started", status
+    } });
     if (!previous) {
       appendItem(session, { id, type: "mcpToolCall", title, text, status, rawMetadataJSON });
       return;

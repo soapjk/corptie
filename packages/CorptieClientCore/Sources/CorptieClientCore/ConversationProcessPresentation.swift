@@ -21,17 +21,21 @@ public enum ConversationProcessState: Hashable, Sendable {
 
 public struct ConversationProcessPresentation: Sendable {
     public let state: ConversationProcessState
+    public let subagentCount: Int
     public let count: Int
     public let duration: String?
     public let currentStepTitle: String?
-    public init(state: ConversationProcessState, count: Int, duration: String? = nil, currentStepTitle: String? = nil) {
+    public init(state: ConversationProcessState, count: Int, duration: String? = nil, currentStepTitle: String? = nil, subagentCount: Int = 0) {
+        self.subagentCount = subagentCount
         self.state = state; self.count = count; self.duration = duration; self.currentStepTitle = currentStepTitle
     }
     public var summary: String { summary(languageCode: "en") }
 
     public func summary(languageCode: String) -> String {
         let chinese = languageCode.lowercased().hasPrefix("zh")
-        let steps = chinese ? "\(count) 步" : "\(count) \(count == 1 ? "step" : "steps")"
+        let childLabel = subagentCount > 0 ? (chinese ? " · \(subagentCount) 个子 agent" : " · \(subagentCount) subagents") : ""
+        let stepCount = max(0, count - subagentCount)
+        let steps = (chinese ? "\(stepCount) 步" : "\(stepCount) \(stepCount == 1 ? "step" : "steps")") + childLabel
         let normalizedDuration = duration?
             .replacingOccurrences(of: "·", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

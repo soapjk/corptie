@@ -2649,3 +2649,10 @@
 "Installed globally. Enable with @ or the Session abilities card." = "全局安装 · 在会话中通过 @ 或右侧能力卡片开启";
 "Install globally; enable in a Session with @ or its abilities card." = "全局安装；在会话中通过 @ 或能力卡片开启。";
 "Install a Server, then enable it in a Session." = "安装 MCP 后，在会话中按需开启。";
+"Subagent started" = "子 agent 已启动";
+
+"Subagent follow-up sent" = "已发送后续指令";
+
+"Subagent completed" = "子 agent 已完成";
+
+"Subagent status unknown" = "子 agent 状态待确认";

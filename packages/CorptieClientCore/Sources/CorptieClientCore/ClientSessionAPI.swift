@@ -79,6 +79,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public var replyAssociation: ConversationMessageReply? = nil
     public var coordinationProgress: ClientCoordinationProgress? = nil
     public let executionPlan: ConversationExecutionPlan?
+    public var subagentActivity: ConversationSubagentActivity? = nil
     public let toolExecution: ConversationToolExecution?
     public let changeSet: ConversationChangeSet?
     public let userInput: ConversationUserInput?
@@ -100,7 +101,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         case messageOrigin, automationRunId, automationRunStatus, automationRunError
         case automationTriggerType, automationScheduleType, automationIntervalSeconds, automationConditionCheckIntervalSeconds, automationProcessPollIntervalSeconds
         case automationExpiresAt, systemEventKind, systemEventReason, systemEventSource
-        case rawMetadataJSON, replyAssociation, coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
+        case subagentActivity, rawMetadataJSON, replyAssociation, coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -175,6 +176,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         processEndedAt = try container.decodeIfPresent(String.self, forKey: .processEndedAt)
         images = try container.decodeIfPresent([ClientMessageImage].self, forKey: .images) ?? []
         executionPlan = try? container.decodeIfPresent(ConversationExecutionPlan.self, forKey: .executionPlan)
+        subagentActivity = try? container.decodeIfPresent(ConversationSubagentActivity.self, forKey: .subagentActivity)
         toolExecution = try? container.decodeIfPresent(ConversationToolExecution.self, forKey: .toolExecution)
         changeSet = try? container.decodeIfPresent(ConversationChangeSet.self, forKey: .changeSet)
         userInput = try? container.decodeIfPresent(ConversationUserInput.self, forKey: .userInput)

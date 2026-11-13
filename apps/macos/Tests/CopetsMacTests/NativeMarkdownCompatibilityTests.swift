@@ -1,8 +1,27 @@
 import AppKit
 import XCTest
+import CorptieClientCore
 @testable import CorptieMac
 
 final class NativeMarkdownCompatibilityTests: XCTestCase {
+    @MainActor
+    func testSubagentNotificationsDecodeAndAggregateOnMac() throws {
+        let source: [[String: Any]] = ["started", "completed", "interacted"].enumerated().map { index, event in
+            ["id": "event\(index)", "turnId": "turn", "type": "subAgentActivity", "title": "subAgentActivity", "text": "", "turnStatus": "inProgress",
+             "subagentActivity": ["schemaVersion": 1, "activityId": "event\(index)", "childId": "child", "name": "worker", "event": event,
+                "status": event == "started" ? "running" : event == "completed" ? "completed" : "unknown"]]
+        }
+        let items = try JSONDecoder().decode([CodexThreadItem].self, from: JSONSerialization.data(withJSONObject: source))
+        let steps = NativeExecutionTimelineProjection.steps(for: items)
+        XCTAssertEqual(steps.count, 1)
+        XCTAssertEqual(steps[0].state, .unknown)
+        XCTAssertEqual(steps[0].subagent?.activities.count, 3)
+        let text = NativeExecutionTimelineAttributedText.make(steps: steps).string
+        XCTAssertTrue(text.contains("worker"))
+        XCTAssertTrue(text.contains(L10n("Subagent follow-up sent")))
+        XCTAssertFalse(text.contains("subAgentActivity"))
+    }
+
     @MainActor
     func testInlineChartCopyRespectsExplicitSafePresentationAndKeepsRawOtherwise() {
         let raw = "Before\n```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"A\",\"data\":[{\"label\":\"B\",\"value\":2}]}\n```\nAfter"
@@ -461,12 +480,14 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testNonWhitelistedAutomationEventCannotRenderACard() {
+    func testCompletedAutomationEventRetainsItsMessageCard() throws {
         var automation = item(id: "automation", type: "automationEvent", text: "Done")
         automation.presentationRole = "automation"
         automation.automationName = "Nightly review"
         automation.automationEventType = "ScheduledSessionRunCompleted"
-        XCTAssertNil(nativeAutomationCardPresentation(for: automation))
+        let card = try XCTUnwrap(nativeAutomationCardPresentation(for: automation))
+        XCTAssertEqual(card.title, "Nightly review")
+        XCTAssertEqual(card.messageText, "Done")
     }
 
     @MainActor
@@ -480,9 +501,10 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
 
         XCTAssertNil(nativeCollaborationCardPresentation(for: anomaly, currentSessionTitle: "Session"))
         let presentation = try XCTUnwrap(nativeSystemEventCardPresentation(for: anomaly))
-        XCTAssertTrue(presentation.title.contains("System Event"))
+        let words = ConversationEventText(languageCode: AppLanguageController.shared.languageCode)
+        XCTAssertEqual(presentation.title, words.systemKind(anomaly.systemEventKind))
         XCTAssertTrue(presentation.bodyMarkdown.contains("task:missing"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("not an executable"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains(words.systemNotice))
     }
 
     func testOnlyPendingApprovalsOfferActions() {

@@ -1,3 +1,4 @@
+import { subagentActivityForItem } from "../adapters/subagentActivityProjection.mjs";
 import { parseJson } from "./storedJson.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
@@ -21,7 +22,8 @@ export function normalizeStoredItem(item, provider) {
       automationEventType: "ScheduledSessionRunQueued", automationRunStatus: restored.status,
       automationEventOccurredAt: restored.createdAt };
   }
-  return presentChildTaskResult(restored);
+  const subagentActivity = subagentActivityForItem(restored);
+  return presentChildTaskResult(subagentActivity ? { ...restored, subagentActivity } : restored);
 }
 
 export function normalizeStoredText(text = "", provider = "") {

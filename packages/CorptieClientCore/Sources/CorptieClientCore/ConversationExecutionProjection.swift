@@ -138,6 +138,7 @@ public struct ConversationUserInput: Codable, Sendable, Hashable {
 }
 
 public protocol ConversationExecutionItem: ConversationTimelineItem {
+    var subagentActivity: ConversationSubagentActivity? { get }
     var executionTitle: String { get }
     var status: String? { get }
     var executionPlan: ConversationExecutionPlan? { get }
@@ -146,6 +147,7 @@ public protocol ConversationExecutionItem: ConversationTimelineItem {
 }
 
 public extension ConversationExecutionItem {
+    var subagentActivity: ConversationSubagentActivity? { nil }
     var executionPlan: ConversationExecutionPlan? { nil }
     var toolExecution: ConversationToolExecution? { nil }
     var changeSet: ConversationChangeSet? { nil }
@@ -191,6 +193,7 @@ public struct ConversationExecutionStep: Identifiable, Hashable, Sendable {
     public let detail: String?
     public let plan: ConversationExecutionPlan?
     public let tool: ConversationToolExecution?
+    public var subagent: ConversationSubagentSummary? = nil
     public let changeSet: ConversationChangeSet?
     public init(id: String, kind: Kind, state: State, title: String, detail: String?,
                 plan: ConversationExecutionPlan? = nil, tool: ConversationToolExecution? = nil,
@@ -201,14 +204,48 @@ public struct ConversationExecutionStep: Identifiable, Hashable, Sendable {
 }
 
 public enum ConversationExecutionProjection {
+    public static func subagentCount<Item: ConversationExecutionItem>(for items: [Item]) -> Int {
+        Set(items.compactMap { $0.subagentActivity?.schemaVersion == 1 ? $0.subagentActivity?.childId : nil }.filter { !$0.isEmpty }).count
+    }
+    public static func displayedCount<Item: ConversationExecutionItem>(for items: [Item]) -> Int {
+        var children: Set<String> = []; var count = 0
+        for item in items {
+            if let child = item.subagentActivity, child.schemaVersion == 1, !child.childId.isEmpty {
+                if children.insert(child.childId).inserted { count += 1 }
+            } else { count += 1 }
+        }
+        return count
+    }
     public static let detailCharacterLimit = 180
     public static let detailLineLimit = 2
 
     public static func steps<Item: ConversationExecutionItem>(for items: [Item]) -> [ConversationExecutionStep] {
         let runningTurn = items.last.map { isRunningTurnStatus($0.timelineTurnStatus) } ?? false
-        return items.enumerated().map { index, item in
+        var result: [ConversationExecutionStep] = []
+        var grouped: [String: [ConversationSubagentActivity]] = [:]
+        var seen: Set<String> = []
+        for item in items {
+            if let activity = item.subagentActivity, activity.schemaVersion == 1,
+               !activity.childId.isEmpty, seen.insert(activity.activityId).inserted {
+                grouped[activity.childId, default: []].append(activity)
+            }
+        }
+        var emitted: Set<String> = []
+        for (index, item) in items.enumerated() {
+            if let activity = item.subagentActivity, let activities = grouped[activity.childId],
+               let latest = activities.last {
+                guard emitted.insert(activity.childId).inserted else { continue }
+                let summary = ConversationSubagentSummary(childId: activity.childId, name: latest.name, activities: activities)
+                let childState: ConversationExecutionStep.State = latest.status == "completed" ? .completed
+                    : latest.status == "failed" ? .failed : latest.status == "cancelled" ? .cancelled
+                    : latest.status == "running" && runningTurn ? .running : .unknown
+                var step = ConversationExecutionStep(id: "subagent:" + activity.childId, kind: .action, state: childState, title: summary.name, detail: nil)
+                step.subagent = summary
+                result.append(step)
+                continue
+            }
             let sourceTitle = item.executionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-            return ConversationExecutionStep(
+            result.append(ConversationExecutionStep(
                 id: item.id,
                 kind: kind(item.type),
                 state: state(item, isLatest: index == items.indices.last, runningTurn: runningTurn),
@@ -219,8 +256,9 @@ public enum ConversationExecutionProjection {
                 plan: item.executionPlan?.schemaVersion == 1 ? item.executionPlan : nil,
                 tool: item.toolExecution?.schemaVersion == 1 ? item.toolExecution : nil,
                 changeSet: item.changeSet?.schemaVersion == 1 ? item.changeSet : nil
-            )
+            ))
         }
+        return result
     }
 
     public static func title<Item: ConversationExecutionItem>(for item: Item) -> String {
@@ -243,7 +281,7 @@ public enum ConversationExecutionProjection {
 
     public static func plainText(for steps: [ConversationExecutionStep]) -> String {
         steps.map { step in
-            ["\(step.state.marker) [\(step.kind.label)] \(step.title)", step.detail,
+            ["\(step.state.marker) [\(step.kind.label)] \(step.title)", step.detail, step.subagent?.text(languageCode: "en"),
              step.tool.map { tool in
                  [tool.input.map { "Input: \($0)" }, tool.result.map { "Result: \($0)" }]
                      .compactMap { $0 }.joined(separator: "\n")

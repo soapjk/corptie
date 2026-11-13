@@ -1647,7 +1647,7 @@ private struct PadProcessCard: View {
         ConversationProcessPresentation(
             state: presentation.state,
             count: presentation.count,
-            duration: presentation.duration
+            duration: presentation.duration, subagentCount: presentation.subagentCount
         ).summary(languageCode: languageCode)
     }
     private var progressLabel: String? {
@@ -1687,7 +1687,7 @@ private struct PadProcessCard: View {
 
     private var staticSummary: String {
         ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: presentation.duration).summary(languageCode: languageCode)
+            duration: presentation.duration, subagentCount: presentation.subagentCount).summary(languageCode: languageCode)
     }
 
     private var pausedSummary: String {
@@ -1702,7 +1702,7 @@ private struct PadProcessCard: View {
             startedAt: startedAt, endingAt: date, showSeconds: true, fractionDigits: 0)
             ?? presentation.duration
         return ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: duration).summary(languageCode: languageCode)
+            duration: duration, subagentCount: presentation.subagentCount).summary(languageCode: languageCode)
     }
 
     private func processCard(summary: String, liveSummary: ((Date) -> String)? = nil) -> some View {

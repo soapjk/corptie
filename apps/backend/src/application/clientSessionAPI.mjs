@@ -14,6 +14,7 @@ import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscu
 import { clientChatCreationOptions, createClientChat } from "./clientChatCreation.mjs";
 import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand, clientWorkCreationOptions, createClientWork } from "./clientEntityCommands.mjs";
 import { clientWorkLocalState } from "./clientEntityCommands.mjs";
+import { publicSubagentActivity } from "../adapters/subagentActivityProjection.mjs";
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
 import { publicUserInput, validateInteractionAnswers, withSubmittedUserInputAnswers } from "./interactionInput.mjs";
@@ -138,6 +139,7 @@ function publicClientMessage(item) {
         ...normalizedImageGeometry(image.pixelWidth, image.pixelHeight) })) : [],
     coordinationProgress: item.type === "coordinationProgress" ? item.coordinationProgress ?? null : null,
     executionPlan: ["executionPlan", "executionChecklist"].includes(item.type) ? publicExecutionPlan(item.executionPlan) : null,
+    subagentActivity: publicSubagentActivity(item.subagentActivity),
     toolExecution: publicToolExecution(item.toolExecution),
     changeSet: publicChangeSet(item.changeSet),
     userInput: item.type === "userInput" ? publicUserInput(item.userInput) : null,
