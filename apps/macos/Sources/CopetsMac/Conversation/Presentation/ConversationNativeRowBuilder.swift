@@ -463,11 +463,12 @@ struct ConversationNativeRowBuilder {
             hasher.combine(itemSignature(item))
             hasher.combine(expandedTurnIds.contains(ScheduledTriggerPresentation.expansionID(for: item.id)))
         case .process(let turnId, let items):
+            let expanded = expandedTurnIds.contains(entry.processDisclosureID)
             hasher.combine(entry.processReplyCompleted)
             hasher.combine(entry.processReplyState)
             hasher.combine(AppLanguageController.shared.languageCode)
             hasher.combine(turnId)
-            hasher.combine(expandedTurnIds.contains(turnId))
+            hasher.combine(expanded)
             hasher.combine(items.count)
             hasher.combine(items.first?.processStartedAt)
             hasher.combine(items.first?.processEndedAt)
@@ -481,7 +482,7 @@ struct ConversationNativeRowBuilder {
                 // current-step summary does not remain on the old revision.
                 hasher.combine(last.executionPlan?.revision)
             }
-            if expandedTurnIds.contains(turnId) {
+            if expanded {
                 items.forEach { hasher.combine(itemSignature($0)) }
             }
         }

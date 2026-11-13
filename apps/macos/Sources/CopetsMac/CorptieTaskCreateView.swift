@@ -12,7 +12,6 @@ enum CorptieTaskCreateFormPolicy {
     @MainActor
     static func validationMessage(
         title: String,
-        detail: String,
         workId: String?,
         roleId: String?
     ) -> String? {
@@ -21,9 +20,6 @@ enum CorptieTaskCreateFormPolicy {
         }
         if !EntityNamePolicy.isValid(title) {
             return EntityNamePolicy.validationMessage
-        }
-        if detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return L10n("请输入 Task 描述。")
         }
         if workId == nil {
             return L10n("请选择 Work。")
@@ -58,8 +54,6 @@ struct CorptieTaskCreateView: View {
     let onCreated: (CorptieTask) -> Void
 
     @State private var title = ""
-    @State private var detail = ""
-    @State private var acceptanceCriteria = ""
     @State private var priority = "medium"
     @State private var selectedWorkId: String?
     @State private var selectedRoleId: String?
@@ -102,27 +96,17 @@ struct CorptieTaskCreateView: View {
                         formType: .task,
                         promptHint: L10n("例如：重构三个创建页，共享一键生成协议和错误处理，并补充测试。"),
                         currentValues: {
-                            ["title": title, "description": detail,
-                             "acceptanceCriteria": acceptanceCriteria, "priority": priority]
+                            ["title": title, "priority": priority]
                         }, onApply: applyGeneratedFields)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L10n("标题 *")).font(.caption).foregroundStyle(.secondary)
                         TextField(L10n("Task 标题"), text: $title)
                         EntityNameValidationMessage(value: title)
                     }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n("描述 *")).font(.caption).foregroundStyle(.secondary)
-                        TextEditor(text: $detail).font(.body).frame(height: 90).padding(6)
-                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                    }
                     workSection
                     agentSection
                     if let parentTaskId, let parent = parentChoices.first(where: { $0.id == parentTaskId }) {
                         Label(parent.title, systemImage: "arrow.turn.down.right").font(.callout)
-                    }
-                    DisclosureGroup(L10n("验收标准")) {
-                        TextEditor(text: $acceptanceCriteria).font(.body).frame(height: 70).padding(6)
-                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                     }
                     DisclosureGroup(L10n("执行配置与更多选项"), isExpanded: $showsAdvanced) {
                         VStack(alignment: .leading, spacing: 16) {
@@ -209,7 +193,6 @@ struct CorptieTaskCreateView: View {
     private var validationMessage: String? {
         CorptieTaskCreateFormPolicy.validationMessage(
             title: title,
-            detail: detail,
             workId: selectedWorkId,
             roleId: selectedRoleId
         )
@@ -425,8 +408,6 @@ struct CorptieTaskCreateView: View {
         let requestId = creationId
         let requestWorkId = selectedWorkId
         let requestTitle = trimmedTitle
-        let requestDetail = trimmedDetail
-        let requestAcceptanceCriteria = acceptanceCriteria
         let requestPriority = priority
         let parent=parentChoices.first{$0.id == parentTaskId}
         guard parentTaskId == nil || (parent != nil && parent?.resourceVersion != nil) else {
@@ -449,8 +430,6 @@ struct CorptieTaskCreateView: View {
                     id: requestId,
                     workId: requestWorkId,
                     title: requestTitle,
-                    description: requestDetail,
-                    acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
                     mainRoleId: selectedRoleId,
                     priority: requestPriority,
                     providerId: providerId,
@@ -475,14 +454,8 @@ struct CorptieTaskCreateView: View {
         title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var trimmedDetail: String {
-        detail.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func applyGeneratedFields(_ fields: [String: String]) {
         title = fields["title"] ?? title
-        detail = fields["description"] ?? detail
-        acceptanceCriteria = fields["acceptanceCriteria"] ?? acceptanceCriteria
         priority = fields["priority"] ?? priority
     }
 }

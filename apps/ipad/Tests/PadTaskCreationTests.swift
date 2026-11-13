@@ -119,11 +119,11 @@ struct PadTaskCreationTests {
         state.draft.model = "not-in-catalog"
         #expect(!state.canSubmit)
         state.draft.model = ""
-        state.draft.description = "保留描述"
+        state.draft.priority = "high"
         state.flush()
         let restored = PadTaskCreationState(workID: "work:a", sourceSessionID: "session:a", connection: connection, defaults: defaults)
         #expect(restored.draft.title == "修复任务")
-        #expect(restored.draft.description == "保留描述")
+        #expect(restored.draft.priority == "high")
         #expect(CreationProtocol.posts == 0)
     }
 

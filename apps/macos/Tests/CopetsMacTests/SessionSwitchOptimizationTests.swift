@@ -404,7 +404,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
                 createdAt: "2026-10-24", updatedAt: "2026-10-24")
             store.hydrate(works: [work])
             _ = store.acceptCorptieTask(CorptieTask(id: taskIDs[index], workId: workIDs[index],
-                title: "Switch task \(index)", description: "", acceptanceCriteria: "", priority: "medium",
+                title: "Switch task \(index)",   priority: "medium",
                 lifecycleState: "todo", mainRoleId: nil, currentSessionId: ids[index], executionStatus: "idle",
                 createdAt: "2026-10-24", updatedAt: "2026-10-24"))
             _ = store.acceptCreatedSession(TaskSession(id: ids[index], title: "Switch task \(index)", agent: "Fixture",
@@ -569,7 +569,7 @@ final class SessionSwitchOptimizationTests: XCTestCase {
     }
 
     private func task(_ id: String = "task:one", current: String? = nil) -> CorptieTask {
-        CorptieTask(id: id, workId: "work:one", title: id, description: "", acceptanceCriteria: "",
+        CorptieTask(id: id, workId: "work:one", title: id,
             priority: "medium", lifecycleState: "todo", mainRoleId: nil, currentSessionId: current,
             executionStatus: "idle", createdAt: "2026-09-01", updatedAt: "2026-09-01")
     }

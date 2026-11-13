@@ -44,7 +44,7 @@ struct ConversationNativeBusinessDetail: View {
         Group {
         #if os(macOS)
         let input = DetailCardReorderController.Input(scope: reorderScope, enabled: canReorder,
-            items: snapshot.map { .init(id: $0.id, size: $0.size, naturalHeight: isNaturalProvider($0)) })
+            items: snapshot.map { .init(id: $0.id, size: $0.size, naturalHeight: usesNaturalHeight($0)) })
         let generation = activity?.generation ?? 0
         let states = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
         grid(cardReorder.displayOrder(snapshot.map(\.id)).compactMap { states[$0] })
@@ -71,12 +71,12 @@ struct ConversationNativeBusinessDetail: View {
         }
     }
 
-    private func isNaturalProvider(_ card: SizedCard) -> Bool {
-        card.state.card.kind == "provider" && card.state.card.loadState != "error"
+    private func usesNaturalHeight(_ card: SizedCard) -> Bool {
+        ["provider", "taskInfo"].contains(card.state.card.kind) && card.state.card.loadState != "error"
     }
     private func grid(_ snapshot: [SizedCard]) -> some View {
         DetailWidgetLayout(sizes: snapshot.map(\.size), fixedWidth: fixedContentWidth,
-            naturalHeightIndices: Set(snapshot.indices.filter { isNaturalProvider(snapshot[$0]) })) {
+            naturalHeightIndices: Set(snapshot.indices.filter { usesNaturalHeight(snapshot[$0]) })) {
             ForEach(snapshot) { sized in
                 let state = sized.state
                 Group {
@@ -93,7 +93,7 @@ struct ConversationNativeBusinessDetail: View {
                 #endif
                 .detailWidget(sized.size)
                 .environment(\.detailPrefersNaturalContent,
-                    state.card.kind == "sessionInfo" || state.card.kind == "provider" || state.card.loadState == "error")
+                    state.card.kind == "taskInfo" || state.card.kind == "provider" || state.card.loadState == "error")
                 .environment(\.detailCardDrag, canReorder ? .init(scope: reorderScope, cardID: state.id) : nil)
                 .modifier(ConversationDetailCardDropTarget(enabled: canReorder) { payload, after in
                     guard canReorder else { return false }
@@ -176,8 +176,9 @@ private struct NativeBusinessCard: View {
     }
     private var card: ClientDetailBusinessCard { state.card }
     var body: some View {
-        ConversationDetailModuleCard(title: title, systemImage: symbol) {
-            ForEach(card.actions.filter { card.loadState != "error" && $0.kind == "navigation" && $0.operation == "editor.open" && $0.target?.resourceType == "task" }) { action in
+        ConversationDetailModuleCard(title: title, systemImage: symbol,
+            naturalHeight: card.kind == "taskInfo" && card.loadState != "error", headerActions: {
+            ForEach(card.actions.filter { card.kind != "taskInfo" && card.loadState != "error" && $0.kind == "navigation" && $0.operation == "editor.open" && $0.target?.resourceType == "task" }) { action in
                 NativeBusinessNavigation(action: action, symbol: "square.and.pencil", actions: actions)
             }
             if card.kind == "contextReferences", let references {
@@ -195,7 +196,7 @@ private struct NativeBusinessCard: View {
                 Button { addingReference.toggle() } label: { Image(systemName: "plus").frame(minWidth: 24, minHeight: 24) }
                     .buttonStyle(.plain).foregroundStyle(Color.accentColor).help("添加引用").accessibilityLabel("添加引用")
             }
-        } content: {
+        }) {
             if card.loadState == "error" {
                 HStack(alignment: .top) {
                     Label("暂时无法读取", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
@@ -276,39 +277,21 @@ private struct NativeBusinessCard: View {
     @ViewBuilder private var content: some View {
         switch card.payload {
         case .coordinationProgress: EmptyView()
-        case .session(let value):
-            NativeBusinessProperty(title: "Session", value: value.sessionId, technical: true)
-            if !value.workName.isEmpty { NativeBusinessProperty(title: "Work", value: value.workName) }
+        case .session: EmptyView() // Retained wire compatibility; removed by the shared card policy.
         case .summary(let value): NativeBusinessTextSection(title: "会话摘要", text: value.text)
         case .work(let value):
             Text(value.name).font(.system(size: 12, weight: .medium))
             NativeBusinessTextSection(title: "Work 概述", text: value.description)
         case .task(let value):
-            Text(value.title).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
-            HStack {
-                NativeBusinessStatus(status: value.status)
-                Spacer(minLength: 8)
-                ForEach(card.actions.filter { $0.operation == "resource.open" && $0.target?.resourceType == "session" }) { action in
-                    NativeBusinessNavigation(action:action,symbol:"arrow.up.backward",actions:actions)
-                }
-            }
-            if let hierarchy = value.hierarchy, hierarchy.childCount > 0 {
-                Text("\(hierarchy.completedChildCount)/\(hierarchy.childCount) 子任务已完成")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            NativeBusinessSummary(summary: value.summary)
-            if let action = command("task.coordination.update", target: value.taskId) {
-                ConversationTaskCoordinationControl(enabled: value.coordinationEnabled ?? false, dispatches: value.coordinationDispatches ?? [], execution: value.coordinationExecution, onRequestControl: { requestId, operation in
-                    if let control = command("task.request.control", target: value.taskId) {
-                        perform(control, ["requestId": .string(requestId), "action": .string(operation)])
-                    }
-                }) { enabled in
+            NativeBusinessProperty(title: "当前重点", value: value.summary.focus.isEmpty ? "暂无" : value.summary.focus)
+            NativeBusinessProperty(title: "进展", value: value.summary.progress.isEmpty ? "暂无" : value.summary.progress)
+            let action = command("task.coordination.update", target: value.taskId)
+            TaskCoordinationToggle(enabled: value.coordinationEnabled ?? false,
+                supported: value.coordinationExecution?.status != "unsupported") { enabled in
+                    guard let action, canCommand(action) else { return }
                     perform(action, ["coordinationEnabled": .bool(enabled)])
-                }.disabled(!action.available)
-            }
-            NativeBusinessTextSection(title: "描述", text: value.description)
-            NativeBusinessTextSection(title: "验收标准", text: value.acceptanceCriteria)
-            NativeBusinessTextSection(title: "验证标准", text: value.verificationCriteria)
+                }
+                .disabled(action.map { !canCommand($0) } ?? true)
         case .artifacts(let list):
             listContainer(count: list.items.count) {
                 ForEach(list.items) { row in

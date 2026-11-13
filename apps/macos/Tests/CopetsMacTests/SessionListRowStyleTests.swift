@@ -10,7 +10,7 @@ final class SessionListRowStyleTests: XCTestCase {
             for selected in [false, true] {
                 let buttonBounds = NSView(), surfaceBounds = NSView()
                 let task = CorptieTask(id: "task:row", workId: "work:row", title: title,
-                    description: "", acceptanceCriteria: "", priority: "medium", lifecycleState: "in_progress",
+                      priority: "medium", lifecycleState: "in_progress",
                     mainRoleId: "role:row", currentSessionId: nil, executionStatus: "running",
                     acceptanceAssessment: nil, completionSuggestion: nil,
                     createdAt: "2026-11-03T00:00:00Z", updatedAt: "2026-11-03T00:00:00Z")

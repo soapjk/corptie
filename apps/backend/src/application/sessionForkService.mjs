@@ -67,17 +67,17 @@ export class SessionForkService {
       reasoningLevel: session.external?.currentReasoningLevel ?? null,
       sourceSessionTitle: session.title, sourceTurnNumber: turnNumber,
       sourceExcerpt: String(item.presentation_text || item.text || "").trim().slice(0, 280),
-      description: task?.description ?? "", acceptanceCriteria: task?.acceptance_criteria ?? "",
-      verificationCriteria: task?.verification_criteria ?? "", priority: task?.priority ?? "medium",
+
+       priority: task?.priority ?? "medium",
       hasWorktree: Boolean(this.store.getLogicalSessionByLegacySessionId(session.id)?.activeWorkspaceId) };
   }
 
   async create(sessionId, input) {
-    const fields = ["requestId", "itemId", "sourceBindingId", "title", "description", "acceptanceCriteria", "verificationCriteria", "priority"];
+    const fields = ["requestId", "itemId", "sourceBindingId", "title", "priority"];
     if (!input || Object.keys(input).some(key => !fields.includes(key))
       || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")
       || typeof input.itemId !== "string" || typeof input.sourceBindingId !== "string") fail("INVALID_FORK_INPUT", "分叉请求不完整。", 400);
-    for (const key of ["title", "description", "acceptanceCriteria", "verificationCriteria"]) {
+    for (const key of ["title"]) {
       if (input[key] !== undefined && (typeof input[key] !== "string" || input[key].length > 16000)) fail("INVALID_FORK_INPUT", "分支信息过长。", 400);
     }
     if (input.priority !== undefined && !priorities.has(input.priority)) fail("INVALID_FORK_INPUT", "分支优先级无效。", 400);
@@ -146,9 +146,8 @@ export class SessionForkService {
         const workspace = this.store.getTaskWorkspaceContext(parent);
         if (!workspace?.repository?.id) fail("FORK_WORKSPACE_UNSUPPORTED", "当前 Task 文件空间没有 Git Worktree，暂不能创建文件分支。");
         const task = this.workService.createTask({ id: taskId, workId: parent.work_id,
-          title: input.title, description: input.description ?? parent.description ?? "",
-          acceptanceCriteria: input.acceptanceCriteria ?? parent.acceptance_criteria ?? "",
-          verificationCriteria: input.verificationCriteria ?? parent.verification_criteria ?? "",
+          title: input.title,
+
           priority: input.priority ?? parent.priority,
           mainAgentId: parent.main_agent_id }, { creationPending: true, creationOrigin: { originType: "direct_user", operationId: input.requestId } });
         const current = this.store.getTask(task.id);

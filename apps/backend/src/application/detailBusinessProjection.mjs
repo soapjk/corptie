@@ -33,17 +33,10 @@ export const DETAIL_BUSINESS_MODULES = Object.freeze({
   task: {
     dependencies: ["session", "sessionMetadata", "task"],
     select: scope => scope.session.sessionKind === "worker" && scope.task ? {
-      taskId: scope.task.id, title: bounded(scope.task.title),
-      description: bounded(scope.task.description), acceptance: bounded(scope.task.acceptance_criteria),
-      verification: bounded(scope.task.verification_criteria)
+      taskId: scope.task.id, title: bounded(scope.task.title)
     } : null,
     project: data => data ? [card("task-information", text("detail.taskInformation", "Task 信息"), "information", [
-      column(["title", "definition"]), field("title", "title"),
-      { id: "definition", kind: "disclosure", props: { label: text("detail.taskDefinition", "Task 定义") },
-        children: ["description-label", "description", "acceptance-label", "acceptance", "verification-label", "verification"] },
-      { ...field("description-label"), props: { text: text("detail.description", "描述") } }, field("description", "description", "markdown"),
-      { ...field("acceptance-label"), props: { text: text("detail.acceptanceCriteria", "验收标准") } }, field("acceptance", "acceptance", "markdown"),
-      { ...field("verification-label"), props: { text: text("detail.verificationCriteria", "验证标准") } }, field("verification", "verification", "markdown")
+      column(["title"]), field("title", "title")
     ], data)] : []
   },
   work: {

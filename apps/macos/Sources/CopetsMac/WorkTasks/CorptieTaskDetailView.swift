@@ -180,9 +180,7 @@ struct CorptieTaskDetailView: View {
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             ConversationTaskInformationCard(summary: task.conversationDetailSummary,
-                description: task.description, acceptance: task.acceptanceCriteria,
                 title: L10n("Task 信息"),
-                descriptionTitle: L10n("Description"), acceptanceTitle: L10n("Acceptance Criteria"),
                 expandLabel: L10n("Expand"),
                 collapseLabel: L10n("Collapse"), showsWhenEmpty: true,
                 autoTitleEnabled: task.autoTitleEnabled ?? true,

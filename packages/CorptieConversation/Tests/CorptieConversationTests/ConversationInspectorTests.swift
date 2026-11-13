@@ -53,12 +53,11 @@ struct ConversationInspectorTests {
         #expect(card.contains("@State private var isExpanded = false"))
         let summary = try #require(card.range(of: "ConversationTaskSummaryView(summary:"))
         let expanded = try #require(card.range(of: "if isExpanded {"))
-        let definition = try #require(card.range(of: "ConversationTaskDefinition(description:"))
         let preference = try #require(card.range(of: "Toggle(autoTitleLabel"))
         let disclosure = try #require(card.range(of: "Button { isExpanded.toggle() }"))
         #expect(summary.lowerBound < expanded.lowerBound)
-        #expect(expanded.lowerBound < definition.lowerBound)
-        #expect(definition.lowerBound < preference.lowerBound)
+        #expect(expanded.lowerBound < preference.lowerBound)
+        #expect(!card.contains("ConversationTaskDefinition"))
         #expect(preference.lowerBound < disclosure.lowerBound)
         #expect(card.contains(".accessibilityLabel(isExpanded ? collapseLabel : expandLabel)"))
     }
@@ -68,7 +67,7 @@ struct ConversationInspectorTests {
         for width in [240.0, 280.0, 375.0] {
             func height(description: String, acceptance: String) -> CGFloat {
                 let host = NSHostingView(rootView: ConversationTaskInformationCard(
-                    summary: nil, description: description, acceptance: acceptance,
+                    summary: nil,
                     autoTitleEnabled: true, onAutoTitleChange: { _ in }) { EmptyView() }
                     .frame(width: width))
                 host.frame = NSRect(x: 0, y: 0, width: width, height: 400)
@@ -129,12 +128,6 @@ struct ConversationInspectorTests {
         #expect(!CollapsibleDetailTextLayout.isOverflowing(fullHeight: 60.4, collapsedHeight: 60))
         #expect(CollapsibleDetailTextLayout.isOverflowing(fullHeight: 61, collapsedHeight: 60))
         #expect(!CollapsibleDetailTextLayout.isOverflowing(fullHeight: 40, collapsedHeight: 60))
-    }
-
-    @Test func taskDefinitionCardAppearsOnlyWithActualContent() {
-        #expect(!ConversationTaskDefinition.hasContent(description: " \n", acceptance: ""))
-        #expect(ConversationTaskDefinition.hasContent(description: "", acceptance: "验收"))
-        #expect(ConversationTaskDefinition.hasContent(description: "描述", acceptance: ""))
     }
 
     @Test func detailHeaderReservesAccessibleNativeActionTargets() throws {

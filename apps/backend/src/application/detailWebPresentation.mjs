@@ -12,7 +12,7 @@ export function parseDetailWebCards(value) {
 }
 export function selectWebPresentation(card) {
   const source = card.id === "task-information"
-    ? [["description", "描述"], ["acceptanceCriteria", "验收标准"], ["verificationCriteria", "验证标准"]]
+    ? [["state", "状态"]]
     : [["body", "概述"]];
   const sections = source.map(([id, title]) => ({ id, title, body: card.fields[id] ?? "",
     preview: card.fields[id + "Preview"] ?? Array.from(String(card.fields[id] ?? "").replace(/\s+/g, " ")).slice(0, 400).join("") }));

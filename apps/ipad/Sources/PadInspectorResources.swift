@@ -425,13 +425,10 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
         if kind == .task {
             let definition = store.snapshot?.taskDefinition
             let task = workspace.tasks.first { $0.id == workspace.sessionsByID[sessionID]?.taskId }
-            let description = definition?["description"].text ?? task?.description ?? ""
-            let acceptance = definition?["acceptanceCriteria"].text ?? task?.acceptanceCriteria ?? ""
             let summary = definition.flatMap {
                 ConversationTaskSummary(inspectorValue: $0["summary"], taskRevision: $0["revision"].number.map(Int.init))
             }
-            ConversationTaskInformationCard(summary: summary, description: description,
-                acceptance: acceptance, showsWhenEmpty: true,
+            ConversationTaskInformationCard(summary: summary, showsWhenEmpty: true,
                 autoTitleEnabled: definition?["autoTitleEnabled"] == .null ? true : definition?["autoTitleEnabled"].flag,
                 autoTitleUpdating: locked,
                 onAutoTitleChange: { enabled in
@@ -458,15 +455,13 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 if let definition {
                     Button {
                         editor = .init(title: "编辑 Task", action: "task.update", fields: definition.fields,
-                            inputs: [.init(key: "title", label: "标题"), .init(key: "description", label: "描述", multiline: true),
-                                     .init(key: "acceptanceCriteria", label: "验收标准", multiline: true),
+                            inputs: [.init(key: "title", label: "标题"),
                                      .init(key: "priority", label: "优先级", choices: ["low", "medium", "high", "urgent"].map { ($0, $0) }),
                                      .init(key: "mainAgentId", label: "角色", choices: definition["agents"].items.compactMap {
                                          guard let id = $0["id"].text else { return nil }; return (id, $0["name"].text ?? id)
                                      })])
                         editor?.fields.removeValue(forKey: "summary"); editor?.fields.removeValue(forKey: "agents")
                         editor?.fields.removeValue(forKey: "lifecycleState")
-                        editor?.fields.removeValue(forKey: "verificationCriteria")
                         editor?.fields.removeValue(forKey: "autoTitleEnabled")
                         editor?.fields.removeValue(forKey: "parentTaskId")
                         editor?.fields.removeValue(forKey: "hierarchy")

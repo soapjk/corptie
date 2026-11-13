@@ -279,7 +279,7 @@ struct NewSessionCreationSheet: View {
             if let fixedCorptieTask {
                 selectedRow(
                     title: fixedCorptieTask.title,
-                    subtitle: fixedCorptieTask.description,
+                    subtitle: fixedCorptieTask.userSummary?.content?.focus ?? "",
                     systemImage: "checklist"
                 )
             } else if isLoadingCorptieTasks {

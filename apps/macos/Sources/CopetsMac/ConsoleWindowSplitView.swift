@@ -628,6 +628,10 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
     private let widthDefaults: UserDefaults
     private let workRestoreHandle = WorkColumnRestoreHandle(frame: .zero)
     private var collapseObservation: NSKeyValueObservation?
+    private var workColumnAnimationGeneration = 0
+    private(set) var workColumnAnimationTarget: Bool?
+    /// Injected only by geometry tests; production follows the system setting.
+    var reduceMotionOverride: Bool?
 
     init(mode: ConsoleNavigationMode, sidebar: Sidebar, detail: Detail, defaults: UserDefaults? = nil) {
         self.mode = mode
@@ -809,11 +813,33 @@ final class ConsoleSplitController<Sidebar: View, Detail: View>: NSSplitViewCont
 
     func setWorkColumnCollapsed(_ collapsed: Bool) {
         guard isActive, isViewLoaded, let item = splitViewItems.first,
-              item.isCollapsed != collapsed else { return }
-        if collapsed { saveWidth() }
-        // One native layout change; no per-frame transcript width animation.
-        item.isCollapsed = collapsed
-        if !collapsed { restoreWidth() }
+              (workColumnAnimationTarget ?? item.isCollapsed) != collapsed else { return }
+        // A reversal must not persist a partly expanded sidebar as its width.
+        if collapsed, workColumnAnimationTarget == nil { saveWidth() }
+        workColumnAnimationGeneration += 1
+        let generation = workColumnAnimationGeneration
+        let reduceMotion = reduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard !reduceMotion, view.window?.isVisible == true,
+              !view.isHiddenOrHasHiddenAncestor, !ConsoleNativeSplitView.isResizing(view) else {
+            workColumnAnimationTarget = nil
+            item.isCollapsed = collapsed
+            if !collapsed { restoreWidth() }
+            return
+        }
+        workColumnAnimationTarget = collapsed
+        // Let AppKit animate its existing split items. No SwiftUI animation,
+        // root replacement, snapshot or per-frame application callback.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            item.animator().isCollapsed = collapsed
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.workColumnAnimationGeneration == generation else { return }
+                self.workColumnAnimationTarget = nil
+                if self.splitViewItems.first?.isCollapsed == false { self.restoreWidth() }
+            }
+        }
     }
 
     private func restoreWidth() {

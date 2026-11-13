@@ -351,8 +351,7 @@ export class SessionContextReferenceService {
     return {
       title: `Task: ${value.title}`,
       text: lines([
-        ["Status", value.status], ["Priority", value.priority], ["Description", value.description],
-        ["Acceptance criteria", value.acceptance_criteria], ["Work id", value.work_id]
+        ["Status", value.lifecycle_state], ["Priority", value.priority], ["Work id", value.work_id]
       ])
     };
   }

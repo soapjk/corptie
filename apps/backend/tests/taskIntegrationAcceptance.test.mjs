@@ -53,7 +53,7 @@ async function fixture(t) {
   const entities = new WorkApplicationService({ store });
   const agent = store.createAgent({ name: "Integration", role: "independentContributor" });
   const work = entities.createWork({ name: "Integration", workspaceId: "workspace:integration", contributorAgentIds: [agent.agentId] });
-  const parent = store.createTask({ workId: work.id, title: "Parent", acceptanceCriteria: "Combined changes pass" });
+  const parent = store.createTask({ workId: work.id, title: "Parent"});
   const children = ["Child_one", "Child_two"].map(title => store.createTask({ workId: work.id, title, parentTaskId: parent.id }, {}, {
     expectedParentResourceVersion: store.getTask(parent.id).resource_version
   }));
@@ -172,7 +172,6 @@ async function addStandalone(f, name) {
   return { path, worktreeId };
 }
 
-
 async function waitForTerminal(jobs, id) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
@@ -183,7 +182,6 @@ async function waitForTerminal(jobs, id) {
   }
   assert.fail(`Integration job ${id} did not settle`);
 }
-
 
 test("accepted child delivery uses a real scoped Git Job, never main or a sibling",{timeout:20000},async t=>{
   const f=await fixture(t),child=f.children[0],tree=f.trees.get(child.id),manager=new GitWorkspaceManager({store:f.store});
@@ -556,7 +554,6 @@ for(const action of ["delete","ignore","artifact"]) test(`publication Markdown $
   const completed=await waitForTerminal(jobs,job.id);assert.equal(completed.status,"completed",completed.error);
   assert.ok(!(await git(f.mainPath,["ls-tree","--name-only","HEAD"])).includes("policy.md"));
 });
-
 
 test("new committed code after human approval is delivered under the same operation without rewriting original approval",async t=>{
   const f=await fixture(t),child=f.children[0],manager=new GitWorkspaceManager({store:f.store}),jobs=integrationJobs(f);

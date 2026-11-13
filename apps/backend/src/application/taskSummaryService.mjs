@@ -196,9 +196,8 @@ export class TaskSummaryService {
     }
     const definitionID = `task-definition:${claim.taskID}:${claim.basis.taskRevision}`;
     const allowedSources = new Set([definitionID, ...messages.map((row) => row.id)]);
-    const definition = { id: definitionID, title: task.title, description: task.description,
-      acceptanceCriteria: task.acceptance_criteria, verificationCriteria: task.verification_criteria };
-    for (const key of ["title", "description", "acceptanceCriteria", "verificationCriteria"]) {
+    const definition = { id: definitionID, title: task.title};
+    for (const key of ["title"]) {
       const value = String(definition[key] ?? "");
       if (value.length > 6000) incomplete = true;
       definition[key] = value.slice(0, 6000);

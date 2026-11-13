@@ -265,7 +265,7 @@ export class CoordinationTurnService {
     const task = this.taskFor(current);
     if (current.bindingId !== reference.bindingId || current.routingVersion !== reference.routingVersion
       || task?.id !== original.id || (!this.requests?.forShadow(reference.logicalSessionId) && !this.dispatch.shadow?.forShadow(reference.logicalSessionId) && task?.coordination_enabled !== 1) || task?.revision !== original.revision
-      || ["description", "acceptance_criteria", "verification_criteria", "main_agent_id"].some(key => task?.[key] !== original[key])
+      || ["main_agent_id"].some(key => task?.[key] !== original[key])
       || task.archived || task.deletion_status) {
       throw failure("COORDINATION_POLICY_CHANGED", "协调策略、任务或会话绑定已变化，本轮未继续派发。");
     }
@@ -395,9 +395,7 @@ export class CoordinationTurnService {
         concurrentRequests: this.requests.index(ownerId, request.request_id),
         dependency: request.dependency_id ? this.requests.dependency(request.dependency_id) : null } : null;
       const children = this.store.selectAll("SELECT id,title,lifecycle_state AS state FROM tasks WHERE parent_task_id=? AND archived=0 AND COALESCE(deletion_status,'')='' ORDER BY updated_at DESC LIMIT 20", [task.id]);
-      const payload = { requestContext, task: { id: task.id, title: task.title, description: String(task.description??"").slice(0,3000),
-        acceptanceCriteria: String(task.acceptance_criteria??"").slice(0,3000),
-        definitionTruncated:String(task.description??"").length>3000 || String(task.acceptance_criteria??"").length>3000 }, contributors, children,
+      const payload = { requestContext, task: { id: task.id, title: task.title}, contributors, children,
         shadowSummary: this.dispatch.shadow ? this.store.selectOne(`SELECT report_id,body,decision_json,requirement_revision,created_at
           FROM coordination_shadow_reports WHERE main_session_id=? ORDER BY created_at DESC LIMIT 1`,
           [ownerId]) : null,
@@ -410,7 +408,7 @@ export class CoordinationTurnService {
         dispatches: this.dispatch.listForParent(task.id).map(row=>{
           const request = JSON.parse(this.dispatch.get(row.dispatchId)?.request_json ?? "{}");
           return {...row, action:request.action, title:request.creation?.title ?? null,
-            description:String(request.creation?.description??"").slice(0,1000), errorMessage:String(row.errorMessage??"").slice(0,300)};
+            errorMessage:String(row.errorMessage??"").slice(0,300)};
         }),
         history: history.reverse().map(item => ({ role: item.type, text: String(item.text ?? "").slice(0, 1800),
           truncated: item.textTruncated || String(item.text ?? "").length > 1800 })),
@@ -563,7 +561,7 @@ export class CoordinationTurnService {
           providerBindingId: reference.bindingId }, session.agentId, { items: plan.items.map((item, index) => ({
             action: item.action, text: item.text, idempotencyKey: `${rootTurnId}:${index}`,
             ...(item.action === "send" ? { taskId: item.taskId } : {
-              creation: { title: item.title, description: item.text, agentId: item.agentId }
+              creation: { title: item.title, agentId: item.agentId }
             })
           })) }, {sourceTurnId:rootTurnId,batchId:progressBatchId});
         progressBatchId = admitted.batchId;

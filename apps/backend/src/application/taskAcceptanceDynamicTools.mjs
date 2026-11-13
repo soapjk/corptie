@@ -56,7 +56,7 @@ export const taskAcceptanceDynamicTools = Object.freeze([
         type: "array",
         minItems: 1,
         items: result,
-        description: "Results for every current Task acceptance criterion, exactly once and in the original order."
+        description: "Non-empty, unique checked outcomes for the current Task revision. Each passed outcome requires reproducible evidence."
       }
     },
     ["results"]
@@ -79,17 +79,14 @@ export const taskAcceptanceDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_task_revise",
-    "Evolve the Task bound to this Session after the user switches to a new problem. Corptie atomically snapshots the previous Task definition and replaces the current title, description, acceptance criteria, and verification criteria without creating another Task.",
+    "Evolve the Task bound to this Session after the user switches to a new problem. Corptie atomically snapshots the previous Task definition and updates its title without creating another Task.",
     {
       expectedRevision: { type: "integer", minimum: 1 },
       next: {
         type: "object",
         additionalProperties: false,
         properties: {
-          title: { type: "string", minLength: 1 },
-          description: { type: "string" },
-          acceptanceCriteria: { type: "string" },
-          verificationCriteria: { type: "string" }
+          title: { type: "string", minLength: 1 }
         },
         minProperties: 1
       },

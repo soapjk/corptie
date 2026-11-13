@@ -22,8 +22,8 @@ public struct ConversationTaskCoordinationControl: View {
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
-                .disabled(updating || (!enabled && execution?.status == "unsupported"))
+            TaskCoordinationToggle(enabled: enabled, updating: updating,
+                supported: execution?.status != "unsupported", onChange: onChange)
             if enabled {
                 Text(execution?.statusLabel ?? "执行限制尚未验证")
                     .font(.caption).foregroundStyle(.secondary)
@@ -83,5 +83,19 @@ public struct ConversationTaskCoordinationControl: View {
                 }.font(.caption)
             }
         }
+    }
+}
+
+/// The same capability-aware switch, without operational reports in the compact Detail card.
+struct TaskCoordinationToggle: View {
+    let enabled: Bool
+    var updating = false
+    var supported = true
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
+            .disabled(updating || (!enabled && !supported))
+            .accessibilityIdentifier("task.coordination.toggle")
     }
 }

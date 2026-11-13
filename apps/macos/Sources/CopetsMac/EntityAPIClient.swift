@@ -337,19 +337,13 @@ final class EntityAPIClient: ObservableObject {
 
     // 更新 CorptieTask：PATCH /tasks/:id → task（直接返回对象，非 envelope）
     @discardableResult
-    func updateCorptieTask(taskId: String, title: String? = nil, description: String? = nil,
-                        acceptanceCriteria: String? = nil,
-                        verificationCriteria: String? = nil,
-                        priority: String? = nil, lifecycleState: String? = nil,
+    func updateCorptieTask(taskId: String, title: String? = nil, priority: String? = nil, lifecycleState: String? = nil,
                         mainRoleId: String? = nil, autoTitleEnabled: Bool? = nil, coordinationEnabled: Bool? = nil) async -> CorptieTask? {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [:]
         if let title { body["title"] = title }
-        if let description { body["description"] = description }
-        if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
-        if let verificationCriteria { body["verificationCriteria"] = verificationCriteria }
         if let priority { body["priority"] = priority }
         if let lifecycleState { body["lifecycleState"] = lifecycleState }
         if let mainRoleId { body["mainAgentId"] = mainRoleId }
@@ -692,10 +686,7 @@ final class EntityAPIClient: ObservableObject {
 
     // 创建 CorptieTask 及其伴生 Work Session：统一 POST /tasks，一次返回两者。
     @discardableResult
-    func createCorptieTask(id: String? = nil, workId: String, title: String, description: String? = nil,
-                        acceptanceCriteria: String? = nil,
-                        verificationCriteria: String? = nil,
-                        mainRoleId: String? = nil,
+    func createCorptieTask(id: String? = nil, workId: String, title: String, mainRoleId: String? = nil,
                         priority: String? = nil,
                         providerId: String,
                         model: String? = nil,
@@ -730,9 +721,6 @@ final class EntityAPIClient: ObservableObject {
         if let parentTaskId {
             body["parentTaskId"] = parentTaskId
         }
-        if let description, !description.isEmpty { body["description"] = description }
-        if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
-        if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
         if let mainRoleId, !mainRoleId.isEmpty { body["mainAgentId"] = mainRoleId }
         if let priority { body["priority"] = priority }
         if let model, !model.isEmpty { body["model"] = model }
@@ -767,9 +755,6 @@ final class EntityAPIClient: ObservableObject {
         task: CorptieTask,
         createdBySessionId: String,
         title: String,
-        description: String,
-        acceptanceCriteria: String,
-        verificationCriteria: String,
         executionSummary: String,
         sourceMessageId: String? = nil
     ) async -> CorptieTaskRevisionEnvelope? {
@@ -782,9 +767,6 @@ final class EntityAPIClient: ObservableObject {
             "executionSummary": executionSummary,
             "next": [
                 "title": title,
-                "description": description,
-                "acceptanceCriteria": acceptanceCriteria,
-                "verificationCriteria": verificationCriteria
             ]
         ]
         if let sourceMessageId { body["sourceMessageId"] = sourceMessageId }

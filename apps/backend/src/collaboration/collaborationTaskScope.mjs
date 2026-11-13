@@ -167,8 +167,7 @@ export class CollaborationTaskScope {
       id,
       workId: input.targetWorkId,
       title: input.title,
-      description: input.summary,
-      acceptanceCriteria: input.acceptanceCriteria.map((entry) => `- ${entry}`).join("\n"),
+
       priority: "medium",
       lifecycleState: input.lifecycleState ?? "todo",
       mainAgentId: input.recipientAgentId

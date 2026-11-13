@@ -144,9 +144,7 @@ export function mergeWorkerSessionContexts({ baseContext, directUserIntentContex
 function canonicalTaskDefinition(task) {
   const definition = {
     id: text(task.id), workId: text(task.work_id), title: String(task.title ?? ""),
-    description: String(task.description ?? ""),
-    acceptanceCriteria: String(task.acceptance_criteria ?? ""),
-    verificationCriteria: String(task.verification_criteria ?? ""),
+
     revision: Number(task.revision), resourceVersion: Number(task.resource_version)
   };
   if (task.parent_task_id) definition.parentTaskId = text(task.parent_task_id);

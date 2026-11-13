@@ -698,6 +698,27 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertNotEqual(collapsed.contentRevision, expanded.contentRevision)
     }
 
+    func testStableProcessDisclosureInvalidatesExpansionAndChangedEarlierStep() throws {
+        func entry(_ text: String) throws -> ChatDisplayEntry {
+            .init(kind: .process(turnId: "provider-turn", items: [
+                try item(["id": "first-step", "type": "commandExecution", "text": text]),
+                try item(["id": "last-step", "type": "commandExecution", "text": "Unchanged last step"])
+            ]), processRowIdentity: "input:stable")
+        }
+        let projection = builder(), original = try entry("Earlier output")
+        let collapsed = projection.nativeAppKitRow(original, expandedTurnIds: [])
+        let expanded = projection.nativeAppKitRow(original, expandedTurnIds: [original.processDisclosureID])
+        let updated = projection.nativeAppKitRow(try entry("Updated earlier output"),
+            expandedTurnIds: [original.processDisclosureID])
+        XCTAssertEqual(collapsed.id, expanded.id)
+        XCTAssertEqual(expanded.expandableTurnId, "input:stable")
+        XCTAssertTrue(expanded.isExpanded)
+        XCTAssertNotEqual(collapsed.contentRevision, expanded.contentRevision)
+        XCTAssertNotEqual(expanded.contentRevision, updated.contentRevision)
+        XCTAssertEqual(collapsed.contentRevision,
+            projection.nativeAppKitRow(original, expandedTurnIds: ["unrelated-process"]).contentRevision)
+    }
+
     func testPendingApprovalKeepsActionsAndIdentityWhenItExpires() throws {
         let pending = ChatDisplayEntry(kind: .message(try item([
             "type": "approval", "status": "pending", "presentationRole": ""

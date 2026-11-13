@@ -30,9 +30,6 @@ struct PadTaskCreationSheet: View {
                         .accessibilityIdentifier("task-create-title")
                     Text(EntityTitlePolicy.guidance)
                         .font(.caption).foregroundStyle(.secondary)
-                    TextField("任务描述", text: $state.draft.description, axis: .vertical).lineLimit(3...8)
-                    TextField("验收标准", text: $state.draft.acceptanceCriteria, axis: .vertical).lineLimit(2...6)
-                    TextField("验证要求", text: $state.draft.verificationCriteria, axis: .vertical).lineLimit(2...6)
                 }
                 .disabled(state.pending != nil || state.submitting || !state.matches(connection))
 

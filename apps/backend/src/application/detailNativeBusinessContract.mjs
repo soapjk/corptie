@@ -20,7 +20,7 @@ const schemas = {
   sessionInfo: object({ sessionId: string(512), workName: string() }),
   chatSummary: object({ text: string() }),
   workOverview: object({ workId: string(512), name: string(), description: string() }),
-  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), description: string(), acceptanceCriteria: string(), verificationCriteria: string(), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema), coordinationEnabled: boolean, coordinationProgress: nullable(coordinationProgressSchema),
+  taskInfo: extended({ taskId: string(512), title: string(), status: string(64), resourceRevision: string(512), summary }, { parentTaskId: nullable(string(512)), parentSessionId: nullable(string(512)), hierarchy: nullable(taskHierarchySummarySchema), coordinationEnabled: boolean, coordinationProgress: nullable(coordinationProgressSchema),
     coordinationExecution: nullable(extended({ status: { enum: ["off", "pending", "enforced", "unsupported"] }, reason: string(1024) }, {
       requests: array(object({ requestId: string(512), messageId: string(512), status: string(64), errorCode: nullable(string(512)), errorMessage: nullable(string()), phase: string(64), relation: nullable(string(64)),
         relatedRequestId: nullable(string(512)), responseItemId: nullable(string(512)), dispatches: nullable(string()), question: nullable(string(800)) }), 20),

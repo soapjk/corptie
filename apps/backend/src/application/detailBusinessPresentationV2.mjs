@@ -29,21 +29,10 @@ export function refineBusinessPresentation(card, scope, results) {
   for (const item of structure.card.nodes) if (item.kind === "detail.resourceList") item.props.presentationRole = "link";
   const root = structure.card.nodes.find(item => item.id === structure.card.rootNodeId);
   if (card.id === "task-information") {
-    const values = { description: complete(scope.task.description), acceptanceCriteria: complete(scope.task.acceptance_criteria),
-      verificationCriteria: complete(scope.task.verification_criteria) };
-    const headings = { description: "描述", acceptanceCriteria: "验收标准", verificationCriteria: "验证标准" };
-    card.fields = { title: card.fields.title, state: card.fields.state, ...values };
+    card.fields = { title: card.fields.title, state: card.fields.state };
     structure.fieldSchema = { title: field(512), state: field(1024) };
     root.children = ["state"];
     structure.card.nodes = [root, node("state", "detail.status", "state", { semantic: "neutral" })];
-    for (const [name, value] of Object.entries(values)) {
-      structure.fieldSchema[name] = field(65536); structure.fieldSchema[name + "Preview"] = field(512);
-      card.fields[name + "Preview"] = preview(value) || "暂无内容";
-      root.children.push(name + "Section");
-      structure.card.nodes.push(node(name + "Section", "disclosure", null,
-        { label: label(headings[name]), previewBinding: name + "Preview", initiallyExpanded: false }, [name + "Body"]),
-        node(name + "Body", "detail.markdown", name));
-    }
     if (card.actions?.edit) { root.children.push("edit"); structure.card.nodes.push(node("edit", "detail.button", null, { actionId: "edit", presentationRole: "link" })); }
   } else if (card.id === "business-artifacts") {
     // One resource list, not a second aggregate of the same titles and audit facts.

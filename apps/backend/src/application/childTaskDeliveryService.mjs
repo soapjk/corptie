@@ -56,7 +56,7 @@ export class ChildTaskDeliveryService {
       status: artifact.status, boundTaskId: artifact.boundTaskId, boundSessionId: artifact.boundSessionId,
       versions: this.store.listArtifactVersions(artifact.artifactId).map(version => ({ version:version.version,contentHash:version.contentHash })) }));
     return { version:1,taskId,parentTaskId:parent.id,workId:task.work_id,title:task.title,taskRevision:task.revision,
-      acceptanceCriteria:task.acceptance_criteria ?? "",verificationCriteria:task.verification_criteria ?? "",git,artifacts,sessionIds };
+      git,artifacts,sessionIds };
   }
   ownedArtifacts(taskId,sessionIds) {
     const ids=new Set(this.store.selectAll("SELECT artifact_id FROM artifacts WHERE bound_task_id=?",[taskId]).map(row=>row.artifact_id));
