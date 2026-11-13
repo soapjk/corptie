@@ -833,6 +833,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 to: newIDs,
                 oldRevisions: oldRevisions,
                 oldReplyIdentities: oldReplyIdentitiesByID,
+                oldProcessContinuations: Dictionary(uniqueKeysWithValues: previousRows.map { ($0.id, $0.followsReplyProcess) }),
                 in: tableView
             )
             // Structural changes can remove headers or precede an explicit
@@ -883,6 +884,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let changed = IndexSet(nextRows.indices.filter { index in
             oldRevisions[nextRows[index].id] != nextRows[index].contentRevision
                 || oldReplyIdentities[index] != nextRows[index].replyIdentity
+                || previousRows[index].followsReplyProcess != nextRows[index].followsReplyProcess
         })
         guard !changed.isEmpty else { return }
         let resetSDKRows = IndexSet(changed.filter { index in
@@ -890,6 +892,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
                 && !(usesSharedCard(previousRows[index]) && usesSharedCard(nextRows[index])
                     && SDKRowContainerResetPolicy.canRetainForAppend(previous: previousRows[index], next: nextRows[index])))
                 || (oldReplyIdentities[index] == nil) != (nextRows[index].replyIdentity == nil)
+                || previousRows[index].followsReplyProcess != nextRows[index].followsReplyProcess
         })
         for row in changed {
             let currentCell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false)
@@ -937,6 +940,7 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         to newIDs: [String],
         oldRevisions: [String: Int],
         oldReplyIdentities: [String: ConversationReplyIdentity],
+        oldProcessContinuations: [String: Bool],
         in tableView: NSTableView
     ) {
         let selectedIDs = tableView.selectedRowIndexes.compactMap {
@@ -947,7 +951,8 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
         let mountedIDs = Set(visible.location == NSNotFound ? [] : oldIDs.dropFirst(visible.location).prefix(visible.length))
         for row in rows where mountedIDs.contains(row.id) {
             guard let revision = oldRevisions[row.id],
-                  revision != row.contentRevision || oldReplyIdentities[row.id] != row.replyIdentity,
+                  revision != row.contentRevision || oldReplyIdentities[row.id] != row.replyIdentity
+                    || oldProcessContinuations[row.id] != row.followsReplyProcess,
                   let cell = cellsByKey[CellCacheKey(sessionID: representedSessionID, rowID: row.id, revision: revision)],
                   (cell is AppKitSharedMessageTextCell) == usesSharedCard(row) else { continue }
             cell.setContent(row, availableWidth: width, baseDirectory: baseDirectory,

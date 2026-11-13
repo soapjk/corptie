@@ -400,14 +400,15 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     ) {
         if representedRowID == row.id, representedContentRevision == row.contentRevision,
            representedImageGeometries == row.imageGeometries,
-           representedReplyIdentity != row.replyIdentity {
+           representedReplyIdentity != row.replyIdentity,
+           renderedRow?.followsReplyProcess == row.followsReplyProcess {
             // Identity updates are exterior chrome. Keep the native text
             // storage, glyph layout, selection and attachment views untouched.
             renderedRow = row
             representedReplyIdentity = row.replyIdentity
             updateReplyIdentityHeader(row.replyIdentity)
             cardTopConstraint.constant = (skin.showsTimelineTimeSeparators ? row.timeSeparatorHeight : 0)
-                + row.replyIdentityHeight + measuredTypography.rowInset
+                + row.replyIdentityHeight + (row.followsReplyProcess ? MessageCardMetrics.rowInset : measuredTypography.rowInset)
             updateCallbacks(onToggleExpansion: onToggleExpansion, onAction: onAction)
             updateLinkContext(baseDirectory: baseDirectory)
             needsLayout = true
@@ -492,7 +493,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         messageActionBar.alphaValue = 1
         timeSeparatorLabel.stringValue = row.timeSeparatorText ?? ""
         timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
-        cardTopConstraint.constant = layout.timeSeparatorHeight + row.replyIdentityHeight + layout.typography.rowInset
+        cardTopConstraint.constant = layout.timeSeparatorHeight + row.replyIdentityHeight + (row.followsReplyProcess ? MessageCardMetrics.rowInset : layout.typography.rowInset)
         cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row, skin: skin)
         messageActionBarLeadingConstraint.constant = MessageCardMetrics.contentInset - ReplyActionBar.leadingImageInset
         cardLeadingConstraint.isActive = row.nativeStyle != .user
@@ -671,6 +672,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         guard representedRowID == row.id,
               representedContentRevision == row.contentRevision,
               representedReplyIdentity == row.replyIdentity,
+              renderedRow?.followsReplyProcess == row.followsReplyProcess,
               representedImageGeometries == row.imageGeometries else { return false }
         let typography = row.readingTypography(skin.typography(for: row.nativeStyle == .user ? .user : .assistant))
         guard renderedWidth != availableWidth || measuredTypography != typography || measuredSkin != skin else {
@@ -699,9 +701,10 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             cardLeadingConstraint.constant = ReplyLeadingLayout.cardLeading(for: row, skin: skin)
         }
         timeSeparatorLabel.isHidden = layout.timeSeparatorHeight == 0
-        cardTopConstraint.constant = layout.timeSeparatorHeight + (renderedRow?.replyIdentityHeight ?? 0) + layout.typography.rowInset
+        cardTopConstraint.constant = layout.timeSeparatorHeight + (renderedRow?.replyIdentityHeight ?? 0) + (renderedRow?.followsReplyProcess == true ? MessageCardMetrics.rowInset : layout.typography.rowInset)
         cardBottomStandardConstraint.constant = -layout.typography.rowInset
         cardBottomWithMessageActionsConstraint.constant = -26 - layout.typography.rowInset
+        labelTopToCardConstraint.constant = renderedRow?.followsReplyProcess == true ? AppKitChatTimelineRow.processProseTopInset : MessageCardMetrics.contentInset
         label.prepareIntrinsicWidth(max(20, layout.cardWidth - ChatBubbleWidthPolicy.horizontalPadding))
         rawStatusScrollView.invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
