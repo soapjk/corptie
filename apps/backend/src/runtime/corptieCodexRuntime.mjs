@@ -14,6 +14,14 @@ const REQUIRED_CONFIG = Object.freeze({
   cli_auth_credentials_store: "file",
   mcp_oauth_credentials_store: "file"
 });
+// Codex's Responses WebSocket transport resolves the endpoint with the OS
+// resolver and dials it directly, bypassing the HTTP client's proxy policy.
+// Behind a system proxy with a polluted resolver (openai/codex#58627) every
+// turn then burns 5 x 15s retries before falling back to HTTP SSE. This flag
+// makes the WebSocket reuse the effective proxy policy used by HTTPS. Verified
+// locally with `codex doctor --network-only`: HTTP 101 in ~2s instead of a
+// 15s timeout. Keep this narrowly scoped to the Codex runtime config.
+const REQUIRED_FEATURES = Object.freeze({ respect_system_proxy: true });
 
 export function resolveCorptieRuntimePaths(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());
@@ -210,6 +218,7 @@ async function ensureRuntimeConfig(path) {
     const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$`, "m");
     next = pattern.test(next) ? next.replace(pattern, assignment) : insertTopLevelSetting(next, assignment);
   }
+  next = ensureRequiredFeatures(next);
   next = `${next}\n`;
 
   if (next === current) {
@@ -225,6 +234,34 @@ function insertTopLevelSetting(config, assignment) {
   const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
   if (firstTable < 0) return `${config}\n${assignment}`;
   lines.splice(firstTable, 0, assignment);
+  return lines.join("\n");
+}
+
+function ensureRequiredFeatures(config) {
+  const entries = Object.entries(REQUIRED_FEATURES);
+  const assignment = ([key, value]) => `${key} = ${JSON.stringify(value)}`;
+  const lines = config.split("\n");
+  const tableIndex = lines.findIndex((line) => /^\s*\[features\]\s*$/.test(line));
+  if (tableIndex < 0) {
+    return `${config}\n\n[features]\n${entries.map(assignment).join("\n")}`;
+  }
+
+  let tableEnd = lines.length;
+  for (let index = tableIndex + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/.test(lines[index])) {
+      tableEnd = index;
+      break;
+    }
+  }
+  const missing = [];
+  for (const [key, value] of entries) {
+    const pattern = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$`);
+    const existing = lines.findIndex((line, index) =>
+      index > tableIndex && index < tableEnd && pattern.test(line));
+    if (existing < 0) missing.push(assignment([key, value]));
+    else lines[existing] = assignment([key, value]);
+  }
+  if (missing.length > 0) lines.splice(tableIndex + 1, 0, ...missing);
   return lines.join("\n");
 }
 

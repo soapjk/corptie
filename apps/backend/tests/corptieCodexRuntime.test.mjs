@@ -125,6 +125,49 @@ test("startup self-heals managed files without replacing authentication or share
   });
 });
 
+test("managed Codex config keeps Responses WebSockets on the effective proxy", async () => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
+    const options = {
+      corptieHome: join(directory, ".corptie"),
+      sourceAuthPath,
+      bundledAgentsPath,
+      bundledSkillPath,
+      collaborationMcpServerPath
+    };
+    const first = await ensureCorptieCodexRuntime(options);
+    const created = await readFile(first.configPath, "utf8");
+    assert.equal(first.configChanged, true);
+    assert.match(created, /\[features\]\nrespect_system_proxy = true/);
+
+    // A second startup must be a no-op: no duplicate table, no file rewrite.
+    const second = await ensureCorptieCodexRuntime(options);
+    assert.equal(second.configChanged, false);
+    assert.equal(await readFile(second.configPath, "utf8"), created);
+
+    // Existing feature keys and later tables survive; an explicitly disabled
+    // flag is healed back to the managed value instead of adding a second table.
+    await writeFile(first.configPath,
+      'model = "custom"\n[features]\nplugins = true\nrespect_system_proxy = false\n\n[tui]\nnotifications = true\n');
+    const third = await ensureCorptieCodexRuntime(options);
+    const healed = await readFile(third.configPath, "utf8");
+    assert.match(healed, /model = "custom"/);
+    assert.match(healed, /\[features\]\nplugins = true\nrespect_system_proxy = true/);
+    assert.match(healed, /\[tui\]\nnotifications = true/);
+    assert.doesNotMatch(healed, /respect_system_proxy = false/);
+    assert.equal((healed.match(/\[features\]/g) ?? []).length, 1);
+
+    // When no [features] table exists, append one without disturbing existing
+    // tables or the managed top-level settings inserted before them.
+    await writeFile(first.configPath, 'model = "custom"\n\n[projects."/tmp/demo"]\ntrust_level = "trusted"\n');
+    const fourth = await ensureCorptieCodexRuntime(options);
+    const appended = await readFile(fourth.configPath, "utf8");
+    assert.match(appended, /\[projects\."\/tmp\/demo"\]\ntrust_level = "trusted"/);
+    assert.match(appended, /\[features\]\nrespect_system_proxy = true/);
+    assert.ok(appended.indexOf('[projects."/tmp/demo"]') < appended.indexOf("[features]"));
+    assert.match(appended, /cli_auth_credentials_store = "file"/);
+  });
+});
+
 test("Keychain-only login is imported once into both isolated runtime environments", async () => {
   await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
     await rm(sourceAuthPath);
