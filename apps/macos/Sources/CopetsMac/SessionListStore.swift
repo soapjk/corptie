@@ -122,6 +122,13 @@ struct TaskSessionLookup {
             .min { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
     }
 
+    /// Task restart targets only the authoritative current binding, never a fallback/history row.
+    func currentSession(for task: CorptieTask) -> TaskSession? {
+        guard let id = task.currentSessionId, let current = byID[id],
+              current.taskId == task.id, current.archived != true else { return nil }
+        return current
+    }
+
     func session(for task: CorptieTask) -> TaskSession? {
         if let id = task.currentSessionId, let current = byID[id],
            current.taskId == task.id, current.archived != true { return current }

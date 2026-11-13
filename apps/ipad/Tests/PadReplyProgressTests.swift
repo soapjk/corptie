@@ -22,11 +22,11 @@ import CorptieClientCore
         let revision = workspace.tailDisplayRevision
         for (status, expected) in [("completed", ConversationProcessState.completed), ("failed", .failed), ("interrupted", .cancelled)] {
             workspace.messages = [tool, try message("answer", role: "final_answer", status: status,
-                date: "2026-10-31T00:00:10Z")]
+                date: "2026-10-31T00:00:10.234Z")]
             #expect(workspace.processPresentations["process:turn"]?.state == expected)
             #expect(workspace.processSteps["process:turn"]?.map(\.id) == ["tool"])
             #expect(workspace.activeProcessEntryID == nil)
-            #expect(workspace.processPresentations["process:turn"]?.duration == "9.00s")
+            #expect(workspace.processPresentations["process:turn"]?.duration == "9s")
         }
         #expect(workspace.tailDisplayRevision > revision)
     }

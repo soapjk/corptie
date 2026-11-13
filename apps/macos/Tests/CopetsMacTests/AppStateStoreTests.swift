@@ -4,6 +4,26 @@ import Testing
 
 @MainActor
 struct AppStateStoreTests {
+    @Test func taskMenuLookupTracksAuthoritativeUpdatesAndRemovalWithoutAnInventoryScan() throws {
+        let store = AppStateStore()
+        let client = EntityAPIClient(appState: store)
+        var task = CorptieTask(id: "task:menu", workId: "work:menu", title: "Before", description: "",
+            acceptanceCriteria: "", priority: "medium", lifecycleState: "in_progress", mainRoleId: nil,
+            currentSessionId: nil, executionStatus: nil, acceptanceAssessment: nil, completionSuggestion: nil,
+            createdAt: "2026-11-13T00:00:00Z", updatedAt: "2026-11-13T00:00:00Z")
+        var state = ControlPlaneStatePayload.fixture()
+        state.tasks = [task]
+        _ = store.apply(snapshot: .init(revision: 1, state: state))
+        #expect(client.task(task.id)?.title == "Before")
+        task.title = "After"
+        state.tasks = [task]
+        _ = store.apply(snapshot: .init(revision: 2, state: state))
+        #expect(client.task(task.id)?.title == "After")
+        state.tasks = []
+        _ = store.apply(snapshot: .init(revision: 3, state: state))
+        #expect(client.task(task.id) == nil)
+    }
+
     @Test func logicalSessionLookupUsesExactMetadataAndRetiresAmbiguousOrArchivedAliases() throws {
         func session(_ id: String, archived: Bool = false) throws -> TaskSession {
             var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(TaskSession.fixture(id: id, title: id))) as! [String: Any]

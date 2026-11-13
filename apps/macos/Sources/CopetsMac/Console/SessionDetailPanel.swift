@@ -273,7 +273,7 @@ struct SessionDetailPanel: View {
     private var detailAdapters: ConversationDetailAdapters {
         let task = displayValues.tasks.first { $0.id == session.taskId }
         let work = displayValues.works.first { $0.id == session.workId }
-        return ConversationDetailAdapters(configuration: detailConfiguration, selectConfiguration: selectDetailConfiguration,
+        return ConversationDetailAdapters(configuration: detailConfiguration, providerIcon: detailProviderIcon, selectConfiguration: selectDetailConfiguration,
             reloadConfiguration: {
                 guard isPresentationActive else { return }
                 await reloadProviderCatalog()
@@ -367,8 +367,14 @@ struct SessionDetailPanel: View {
             }
         }
     }
+    // The existing brand resolver owns bundled assets and caches decoded images.
+    // Branding is presentation-only; shared configuration capabilities drive behavior.
+    private var detailProviderIcon: Image? {
+        ProviderBrandIcon.image(for: session.external?.provider, providers: displayValues.providers)
+            .map { Image(nsImage: $0) }
+    }
     private var providerConfigurationCard: some View {
-        ConversationDetailProviderCard(configuration: detailConfiguration, scope: session.id, select: selectDetailConfiguration) {
+        ConversationDetailProviderCard(configuration: detailConfiguration, scope: session.id, providerIcon: detailProviderIcon, select: selectDetailConfiguration) {
             await reloadProviderCatalog()
             if backendClient.selectedSession?.id == session.id { await backendClient.loadModelsForSelectedSession(forceRefresh: true) }
         }

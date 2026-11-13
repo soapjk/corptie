@@ -78,7 +78,7 @@ struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
 /// Chat Session rows intentionally share the same visual metrics as Task rows
 /// so switching between the two groups does not change navigation density. It
 /// observes the stable row model directly so content-only patches stay local.
-struct ConsoleSessionRow: View {
+struct ConsoleSessionRow<MenuContent: View>: View {
     var projectName: String? = nil
     var showsHoverFeedback = true
     var isActive = true
@@ -86,6 +86,7 @@ struct ConsoleSessionRow: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
     let selectionRequested: (TaskSession) -> Void
+    @ViewBuilder var menuContent: (TaskSession, Binding<Bool>) -> MenuContent
 
     var body: some View {
         let session = row.session
@@ -128,7 +129,7 @@ struct ConsoleSessionRow: View {
         .buttonStyle(SessionSelectionPressStyle())
         .consoleHoverFeedback(enabled: showsHoverFeedback)
         .contextMenu {
-            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
+            menuContent(session, $isRenaming)
         }
         .sheet(isPresented: $isRenaming) {
             RenameSessionSheet(session: session) { isRenaming = false }

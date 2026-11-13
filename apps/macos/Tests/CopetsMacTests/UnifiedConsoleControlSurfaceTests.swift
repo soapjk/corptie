@@ -518,7 +518,7 @@ struct UnifiedConsoleControlSurfaceTests {
     func jumpToLatestFloatsAboveChecklistWithConditionalSpacingInBaseLiquidGlass() throws {
         let conversation = try source(named: "Conversation/SessionConversationContent.swift")
         let composer = try source(named: "Conversation/Composer/MessageComposer.swift")
-        let styles = try source(named: "Floating/Chrome/ConversationButtonStyles.swift")
+        let styles = try source(named: "Conversation/ConversationButtonStyles.swift")
         #expect(conversation.contains("onJumpToLatest: composerJumpToLatestAction"))
         #expect(conversation.contains("if !usesComposerJumpToLatest"))
         #expect(!conversation.contains("composerClearance + 8"))
@@ -1161,14 +1161,14 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(row.contains(".font(.system(size: 12, weight: .semibold))"))
         #expect(row.contains(".lineLimit(1)"))
         #expect(row.contains("RoundedRectangle(cornerRadius: 5, style: .continuous)"))
-        #expect(row.contains("SessionContextMenuContent("))
+        #expect(row.contains("menuContent(session, $isRenaming)"))
     }
 
     @Test
     func chatSessionRowsUseTheSameCompactMetricsAsTaskRows() throws {
         let source = try source(named: "Console/ConsoleSessionRows.swift")
         let host = try self.source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "struct ConsoleSessionRow: View"))
+        let rowStart = try #require(source.range(of: "struct ConsoleSessionRow<MenuContent: View>: View"))
         let rowEnd = try #require(source.range(
             of: "func sessionMatchingPendingSelection(",
             range: rowStart.lowerBound..<source.endIndex

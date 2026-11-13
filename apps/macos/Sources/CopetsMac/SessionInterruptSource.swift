@@ -1,7 +1,6 @@
 import Foundation
 
 enum SessionInterruptSurface: String, Codable, Sendable {
-    case sessionListRowControl = "session_list.row_control"
     case sessionDetailComposerControl = "session_detail.composer_control"
     case sessionDetailToolbar = "session_detail.toolbar"
     case taskDetailExecutionControl = "task_detail.execution_control"

@@ -1978,6 +1978,44 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
+    func testFollowSettlesSubThresholdGrowthAndPreservesReaderIntent() async throws {
+        let h = makeHarness(followsLatest: true, useSharedTextCards: true, height: 320)
+        var messages = (0..<30).map { row(id: "exact-bottom-\($0)", text: "Message \($0)") }
+        h.coordinator.apply(rows: messages)
+        h.coordinator.setBottomClearance(76)
+        h.coordinator.jumpToLatest()
+        await settlePositionPublication()
+        func gap() -> CGFloat { (h.scrollView.documentView?.frame.height ?? 0) - h.scrollView.contentView.bounds.maxY }
+        for delta: CGFloat in [1, 2, 3, 4, 5, 6, 7, 8] {
+            h.window.setContentSize(.init(width: 420, height: 320 - delta))
+            h.scrollView.layoutSubtreeIfNeeded()
+            await settlePositionPublication()
+            XCTAssertEqual(gap(), 0, accuracy: 0.5)
+        }
+        for revision in 1...8 {
+            messages[29].nativeText += " streaming words streaming words"
+            messages[29].contentRevision = revision
+            h.coordinator.apply(rows: messages)
+        }
+        await settlePositionPublication()
+        XCTAssertEqual(gap(), 0, accuracy: 0.5)
+        h.coordinator.userScrollEventWillBegin()
+        let readerY = h.scrollView.contentView.bounds.minY - 100
+        h.scrollView.contentView.scroll(to: .init(x: 0, y: readerY))
+        h.coordinator.userScrollEventDidEnd()
+        XCTAssertFalse(h.followState.value)
+        h.coordinator.setBottomClearance(154)
+        await settlePositionPublication()
+        XCTAssertEqual(h.scrollView.contentView.bounds.minY, readerY, accuracy: 0.5)
+        h.coordinator.userScrollEventWillBegin()
+        h.scrollView.contentView.scroll(to: .init(x: 0, y: (h.scrollView.documentView?.frame.height ?? 0) - h.scrollView.contentView.bounds.height))
+        h.coordinator.userScrollEventDidEnd()
+        XCTAssertTrue(h.followState.value)
+        h.window.setContentSize(.init(width: 420, height: 311))
+        await settlePositionPublication()
+        XCTAssertEqual(gap(), 0, accuracy: 0.5)
+    }
+
     func testNativeDocumentKeepsBothEndpointRowsOutsideChrome() async {
         let harness = makeHarness(followsLatest: true, height: 320)
         let rows = (0..<30).map { row(id: "two-sided-\($0)", text: "Message \($0)") }
@@ -2586,6 +2624,170 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(after.id, before.id)
         XCTAssertEqual(after.offset, before.offset, accuracy: 4)
         XCTAssertFalse(isNearBottom(harness))
+    }
+
+    func testNativeWheelCancelsPendingBottomBeforeStreamingAndStableLayoutDoesNotCorrect() async throws {
+        let harness = makeHarness(followsLatest: true, useSharedTextCards: true, height: 180)
+        let rows = (0..<30).map { row(id: "queued-goal-row-\($0)", revision: 0, text: "Goal row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        // Realize native estimates before taking the stable-layout baseline.
+        harness.scrollView.needsLayout = true
+        harness.scrollView.layoutSubtreeIfNeeded()
+        await settlePositionPublication()
+        // Repeated stable native layouts must not enqueue more bottom corrections.
+        let syncs = harness.coordinator.documentHeightSyncCount
+        let position = harness.scrollView.contentView.bounds
+        for _ in 0..<16 {
+            harness.scrollView.needsLayout = true
+            harness.scrollView.layoutSubtreeIfNeeded()
+            await settleMainQueue()
+        }
+        XCTAssertEqual(harness.coordinator.documentHeightSyncCount, syncs)
+        XCTAssertEqual(harness.scrollView.contentView.bounds, position)
+
+        var refreshed = Array(rows.dropLast()) + [
+            row(id: "queued-goal-row-29", revision: 1, text: "A taller streamed Goal update\n\nwith more content")
+        ]
+        harness.coordinator.apply(rows: refreshed)
+        // Deliver a native wheel event before the queued .bottom can execute.
+        let cgEvent = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+            wheelCount: 1, wheel1: 120, wheel2: 0, wheel3: 0))
+        let event = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+        harness.scrollView.scrollWheel(with: event)
+        XCTAssertFalse(harness.followState.value)
+        XCTAssertFalse(isNearBottom(harness))
+        // No yield between cancellation and the next streaming burst.
+        for revision in 2...5 {
+            refreshed[29] = row(id: "queued-goal-row-29", revision: revision,
+                text: String(repeating: "More streamed content\n", count: revision))
+            harness.coordinator.apply(rows: refreshed)
+        }
+        await settleMainQueue()
+        XCTAssertFalse(harness.followState.value)
+        XCTAssertFalse(isNearBottom(harness))
+    }
+
+    private var clippedReplyRegressionText: String {
+        """
+        对，我刚才把**“Corptie 保存的访问令牌过期”说成了“账号过期”**，不准确。
+
+        你正在使用这个账号，与检测失败并不矛盾：账号可以正常使用，但 Corptie 导入的那份凭证可能是旧副本，没有及时刷新。访问令牌过期本身很常见，客户端应该通过刷新令牌续期。
+
+        目前只能确认：**Corptie 保存的访问令牌已过期，用它直接请求返回了 401。不能据此判定账号失效，也不能要求你换账号。**
+
+        接下来应该对准这个账号检查：凭证从哪里导入、原来源是否已有更新、Corptie 为什么没有刷新，以及刷新请求是否也受代理问题影响。之前拿另一个账号请求成功，只能证明连接链路可用，不能证明你选中的账号不可用。
+        """
+    }
+
+    func testStructuralReplyCompletionRebindsRetainedCellAndItsHeightAfterHiddenResume() async throws {
+        for hidden in [false, true] {
+            let h = makeHarness(followsLatest: true, useSharedTextCards: true, height: 700)
+            h.window.setContentSize(.init(width: 760, height: 700))
+            h.coordinator.updateSkin(.codexFlat)
+            let history = (0..<30).map { row(id: "retained-history-\($0)", text: "Previous message \($0)", showsHeader: false) }
+            let full = clippedReplyRegressionText
+            let prefix = full.components(separatedBy: "\n\n").prefix(3).joined(separator: "\n\n")
+            var reply = row(id: "retained-reply", text: prefix, showsHeader: false)
+            reply.replyIdentity = .init(roleID: "agent:fixture", name: "Developer", avatarPath: nil)
+            h.coordinator.apply(rows: history + [reply])
+            await settlePositionPublication()
+            let original = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 30, makeIfNecessary: true))
+            let body = try XCTUnwrap(textView(in: original, identifier: "chat.timeline.body"))
+            body.setSelectedRange(.init(location: 2, length: 4))
+            let oldHeight = h.tableView.rect(ofRow: 30).height
+            let resets = h.coordinator.sdkRowResetCount
+            let reloads = (h.tableView as? IntrinsicHeightTableView)?.fullReloadCount
+            if hidden {
+                h.scrollView.isHidden = true
+                h.coordinator.setPresentationActive(false)
+            }
+            reply.nativeText = full; reply.copyText = full; reply.contentRevision += 1
+            let next = row(id: "retained-next-user", text: "Next user message", nativeStyle: .user, showsHeader: false)
+            h.coordinator.apply(rows: history + [reply, next])
+            if hidden {
+                XCTAssertEqual(h.coordinator.sdkRowResetCount, resets, "Hidden hosts must not recache their previous height")
+                h.coordinator.setPresentationActive(true)
+                h.scrollView.isHidden = false
+                h.scrollView.needsLayout = true
+            }
+            h.scrollView.layoutSubtreeIfNeeded()
+            await settlePositionPublication()
+            let current = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 30, makeIfNecessary: true))
+            let currentBody = try XCTUnwrap(textView(in: current, identifier: "chat.timeline.body"))
+            XCTAssertTrue(current === original, "Reset the SDK row container while retaining its text host")
+            XCTAssertTrue(currentBody === body)
+            XCTAssertTrue(currentBody.string.hasSuffix("不能证明你选中的账号不可用。"))
+            XCTAssertEqual(currentBody.selectedRange(), NSRange(location: 2, length: 4))
+            let manager = try XCTUnwrap(currentBody.layoutManager), container = try XCTUnwrap(currentBody.textContainer)
+            manager.ensureLayout(for: container)
+            let used = manager.usedRect(for: container).offsetBy(dx: currentBody.textContainerOrigin.x, dy: currentBody.textContainerOrigin.y)
+            let glyphs = currentBody.convert(used, to: h.tableView)
+            let frame = h.tableView.rect(ofRow: 30)
+            XCTAssertGreaterThan(frame.height, oldHeight)
+            XCTAssertLessThanOrEqual(glyphs.maxY, frame.maxY - 4, "The full fourth paragraph must fit in its actual row")
+            XCTAssertTrue(currentBody.visibleRect.insetBy(dx: -0.5, dy: -0.5).contains(used))
+            XCTAssertGreaterThanOrEqual(h.tableView.rect(ofRow: 31).minY, glyphs.maxY + 4)
+            XCTAssertEqual(h.coordinator.sdkRowResetCount - resets, 1, "Only the changed reply requires a container reset")
+            XCTAssertEqual((h.tableView as? IntrinsicHeightTableView)?.fullReloadCount, reloads)
+            let settledSyncs = h.coordinator.documentHeightSyncCount
+            for _ in 0..<8 {
+                h.scrollView.needsLayout = true; h.scrollView.layoutSubtreeIfNeeded()
+                await settleMainQueue()
+            }
+            XCTAssertEqual(h.coordinator.sdkRowResetCount - resets, 1)
+            XCTAssertEqual(h.coordinator.documentHeightSyncCount, settledSyncs, "The pending reset must drain once")
+        }
+    }
+
+    func testHiddenStructuralReplyCompletionKeepsHistoryAnchor() async throws {
+        var published: AppKitChatTimelinePosition?
+        let h = makeHarness(followsLatest: true, useSharedTextCards: true, height: 300,
+            onPositionChange: { published = $0 })
+        h.window.setContentSize(.init(width: 760, height: 300))
+        h.coordinator.updateSkin(.codexFlat)
+        let before = (0..<30).map { row(id: "anchor-before-\($0)", text: "Previous \($0)", showsHeader: false) }
+        let after = (0..<20).map { row(id: "anchor-after-\($0)", text: "Following \($0)", showsHeader: false) }
+        let full = clippedReplyRegressionText
+        var reply = row(id: "anchor-changing-reply",
+            text: full.components(separatedBy: "\n\n").prefix(3).joined(separator: "\n\n"), showsHeader: false)
+        h.coordinator.apply(rows: before + [reply] + after)
+        await settlePositionPublication()
+        h.coordinator.restore(position: .init(rowID: "anchor-after-0", offset: 5,
+            absoluteScrollY: 0, followsLatest: false))
+        await settlePositionPublication()
+        h.coordinator.publishPositionImmediately()
+        let position = try XCTUnwrap(published)
+        h.scrollView.isHidden = true
+        h.coordinator.setPresentationActive(false)
+        reply.nativeText = full; reply.copyText = full; reply.contentRevision += 1
+        h.coordinator.apply(rows: before + [reply] + after + [row(id: "anchor-new", text: "New message", showsHeader: false)])
+        h.coordinator.setPresentationActive(true)
+        h.scrollView.isHidden = false; h.scrollView.needsLayout = true
+        h.scrollView.layoutSubtreeIfNeeded()
+        await settlePositionPublication()
+        h.coordinator.publishPositionImmediately()
+        XCTAssertEqual(published?.rowID, position.rowID)
+        XCTAssertEqual(published?.offset ?? -1, position.offset, accuracy: 1)
+        XCTAssertFalse(h.followState.value)
+    }
+
+    func testStructuralPlainAppendRetainsTextHostWithoutResettingItsContainer() async throws {
+        let h = makeHarness(followsLatest: true, useSharedTextCards: true, height: 300)
+        var reply = row(id: "structural-plain", text: "Plain streaming reply", showsHeader: false)
+        h.coordinator.apply(rows: [reply])
+        await settlePositionPublication()
+        let original = try XCTUnwrap(h.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        let resets = h.coordinator.sdkRowResetCount
+        let reloads = (h.tableView as? IntrinsicHeightTableView)?.fullReloadCount
+        reply.nativeText += " more words"; reply.copyText = reply.nativeText; reply.contentRevision += 1
+        h.coordinator.apply(rows: [reply, row(id: "structural-plain-user", text: "Next", nativeStyle: .user, showsHeader: false)])
+        await settlePositionPublication()
+        XCTAssertTrue(h.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) === original)
+        XCTAssertEqual(textView(in: original, identifier: "chat.timeline.body")?.string, reply.nativeText)
+        XCTAssertEqual(h.coordinator.sdkRowResetCount, resets)
+        XCTAssertEqual((h.tableView as? IntrinsicHeightTableView)?.fullReloadCount, reloads)
     }
 
     func testUserScrollAwayCancelsQueuedGoalFollowCommand() async {

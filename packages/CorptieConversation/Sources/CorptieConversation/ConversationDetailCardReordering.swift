@@ -39,7 +39,7 @@ struct DetailCardReorderDraft: Equatable {
 /// Cursor movement publishes only to Preview. Card content is invalidated only
 /// when the insertion slot changes. Native probes and timers are drag-scoped.
 @MainActor @Observable final class DetailCardReorderController {
-    struct Item: Equatable { let id: String; let size: DetailWidgetSize }
+    struct Item: Equatable { let id: String; let size: DetailWidgetSize; var naturalHeight: Bool = false }
     struct Input: Equatable { let scope: [String]; let enabled: Bool; let items: [Item] }
     private(set) var draft: DetailCardReorderDraft?
     let preview = DetailCardReorderPreview()
@@ -94,7 +94,15 @@ struct DetailCardReorderDraft: Equatable {
         #endif
         let ids = displayOrder(input.items.map(\.id))
         let sizes = ids.compactMap { id in input.items.first { $0.id == id }?.size }
-        let placement = DetailWidgetPlacement.make(width: container.bounds.width, widgets: sizes)
+        // Existing native card probes already own these frames. Read only the
+        // opted-in Provider height during a drag; never measure or publish geometry.
+        var naturalHeights: [Int: CGFloat] = [:]
+        for (index, id) in ids.enumerated() where input.items.first(where: { $0.id == id })?.naturalHeight == true {
+            if let card = cards.object(forKey: id as NSString), card.bounds.height > 0 {
+                naturalHeights[index] = card.bounds.height
+            }
+        }
+        let placement = DetailWidgetPlacement.make(width: container.bounds.width, widgets: sizes, naturalHeights: naturalHeights)
         frames = Dictionary(uniqueKeysWithValues: zip(ids, placement.frames))
     }
 

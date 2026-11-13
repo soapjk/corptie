@@ -16,7 +16,10 @@ extension UnifiedConsoleView {
     }
 
     func restartTask(_ task: CorptieTask) {
-        guard !pendingTaskRestartIds.contains(task.id) else { return }
+        guard !pendingTaskRestartIds.contains(task.id), task.deletionStatus != "deleting",
+              let current = sessionIndexStore.taskSessionLookup.currentSession(for: task),
+              current.actions?.restart?.available == true,
+              !backendClient.restartingSessionIds.contains(current.id) else { return }
         pendingTaskRestartIds.insert(task.id)
         Task {
             defer { pendingTaskRestartIds.remove(task.id) }

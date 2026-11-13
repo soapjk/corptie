@@ -182,7 +182,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             id: "final",
             type: "agentMessage",
             text: "Done",
-            createdAt: "2026-08-12T03:55:52.000Z"
+            createdAt: "2026-08-12T03:55:52.610Z"
         )
         final.presentationRole = "final_answer"
 
@@ -193,7 +193,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(processItems.first?.processStartedAt, user.createdAt)
         XCTAssertEqual(processItems.first?.processEndedAt, final.createdAt)
-        XCTAssertEqual(executionProcessDurationText(for: processItems), "12.00s")
+        XCTAssertEqual(executionProcessDurationText(for: processItems), "13s")
     }
 
     func testStoredTimelineJSONProjectsCommentaryAsDirectMessageAndToolInsideProcess() throws {

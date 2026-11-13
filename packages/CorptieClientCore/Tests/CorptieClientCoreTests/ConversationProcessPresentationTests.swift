@@ -3,16 +3,37 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationProcessPresentationTests {
-    @Test(arguments: [(0.01, "0.01s"), (4.2, "4.20s"), (9.999, "10.00s"),
-        (59.994, "59.99s"), (59.999, "1m 0.00s"), (60.01, "1m 0.01s"),
-        (3599.999, "1h 0m 0.00s"), (3661.234, "1h 1m 1.23s")])
-    func hundredthsRemainVisibleAcrossMinuteAndHourBoundaries(seconds: Double, expected: String) {
+    @Test(arguments: [(0.01, "0s"), (4.2, "4s"), (9.999, "10s"), (22.61, "23s"),
+        (59.49, "59s"), (59.5, "1m 0s"), (59.999, "1m 0s"), (60.01, "1m 0s"),
+        (3599.999, "1h 0m 0s"), (3661.234, "1h 1m 1s")])
+    func wholeSecondsRoundBeforeMinuteAndHourSplitting(seconds: Double, expected: String) {
         let start = Date(timeIntervalSince1970: 1000)
         #expect(ConversationProcessPresentation.durationText(startedAt: start,
             endingAt: start.addingTimeInterval(seconds)) == expected)
-        let completed = ConversationProcessPresentation(state: .completed, count: 1, duration: "12.34s")
-        #expect(completed.summary(languageCode: "en") == "Completed in 12.34s · 1 step")
-        #expect(completed.summary(languageCode: "zh-Hans") == "已完成 12.34秒 · 1 步")
+    }
+
+    @Test(arguments: ["running", "completed", "failed", "interrupted"])
+    func everyProcessOutcomeUsesWholeSeconds(status: String) throws {
+        let start = "2026-09-19T00:00:00Z"
+        let end = "2026-09-19T00:00:22.610Z"
+        var fields = ["id": "tool", "type": "commandExecution", "text": "result",
+            "turnStatus": status, "processStartedAt": start]
+        if status != "running" { fields["processEndedAt"] = end }
+        let item = try JSONDecoder().decode(ClientMessage.self,
+            from: JSONSerialization.data(withJSONObject: fields))
+        let base = try #require(ISO8601DateFormatter().date(from: start))
+        let duration = ConversationProcessPresentation.durationText(for: [item],
+            now: base.addingTimeInterval(22.61))
+        #expect(duration == "23s")
+        let presentation = ConversationProcessPresentation(
+            state: ConversationProcessPresentation.state(for: [item]), count: 6, duration: duration)
+        let prefixes = ["running": ("Working for", "处理中"), "completed": ("Completed in", "已完成"),
+            "failed": ("Execution failed after", "处理失败，耗时"), "interrupted": ("Execution stopped after", "已停止处理，耗时")]
+        let prefix = try #require(prefixes[status])
+        #expect(presentation.summary(languageCode: "en") == "\(prefix.0) 23s · 6 steps")
+        #expect(presentation.summary(languageCode: "zh-Hans") == "\(prefix.1) 23秒 · 6 步")
+        #expect(item.processStartedAt == start)
+        #expect(item.processEndedAt == (status == "running" ? nil : end))
     }
 
     @Test func durationUsesProjectedBoundsAndDoesNotInventMissingTime() throws {
@@ -26,20 +47,20 @@ struct ConversationProcessPresentationTests {
         #expect(ConversationProcessPresentation.durationText(for: [single]) == nil)
         let completed = try item(["createdAt": "2026-09-19T00:00:10Z", "turnStatus": "completed",
             "processStartedAt": start, "processEndedAt": "2026-09-19T00:01:12Z"])
-        #expect(ConversationProcessPresentation.durationText(for: [completed]) == "1m 12.00s")
+        #expect(ConversationProcessPresentation.durationText(for: [completed]) == "1m 12s")
         #expect(ConversationProcessPresentation.durationText(for: [completed],
-            now: Date(timeIntervalSince1970: 2_000_000_000)) == "1m 12.00s")
+            now: Date(timeIntervalSince1970: 2_000_000_000)) == "1m 12s")
         let running = try item(["processStartedAt": start, "turnStatus": "running"])
         let base = try #require(ISO8601DateFormatter().date(from: start))
-        for (seconds, expected) in [(0.01, "0.01s"), (4.2, "4.20s"), (17.0, "17.00s"),
-                                    (60.0, "1m 0.00s"), (3660.0, "1h 1m 0.00s")] {
+        for (seconds, expected) in [(0.01, "0s"), (4.2, "4s"), (17.0, "17s"),
+                                    (60.0, "1m 0s"), (3660.0, "1h 1m 0s")] {
             #expect(ConversationProcessPresentation.durationText(for: [running],
                 now: base.addingTimeInterval(seconds)) == expected)
         }
         #expect(ConversationProcessPresentation.durationText(for: [running],
             now: base.addingTimeInterval(-5)) == nil)
         #expect(ConversationProcessPresentation.startedAt(for: [running]) == base)
-        #expect(ConversationProcessPresentation.durationText(for: [running], now: base) == "0.00s")
+        #expect(ConversationProcessPresentation.durationText(for: [running], now: base) == "0s")
         #expect(ConversationProcessPresentation.elapsedRefreshInterval == 1.0)
         // The live label is a wall-clock read on a one-second cadence. A
         // sub-second repeating timer on the main thread regresses window drag.
@@ -51,15 +72,15 @@ struct ConversationProcessPresentationTests {
         #expect(ConversationProcessPresentation.durationText(
             startedAt: base, endingAt: base.addingTimeInterval(3_661), showSeconds: true, fractionDigits: 0) == "1h 1m 1s")
         #expect(ConversationProcessPresentation.durationText(
-            startedAt: base, endingAt: base.addingTimeInterval(5)) == "5.00s")
+            startedAt: base, endingAt: base.addingTimeInterval(5)) == "5s")
         #expect(ConversationProcessPresentation.durationText(
-            startedAt: base, endingAt: base.addingTimeInterval(6)) == "6.00s")
+            startedAt: base, endingAt: base.addingTimeInterval(6)) == "6s")
         #expect(ConversationProcessPresentation.durationText(
-            startedAt: base, endingAt: base.addingTimeInterval(60), showSeconds: true) == "1m 0.00s")
+            startedAt: base, endingAt: base.addingTimeInterval(60), showSeconds: true) == "1m 0s")
         #expect(ConversationProcessPresentation.durationText(
-            startedAt: base, endingAt: base.addingTimeInterval(3_660), showSeconds: true) == "1h 1m 0.00s")
+            startedAt: base, endingAt: base.addingTimeInterval(3_660), showSeconds: true) == "1h 1m 0s")
         #expect(ConversationProcessPresentation.durationText(
-            startedAt: base, endingAt: base.addingTimeInterval(3_661), showSeconds: true) == "1h 1m 1.00s")
+            startedAt: base, endingAt: base.addingTimeInterval(3_661), showSeconds: true) == "1h 1m 1s")
         let invalid = try item(["createdAt": "bad-date", "turnStatus": "completed"])
         #expect(ConversationProcessPresentation.durationText(for: [invalid]) == nil)
     }
@@ -75,11 +96,11 @@ struct ConversationProcessPresentationTests {
     }
 
     @Test func summariesKeepDesktopWordingAndDurationRules() {
-        let completed = ConversationProcessPresentation(state: .completed, count: 3, duration: "1.2s")
-        #expect(completed.summary(languageCode: "en") == "Completed in 1.2s · 3 steps")
-        #expect(completed.summary(languageCode: "zh-Hans") == "已完成 1.2秒 · 3 步")
-        #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1m 12.00s")
-            .summary(languageCode: "zh") == "已完成 1分钟 12.00秒 · 1 步")
+        let completed = ConversationProcessPresentation(state: .completed, count: 3, duration: "1s")
+        #expect(completed.summary(languageCode: "en") == "Completed in 1s · 3 steps")
+        #expect(completed.summary(languageCode: "zh-Hans") == "已完成 1秒 · 3 步")
+        #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1m 12s")
+            .summary(languageCode: "zh") == "已完成 1分钟 12秒 · 1 步")
         #expect(ConversationProcessPresentation(state: .completed, count: 1, duration: "1h 2m")
             .summary(languageCode: "zh") == "已完成 1小时 2分钟 · 1 步")
         #expect(ConversationProcessPresentation(state: .running, count: 2).summary == "Working… · 2 steps")

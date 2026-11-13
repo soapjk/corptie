@@ -4,6 +4,28 @@ import Testing
 
 @MainActor
 struct SessionCollectionPatchTests {
+    @Test func taskRestartNeverFallsBackToAnUnrelatedOrHistoricalSession() {
+        var task = makeCorptieTask(id: "task:restart", lifecycleState: "in_progress")
+        task.currentSessionId = "current"
+        let history = makeSession(id: "history", sessionKind: .worker, taskId: task.id, archived: true)
+        let fallback = makeSession(id: "fallback", sessionKind: .worker, taskId: task.id)
+        var current = makeSession(id: "current", sessionKind: .worker, taskId: task.id)
+        var lookup = TaskSessionLookup(sessions: [history, fallback])
+        #expect(lookup.session(for: task)?.id == "fallback")
+        #expect(lookup.currentSession(for: task) == nil)
+        lookup = TaskSessionLookup(sessions: [history, fallback, current])
+        #expect(lookup.currentSession(for: task)?.id == "current")
+        current.archived = true
+        lookup = TaskSessionLookup(sessions: [history, fallback, current])
+        #expect(lookup.currentSession(for: task) == nil)
+        current.archived = false
+        current.taskId = "task:other"
+        lookup = TaskSessionLookup(sessions: [history, fallback, current])
+        #expect(lookup.currentSession(for: task) == nil)
+        task.currentSessionId = nil
+        #expect(lookup.currentSession(for: task) == nil)
+    }
+
     @Test func assistantProcessingSummaryTracksMultipleSessionsAndMembershipChanges() {
         let store = SessionIndexStore()
         var first = makeSession(id: "first", sessionKind: .assistantChat, status: .running)

@@ -21,23 +21,28 @@ struct ConsoleOverlayScroller: NSViewRepresentable {
     static let leadingContentInset: CGFloat = NSScroller.scrollerWidth(for: .small, scrollerStyle: .overlay) + 12
     var placeOnLeadingEdge = false
     var usesWorkStyle = false
+    var allowsVerticalIndicator = true
 
     func makeNSView(context: Context) -> Probe {
-        Probe(placeOnLeadingEdge: placeOnLeadingEdge, usesWorkStyle: usesWorkStyle)
+        Probe(placeOnLeadingEdge: placeOnLeadingEdge, usesWorkStyle: usesWorkStyle,
+              allowsVerticalIndicator: allowsVerticalIndicator)
     }
     func updateNSView(_ view: Probe, context: Context) {
         view.placeOnLeadingEdge = placeOnLeadingEdge
         view.usesWorkStyle = usesWorkStyle
+        view.allowsVerticalIndicator = allowsVerticalIndicator
         view.configure()
     }
 
     final class Probe: NSView {
         var placeOnLeadingEdge: Bool
         var usesWorkStyle: Bool
+        var allowsVerticalIndicator: Bool
 
-        init(placeOnLeadingEdge: Bool = false, usesWorkStyle: Bool = false) {
+        init(placeOnLeadingEdge: Bool = false, usesWorkStyle: Bool = false, allowsVerticalIndicator: Bool = true) {
             self.placeOnLeadingEdge = placeOnLeadingEdge
             self.usesWorkStyle = usesWorkStyle
+            self.allowsVerticalIndicator = allowsVerticalIndicator
             super.init(frame: .zero)
         }
 
@@ -58,9 +63,10 @@ struct ConsoleOverlayScroller: NSViewRepresentable {
         func configure() {
             guard let scrollView = enclosingScrollView else { return }
             if usesWorkStyle {
-                WorkNavigationScrollStyle.configure(scrollView)
+                WorkNavigationScrollStyle.configure(scrollView, allowsVerticalIndicator: allowsVerticalIndicator)
                 return
             }
+            if !allowsVerticalIndicator, scrollView.hasVerticalScroller { scrollView.hasVerticalScroller = false }
             if scrollView.scrollerStyle != .overlay { scrollView.scrollerStyle = .overlay }
             if scrollView.hasVerticalScroller, !(scrollView.verticalScroller is ConsoleThinScroller) {
                 scrollView.verticalScroller = ConsoleThinScroller()

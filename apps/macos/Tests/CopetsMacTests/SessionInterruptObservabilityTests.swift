@@ -25,11 +25,9 @@ struct SessionInterruptObservabilityTests {
 
     @Test
     func everyInterruptButtonDeclaresItsOwnSurface() throws {
-        let rootSource = try source(named: "Floating/SessionList/SessionCards.swift")
-            + source(named: "Conversation/Composer/MessageComposer.swift")
+        let rootSource = try source(named: "Conversation/Composer/MessageComposer.swift")
         let taskSource = try source(named: "WorkTasks/CorptieTaskDetailView.swift")
 
-        #expect(rootSource.contains("surface: .sessionListRowControl"))
         let stopSource = try source(named: "SessionComposerStopButton.swift")
         #expect(stopSource.contains("surface: .sessionDetailComposerControl"))
         #expect(stopSource.contains("session.executionTaskStatus == .running"))

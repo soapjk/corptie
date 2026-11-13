@@ -133,7 +133,7 @@ import Testing
             styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        window.orderFront(nil)
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         defer { window.contentView = nil; window.close() }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(60))
@@ -167,7 +167,7 @@ import Testing
             styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        window.orderFront(nil)
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
         defer { window.contentView = nil; window.close() }
         host.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(50))
@@ -226,7 +226,7 @@ import Testing
                 ConversationDetailModuleCard(title: "生命周期", systemImage: "list.bullet") { Text("内容") }
             })
             window.contentView = host
-            window.orderFront(nil)
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
             host.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(30))
             func find(_ view: NSView) -> DetailCardProbe.View? {
@@ -293,7 +293,7 @@ import Testing
             document.addSubview(cardB)
             rail.frame = document.bounds
             document.addSubview(rail)
-            window.orderFront(nil)
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000)); window.orderBack(nil)
             outer.layoutSubtreeIfNeeded()
             router.attach(rail)
             router.register(innerA)

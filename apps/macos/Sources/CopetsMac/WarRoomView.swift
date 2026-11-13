@@ -3,7 +3,6 @@ import CorptieClientCore
 import CorptieConversation
 
 // 控制台主视图：三栏布局。
-// 净新增独立文件，不碰 FloatingRootView.swift 巨石。
 //
 // 左栏使用原生 Work Sidebar；中栏平铺 CorptieTask 看板；右栏是独立的详情卡片。
 

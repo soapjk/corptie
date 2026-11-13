@@ -203,11 +203,27 @@ extension UnifiedConsoleView {
         }
     }
 
+    /// One resource menu for Worker entries in both flat and grouped navigation.
+    @ViewBuilder
+    func sessionContextMenuContent(for session: TaskSession, isRenaming: Binding<Bool>) -> some View {
+        if session.resolvedSessionKind == .worker,
+           let taskID = session.taskId, let task = entityClient.task(taskID) {
+            taskContextMenuContent(for: task, session: session)
+        } else {
+            if session.resolvedSessionKind == .worker {
+                Text(L10n("Associated Task Unavailable"))
+            }
+            SessionContextMenuContent(session: session, isRenaming: isRenaming,
+                usesExplicitTargetLabels: session.resolvedSessionKind == .worker)
+        }
+    }
+
     @ViewBuilder
     func taskContextMenuContent(
         for task: CorptieTask,
         session: TaskSession?
     ) -> some View {
+        let currentSession = sessionIndexStore.taskSessionLookup.currentSession(for: task)
         TaskFixedDisplayMenuItem(task: task)
         if session == nil && task.deletionStatus == nil {
             Button(L10n("启动状态与恢复"), systemImage: "arrow.clockwise") { taskStartupRecoveryTarget = task }
@@ -215,11 +231,11 @@ extension UnifiedConsoleView {
         if task.hierarchy?.canCreateChild == true {
             Button(L10n("新建子任务"),systemImage:"plus") { taskCreationTarget=TaskCreationTarget(workID:task.workId,parentTaskId:task.id) }
         }
-        if let id=task.parentTaskId,let parent=entityClient.tasks.first(where:{$0.id == id}) {
+        if let id = task.parentTaskId, let parent = entityClient.task(id) {
             Button(L10n("打开父任务"),systemImage:"arrow.turn.up.left") {openTask(parent,session:workerSession(for:parent))}
         }
         Divider()
-        Button(L10n("Rename"), systemImage: "pencil") {
+        Button(L10n("Rename Task"), systemImage: "pencil") {
             taskPendingRename = task
         }
         .disabled(task.deletionStatus == "deleting")
@@ -227,20 +243,25 @@ extension UnifiedConsoleView {
             taskPendingEdit = task
         }
         .disabled(task.deletionStatus == "deleting")
-        Button(L10n("Restart Task"), systemImage: "arrow.clockwise") {
+        SessionRestartMenuButton(commandState: backendClient.sessionCommandController, session: currentSession, title: L10n("Restart Task Current Session"),
+            isPending: pendingTaskRestartIds.contains(task.id) || task.deletionStatus == "deleting") {
             restartTask(task)
         }
-        .disabled(session?.actions?.restart?.available != true
-            || pendingTaskRestartIds.contains(task.id)
-            || task.deletionStatus == "deleting")
-        DetachedChatWindowMenuButton(session: session)
-            .disabled(task.deletionStatus == "deleting")
         Button(task.archived == true ? L10n("恢复 Task") : L10n("归档 Task"), systemImage: "archivebox") {
             Task { await setTaskArchived(task.archived != true, task: task) }
         }
         .disabled(task.deletionStatus == "deleting")
         Divider()
-        Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+        if let session {
+            Menu(L10n("This Session")) {
+                SessionContextMenuContent(session: session, isRenaming: .constant(false),
+                    usesExplicitTargetLabels: true,
+                    isRestartPending: pendingTaskRestartIds.contains(task.id) && session.id == currentSession?.id)
+            }
+            .disabled(task.deletionStatus == "deleting" || pendingTaskDeletionIds.contains(task.id))
+            Divider()
+        }
+        Button(L10n("Delete Task and Associated Sessions…"), systemImage: "trash", role: .destructive) {
             Task { await prepareTaskDeletion(task) }
         }
         .disabled(pendingTaskDeletionIds.contains(task.id) || task.deletionStatus == "deleting")
