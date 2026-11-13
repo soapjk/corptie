@@ -21,7 +21,7 @@ struct DetailRailBackdropGeometryTests {
                 Probe(view: transcript)
             } detail: {
                 Probe(view: inspector)
-            }.environment(\.accessibilityReduceMotion, true)
+            }
         }
     }
     private func descendants<T>(_ view: NSView, as type: T.Type) -> [T] {
@@ -38,7 +38,7 @@ struct DetailRailBackdropGeometryTests {
         defer { window.contentView = nil; window.close() }
         func settle() async throws {
             host.layoutSubtreeIfNeeded()
-            try await Task.sleep(for: .milliseconds(80))
+            try await Task.sleep(for: .milliseconds(400))
             host.layoutSubtreeIfNeeded()
         }
         #expect(DetailRailGeometry.leadingBackdropExtension == 32 - 12)
