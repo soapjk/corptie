@@ -83,15 +83,15 @@ public struct BackendByteStream: AsyncSequence, Sendable {
         return AsyncIterator(chunks: chunks!.makeAsyncIterator())
     }
 
-    fileprivate func collectImage(total: Int64?, progress: @escaping @Sendable (ClientImageProgress) -> Void, chunkReceived: @Sendable (Data) throws -> Void = { _ in }) async throws -> Data {
-        guard let chunks else { return try await ClientImageDataCollector.collect(self, total: total, progress: progress, chunk: chunkReceived) }
-        guard total == nil || total! <= ClientImageDataCollector.maximum else { throw URLError(.dataLengthExceedsMaximum) }
+    fileprivate func collectImage(total: Int64?, maximum: Int = ClientImageDataCollector.maximum, progress: @escaping @Sendable (ClientImageProgress) -> Void, chunkReceived: @Sendable (Data) throws -> Void = { _ in }) async throws -> Data {
+        guard let chunks else { return try await ClientImageDataCollector.collect(self, total: total, progress: progress, maximum: maximum, chunk: chunkReceived) }
+        guard total == nil || total! <= maximum else { throw URLError(.dataLengthExceedsMaximum) }
         var data = Data(), last = ContinuousClock.now
         if let total { data.reserveCapacity(Int(total)) }
         progress(.init(received: 0, total: total))
         for try await chunk in chunks {
             try Task.checkCancellation()
-            guard chunk.count <= ClientImageDataCollector.maximum - data.count else { throw URLError(.dataLengthExceedsMaximum) }
+            guard chunk.count <= maximum - data.count else { throw URLError(.dataLengthExceedsMaximum) }
             data.append(chunk)
             try chunkReceived(chunk)
             if last.duration(to: .now) >= .milliseconds(100) {
@@ -228,7 +228,7 @@ public final class BackendTransport: Sendable {
 
     /// Images retain relay chunks and native URLSession AsyncBytes directly.
     /// Do not pass a multi-megabyte body through the SSE per-byte stream adapter.
-    public func imageData(for request: URLRequest, transfer: ClientImageTransfer? = nil,
+    public func imageData(for request: URLRequest, transfer: ClientImageTransfer? = nil, preview: Bool = false,
         progress: @escaping @Sendable (ClientImageProgress) -> Void = { _ in }) async throws -> Data {
         let prepared = try prepare(transfer?.prepare(request) ?? request)
         func length(_ response: HTTPURLResponse) -> Int64? {
@@ -247,8 +247,14 @@ public final class BackendTransport: Sendable {
             stream = BackendByteStream(native: native); response = http
         }
         try await Self.requireByteSuccess(stream, response: response)
+        if preview {
+            guard response.value(forHTTPHeaderField: "X-Corptie-Image-Variant") == "preview",
+                  response.expectedContentLength > 0, response.expectedContentLength <= 300 * 1024 else {
+                throw URLError(.cannotDecodeContentData)
+            }
+        }
         let offset = try transfer?.begin(response) ?? 0
-        let data = try await stream.collectImage(total: length(response), progress: { value in
+        let data = try await stream.collectImage(total: length(response), maximum: preview ? 300 * 1024 : ClientImageDataCollector.maximum, progress: { value in
             progress(.init(received: offset + value.received, total: value.total.map { offset + $0 }))
         }, chunkReceived: { try transfer?.append($0) })
         return transfer?.complete() ?? data

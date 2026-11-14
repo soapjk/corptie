@@ -4,6 +4,12 @@ import CorptieClientCore
 @testable import CorptieClientSecurity
 
 struct CloudRelayTransportTests {
+    @Test func imageVariantSurvivesRelayResponseHeaderAllowlist() throws {
+        let response = try #require(HTTPURLResponse(url: URL(string: "http://localhost/image")!, statusCode: 200,
+            httpVersion: nil, headerFields: ["X-Corptie-Image-Variant":"preview", "Content-Length":"100"])!)
+        let headers = CloudRelayMacAgent.responseHeaders(response)
+        #expect(headers.contains { $0.key.lowercased() == "x-corptie-image-variant" && $0.value == "preview" })
+    }
     @Test func closedConnectionWindowRejectsUnknownExpiredAndEvictedIDs() {
         var window = CloudRelayClosedConnectionWindow()
         let now = Date(timeIntervalSince1970: 1000), id = UUID()

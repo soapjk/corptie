@@ -8,7 +8,7 @@ public final class ClientImageTransfer: @unchecked Sendable {
     private var expectedTotal: Int64?
     private let hash: String
     public init?(resource: ClientMessageImageResource) {
-        guard case .messageReference(let destination) = resource.source,
+        guard resource.variant == .original, case .messageReference(let destination) = resource.source,
               let url = URLComponents(string: destination), url.scheme == "artifact",
               let version = url.queryItems?.first(where: { $0.name == "version" })?.value,
               let number = Int(version), number > 0,

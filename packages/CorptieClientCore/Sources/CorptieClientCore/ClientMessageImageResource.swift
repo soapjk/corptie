@@ -9,11 +9,17 @@ public struct ClientMessageImageResource: Equatable, Sendable {
         case messageReference(destination: String)
         case publicRemote(url: URL)
     }
+    public enum Variant: String, Equatable, Sendable { case preview, original }
+    public let variant: Variant
+    public func withVariant(_ variant: Variant) -> Self {
+        .init(sessionID: sessionID, sourceItemID: sourceItemID, source: source, variant: variant)
+    }
     public let sessionID: String
     public let sourceItemID: String
     public let source: Source
 
-    public init(sessionID: String, sourceItemID: String, source: Source) {
+    public init(sessionID: String, sourceItemID: String, source: Source, variant: Variant = .original) {
+        self.variant = variant
         self.sessionID = sessionID
         self.sourceItemID = sourceItemID
         self.source = source
@@ -52,19 +58,20 @@ public extension ClientSessionAPI {
         switch resource.source {
         case .managed(let path):
             request = try transport.endpoint.request(path: prefix + [resource.sessionID, "images"],
-                query: [.init(name: "path", value: path)])
+                query: [.init(name: "path", value: path), .init(name: "variant", value: resource.variant.rawValue)])
         case .messageReference(let destination):
             request = try transport.endpoint.request(path: prefix + [resource.sessionID, "resources"],
-                query: [.init(name: "itemId", value: resource.sourceItemID), .init(name: "path", value: destination)])
+                query: [.init(name: "itemId", value: resource.sourceItemID), .init(name: "path", value: destination), .init(name: "variant", value: resource.variant.rawValue)])
         case .publicRemote(let url):
+            guard resource.variant == .original else { throw URLError(.resourceUnavailable) }
             return try await ClientRemoteImageDownload.read(url, progress: progress)
         }
         let requestID = UUID().uuidString
         request.setValue(requestID, forHTTPHeaderField: "X-Corptie-Request-Id")
         let log = Logger(subsystem: "com.corptie.client", category: "ImageDownload")
         log.info("Image request started: request=\(requestID, privacy: .public)")
-        let data = try await transport.imageData(for: request, transfer: transfer, progress: progress)
-        if case .messageReference(let destination) = resource.source,
+        let data = try await transport.imageData(for: request, transfer: resource.variant == .original ? transfer : nil, preview: resource.variant == .preview, progress: progress)
+        if resource.variant == .original, case .messageReference(let destination) = resource.source,
            let url = URLComponents(string: destination), url.scheme == "artifact",
            let expected = url.queryItems?.first(where: { $0.name == "hash" })?.value {
             let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -80,6 +87,7 @@ enum ClientImageDataCollector {
 
     static func collect<Bytes: AsyncSequence>(_ bytes: Bytes, total: Int64?,
         progress: @escaping @Sendable (ClientImageProgress) -> Void,
+        maximum: Int = ClientImageDataCollector.maximum,
         chunk: @Sendable (Data) throws -> Void = { _ in }) async throws -> Data where Bytes.Element == UInt8 {
         guard total == nil || total! <= maximum else { throw URLError(.dataLengthExceedsMaximum) }
         var result = Data()

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B12500000000000000000001 /* ImageGalleryLoadingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12500000000000000000002 /* ImageGalleryLoadingTests.swift */; };
 		B12400000000000000000001 /* PadImageGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = B12400000000000000000002 /* PadImageGallery.swift */; };
 		043FEBA28BF0F3F1F5FDC27F /* PadMessageDelivery.swift in Sources */ = {isa = PBXBuildFile; fileRef = E613FBE0CD902F4F6F5D2616 /* PadMessageDelivery.swift */; };
 		09DBEDDD915E59DC06E1C90F /* ConversationNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B6D5D9E4A86E7BA5C3C033 /* ConversationNavigationTests.swift */; };
@@ -78,6 +79,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B12500000000000000000002 /* ImageGalleryLoadingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageGalleryLoadingTests.swift; sourceTree = "<group>"; };
 		B12400000000000000000002 /* PadImageGallery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadImageGallery.swift; sourceTree = "<group>"; };
 		0146C8406CC84803BF91ADAF /* CorptieMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorptieMobileApp.swift; sourceTree = "<group>"; };
 		04AE156806E8E27AB03042C1 /* PadMessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadMessageText.swift; sourceTree = "<group>"; };
@@ -238,6 +240,7 @@
 		981560E700E4E4C9B67E2849 /* NativeTests */ = {
 			isa = PBXGroup;
 			children = (
+				B12500000000000000000002 /* ImageGalleryLoadingTests.swift */,
 				2A355B466756E88DBB021921 /* ComposerPlaceholderTests.swift */,
 				B193871C58ABD6230A57F7A7 /* NativeTimelineLayoutTests.swift */,
 				CFC8B0D135AFE387173FC661 /* StandardTimelineLayoutTests.swift */,
@@ -382,6 +385,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B12500000000000000000001 /* ImageGalleryLoadingTests.swift in Sources */,
 				6BCA6D834AC3E714C5265006 /* ComposerPlaceholderTests.swift in Sources */,
 				B780406A8F2CAA30F9CEFCF4 /* NativeTimelineLayoutTests.swift in Sources */,
 				9053FA67E36D454C69C67F49 /* StandardTimelineLayoutTests.swift in Sources */,
