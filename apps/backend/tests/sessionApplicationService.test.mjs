@@ -27,6 +27,40 @@ test("native fork uses a fresh tool attachment and the ordinary binding finaliza
   assert.equal(result.id, "new"); assert.deepEqual(calls, ["tools", "fork", "bind"]);
 });
 
+test("coordination executor availability remains authoritative before restricted discussion", async () => {
+  const { service, calls } = fixture();
+  service.resolveExecutionPolicy = () => "host-coordination";
+  service.workChatReadOnlyTurns = {
+    required: () => true,
+    send: () => assert.fail("Unavailable coordination must not dispatch a discussion turn")
+  };
+  await assert.rejects(service.sendMessage("logical-a", "continue"), { code: "COORDINATION_EXECUTOR_UNAVAILABLE" });
+  assert.deepEqual(calls, []);
+});
+
+test("restricted Work Chat routes before coordination and native dispatch without fallback", async () => {
+  const { service, calls } = fixture();
+  service.resolveExecutionPolicy = () => "host-coordination";
+  service.coordinationTurns = {
+    enabled: () => true,
+    send: () => assert.fail("Read-only discussion must not enter coordination execution")
+  };
+  const receipt = { turnId: "readonly:one", delivery: "accepted" };
+  let reject = false;
+  service.workChatReadOnlyTurns = {
+    required: () => true,
+    send: async (_reference, message) => {
+      assert.equal(message, "discuss");
+      if (reject) throw Object.assign(new Error("Read-only unavailable"), { code: "READ_ONLY_UNAVAILABLE" });
+      return receipt;
+    }
+  };
+  assert.equal(await service.sendMessage("logical-a", "discuss"), receipt);
+  reject = true;
+  await assert.rejects(service.sendMessage("logical-a", "discuss"), { code: "READ_ONLY_UNAVAILABLE" });
+  assert.deepEqual(calls, []);
+});
+
 test("model selection persists only after the Provider acknowledges it", async () => {
   const calls = [];
   let reject = false;
