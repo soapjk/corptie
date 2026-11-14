@@ -25,3 +25,17 @@ test("missing helper and unsupported platforms do not claim readiness or launch 
   assert.equal((await independentComputerUsePreset({ dataDir: "/managed", platform: "linux", fs })).runtime.status, "unsupported_platform");
   await assert.rejects(independentComputerUsePreset({ dataDir: "relative" }), /absolute/);
 });
+
+test("unavailable native runtime exposes actionable errors without an executable config or state directory", async () => {
+  let directories = 0;
+  const fs = available();
+  fs.mkdir = async () => { directories++; };
+  fs.access = async () => { throw new Error("ENOENT"); };
+  for (const [platform, code] of [["darwin", "COMPUTER_USE_HELPER_MISSING"], ["linux", "COMPUTER_USE_PLATFORM_UNSUPPORTED"]]) {
+    const { runtime, config } = await independentComputerUsePreset({ dataDir: "/managed", platform, fs });
+    assert.equal(config, null);
+    assert.equal(runtime.errorCode, code);
+    assert.equal(runtime.helperPath, null);
+  }
+  assert.equal(directories, 0);
+});

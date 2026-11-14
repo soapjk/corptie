@@ -98,3 +98,26 @@ test("clients without elicitation fail closed before native execution", async t 
   assert.equal(result.isError, true);
   assert.equal(calls.length, 0);
 });
+
+test("application listing does not authorize a PID and a new Turn requires a fresh grant", async t => {
+  let approvals = 0;
+  const approve = async () => { approvals++; return { action: "accept", content: { allow: true } }; };
+  const first = await harness(t, approve);
+  for (const args of [{ action: "apps" }, { action: "read", pid: 3, windowId: 4 }, { action: "read", pid: 3, windowId: 5 }]) {
+    const result = await first.client.callTool({ name: "computer_use", arguments: args });
+    assert.notEqual(result.isError, true);
+  }
+  assert.equal(approvals, 2);
+  const next = await harness(t, approve);
+  const result = await next.client.callTool({ name: "computer_use", arguments: { action: "read", pid: 3, windowId: 4 } });
+  assert.notEqual(result.isError, true);
+  assert.equal(approvals, 3);
+  assert.equal(next.calls.length, 1);
+});
+
+test("extended shortcut keys remain available through the MCP schema", () => {
+  for (const key of ["l", "n", "t", "w", "r"]) {
+    const args = { action: "key", pid: 3, windowId: 4, key, modifiers: ["command"] };
+    assert.deepEqual(validateComputerUseArguments(args), args);
+  }
+});
