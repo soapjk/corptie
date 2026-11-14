@@ -18,6 +18,7 @@ import { CoordinationRequestService } from "./application/coordinationRequestSer
 import { CoordinationTurnService } from "./application/coordinationTurnService.mjs";
 import { SessionChannelMailboxService } from "./collaboration/sessionChannelMailboxService.mjs";
 import http from "node:http";
+import { withdrawUnreceivedUserMessage } from "./application/userMessageWithdrawal.mjs";
 import { deleteUnreceivedUserMessage } from "./application/userMessageDeletion.mjs";
 import { routeBackendHttpRequest } from "./application/backendHttpRouter.mjs";
 import { detailServiceFor } from "./application/detailDocumentService.mjs";
@@ -2028,6 +2029,16 @@ function cancelQueuedUserMessage(sessionId, taskId) {
   return task;
 }
 
+function withdrawUserMessage(sessionId, messageId) {
+  const routedSessionId = requireSessionReference(sessionId).sessionId;
+  const result = withdrawUnreceivedUserMessage(store, routedSessionId, messageId);
+  forgetRuntimeQueuedWork(routedSessionId, messageId);
+  const task = store.getAgentTask(messageId);
+  if (task) emitEvent("AgentWorkCompleted", { sessionId: routedSessionId, task }, { sessionId: routedSessionId, source: task.source });
+  scheduleAgentWorkDrain(routedSessionId);
+  return result;
+}
+
 function deleteUserMessage(sessionId, messageId) {
   return deleteUnreceivedUserMessage(store, requireSessionReference(sessionId).sessionId, messageId);
 }
@@ -2573,6 +2584,7 @@ const backendHttpPorts = Object.freeze({
   get sendUnifiedSessionMessage() { return sendUnifiedSessionMessage; },
   get cancelQueuedUserMessage() { return cancelQueuedUserMessage; },
   get deleteUserMessage() { return deleteUserMessage; },
+  get withdrawUserMessage() { return withdrawUserMessage; },
   get publishDshPromptFailure() { return publishDshPromptFailure; },
   get handleBackendHealthHttpRequest() { return handleBackendHealthHttpRequest; },
   get projectCodeIndexStore() { return projectCodeIndexStore; },

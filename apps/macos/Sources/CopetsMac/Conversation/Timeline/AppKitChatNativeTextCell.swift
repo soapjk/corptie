@@ -55,6 +55,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
     private let messageStatusButton = NSButton()
+    private let withdrawnEditButton = NSButton()
     private let label = NativeTimelineTextView()
     private let imageStack = NSStackView()
     private let rawStatusScrollView = IntrinsicTimelineRawStatusView()
@@ -244,6 +245,23 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             processSeparator,
             processButton
         ].forEach(cardView.addSubview)
+        withdrawnEditButton.translatesAutoresizingMaskIntoConstraints = false
+        withdrawnEditButton.title = L10n("编辑")
+        withdrawnEditButton.isBordered = false
+        withdrawnEditButton.font = .systemFont(ofSize: 12)
+        withdrawnEditButton.contentTintColor = .controlAccentColor
+        withdrawnEditButton.target = self
+        withdrawnEditButton.action = #selector(editWithdrawnMessage)
+        withdrawnEditButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.withdrawn.edit")
+        withdrawnEditButton.setAccessibilityLabel(L10n("编辑已撤回的消息"))
+        withdrawnEditButton.isHidden = true
+        cardView.addSubview(withdrawnEditButton)
+        NSLayoutConstraint.activate([
+            withdrawnEditButton.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -12),
+            withdrawnEditButton.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            withdrawnEditButton.widthAnchor.constraint(equalToConstant: 44),
+            withdrawnEditButton.heightAnchor.constraint(equalToConstant: 24)
+        ])
         processSeparatorHeight = processSeparator.heightAnchor.constraint(equalToConstant: 0)
         processButtonHeight = processButton.heightAnchor.constraint(equalToConstant: 0)
         processButtonTopConstraint = processButton.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 3)
@@ -468,6 +486,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         queuedMessageTaskID = row.queuedMessageTaskID
         deletableMessageID = row.deletableMessageID
         forkUnavailableReason = row.forkUnavailableReason
+        withdrawnEditButton.isHidden = row.withdrawnMessageID == nil
         configureContextMenu()
         configureMessageStatus(row.messageStatus)
         messageActionBar.configure(row, copy: { [weak self] in self?.copyText() },
@@ -887,6 +906,16 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                         kind: .forkMessage(itemID: forkItemID)))
     }
 
+    @objc private func withdrawMessage() {
+        guard let id = renderedRow?.withdrawableMessageID else { return }
+        onAction?(.init(id: "withdraw:" + id, label: L10n("撤回"), isDestructive: false, kind: .withdrawMessage(messageID: id)))
+    }
+
+    @objc private func editWithdrawnMessage() {
+        guard let id = renderedRow?.withdrawnMessageID else { return }
+        onAction?(.init(id: "edit-withdrawn:" + id, label: L10n("编辑"), isDestructive: false, kind: .editWithdrawnMessage(messageID: id)))
+    }
+
     @objc private func deleteUnreceivedMessage() {
         guard let id = deletableMessageID else { return }
         onAction?(.init(id: "delete:\(id)", label: "删除", isDestructive: true,
@@ -909,11 +938,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             return
         }
         let menu = NSMenu()
-        if deletableMessageID != nil {
-            let deletion = NSMenuItem(title: "删除", action: #selector(deleteUnreceivedMessage), keyEquivalent: "")
-            deletion.target = self
-            deletion.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
-            menu.addItem(deletion)
+        if renderedRow?.withdrawableMessageID != nil {
+            let withdraw = NSMenuItem(title: L10n("撤回"), action: #selector(withdrawMessage), keyEquivalent: "")
+            withdraw.target = self
+            withdraw.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.withdraw")
+            menu.addItem(withdraw)
         }
         if !contextTimestamp.isEmpty {
             let timestamp = NSMenuItem(title: L10nFormat("Time: %@", contextTimestamp), action: nil, keyEquivalent: "")
@@ -930,13 +959,6 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
-        }
-        if queuedMessageTaskID != nil {
-            let cancel = NSMenuItem(title: L10n("Cancel"), action: #selector(cancelQueuedMessage), keyEquivalent: "")
-            cancel.target = self
-            cancel.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
-            cancel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.cancel-queued")
-            menu.addItem(cancel)
         }
         if forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkMessage), keyEquivalent: "")
@@ -973,10 +995,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 name: L10n("Create Branch"), target: self, selector: #selector(forkMessage)
             ))
         }
-        if queuedMessageTaskID != nil {
-            accessibilityActions.append(NSAccessibilityCustomAction(
-                name: L10n("Cancel"), target: self, selector: #selector(cancelQueuedMessage)
-            ))
+        if renderedRow?.withdrawableMessageID != nil {
+            accessibilityActions.append(NSAccessibilityCustomAction(name: L10n("撤回"), target: self, selector: #selector(withdrawMessage)))
         }
         setAccessibilityCustomActions(accessibilityActions)
     }
