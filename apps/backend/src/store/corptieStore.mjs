@@ -1,3 +1,4 @@
+import { BackgroundReadPool } from "./backgroundReadPool.mjs";
 import { initializeUnifiedSearch } from "./unifiedSearch.mjs";
 import { initializeQuickMessageIndex } from "./quickMessageIndex.mjs";
 import { randomUUID } from "node:crypto";
@@ -547,10 +548,19 @@ export class CorptieStore {
   setStateDirtyListener(listener) { return this.transactions.setStateDirtyListener(listener); }
   setTimelineDirtyListener(listener) { return this.transactions.setTimelineDirtyListener(listener); }
   notifyTimelineDirty(sessionId, options) { return this.transactions.notifyTimelineDirty(sessionId, options); }
+  afterCommit(callback) { return this.transactions.afterCommit(callback); }
   runInTransaction(operation) { return this.transactions.runInTransaction(operation); }
   flushCommittedDirtyNotifications() { return this.transactions.flushCommittedDirtyNotifications(); }
 
+  getBackgroundReadPool() {
+    if (!this.db) throw new Error("Store is closed.");
+    return this.backgroundReadPool ??= new BackgroundReadPool({ dbPath: this.dbPath });
+  }
+
   async close(options = {}) {
+    const reads = this.backgroundReadPool;
+    this.backgroundReadPool = null;
+    await reads?.close();
     if (!this.db) return;
     if (options.checkpoint !== false) await this.save();
     this.db.close();

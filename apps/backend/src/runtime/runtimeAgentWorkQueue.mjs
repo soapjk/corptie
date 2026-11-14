@@ -415,13 +415,28 @@ export function createRuntimeAgentWorkQueue({
     }
   }
 
-  async function tickAgentWorkQueue() {
-    sessionMailbox?.syncQueuedOperations(registerRuntimeQueuedWork);
+  let discoveryFlight = null;
+  let lastDiscoveryAt = 0;
+  async function discoverQueuedWork() {
+    await sessionMailbox?.syncQueuedOperations(registerRuntimeQueuedWork);
     await syncSessionChannelDeliveriesIntoAgentWorkQueue();
     await syncCollaborationDeliveriesIntoAgentWorkQueue();
-    await Promise.all(
-      [...runtimeQueuedTasksBySession.keys()].map((sessionId) => drainAgentWork(sessionId))
-    );
+  }
+
+  async function tickAgentWorkQueue({ forceDiscovery = true } = {}) {
+    // Drain known Sessions immediately; slow recovery discovery cannot hold
+    // them behind an unrelated background query. Failed discovery retains the
+    // durable work and is retried on a later tick.
+    const drains = Promise.all([...runtimeQueuedTasksBySession.keys()].map(drainAgentWork));
+    if (!discoveryFlight && (forceDiscovery || Date.now() - lastDiscoveryAt >= 30_000)) {
+      lastDiscoveryAt = Date.now();
+      const flight = discoverQueuedWork();
+      discoveryFlight = flight;
+      flight.finally(() => { if (discoveryFlight === flight) discoveryFlight = null; }).catch(() => {});
+    }
+    const discovery = discoveryFlight;
+    await Promise.all([drains, discovery]);
+    await Promise.all([...runtimeQueuedTasksBySession.keys()].map(drainAgentWork));
   }
 
   return { registerRuntimeQueuedWork, forgetRuntimeQueuedWork, moveRuntimeQueuedWork,
