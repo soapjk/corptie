@@ -22,15 +22,13 @@ enum MainWindowLayoutMetrics {
 enum MainWindowPageLayoutMetrics {
     static let outerPadding: CGFloat = 6
     static let columnSpacing: CGFloat = 6
-    /// The two top rows (Work column search/more controls and the conversation
-    /// title + path header) share one height, so they read as a single thin
-    /// band. This stays a compile-time constant: the conversation accessory is
-    /// pinned by an AppKit height constraint and must never be measured during
-    /// a live resize. Sized to hug the header content (title 20 + 2 + path 15
-    /// + 8 bottom padding ~= 45) instead of the old 72 that left 27pt of dead
-    /// space below it.
+    /// Shared first-row centre for the sidebar controls and conversation title/actions.
     static let headerPrimaryRowHeight: CGFloat = 28
+    /// The conversation accessory stays compact; the sidebar sizes its two rows naturally.
     static let headerRowHeight: CGFloat = 48
+    static let sidebarCreationRowHeight: CGFloat = 34
+    static let sidebarHeaderRowSpacing: CGFloat = 4
+    static let sidebarHeaderBottomInset: CGFloat = 6
     static let cardCornerRadius: CGFloat = 10
     static let cardBorderOpacity = 0.10
     static let increasedContrastCardBorderOpacity = 0.40
