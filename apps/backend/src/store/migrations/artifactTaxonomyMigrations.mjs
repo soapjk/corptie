@@ -26,4 +26,18 @@ export function migrateArtifactTaxonomy({ ensureColumn, runDataMigrationOnce, db
       body,
       tokenize='unicode61 remove_diacritics 2'
     )`);
+    db.run(`CREATE TABLE IF NOT EXISTS artifact_search_rows (
+      artifact_id TEXT PRIMARY KEY, fts_rowid INTEGER NOT NULL UNIQUE
+    )`);
+    runDataMigrationOnce("artifact-search-row-locator-v1", () => {
+      // Migration worker only: scan legacy metadata once, never on a user request.
+      // Preserve every existing FTS rowid; duplicates retain the newest document.
+      db.run(`INSERT INTO artifact_search_rows(artifact_id,fts_rowid)
+        SELECT artifact_id,MAX(rowid) FROM artifact_search_fts GROUP BY artifact_id`);
+      db.run(`DELETE FROM artifact_search_fts WHERE rowid NOT IN
+        (SELECT fts_rowid FROM artifact_search_rows)`);
+    });
+    db.run(`CREATE TABLE IF NOT EXISTS artifact_index_jobs (
+      artifact_id TEXT PRIMARY KEY, input_json TEXT NOT NULL, body TEXT
+    )`);
 }

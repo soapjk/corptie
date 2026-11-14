@@ -192,23 +192,31 @@ export class ArtifactRepository {
   }
 
   upsertArtifactSearchDocument(input) {
-    const existing = this.selectOne(
-      "SELECT body FROM artifact_search_fts WHERE artifact_id = ? LIMIT 1",
-      [input.artifactId]
-    );
-    this.db.run("DELETE FROM artifact_search_fts WHERE artifact_id = ?", [input.artifactId]);
-    this.db.run(
-      `INSERT INTO artifact_search_fts (
-        artifact_id, work_id, title, summary, kind, category_path,
-        tags, aliases, keywords, body
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        input.artifactId, input.workId, input.title ?? "", input.summary ?? "",
-        input.kind ?? "other", input.categoryPath ?? "",
-        (input.tags ?? []).join(" "), (input.aliases ?? []).join(" "),
-        (input.keywords ?? []).join(" "), input.body == null ? (existing?.body ?? "") : input.body
-      ]
-    );
+    // SAVEPOINT composes with the caller's transaction and also protects direct
+    // repository calls from publishing a locator without its corresponding row.
+    this.db.run("SAVEPOINT artifact_search_update");
+    try {
+      const located = this.selectOne("SELECT fts_rowid FROM artifact_search_rows WHERE artifact_id=?", [input.artifactId]);
+      const values = [input.workId, input.title ?? "", input.summary ?? "", input.kind ?? "other",
+        input.categoryPath ?? "", (input.tags ?? []).join(" "), (input.aliases ?? []).join(" "),
+        (input.keywords ?? []).join(" ")];
+      if (located) {
+        // Metadata-only updates keep body in SQLite instead of materializing it
+        // in JavaScript. Row lookup is by FTS rowid, not an UNINDEXED column.
+        this.db.run(`UPDATE artifact_search_fts SET work_id=?,title=?,summary=?,kind=?,category_path=?,
+          tags=?,aliases=?,keywords=?${input.body == null ? "" : ",body=?"} WHERE rowid=?`,
+          [...values, ...(input.body == null ? [] : [input.body]), located.fts_rowid]);
+      } else {
+        this.db.run(`INSERT INTO artifact_search_fts(artifact_id,work_id,title,summary,kind,category_path,
+          tags,aliases,keywords,body) VALUES(?,?,?,?,?,?,?,?,?,?)`, [input.artifactId,...values,input.body ?? ""]);
+        this.db.run("INSERT INTO artifact_search_rows(artifact_id,fts_rowid) VALUES(?,last_insert_rowid())", [input.artifactId]);
+      }
+      this.db.run("RELEASE artifact_search_update");
+    } catch (error) {
+      this.db.run("ROLLBACK TO artifact_search_update");
+      this.db.run("RELEASE artifact_search_update");
+      throw error;
+    }
   }
 
   searchArtifactDocuments(workId, query, limit = 50) {

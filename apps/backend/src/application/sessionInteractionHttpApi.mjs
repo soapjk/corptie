@@ -3,12 +3,25 @@ import { randomUUID } from "node:crypto";
 import { logSessionMessageLatency, logSessionMessageFailure, sessionMessageLatencyTraceFromHeaders } from "../utils/sessionMessageLatency.mjs";
 
 export function handleSessionInteractionHttpRequest({
-  request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
+  request, response, url, store, sendUnifiedSessionMessage, userMessageCommandSource,
   chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, withdrawUserMessage,
   respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
   readJson, sendJson, unifiedErrorStatus
 }) {
   const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+  const receiptMatch=url.pathname.match(/^\/sessions\/([^/]+)\/messages\/([^/]+)\/receipt$/);
+  if(request.method === "GET" && receiptMatch) {
+    try {
+      const sessionId=decodeURIComponent(receiptMatch[1]);
+      requireSessionReference(sessionId);
+      const messageId=decodeURIComponent(receiptMatch[2]);
+      const delivery=store.getMessageDeliveryForMessage(messageId);
+      if(!delivery || delivery.sessionId!==sessionId) sendJson(response,404,{code:"MESSAGE_NOT_RECEIVED"});
+      else sendJson(response,200,{accepted:true,queued:delivery.status==="queued",sessionId,
+        messageId,deliveryId:delivery.deliveryId,status:delivery.status});
+    } catch(error) { sendJson(response,unifiedErrorStatus(error),{code:error.code ?? "MESSAGE_RECEIPT_UNAVAILABLE"}); }
+    return true;
+  }
   const resourceMatch = url.pathname.match(/^\/sessions\/([^/]+)\/resources$/);
   if (request.method === "GET" && resourceMatch) {
     Promise.resolve().then(() => deliverImageVariant(imageVariant(url.searchParams), () => chatResourceService.readMessageResource(

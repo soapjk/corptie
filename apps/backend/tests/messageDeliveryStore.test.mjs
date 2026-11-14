@@ -345,3 +345,64 @@ test('concurrent worker claims reserve a Session once',async()=>{
     assert.equal(store.listQueuedAgentTasksForSession('session:one',10).length,1);
   } finally {await store.close();await rm(directory,{recursive:true,force:true});}
 });
+
+test('same message identity returns its committed receipt and rejects changed content',async()=>{
+  const {directory,store}=await fixture();
+  try {
+    const input={deliveryId:'delivery:replay',messageId:'message:replay',sessionId:'session:one',binding,
+      agentId:'agent:one',text:'once'};
+    const first=store.createUserMessageDelivery(input);
+    const again=store.createUserMessageDelivery(input);
+    assert.equal(first.inserted,true); assert.equal(again.inserted,false);
+    assert.equal(again.task.taskId,first.task.taskId);
+    assert.throws(()=>store.createUserMessageDelivery({...input,text:'different'}),{code:'MESSAGE_DELIVERY_CONFLICT'});
+    assert.equal(store.getAgentTask(input.messageId).text,'once');
+  } finally {await store.close();await rm(directory,{recursive:true,force:true});}
+});
+
+test('real HTTP lost acknowledgement reconciles once during concurrent Artifact indexing',async t=>{
+  const {createServer}=await import('node:http');
+  const {once}=await import('node:events');
+  const {handleSessionInteractionHttpRequest}=await import('../src/application/sessionInteractionHttpApi.mjs');
+  const {directory,store}=await fixture();
+  let dropped=false;
+  const server=createServer((request,response)=>{
+    if(request.url==='/health') {response.end('ok');return;}
+    handleSessionInteractionHttpRequest({request,response,url:new URL(request.url,'http://localhost'),store,
+      requireSessionReference:id=>({sessionId:id}),userMessageCommandSource:()=>({type:'desktop'}),
+      readJson:async req=>{let body='';for await(const chunk of req)body+=chunk;return JSON.parse(body);},
+      sendUnifiedSessionMessage:async(sessionId,input)=>{
+        const result=store.createUserMessageDelivery({...input,sessionId,binding,agentId:'agent:one'});
+        return {accepted:true,inserted:result.inserted};
+      },unifiedErrorStatus:error=>error.statusCode ?? 500,
+      sendJson:(res,status,body)=>{
+        if(request.method==='POST'&&!dropped) {dropped=true;res.destroy();return;}
+        res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(body));
+      }});
+  });
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  const base=`http://127.0.0.1:${server.address().port}`;
+  try {
+    for(let i=0;i<100;i++) store.enqueueArtifactSearchDocument({artifactId:`artifact:bulk-${i}`,workId:'work:test',title:`Item ${i}`,body:'search words '.repeat(4096)});
+    const indexing=store.flushArtifactIndex();
+    const input={messageId:'message:http',deliveryId:'delivery:http',text:'exactly once'};
+    await assert.rejects(fetch(base+'/sessions/session%3Aone/messages',{method:'POST',body:JSON.stringify(input)}));
+    const receipt=await fetch(base+'/sessions/session%3Aone/messages/message%3Ahttp/receipt');
+    assert.equal((await receipt.json()).accepted,true);
+    const replay=await fetch(base+'/sessions/session%3Aone/messages',{method:'POST',body:JSON.stringify(input)});
+    assert.equal((await replay.json()).inserted,false);
+    const times=[];
+    for(let i=0;i<20;i++) {
+      const start=performance.now();
+      assert.equal(await (await fetch(base+'/health')).text(),'ok');
+      const sent=await fetch(base+'/sessions/session%3Aone/messages',{method:'POST',body:JSON.stringify({messageId:`message:bulk-${i}`,deliveryId:`delivery:bulk-${i}`,text:'concurrent'})});
+      assert.equal(sent.status,202);
+      times.push(performance.now()-start);
+    }
+    await indexing;
+    assert.equal(store.selectOne("SELECT count(*) n FROM agent_operations WHERE task_id='message:http'").n,1);
+    assert.equal(store.selectOne('SELECT count(*) n FROM artifact_index_jobs').n,0);
+    t.diagnostic(`100 Artifact documents, HTTP health+admission max=${Math.max(...times).toFixed(2)}ms`);
+    assert.ok(Math.max(...times)<2000);
+  } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await store.close();await rm(directory,{recursive:true,force:true});}
+});

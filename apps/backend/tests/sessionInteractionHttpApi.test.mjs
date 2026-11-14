@@ -137,3 +137,15 @@ test("withdrawal routes exact identities and preserves the claim-race refusal", 
   assert.equal(denied.status, 409);
   assert.equal(denied.body.code, "MESSAGE_MAY_HAVE_BEEN_RECEIVED");
 });
+
+test('message receipt confirms admission without dispatch and hides other Sessions',async()=>{
+  const f=fixture();
+  f.dependencies.store={getMessageDeliveryForMessage:()=>({messageId:'message',deliveryId:'delivery',sessionId:'session',status:'processing'})};
+  const receipt=await f.dispatch('/sessions/session/messages/message/receipt','GET').result;
+  assert.equal(receipt.body.accepted,true);
+  assert.equal(receipt.body.messageId,'message');
+  assert.equal(f.calls.some(([name])=>name==='message'),false);
+  const other=await f.dispatch('/sessions/other/messages/message/receipt','GET').result;
+  assert.equal(other.status,404);
+  assert.equal(other.body.code,'MESSAGE_NOT_RECEIVED');
+});

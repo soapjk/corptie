@@ -20,6 +20,10 @@ export class DatabaseWorkerPool {
     for (let index = 0; index < this.size; index += 1) this.#spawn(index);
   }
 
+  searchArtifactDocuments(input) { return this.#enqueue("searchArtifactDocuments", input); }
+
+  drainArtifactIndex() { return this.#enqueue("drainArtifactIndex", {}); }
+
   claimSessionWork(input) { return this.#enqueue("claimSessionWork", input); }
 
   admitUserMessage(input) { return this.#enqueue("admitUserMessage", input); }
