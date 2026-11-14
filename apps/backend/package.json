@@ -33,5 +33,8 @@
     "node-pty": "^1.1.0",
     "yauzl": "3.4.0",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "codex-computer-use-mcp": "0.7.1"
   }
 }

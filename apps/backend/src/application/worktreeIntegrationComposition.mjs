@@ -108,14 +108,12 @@ export function createWorktreeIntegrationServices({
       });
     },
     createAndLaunchConflictTask: async ({
-      work, projectId, agent, workspace, title, description, acceptanceCriteria, prompt,
+      work, projectId, agent, workspace, title, prompt,
       integrationRunId, sourceSessionId
     }) => {
       const task = workService.createTask({
         workId: work.id,
         title,
-        description,
-        acceptanceCriteria,
         priority: "high",
         mainAgentId: agent.agentId
       }, { creationPending: true });
@@ -228,6 +226,15 @@ export function createWorktreeIntegrationServices({
       const planIdentity = job.id.replace(/^worktree_integration:/, "");
       const planLabel = planIdentity.slice(0, 8);
       const basePlanTaskId = `task:integration_conflicts:${planIdentity}`;
+      const planGeneration = (task) => {
+        if (task.id === basePlanTaskId) return 0;
+        const prefix = `${basePlanTaskId}:replacement-`;
+        if (!task.id?.startsWith(prefix)) return null;
+        const suffix = task.id.slice(prefix.length);
+        const generation = Number(suffix);
+        return /^[1-9]\d*$/.test(suffix) && Number.isSafeInteger(generation) ? generation : null;
+      };
+      const planTasks = store.listTasks().filter(candidate => planGeneration(candidate) !== null);
       const existingAutomation = job.conflictAutomation ?? null;
       const recordedTask = existingAutomation?.taskId
         ? store.getTask(existingAutomation.taskId)
@@ -236,9 +243,8 @@ export function createWorktreeIntegrationServices({
         ? store.getSession(existingAutomation.sessionId)
         : null;
       const recordedPlanWasDeleted = isDeletedTask(recordedTask) || isDeletedSession(recordedSession);
-      const legacyPlanTask = existingAutomation?.taskId ? null : store.listTasks()
-        .filter((candidate) => !isDeletedTask(candidate)
-          && String(candidate.description ?? "").includes(job.id))
+      const legacyPlanTask = existingAutomation?.taskId ? null : planTasks
+        .filter((candidate) => !isDeletedTask(candidate))
         .sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")))[0] ?? null;
       const existingTask = existingAutomation?.taskId && !recordedPlanWasDeleted
         ? recordedTask
@@ -283,9 +289,8 @@ export function createWorktreeIntegrationServices({
         ? store.getWork(existingTask.work_id)
         : context.work;
       const agent = existingAgent ?? context.agent;
-      const deletedPlanCount = store.listTasks().filter((candidate) => isDeletedTask(candidate)
-        && String(candidate.description ?? "").includes(job.id)).length;
-      const replacementSuffix = recordedPlanWasDeleted ? `:replacement-${Math.max(1, deletedPlanCount)}` : "";
+      const nextPlanGeneration = planTasks.reduce((latest, candidate) => Math.max(latest, planGeneration(candidate)), 0) + 1;
+      const replacementSuffix = recordedPlanWasDeleted ? `:replacement-${nextPlanGeneration}` : "";
       const planTaskId = `${basePlanTaskId}${replacementSuffix}`;
       const startupIdempotencyKey = `integration-plan:${job.id}:start${replacementSuffix}`;
       const branchLabel = item.branchName ?? item.worktreeId;
@@ -313,6 +318,8 @@ export function createWorktreeIntegrationServices({
         `冲突文件：${conflictFiles}`,
         `计划级专用 Integration Worktree：${workspace.path}`,
         "",
+        description,
+        acceptanceCriteria,
         "固定执行流程：",
         `1. 确认仍在本计划的专用 Integration Worktree，基线 HEAD 应为 ${expectedMainHead}。`,
         `2. 在当前 Integration 分支合并来源提交 ${sourceHead}，逐文件分析并解决冲突；不得简单全选 ours 或 theirs。`,
@@ -364,8 +371,6 @@ export function createWorktreeIntegrationServices({
         await prepareConflictSession?.(existingSession.id);
         workService.updateTask(existingTask.id, {
           title,
-          description,
-          acceptanceCriteria,
           lifecycleState: "in_progress",
           mainAgentId: agent.agentId
         });
@@ -398,8 +403,6 @@ export function createWorktreeIntegrationServices({
         workId: work.id,
         title,
         autoTitleEnabled: false,
-        description,
-        acceptanceCriteria,
         priority: "high",
         mainAgentId: agent.agentId
       }, { creationPending: true });

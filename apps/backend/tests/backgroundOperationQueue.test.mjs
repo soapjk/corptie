@@ -61,3 +61,16 @@ test("running cancellation rejects late output and retains its execution slot", 
   gate.resolve("obsolete result");
   await rejected;
 });
+
+test("one Session cannot fill every slot and interactive traffic leaves summary capacity", async () => {
+  const queue = new BackgroundOperationQueue({ concurrency: 6, interactiveReserve: 4, backgroundReserve: 2, perOwnerLimit: 3 });
+  const gate = deferred(), order = [];
+  const run = (id, owner, priority) => queue.run(async () => { order.push(id); await gate.promise; }, { owner, priority });
+  const work = [run("a1", "a", 1), run("a2", "a", 1), run("a3", "a", 1), run("a4", "a", 1),
+    run("b1", "b", 1), run("b2", "b", 1), run("summary", "a:background", 0), run("background", "background", 0)];
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ["a1", "a2", "a3", "b1", "summary", "background"]);
+  assert.equal(queue.running, 6);
+  gate.resolve(); await Promise.all(work);
+  assert.equal(queue.runningOwners.size, 0);
+});

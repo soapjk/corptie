@@ -20,7 +20,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
     func testMissingAgentHasExplicitValidationAndCannotSubmit() {
         let message = CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
-            detail: "Implement the feature",
             workId: "work:one",
             roleId: nil
         )
@@ -31,7 +30,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
     func testCompleteFormPassesValidation() {
         XCTAssertNil(CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
-            detail: "Implement the feature",
             workId: "work:one",
             roleId: "agent:one"
         ))
@@ -41,7 +39,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         XCTAssertEqual(
             CorptieTaskCreateFormPolicy.validationMessage(
                 title: "",
-                detail: "Implement the feature",
                 workId: "work:one",
                 roleId: "agent:one"
             ),
@@ -53,7 +50,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         XCTAssertEqual(
             CorptieTaskCreateFormPolicy.validationMessage(
                 title: "Implement",
-                detail: "Implement the feature",
                 workId: nil,
                 roleId: "agent:one"
             ),

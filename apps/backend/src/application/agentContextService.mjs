@@ -81,7 +81,7 @@ export class AgentContextService {
         return `- ${skill.name} (id: ${skill.skillId})${desc}`;
       });
       parts.push(
-        `The following Skills are assigned to this Agent and available through lazy loading:\n${skillLines.join("\n")}\n` +
+        `The following Skills are explicitly enabled in this Session and available through lazy loading:\n${skillLines.join("\n")}\n` +
         "When a Skill may be relevant, discover corptie_skill_search through corptie_tool_catalog_search, invoke it using the returned invocation contract, then discover and invoke corptie_skill_load with the returned skill id before following its instructions. These are business operation names, not necessarily native tools; restricted_gateway operations must use corptie_tool_call. " +
         "The list above is only a compact index; do not assume the full instructions or unlisted Skills are available."
       );

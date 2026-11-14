@@ -1,9 +1,13 @@
+import { normalizeConversationMessage } from "./application/conversationMessage.mjs";
+import { McpInteractionBroker } from "./application/mcpInteractionBroker.mjs";
+import { computerUseBridgePreset, computerUseBridgeFingerprint } from "./application/computerUseBridge.mjs";
+import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig } from "./application/computerUseGatewayPolicy.mjs";
 import { InitialMessageTitleService } from "./application/initialMessageTitleService.mjs";
 import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
 import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.mjs";
 import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
-import { worktreeDispatchBlocker } from "./application/worktreeExecutionBarrier.mjs";
+import { conversationWorktreeBlocker, WorkChatReadOnlyTurnService } from "./application/workChatReadOnlyTurnService.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
@@ -30,7 +34,8 @@ import { createCodexNotificationReceiver } from "./adapters/codexNotificationRec
 import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
 import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
 import { createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
-import { readFile } from "node:fs/promises";
+import { readFile, rm, mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { CodexEnvironmentRegistry } from "./runtime/codexEnvironmentRegistry.mjs";
 import { createCodexEnvironmentRuntime } from "./agent-provider/bootstrap/codexEnvironmentRuntime.mjs";
 import { createCodexEnvironmentSetup } from "./adapters/codexEnvironmentSetup.mjs";
@@ -618,13 +623,15 @@ const taskSessionProjection = createTaskSessionProjection({
   emitEvent, sessionWithLogicalWorkspace
 });
 const { settleEntityTaskFromSession, settleTaskForWorkspaceContinuation, reconcileEntityTasksAtStartup } = taskSessionProjection;
+let settleMcpTurn = () => {};
 const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle({
   store, emitEvent, sessionMailbox,
   recordWorkSettled: (task) => workspaceContinuationCoordinator.recordWorkSettled(task),
   settleEntityTaskFromSession, collaborationCore,
   continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
   continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args),
-  resumeWorkAfterTransition, scheduleAgentWorkDrain
+  resumeWorkAfterTransition, scheduleAgentWorkDrain,
+  onTurnSettled: (entry) => settleMcpTurn(entry)
 });
 const assistantService = new AssistantService({
   store,
@@ -675,16 +682,11 @@ const managedOpenClackyRuntime = configuredOpenClackyBaseURL ? null : new OpenCl
   // privacy grant and other launch context.
   env: () => ({ ...process.env, HOME: corptieOpenClackyRuntimePaths.providerHome })
 });
-// Skill 维护中心（provider-neutral）：全局共享的 Skill 映射表 + 物化到各 Provider 的 skills 目录。
-// skillsDirs 由组合根声明「各 Provider 的 skills 根目录」，SkillRegistryService 不感知 Provider 名语义，
-// 仅把 Skill 内容镜像到这些目录；Claude Code / Codex 运行时会自动扫描各自目录发现 Skill。
+// Global installation storage; runtime instructions are exposed only by the Session gateway.
 const skillRegistryService = new SkillRegistryService({
   store,
   packageRoot: join(store.dataRoot, "skill-packages"),
-  skillsDirs: {
-    "codex-app-server": corptieCodexRuntimePaths.skillsDir,
-    "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
-  }
+  skillsDirs: {}
 });
 const mcpRegistryService = new McpRegistryService({ store, ephemeral: developmentPreview });
 // Reconcile exact, durably queued package/Keychain cleanup after a prior crash.
@@ -695,19 +697,59 @@ const mcpCleanupInterval = setInterval(() => {
 mcpCleanupInterval.unref();
 function mcpAssignmentRevisionForAgent(agentId) {
   const skill = skillRegistryService.mcpAssignmentRevisionForAgent(agentId);
-  const standalone = mcpRegistryService.assignmentRevisionForAgent(agentId);
+  const standalone = mcpRegistryService.installationRevision();
   return skill === "none" && standalone === "none" ? "none" : `${skill}:${standalone}`;
 }
 const sessionAbilityPreferences = new SessionAbilityPreferences({ store, registry: mcpRegistryService });
 skillRegistryService.sessionAbilityPreferences = sessionAbilityPreferences;
+const mcpInteractions = new McpInteractionBroker({ store, emitEvent });
+const computerUsePreset = () => computerUseBridgePreset({ dataDir: store.dataDir });
+
 const skillMcpGateway = new SkillMcpGateway({
+  connectComputerUseServer: (config, context, onElicitation) => agentProviderRegistry.invoke(
+    context.providerId, AGENT_PROVIDER_CAPABILITIES.COMPUTER_USE_RUNTIME, config, { onElicitation }),
+  onElicitation: (input) => mcpInteractions.request(input),
+  computerUseSupport: (input) => agentProviderRegistry.get(input.providerId ?? input.metadata?.providerId)
+    .descriptor.metadata.computerUse?.supported === true,
+  executionContext: (input) => {
+    const metadata = input.metadata ?? {};
+    if (!metadata.logicalSessionId) return metadata;
+    const logical = store.getLogicalSession(metadata.logicalSessionId);
+    const binding = logical?.activeBinding;
+    const session = logical?.legacySessionId && store.getSession(logical.legacySessionId);
+    if (!session || binding?.state !== "active" || binding.bindingId !== metadata.providerBindingId) {
+      throw Object.assign(new Error("MCP Session binding changed."), { code: "MCP_INTERACTION_STALE" });
+    }
+    const turnId = session.external?.activeTurnId ?? session.rawStatus?.activeTurnId
+      ?? store.listUnsettledSessionTurns(session.id).at(-1)?.turn_id;
+    const providerSessionId = binding.providerSessionId ?? logical.activeThreadId;
+    const native = input.providerRequestMeta?.["x-codex-turn-metadata"];
+    if (native && (native.thread_id !== providerSessionId || native.turn_id !== turnId)) {
+      throw Object.assign(new Error("MCP native call correlation is stale."), { code: "MCP_INTERACTION_STALE" });
+    }
+    return { ...metadata, turnId, providerSessionId,
+      ...(native ? { requestMetadata: { "x-codex-turn-metadata": {
+        thread_id: native.thread_id, turn_id: native.turn_id, call_id: native.call_id
+      } } } : {}) };
+  },
   onRuntimeEvent: (event) => mcpRegistryService.recordRuntimeEvent(event),
   resolveServers: async ({ actorId, providerId, context }) => {
     const reference = context.logicalSessionId ?? context.sessionId;
     const servers = {
       ...await skillRegistryService.mcpServersForAgent(actorId, providerId, { isolateFailures: true, sessionReference: reference }),
-      ...mcpRegistryService.serversForAgent(actorId)
+      ...mcpRegistryService.serversForSession(reference, sessionAbilityPreferences)
     };
+    // Official JS hosts retain state: isolate their home by the actual Session binding.
+    for (const config of Object.values(servers)) {
+      if (!isComputerUseMcpConfig(config)) continue;
+      if (isComputerUseBridgeConfig(config)) config.observationRevision = await computerUseBridgeFingerprint(config);
+      const identity = createHash("sha256").update(`${reference}:${context.providerBindingId ?? context.bindingId}`).digest("hex");
+      const home = join(store.dataDir, "computer-use", "sessions", identity);
+      await mkdir(home, { recursive: true });
+      config.env = isNativeComputerUseMcpConfig(config) ? { ...config.env, CODEX_HOME: home } : config.env;
+      config.cwd = home;
+      config.isolatedEnv = true;
+    }
     return Object.fromEntries(Object.entries(servers).filter(([, config]) =>
       !config.serverId || !sessionAbilityPreferences.isDisabled(reference, "mcp", config.serverId)));
   },
@@ -729,8 +771,15 @@ const skillMcpGateway = new SkillMcpGateway({
   },
   resolveRevision: mcpAssignmentRevisionForAgent
 });
+settleMcpTurn = ({ event, logicalRoute, session }) => {
+  const logicalId = logicalRoute?.logicalSessionId ?? store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId;
+  if (!logicalId) return;
+  mcpInteractions.cancelSession(logicalId, event.turnId);
+  void skillMcpGateway.endTurn(logicalId, event.turnId, event.type === "turn.cancelled" ? "Interrupt" : "Stop")
+    .catch(error => logError("mcp.turn-ended", error));
+};
 const mcpSessionAvailabilityService = new McpSessionAvailabilityService({
-  store, gateway: skillMcpGateway, registry: mcpRegistryService
+  store, gateway: skillMcpGateway, registry: mcpRegistryService, preferences: sessionAbilityPreferences
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
 agentContextService.resolveAgentSkills = (agentId, scope) => {
@@ -1129,6 +1178,7 @@ const gitHubPushes = new GitHubPushManager({
   ensureCommitGate: ensureRepositoryArtifactCommitHook
 });
 const agentProviderRegistry = createProviderRuntimeRegistryComposition({
+  codexCommand: codexAppServerCommand,
   store, claudeProviderRuntime, codexRuntime, openClackyManager,
   openClackyToolHostAttachment, applyOpenClackyToolPlanAtTurnBoundary,
   switchOpenClackyProviderWorkspace, prepareCodexProviderSessionInput,
@@ -1454,8 +1504,8 @@ const sessionApplicationService = createSessionApplicationComposition({
   requireSessionReference, workChatContextService,
   resolveContextReferences: (sessionId, options) => sessionContextReferenceService.resolve(sessionId, options),
   artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
-  resolveAssignedCapabilities: (agentId, reference) => assignedCapabilitySummary(store, agentId)
-    .map(entry => ({ ...entry, enabled: entry.enabled && !sessionAbilityPreferences.isDisabled(reference, entry.kind, entry.id) })),
+  resolveAssignedCapabilities: (agentId, reference) => sessionAbilityPreferences.inspect(reference).abilities
+    .map(entry => ({ ...entry, enabled: entry.available && !entry.disabled })),
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 });
@@ -1463,7 +1513,12 @@ observeSessionContextEvent = (context) => sessionApplicationService.observeSessi
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
+  mcpInteractions,
   onInterruptRequested: (entry) => {
+    mcpInteractions.cancelSession(entry.logicalSessionId, entry.turnId, { revokeGrants: true });
+    skillMcpGateway.cancelSession(entry.logicalSessionId, entry.turnId);
+    if (entry.turnId) void skillMcpGateway.endTurn(entry.logicalSessionId, entry.turnId, "Interrupt")
+      .catch(error => logError("mcp.interrupt", error));
     if (entry.turnId) turnExecutionProbe?.request(entry);
   }
 });
@@ -1744,7 +1799,16 @@ sessionApplicationService.coordinationTurns = new CoordinationTurnService({
     logicalRoute: store.getLogicalSession(reference.logicalSessionId)
   })
 });
+sessionApplicationService.workChatReadOnlyTurns = new WorkChatReadOnlyTurnService({
+  store, registry: agentProviderRegistry, planner: backgroundAgentService, emitEvent,
+  onTerminal: ({ reference, turnId, status }) => handleCommittedProviderTerminalLifecycle({
+    event: { type: `turn.${status}`, turnId, source: "host-readonly-discussion" },
+    projection: { session: store.getSession(reference.sessionId), terminalStatus: status },
+    logicalRoute: store.getLogicalSession(reference.logicalSessionId)
+  })
+});
 const coordinationRequestService = new CoordinationRequestService({ store,
+  forgetQueued: (...args) => forgetRuntimeQueuedWork(...args),
   resolveMessage: async (reference, message) => ({ ...message, images: await Promise.all((message.images ?? []).map(async image => {
     const stored = await chatResourceService.readImage(reference, image.managedPath);
     return { ...image, absolutePath: stored.path, mimeType: stored.mimeType };
@@ -1762,6 +1826,9 @@ workService.assertCoordinationCanEnable = task => sessionApplicationService.coor
 workService.onCoordinationChanged = taskId => {
   sessionApplicationService.coordinationTurns.policyChanged(taskId);
   taskCoordinationService.activateShadow(taskId);
+  const sessionId = store.getTask(taskId)?.current_session_id;
+  const main = sessionId && store.getLogicalSessionByLegacySessionId(sessionId);
+  if (main) coordinationRequestService.migrateQueued(main.logicalSessionId);
 };
 toolHostService.assertExecutionAllowed = input => {
   const id = input.metadata?.logicalSessionId;
@@ -1900,7 +1967,7 @@ const {
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
   isWorkspaceMutationActive: sessionId => automaticWorktreeMutationActive(store, { sessionId }),
-  inspectWorkspaceDispatchBlocker: sessionId => worktreeDispatchBlocker(store,{sessionId})
+  inspectWorkspaceDispatchBlocker: sessionId => conversationWorktreeBlocker(store, agentProviderRegistry, {sessionId})
 });
 function cancelQueuedUserMessage(sessionId, taskId) {
   const request = store.selectOne("SELECT request_id,main_session_id FROM coordination_requests WHERE operation_id=?", [taskId]);
@@ -2229,7 +2296,18 @@ const sessionMessageOperation = createSessionMessageOperation({
 });
 
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
-  return sessionMessageOperation.sendUnifiedSessionMessage(sessionId, input, source, options);
+  const message = normalizeConversationMessage(input);
+  if (message.mentions?.some(m => ["skill", "mcp"].includes(m.targetType))) {
+    if (options.agentTask || !["desktop", "remote-client"].includes(source.type)) {
+      throw Object.assign(new Error("Only user messages can activate installed abilities."), { code: "CAPABILITY_ACTIVATION_FORBIDDEN", statusCode: 403 });
+    }
+    const receipt = sessionAbilityPreferences.activateMentions(sessionId, message.mentions);
+    if (receipt) {
+      const logicalSessionId = receipt.preferences.logicalSessionId;
+      emitEvent("SessionAbilitiesChanged", { sessionId: logicalSessionId, receipt }, { sessionId: logicalSessionId });
+    }
+  }
+  return sessionMessageOperation.sendUnifiedSessionMessage(sessionId, message, source, options);
 }
 
 function assertSessionRecoveryMessageBoundary(reference) {
@@ -2444,6 +2522,7 @@ const backendHttpPorts = Object.freeze({
   get getSshWorkspaceServices() { return getSshWorkspaceServices; },
   get handleMcpRegistryHttpRequest() { return handleMcpRegistryHttpRequest; },
   get mcpRegistryService() { return mcpRegistryService; },
+  get computerUsePreset() { return computerUsePreset; },
   get mcpSessionAvailabilityService() { return mcpSessionAvailabilityService; },
   get sessionAbilityPreferences() { return sessionAbilityPreferences; },
   get emitEvent() { return emitEvent; },
@@ -2617,6 +2696,15 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+// Installed Skills are loaded through the Session-authorized gateway. Remove
+// historical registry mirrors from native scanners, leaving other runtime skills intact.
+for (const skill of store.listRegistrySkills()) {
+  if (!/^skill:[a-zA-Z0-9-]+$/.test(skill.skillId)) continue;
+  for (const root of [corptieCodexRuntimePaths.skillsDir, join(corptieClaudeRuntimePaths.pluginPath, "skills")]) {
+    await rm(join(root, skill.skillId), { recursive: true, force: true });
+  }
+}
+
 if (!developmentPreview) skillRegistryService.reconcileInterruptedInstallations();
 detailServiceFor(store, detailMigration);
 await providerRuntimeSettings.initialize();
@@ -2680,6 +2768,10 @@ function startBackendRuntime() {
   executionChecklistService.retireLegacyContinuations();
   sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
   coordinationRequestService.recover();
+  for (const task of store.selectAll("SELECT current_session_id FROM tasks WHERE coordination_enabled=1 AND archived=0 AND current_session_id IS NOT NULL")) {
+    const main = store.getLogicalSessionByLegacySessionId(task.current_session_id);
+    if (main) coordinationRequestService.migrateQueued(main.logicalSessionId);
+  }
   restoreTurnExecutionProbes();
   memoryExtractionScheduler.start();
   taskSummaryService.start();
@@ -2754,7 +2846,7 @@ const shutdownBackend = createBackendShutdown({
 
 function shutdown() {
   worktreeAutoFollowService?.stop();
-  return codexAccounts.close().finally(() => shutdownBackend());
+  return skillMcpGateway.close().finally(() => codexAccounts.close()).finally(() => shutdownBackend());
 }
 
 process.on("SIGINT", () => void shutdown());

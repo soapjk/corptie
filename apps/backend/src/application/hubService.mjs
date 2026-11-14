@@ -242,7 +242,9 @@ export class HubService {
   // 工具/技能发现 + 去抖缓存
   search(intent, scope = {}, _options = {}) {
     const { workId, taskId, sessionId, agentId } = scope;
-    const intentHash = this.hashIntent(intent);
+    // Version the cache namespace so historical Role-scoped Registry entries
+    // cannot survive the move to dedicated Session-authorized Skill discovery.
+    const intentHash = `memory-discovery-v2:${this.hashIntent(intent)}`;
     const cached = this.store.getHubIntentCache(intentHash, { agentId });
     if (cached) {
       return { ...JSON.parse(cached.result_json || "{}"), cached: true };
@@ -261,17 +263,8 @@ export class HubService {
           candidates.push({ toolName: m.id, description: m.content, kind: m.kind });
         }
       }
-      // Agent Skill Registry 是会话可用 Skill 的授权边界。这里只暴露轻量索引，
-      // 完整 SKILL.md 必须通过受 actorId 校验的 corptie_skill_load 按需读取。
-      for (const skill of this.store.listRegistrySkillsForAgent(scope.agentId)) {
-        candidates.push({
-          skillId: skill.skillId,
-          toolName: skill.manifestName || skill.name,
-          description: skill.manifestDescription || skill.description || skill.name,
-          kind: "registered_skill",
-          contentHash: skill.contentHash || ""
-        });
-      }
+      // Installed Registry Skills are intentionally excluded. Discover and
+      // load them through the dedicated Session-authorized dynamic Skill tools.
     }
     for (const s of this.store.listDiscoverableSkills()) {
       candidates.push({

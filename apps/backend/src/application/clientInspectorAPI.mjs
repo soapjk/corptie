@@ -25,7 +25,7 @@ const ACTION_FIELDS = {
   "memory.rollback": ["id", "auditId", "confirmed", "expectedVersion"],
   "memory.confirm": ["id", "content", "confirmed", "expectedVersion"],
   "memory.reject": ["id", "reason", "confirmed", "expectedVersion"],
-  "task.update": ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId", "autoTitleEnabled", "coordinationEnabled"],
+  "task.update": ["title", "priority", "mainAgentId", "autoTitleEnabled", "coordinationEnabled"],
   "task.reclaimWorktree": ["confirmed"],
   "worktree.autoFollow": ["enabled", "expectedWorktreeId", "expectedTargetWorktreeId", "expectedHierarchyRevision", "expectedBindingRevision"],
 };
@@ -81,8 +81,8 @@ export class ClientInspectorAPI {
     }
     return { schemaVersion: 1, sessionId: id, resolvedSessionId: sessionId,
       workId, taskId: task?.id ?? null, taskDefinition: task ? {
-        description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "",
-        verificationCriteria: task.verification_criteria ?? "", summary: parseSummary(task.user_summary_json),
+
+         summary: parseSummary(task.user_summary_json),
         title: task.title, revision: task.revision, priority: task.priority, mainAgentId: task.main_agent_id, lifecycleState: task.lifecycle_state,
         autoTitleEnabled: task.auto_title_enabled !== 0,
         coordinationEnabled: task.coordination_enabled === 1,

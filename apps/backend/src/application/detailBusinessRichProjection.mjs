@@ -188,10 +188,7 @@ export function projectDetailBusinessRich(scope, readResults = {}, { profile, ge
   if (previous && (previous.documentId !== documentId || previous.sessionId !== scope.logicalSessionId || previous.generation !== generation)) previous = null;
   const cards = [];
   if (scope.session.sessionKind === "worker" && scope.task) cards.push({ id: "task-information", template: contentTemplate,
-    fields: { title: bounded(scope.task.title, 512), state: "只读 Task 定义", body: bounded([
-      "描述", bounded(scope.task.description, 10000), "验收标准", bounded(scope.task.acceptance_criteria, 10000),
-      "验证标准", bounded(scope.task.verification_criteria, 10000)
-    ].join("\n\n"), 32768) } });
+    fields: { title: bounded(scope.task.title, 512), state: scope.task.lifecycle_state ?? "", body: "" } });
   if (cards[0]?.id === "task-information" && editors && profile.clientCapabilities.includes("detail.button")
     && Number.isSafeInteger(scope.task.revision) && scope.task.revision > 0) {
     cards[0].template = taskEditorTemplate;

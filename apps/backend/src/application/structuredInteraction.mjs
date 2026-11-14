@@ -21,6 +21,13 @@ export function asyncQuestionInput(item) {
 // Pure translation shared by Provider adapters. The original schema stays in
 // the adapter; only bounded, declarative fields are exposed to clients.
 export function elicitationInput(request) {
+  const confirmation = elicitationConfirmation(request);
+  if (confirmation) {
+    const model = publicUserInput({ schemaVersion: 1, kind: "form", isBlocking: true, canCancel: true,
+      questions: [question("decision", confirmation.text, confirmation.labels)] });
+    if (!model) throw interactionError("授权请求无法完整展示。");
+    return model;
+  }
   const text = String(request.message ?? "需要补充信息");
   if (request.mode === "url") {
     let url;
@@ -54,6 +61,14 @@ export function elicitationInput(request) {
 export function elicitationResponse(request, input) {
   if (input.action === "cancel") return { action: "cancel", content: null };
   const model = elicitationInput(request);
+  const confirmation = elicitationConfirmation(request);
+  if (confirmation) {
+    if (!validateInteractionAnswers(model, input.answers)) throw interactionError();
+    const decision = input.answers.decision[0];
+    if (decision === "拒绝") return { action: "decline" };
+    return { action: "accept", content: {},
+      ...(decision === "当前会话允许" ? { _meta: { persist: "session" } } : {}) };
+  }
   if (!validateInteractionAnswers(model, input.answers)) throw interactionError();
   if (request.mode === "url") return { action: "accept", content: null };
   const content = Object.create(null);
@@ -130,4 +145,22 @@ export function structuredResponse(request, input) {
   if (request.method === "item/permissions/requestApproval") return permissionResponse(request.params, input);
   if (request.method === "mcpServer/elicitation/request") return elicitationResponse(request.params, input);
   throw interactionError();
+}
+
+// Empty form is an explicit confirmation, not an empty auto-approved form.
+// Scope is offered only when the server requested it; permanent grants are not synthesized.
+export function elicitationConfirmation(request = {}) {
+  const schema = request.requestedSchema;
+  if (request.mode === "url" || !schema || schema.type !== "object"
+    || !schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)
+    || Object.keys(schema.properties).length !== 0
+    || (schema.required != null && !Array.isArray(schema.required))
+    || (schema.additionalProperties != null && typeof schema.additionalProperties !== "boolean")
+    || Object.keys(schema).some(key => !["type", "properties", "required", "additionalProperties", "$schema"].includes(key))
+    || (schema.required?.length ?? 0) !== 0) return null;
+  const meta = request._meta ?? request.meta ?? {};
+  const app = typeof meta.tool_params?.app === "string" ? meta.tool_params.app : null;
+  const session = meta.connector_id === "computer-use" && app && Array.isArray(meta.persist) && meta.persist.includes("session");
+  const text = [request.message || "是否允许此操作？", app ? `目标应用：${app}` : null].filter(Boolean).join("\n");
+  return { text, labels: ["允许本次", ...(session ? ["当前会话允许"] : []), "拒绝"] };
 }

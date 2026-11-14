@@ -932,3 +932,25 @@ test("device keeps checklist child links and strips undeclared assignment fields
     assert.equal(link.secret, undefined);
   } finally { await f.close(); }
 });
+
+test("paired replies expose only the explicit association and exact bounded navigation", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks, readWindow: async (id, input) => {
+      calls.push(input); return { revision: 4, hasEarlier: true, items: [
+        { id: "question", type: "userMessage", text: "question" },
+        { id: "reply", type: "agentMessage", text: "answer", rawMetadataJSON: JSON.stringify({ requestId: "request:1",
+          replyToMessageId: "question", sourceSessionId: "logical:shadow", private: "secret" }) }
+      ] };
+    } });
+    const page = await api.messages(identity, "session:test", new URLSearchParams({ around: "question" }));
+    assert.equal(calls[0].anchorId, "question"); assert.equal(calls[0].after, 15); assert.equal(calls[0].limit, 31);
+    assert.deepEqual(page.items.map(item => item.id), ["question", "reply"]);
+    assert.equal(page.items[1].replyAssociation.replyToMessageId, "question");
+    assert.equal(Object.hasOwn(page.items[1], "rawMetadataJSON"), false);
+    assert.ok(!JSON.stringify(page).includes("secret"));
+    await assert.rejects(api.messages(identity, "session:test", new URLSearchParams({ around: "question", before: "reply" })), { code: "INVALID_QUERY" });
+    await assert.rejects(api.messages(identity, "session:test", new URLSearchParams({ around: "unknown" })), { code: "ANCHOR_NOT_FOUND" });
+  } finally { await f.close(); }
+});

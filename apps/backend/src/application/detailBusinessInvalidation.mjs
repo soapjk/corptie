@@ -60,6 +60,11 @@ export class DetailBusinessInvalidation {
     }
   }
   publishEvent(type, payload, sessionId) {
+    if (type === "TaskChanged") {
+      const taskId = payload?.taskId ?? payload?.entity?.id;
+      if (taskId) this.invalidate({ resourceType: "task", taskId });
+      return;
+    }
     const resourceType = /^(ScheduledSession|Automation)/.test(type) ? "schedule"
       : /^Worktree/.test(type) ? "worktree" : /^GitRepository/.test(type) ? "repository"
       : /^Workspace/.test(type) ? "workspace" : /^Provider(Capabilities|Settings|State|Registry)Changed$/.test(type) ? "provider"

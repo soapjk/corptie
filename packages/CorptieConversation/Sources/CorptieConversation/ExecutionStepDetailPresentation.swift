@@ -17,7 +17,7 @@ public struct ExecutionStepDetailPresentation: Sendable {
         } ?? 0
         guard toolLength + changeLength > Self.inlineCharacterLimit else {
             displayedStep = step
-            hasOverflow = false
+            hasOverflow = (step.subagent?.activities.count ?? 0) > 8
             return
         }
 
@@ -49,6 +49,7 @@ public struct ExecutionStepDetailPresentation: Sendable {
 
     public static func fullText(_ step: ConversationExecutionStep) -> String {
         var sections = ["\(step.state.marker) \(step.title)"]
+        if let child = step.subagent { sections.append(child.text(languageCode: "en")) }
         if let detail = step.detail, !detail.isEmpty { sections.append(detail) }
         if let tool = step.tool {
             if let input = tool.input, !input.isEmpty { sections.append("输入\n\(input)") }

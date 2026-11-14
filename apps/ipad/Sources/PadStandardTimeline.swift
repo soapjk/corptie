@@ -152,6 +152,9 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
                 // A commentary row can become a process child. Resolve the
                 // old visible identity before treating it as missing history.
                 restoreArchivedAnchor(pendingRestore ?? readingPosition())
+                if let target = pendingRestore?.entryID, current.contains(target) {
+                    withoutAnimation { position.scrollTo(id: target, anchor: .top) }
+                }
                 // Rebind a previous explicit ID target when a new tail arrives.
                 // Same-ID streaming growth continues using the system size anchor.
                 if previous.last != current.last, policy.followsLatest, !policy.interacting,
@@ -199,8 +202,10 @@ struct PadStandardTimeline<Row: View, Composer: View>: View {
             diagnose("jump-after")
         }
         input.handle.scrollToEntry = { id in
-            pendingRestore = nil; policy.restored()
             let target = PadTimelineReadingPosition.resolve(id) { input.rowAliases[$0] } ?? id
+            let bookmark = PadTimelineReadingPosition(followsLatest: false, entryID: target, minY: 0)
+            pendingRestore = bookmark
+            policy.begin(saved: bookmark)
             withoutAnimation { position.scrollTo(id: target, anchor: .top) }
         }
         input.handle.scrollToOffset = { offset in

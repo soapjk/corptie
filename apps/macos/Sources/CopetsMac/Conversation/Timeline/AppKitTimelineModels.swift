@@ -16,7 +16,8 @@ struct ConversationReplyIdentity: Equatable {
 enum ReplyIdentityLayout {
     static let avatarSize: CGFloat = 32
     static let headerHeight: CGFloat = 36
-    static let bottomSpacing: CGFloat = 8
+    static let topSpacing: CGFloat = 8
+    static let bottomSpacing: CGFloat = 0
 }
 
 struct AppKitChatTimelineRow: Identifiable {
@@ -30,7 +31,7 @@ struct AppKitChatTimelineRow: Identifiable {
     var coordinationProgress: ClientCoordinationProgress? = nil
     var scheduledTrigger: ScheduledTriggerPresentation? = nil
     var replyIdentity: ConversationReplyIdentity? = nil
-    var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : ReplyIdentityLayout.headerHeight + ReplyIdentityLayout.bottomSpacing }
+    var replyIdentityHeight: CGFloat { replyIdentity == nil ? 0 : ReplyIdentityLayout.topSpacing + ReplyIdentityLayout.headerHeight + ReplyIdentityLayout.bottomSpacing }
     var forkItemID: String? = nil
     var queuedMessageTaskID: String? = nil
     var deletableMessageID: String? = nil
@@ -52,6 +53,7 @@ struct AppKitChatTimelineRow: Identifiable {
         enum Kind {
             case cancelQueuedMessage(taskID: String)
             case deleteUnreceivedMessage(messageID: String)
+            case locateMessage(messageID: String)
             case forkMessage(itemID: String)
             case codexApproval(CodexApprovalOption)
             case ptyChoice(CodexApprovalOption, choiceID: String)
@@ -79,6 +81,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let collaborationRoute: NativeCollaborationRoutePresentation?
     let expandableTurnId: String?
     var isExpanded: Bool
+    let processSubagentCount: Int
     let processCount: Int?
     let processDuration: String?
     let processStartedAt: Date?
@@ -126,6 +129,7 @@ struct AppKitChatTimelineRow: Identifiable {
         collaborationRoute: NativeCollaborationRoutePresentation? = nil,
         expandableTurnId: String?,
         isExpanded: Bool,
+        processSubagentCount: Int = 0,
         processCount: Int? = nil,
         processDuration: String? = nil,
         processStartedAt: Date? = nil,
@@ -154,6 +158,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.collaborationRoute = collaborationRoute
         self.expandableTurnId = expandableTurnId
         self.isExpanded = isExpanded
+        self.processSubagentCount = processSubagentCount
         self.processCount = processCount
         self.processDuration = processDuration
         self.processStartedAt = processStartedAt
@@ -187,7 +192,7 @@ struct AppKitChatTimelineRow: Identifiable {
                 ?? processDuration
             : processDuration
         return ConversationProcessPresentation(state: processState, count: processCount ?? 0,
-            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil)
+            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil, subagentCount: processSubagentCount)
             .summary(languageCode: languageCode ?? processLanguageCode ?? "en")
     }
 
@@ -316,18 +321,11 @@ enum ChatBubbleWidthPolicy {
                 bodyWidth = 0
             } else {
                 let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style, typography: typography)
-                // Probe with a finite box comfortably wider than the 640pt card
-                // ceiling. An infinite line fragment saturates NSStringDrawing
-                // and under-reports the glyph bounds of a long single line.
-                let measured = ceil(attributed.boundingRect(
-                    with: NSSize(width: 4096, height: CGFloat.greatestFiniteMagnitude),
-                    options: [.usesLineFragmentOrigin, .usesFontLeading]).width)
-                // The card hugs `bodyWidth`, and the body renders at exactly
-                // `cardWidth - horizontalPadding`: zero slack. Reserve one body
-                // glyph so a measuring/rendering delta cannot push the final
-                // character (plus punctuation that cannot start a line) into
-                // a one-character second line.
-                bodyWidth = measured + typography.bodySize
+                // Use the body's TextKit configuration, not NSStringDrawing
+                // plus a spare character. A finite probe above the card ceiling
+                // measures short content tightly while long content still clamps.
+                // The existing bounded workspace and row metrics retain this work.
+                bodyWidth = NativeTextKitLayout.size(of: attributed, width: 4096).width
             }
             let titleWidth = ceil((title as NSString).size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .bold)]).width)

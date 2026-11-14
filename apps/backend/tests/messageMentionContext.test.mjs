@@ -30,3 +30,12 @@ test("message mentions ignore self references and deleted resources", () => {
     { targetType: "work", targetId: "work:missing", displayName: "Missing" }
   ]), null);
 });
+
+test("ability mentions resolve installed authoritative names", () => {
+  const installed = { ...store, getRegistrySkill: id => id === "skill:one" ? { name: "Installed Skill" } : null,
+    selectOne: (_, [id]) => id === "mcp:one" ? { name: "Installed MCP" } : null };
+  const result = resolveMessageMentionContext(installed, "owner", [
+    { targetType: "skill", targetId: "skill:one", displayName: "forged" },
+    { targetType: "mcp", targetId: "mcp:one", displayName: "forged" }]);
+  assert.deepEqual(result.mentions.map(m => m.displayName), ["Installed Skill", "Installed MCP"]);
+});

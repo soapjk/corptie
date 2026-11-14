@@ -97,7 +97,7 @@ test("invalid parent state and any reparenting are rejected, including direct SQ
   assert.throws(()=>f.store.deleteTask(f.root.id),/TASK_HIERARCHY_DEPENDENCY/);
   assert.throws(()=>f.store.deleteTask(child.id),/TASK_HIERARCHY_DEPENDENCY/);
   assert.throws(()=>f.store.finalizeTaskDeletion(f.root.id),/TASK_HIERARCHY_DEPENDENCY/);
-  f.store.updateTask(f.root.id,{description:"Version_changed"});
+  f.store.updateTask(f.root.id,{});
   assert.equal(f.store.createTask({workId:f.work.id,title:"Stale_legacy",parentTaskId:f.root.id},{},{expectedParentResourceVersion:1}).parent_task_id,f.root.id);
 });
 
@@ -174,7 +174,6 @@ test("Git parent completion requires integration acceptance but audit remains re
   await assert.rejects(()=>completion.completeFromSession({targetTaskId:root.id},{}),{code:"WORK_ID_REQUIRED"});
   assert.equal(f.store.getTask(root.id).lifecycle_state,"done");
 });
-
 
 test("Worktree-scoped scheduling inspects every matching active job, even behind a newer unrelated job",async t=>{
  const f=await fixture(t);f.store.createWorkspace({workspaceId:"workspace:queue",kind:"linkedLocal",ownership:"userManaged",rootPath:"/queue-test"});

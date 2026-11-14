@@ -4,7 +4,7 @@ import { validateEntityName, validateTaskInput } from "../domain/workTaskValidat
 import { TASK_PRIORITIES } from "../domain/taskToolSchema.mjs";
 import { taskHierarchyCapabilities } from "./taskHierarchyService.mjs";
 
-const legacyTaskFields = ["workId", "title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "mainAgentId"];
+const legacyTaskFields = ["workId", "title", "priority", "mainAgentId"];
 const taskFields = [...legacyTaskFields, "parentTaskId"];
 const providerFields = ["providerId", "model", "reasoningLevel"];
 const legacyFields = ["requestId", ...legacyTaskFields, ...providerFields];
@@ -60,7 +60,7 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   for (const key of [...taskFields, ...providerFields]) {
     if (key === "parentTaskId" && input[key] === null) continue;
     if (input[key] !== undefined && (typeof input[key] !== "string"
-        || input[key].length > (["description", "acceptanceCriteria", "verificationCriteria"].includes(key) ? 16000 : 512))) {
+        || input[key].length > 512)) {
       throw deviceError("INVALID_TASK_CREATION", 400);
     }
   }
@@ -74,10 +74,10 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   const taskInput = validateTaskInput(Object.fromEntries(taskFields.filter(key => input[key] !== undefined)
     .map(key => [key, input[key]])));
   validateEntityName(taskInput.title, "title", "Task");
-  // Preserve legacy receipt hashes byte-for-byte. Retrying an already accepted
-  // request uses its original payload, including any deprecated field it had.
+  // Keep the positional receipt format for requests that already omitted the
+  // retired fields. Retired keys are rejected above, never persisted again.
   const fingerprint = createHash("sha256").update(JSON.stringify([sourceID, "create_task",
-    ...(input.parentTaskId ? fields : legacyFields).map(key => input[key] ?? null)])).digest("hex");
+    ...(input.parentTaskId ? fields : legacyFields).flatMap(key => key === "title" ? [input[key] ?? null, null, null, null] : [input[key] ?? null])])).digest("hex");
   const findReplay = () => {
     const existing = api.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id=? AND request_id=?",
       [identity.deviceId, input.requestId]);

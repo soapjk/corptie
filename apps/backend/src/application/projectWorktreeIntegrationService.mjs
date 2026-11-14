@@ -269,6 +269,7 @@ export class ProjectWorktreeIntegrationService {
     ].join("\n");
     const prompt = [
       description,
+      acceptanceCriteria,
       "",
       "固定执行流程：",
       "1. 确认当前工作目录是系统创建的 Integration Worktree。",
@@ -284,8 +285,6 @@ export class ProjectWorktreeIntegrationService {
       agent,
       workspace,
       title,
-      description,
-      acceptanceCriteria,
       prompt,
       integrationRunId: run.id,
       sourceSessionId: this.#sourceSessionId(run)

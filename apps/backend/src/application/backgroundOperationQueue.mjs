@@ -1,24 +1,28 @@
 // Provider-neutral scheduling. Running slots are released only when the
 // underlying execution settles, never merely because its caller cancels.
 export class BackgroundOperationQueue {
-  constructor({ concurrency = 2, maxPending = 64, interactiveReserve = 0 } = {}) {
+  constructor({ concurrency = 2, maxPending = 64, interactiveReserve = 0, backgroundReserve = 0, perOwnerLimit = concurrency } = {}) {
     if (!Number.isInteger(concurrency) || concurrency < 1) throw new TypeError("Invalid background concurrency.");
     if (!Number.isInteger(interactiveReserve) || interactiveReserve < 0) throw new TypeError("Invalid interactive reserve.");
+    if (!Number.isInteger(backgroundReserve) || backgroundReserve < 0 || !Number.isInteger(perOwnerLimit) || perOwnerLimit < 1) throw new TypeError("Invalid background scheduling limits.");
     this.concurrency = concurrency;
     this.maxPending = maxPending;
     this.running = 0;
     this.runningBackground = 0;
+    this.runningOwners = new Map();
+    this.perOwnerLimit = perOwnerLimit;
+    this.backgroundReserve = Math.min(Math.max(0, backgroundReserve), concurrency - 1);
     this.interactiveReserve = Math.min(Math.max(0, interactiveReserve), concurrency - 1);
     this.pending = [];
     this.closed = false;
   }
 
-  run(operation, { signal, priority = 0 } = {}) {
+  run(operation, { signal, priority = 0, owner = null, onStart = null } = {}) {
     if (this.closed) return Promise.reject(queueError("BACKGROUND_QUEUE_CLOSED"));
     if (signal?.aborted) return Promise.reject(signal.reason ?? queueError("BACKGROUND_CANCELLED"));
     if (this.pending.length >= this.maxPending) return Promise.reject(queueError("BACKGROUND_QUEUE_FULL"));
     return new Promise((resolve, reject) => {
-      const entry = { operation, signal, priority, resolve, reject };
+      const entry = { operation, signal, priority, owner, onStart, resolve, reject };
       entry.onAbort = () => {
         const index = this.pending.indexOf(entry);
         if (index < 0) return;
@@ -35,19 +39,29 @@ export class BackgroundOperationQueue {
 
   drain() {
     while (!this.closed && this.running < this.concurrency && this.pending.length) {
-      if (this.pending[0].priority < 1 && this.runningBackground >= this.concurrency - this.interactiveReserve) break;
-      const entry = this.pending.shift();
+      const index = this.pending.findIndex(entry =>
+        (entry.priority < 1 ? this.runningBackground < this.concurrency - this.interactiveReserve
+          : this.running - this.runningBackground < this.concurrency - this.backgroundReserve)
+        && (!entry.owner || (this.runningOwners.get(entry.owner) ?? 0) < this.perOwnerLimit));
+      if (index < 0) break;
+      const [entry] = this.pending.splice(index, 1);
       entry.signal?.removeEventListener("abort", entry.onAbort);
       this.running += 1;
+      if (entry.owner) this.runningOwners.set(entry.owner, (this.runningOwners.get(entry.owner) ?? 0) + 1);
       if (entry.priority < 1) this.runningBackground += 1;
       Promise.resolve().then(() => {
         entry.signal?.throwIfAborted();
+        entry.onStart?.();
         return entry.operation();
       }).then((result) => {
         entry.signal?.throwIfAborted();
         return result;
       }).then(entry.resolve, entry.reject).finally(() => {
         this.running -= 1;
+        if (entry.owner) {
+          const count = (this.runningOwners.get(entry.owner) ?? 1) - 1;
+          if (count) this.runningOwners.set(entry.owner, count); else this.runningOwners.delete(entry.owner);
+        }
         if (entry.priority < 1) this.runningBackground -= 1;
         this.drain();
       });

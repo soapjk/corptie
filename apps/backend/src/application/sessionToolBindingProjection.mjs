@@ -1,3 +1,4 @@
+import { coordinationDelegation } from "../domain/coordinationDelegation.mjs";
 // Provider-neutral Session identity and Tool Host authorization projection.
 // Reads authoritative bindings on each call; never caches a second route.
 export function createSessionToolBindingProjection({ store, prepareDesiredReplacement }) {
@@ -13,7 +14,8 @@ export function createSessionToolBindingProjection({ store, prepareDesiredReplac
       sessionId: session?.id ?? null,
       logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
       providerBindingId: logical?.activeBinding?.bindingId ?? null,
-      providerId: logical?.activeBinding?.providerId ?? null
+      providerId: logical?.activeBinding?.providerId ?? null,
+      providerSessionId: logical?.activeBinding?.providerSessionId ?? logical?.activeThreadId ?? null
     };
   }
 
@@ -51,7 +53,9 @@ export function createSessionToolBindingProjection({ store, prepareDesiredReplac
         [session.taskId, session.id, logical.logicalSessionId]
       ))
       : null;
+    const delegation = task?.current_session_id !== session?.id && !startupAuthorization ? coordinationDelegation(store, logicalSessionId) : null;
     return {
+      delegation,
       logicalSessionId: logical.logicalSessionId,
       providerBindingId: active.bindingId,
       providerId: active.providerId,
@@ -67,7 +71,7 @@ export function createSessionToolBindingProjection({ store, prepareDesiredReplac
       currentTaskSessionId: task?.current_session_id ?? null,
       taskSessionAuthorization: task?.current_session_id === session?.id
         ? "current"
-        : (startupAuthorization ? "startup" : null),
+        : (startupAuthorization ? "startup" : delegation?.kind ?? null),
       startupOperationId: startupAuthorization?.startup_operation_id ?? null,
       agentId: session?.agentId ?? null,
       authorizationRevision: Math.max(

@@ -19,6 +19,7 @@ export class SessionNotFoundError extends Error {
 export class SessionApplicationService {
   constructor(options = {}) {
     this.registry = options.registry;
+    this.resolveExecutionPolicy = options.resolveExecutionPolicy ?? (() => null);
     this.coordinationTurns = options.coordinationTurns ?? null;
     this.resolveCreationDefaults = options.resolveCreationDefaults ?? ((providerId, input) => ({ providerId, input }));
     this.resolveSessionReference = options.resolveSessionReference;
@@ -95,10 +96,21 @@ export class SessionApplicationService {
     }
     // All new product Sessions share this policy. Forks retain source runtime.
     if (!context.forkSource) ({ providerId, input } = await measureStartup(startupTiming, "session.resolve-defaults", () => this.resolveCreationDefaults(providerId, input, context)));
+    const executionPolicy = this.resolveExecutionPolicy({ context });
     const provider = this.registry.get(providerId);
-    const preparedInput = typeof provider.prepareSessionInput === "function"
+    if (executionPolicy === "host-coordination" && !provider.descriptor.metadata?.backgroundExecutionPolicies?.includes("no-tools")) {
+      throw Object.assign(new Error("Provider does not support isolated coordination execution."), { code: "COORDINATION_ISOLATION_UNSUPPORTED" });
+    }
+    context.signal?.throwIfAborted();
+    let preparedInput = typeof provider.prepareSessionInput === "function"
       ? await measureStartup(startupTiming, "session.prepare-input", () => provider.prepareSessionInput(input, context))
       : input;
+    if (executionPolicy === "host-coordination") preparedInput = { ...preparedInput,
+      executionPolicy: "host-coordination", actorId: context.actorId, prompt: "",
+      sandbox: "read-only", approvalPolicy: "never" };
+    else if (preparedInput.executionPolicy === "host-coordination") {
+      throw Object.assign(new Error("Restricted Session creation requires an authoritative delegation."), { code: "COORDINATION_RESERVATION_INVALID" });
+    }
     const hasPreparedToolHost = Object.prototype.hasOwnProperty.call(context, "preparedToolHost");
     if (hasPreparedToolHost && context.deferSessionBinding !== true) {
       throw new TypeError("A prepared Tool Host attachment is only valid for an internal route transition.");
@@ -108,7 +120,7 @@ export class SessionApplicationService {
       ...attachmentContext,
       sessionKind: context.sessionKind ?? preparedInput.sessionKind ?? "legacy"
     });
-    const toolHost = hasPreparedToolHost
+    const toolHost = executionPolicy === "host-coordination" ? null : hasPreparedToolHost
       ? context.preparedToolHost
       : this.toolHostService
         ? await measureStartup(startupTiming, "session.tool-host.prepare", () => this.toolHostService.prepareSession(providerId, {
@@ -147,7 +159,7 @@ export class SessionApplicationService {
       if (this.removeSessionBinding) await this.removeSessionBinding({ reference: failedReference });
       throw error;
     }
-    if (context.deferToolHostFinalization !== true) {
+    if (context.deferToolHostFinalization !== true && executionPolicy !== "host-coordination") {
       try {
         await measureStartup(startupTiming, "session.tool-host.finalize", () => this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference));
       } catch (error) {
@@ -257,6 +269,7 @@ export class SessionApplicationService {
       : await this.referenceFor(sessionId);
     assertTaskNotArchived(reference);
     assertExpectedBinding(reference, context);
+    if (this.resolveExecutionPolicy({ reference, context }) === "host-coordination") return { ready: true, executionPolicy: "host-coordination", reference, providerSession: reference.metadata?.session ?? reference.session };
     const storedSession = reference.metadata?.session ?? context.before ?? null;
     const actorId = normalizedText(storedSession?.agentId) ?? normalizedText(context.actorId);
     const {
@@ -503,6 +516,7 @@ export class SessionApplicationService {
 
   async #deleteSession(sessionId, context, removeLocalBindingOnProviderFailure) {
     const reference = await this.referenceFor(sessionId);
+    await this.coordinationRequests?.cancelForMain(reference.logicalSessionId);
     let providerResult = false;
     let providerError = null;
     try {
@@ -704,6 +718,11 @@ export class SessionApplicationService {
     } catch (error) {
       throw withDispatchStateNotSent(error);
     }
+    const executionPolicy = this.resolveExecutionPolicy({ reference, context });
+    if (executionPolicy === "host-coordination" && !this.coordinationTurns?.enabled(reference)) {
+      throw Object.assign(new Error("Coordination executor is unavailable."), { code: "COORDINATION_EXECUTOR_UNAVAILABLE" });
+    }
+    if (this.workChatReadOnlyTurns?.required(reference)) return this.workChatReadOnlyTurns.send(reference, message, context);
     // This check precedes native tool preparation and ordinary Provider send.
     // The host owns the route: a failed restricted turn never falls back.
     this.coordinationTurns?.continuationFor?.(reference, context);
@@ -771,6 +790,10 @@ export class SessionApplicationService {
       if (this.coordinationTurns?.enabled(dispatchReference)) {
         contextReceipt.reject();
         return this.coordinationTurns.send(dispatchReference, message, context);
+      }
+      if (this.workChatReadOnlyTurns?.required(dispatchReference)) {
+        contextReceipt.reject();
+        return this.workChatReadOnlyTurns.send(dispatchReference, message, context);
       }
       result = await this.registry.invoke(
         dispatchReference.providerId,
@@ -866,6 +889,7 @@ export class SessionApplicationService {
   async clearConversation(sessionId, context = {}) {
     this.invalidateSessionContext(sessionId);
     const reference = await this.referenceFor(sessionId);
+    await this.coordinationRequests?.cancelForMain(reference.logicalSessionId);
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
@@ -876,6 +900,8 @@ export class SessionApplicationService {
 
   async interrupt(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const readOnly = await this.workChatReadOnlyTurns?.interrupt(reference);
+    if (readOnly) return readOnly;
     const coordinated = await this.coordinationTurns?.interrupt(reference);
     if (coordinated) return coordinated;
     return this.registry.invoke(

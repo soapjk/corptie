@@ -144,7 +144,7 @@ export class SessionCollaborationService {
     const keys = new Set();
     for (const item of input.items) {
       if (!item || typeof item !== "object" || Array.isArray(item)) throw coded("INVALID_TASK_BATCH_ITEM", "Every batch item must be an object.", 400);
-      assertKnown(item, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId",
+      assertKnown(item, ["title", "priority", "agentId",
         "providerId", "artifactReference", "fileReference", "idempotencyKey"]);
       const key = required(item.idempotencyKey, "items[].idempotencyKey");
       if (keys.has(key)) throw coded("DUPLICATE_TASK_BATCH_KEY", "Each child Task must have a distinct stable idempotency key.", 400);
@@ -152,7 +152,7 @@ export class SessionCollaborationService {
     }
     if(this.taskCoordinationService && scope.session.sessionKind==="worker") {
       const receipt=this.taskCoordinationService.acceptDispatch(metadata,actorId,{items:input.items.map(item=>({
-        action:"create",text:item.description?.trim() || `执行子任务：${item.title}`,
+        action:"create",text:`执行子任务：${item.title}`,
         idempotencyKey:item.idempotencyKey,
         creation:Object.fromEntries(Object.entries(item).filter(([key])=>key!=="idempotencyKey"))
       }))});
@@ -280,7 +280,7 @@ export class SessionCollaborationService {
   // Internal metadata primitive retained for existing callers. Transport uses
   // createTaskAndSession; child persistence additionally requires prepared intent.
   createTask(metadata, actorId, input = {}, creationAuthorization = null, prepared = null) {
-    assertKnown(input, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId",
+    assertKnown(input, ["title", "priority", "agentId",
       "parentTaskId", "expectedParentResourceVersion",
       "providerId", "artifactReference", "fileReference", "logicalSessionId",
       "userMessageEventId", "userMessageSequence", "turnId", "idempotencyKey"]);
@@ -335,9 +335,7 @@ export class SessionCollaborationService {
       item = this.workService.createTask(prepared?.taskInput ?? {
         workId: scope.session.workId,
         title,
-        description: input.description ?? "",
-        acceptanceCriteria: input.acceptanceCriteria ?? "",
-        verificationCriteria: input.verificationCriteria ?? "",
+
         priority,
         lifecycleState: "todo",
         mainAgentId: targetAgentId
@@ -389,7 +387,7 @@ export class SessionCollaborationService {
   }
 
   #creationIntent(scope, input, authorization) {
-    assertKnown(input, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId", "providerId",
+    assertKnown(input, ["title", "priority", "agentId", "providerId",
       "parentTaskId", "expectedParentResourceVersion", "artifactReference", "fileReference", "logicalSessionId",
       "userMessageEventId", "userMessageSequence", "turnId", "idempotencyKey"]);
     this.#assertCreationSource(scope);
@@ -399,7 +397,7 @@ export class SessionCollaborationService {
     const agentId = required(input.agentId, "agentId");
     this.#requireContributor(scope.session.workId, agentId);
     const taskInput = validateTaskInput({ workId: scope.session.workId, title: validateEntityName(input.title, "title", "Task"),
-      description: input.description ?? "", acceptanceCriteria: input.acceptanceCriteria ?? "", verificationCriteria: input.verificationCriteria ?? "",
+
       priority: input.priority ?? "medium", mainAgentId: agentId, parentTaskId: input.parentTaskId ?? null });
     if (input.artifactReference != null && input.fileReference != null) throw coded("TASK_REFERENCE_CONFLICT", "Choose one creation reference.", 400);
     const request = { ...taskInput, providerId: optional(input.providerId),
@@ -430,8 +428,7 @@ export class SessionCollaborationService {
       // Historical root requests predate intent storage. Never reinterpret one
       // as a child or silently accept changed persisted definition fields.
       if (intent.taskInput.parentTaskId || prior.parent_task_id || prior.work_id !== scope.session.workId
-        || prior.title !== intent.taskInput.title || prior.description !== intent.taskInput.description
-        || prior.acceptance_criteria !== intent.taskInput.acceptanceCriteria || prior.verification_criteria !== intent.taskInput.verificationCriteria
+        || prior.title !== intent.taskInput.title
         || prior.priority !== intent.taskInput.priority || prior.main_agent_id !== intent.taskInput.mainAgentId
         || (prior.creation_reference_fingerprint ?? null) !== intent.request.referenceFingerprint) throw coded("IDEMPOTENCY_CONFLICT", "Legacy creation intent cannot be changed.", 409);
     }
@@ -565,16 +562,16 @@ export class SessionCollaborationService {
     } else if (request.action === "create") {
       if (request.taskId !== null) throw coded("INVALID_DISPATCH", "create cannot target an existing Task.", 400);
       const creation = item.creation ?? {};
-      assertKnown(creation, ["title", "description", "acceptanceCriteria", "verificationCriteria", "priority", "agentId", "providerId", "artifactReference", "fileReference"]);
+      assertKnown(creation, ["title", "priority", "agentId", "providerId", "artifactReference", "fileReference"]);
       required(creation.agentId, "agentId");
       if (!replay) this.#requireContributor(scope.session.workId, creation.agentId);
       const normalized = validateTaskInput({ title: creation.title, workId: scope.parent.work_id, mainAgentId: creation.agentId,
-        description: creation.description ?? "", acceptanceCriteria: creation.acceptanceCriteria ?? "", verificationCriteria: creation.verificationCriteria ?? "", priority: creation.priority ?? "medium" });
+           priority: creation.priority ?? "medium" });
       if (!replay && creation.artifactReference != null) this.#prepareArtifactReference(scope, creation.artifactReference);
       if (!replay && creation.fileReference != null) this.#prepareFileReference(scope, creation.fileReference);
       if (creation.artifactReference && creation.fileReference) throw coded("TASK_REFERENCE_CONFLICT", "Choose one reference.", 400);
-      request.creation = { title: normalized.title, description: normalized.description, acceptanceCriteria: normalized.acceptanceCriteria,
-        verificationCriteria: normalized.verificationCriteria, priority: normalized.priority, agentId: creation.agentId,
+      request.creation = { title: normalized.title,
+         priority: normalized.priority, agentId: creation.agentId,
         ...(creation.providerId ? { providerId: creation.providerId } : {}),
         ...(creation.artifactReference ? { artifactReference: creation.artifactReference } : {}),
         ...(creation.fileReference ? { fileReference: creation.fileReference } : {}) };
@@ -892,8 +889,7 @@ export class SessionCollaborationService {
         id: taskId,
         workId: targetWorkId,
         title: optional(request.title) ?? "Session Channel",
-        description: request.summary ?? request.body ?? "",
-        acceptanceCriteria: "",
+
         priority: "medium",
         lifecycleState: "todo",
         mainAgentId: agent.agentId
@@ -972,8 +968,7 @@ export class SessionCollaborationService {
         id: taskId,
         workId: targetWorkId,
         title: required(request.title, "title"),
-        description: required(request.summary, "summary"),
-        acceptanceCriteria: (request.acceptanceCriteria ?? []).map((entry) => `- ${entry}`).join("\n"),
+
         priority: "medium",
         lifecycleState: "todo",
         mainAgentId: agent.agentId

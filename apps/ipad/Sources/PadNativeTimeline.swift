@@ -268,7 +268,6 @@ final class PadNativeTimelineController<Row: View, Composer: View>: UIViewContro
         input.handle.scrollToEntry = { [weak self] id in
             guard let self else { return }
             let id = PadTimelineReadingPosition.resolve(id) { self.input.rowAliases[$0] } ?? id
-            guard self.dataSource.indexPath(for: id) != nil else { return }
             self.following = false
             self.intentRevision &+= 1
             self.pendingRestore = PadTimelineReadingPosition(followsLatest: false, entryID: id, minY: 0)

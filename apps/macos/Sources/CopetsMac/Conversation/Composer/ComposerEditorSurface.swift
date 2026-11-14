@@ -1,5 +1,6 @@
 import AppKit
 import CorptieConversation
+import CorptieClientCore
 import SwiftUI
 import Observation
 
@@ -19,6 +20,8 @@ struct ComposerEditorSurface: View {
 
     @State private var inputHeight = ComposerInputLayout.minimumHeight
     @State private var mentions = ComposerMentionPresentation()
+    @State private var abilities: [ComposerMentionCatalog.Ability] = []
+    @State private var abilityRevision: UInt64 = 0
     private var mentionSearch: ComposerMentionSearch { mentions.search }
 
     private var acceptsPresentationUpdates: Bool { renderInputs?.acceptsPresentationUpdates ?? true }
@@ -60,7 +63,11 @@ struct ComposerEditorSurface: View {
             await mentionSearch.search(request, sessionID: sessionId,
                 sessions: renderInputs?.mentionSessions ?? backendClient.appState.sessions,
                 works: renderInputs?.works ?? backendClient.appState.works,
-                draft: editorController.draft.text)
+                draft: editorController.draft.text, abilities: abilities)
+        }
+        .task(id: "\(sessionId):\(mentions.query != nil && acceptsPresentationUpdates)") {
+            guard mentions.query != nil, acceptsPresentationUpdates else { return }
+            await loadMentionAbilities()
         }
         .onChange(of: acceptsPresentationUpdates) { _, active in
             if !active { dismissMentions() }
@@ -77,7 +84,28 @@ struct ComposerEditorSurface: View {
         .init(query: mentions.query?.text,
               catalogRevision: renderInputs?.mentionCatalogRevision ?? legacyMentionCatalogRevision,
               draftRevision: mentions.draftRevision,
-              selectedMentions: selectedMentions, active: acceptsPresentationUpdates)
+              selectedMentions: selectedMentions, active: acceptsPresentationUpdates, abilityRevision: abilityRevision)
+    }
+
+    private func loadMentionAbilities() async {
+        do {
+            let endpoint = try BackendEndpoint(CorptieAppEnvironment.backendBaseURL)
+            let request = try endpoint.request(path: ["sessions", sessionId, "abilities"])
+            let transport = try BackendTransport(endpoint: endpoint)
+            let (data, _) = try await transport.data(for: request)
+            let value = try JSONDecoder().decode(ClientInspectorValue.self, from: data)
+            try Task.checkCancellation()
+            let next: [ComposerMentionCatalog.Ability] = value["preferences"]["abilities"].items.compactMap { item in
+                guard item["available"].flag, let id = item["id"].text,
+                      let kind = ComposerMentionSuggestion.Kind(rawValue: item["kind"].text ?? ""),
+                      kind == .skill || kind == .mcp else { return nil }
+                return .init(id: id, name: item["name"].text ?? id, kind: kind)
+            }
+            if next != abilities { abilities = next; abilityRevision &+= 1 }
+        } catch is CancellationError {} catch {
+            // Never offer stale installation identities when the registry cannot be read.
+            if !abilities.isEmpty { abilities = []; abilityRevision &+= 1 }
+        }
     }
 
     private func updateMentionQuery(_ query: ComposerMentionQuery?) {

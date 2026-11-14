@@ -15,9 +15,9 @@ struct SessionForkAPITests {
             #expect(json["itemId"] == "answer")
             #expect(json["sourceBindingId"] == "binding")
             #expect(json["title"] == "Branch")
-            #expect(json["description"] == "Description")
-            #expect(json["acceptanceCriteria"] == "Acceptance")
-            #expect(json["verificationCriteria"] == "Verification")
+            #expect(json["description"] == nil)
+            #expect(json["acceptanceCriteria"] == nil)
+            #expect(json["verificationCriteria"] == nil)
             #expect(json["priority"] == "high")
             return (200, #"{"session":{"id":"target","title":"Branch","agent":"Agent","status":"complete","progress":0,"summary":"","suggestedOptions":null,"suggestedPrompt":null,"activityStatus":null,"updatedAt":"2026-09-28T00:00:00Z","accent":"cyan"},"taskId":"task:target"}"#)
         }
@@ -26,8 +26,8 @@ struct SessionForkAPITests {
             urlSession: makeSession()
         ).createSessionFork(
             .init(sessionID: "source", itemID: "answer"), requestID: "request-123",
-            sourceBindingID: "binding", title: "Branch", description: "Description",
-            acceptanceCriteria: "Acceptance", verificationCriteria: "Verification", priority: "high"
+            sourceBindingID: "binding", title: "Branch",
+             priority: "high"
         )
         #expect(result.session.id == "target")
         #expect(result.taskId == "task:target")

@@ -682,7 +682,7 @@ export class SkillRegistryService {
     if (!agentId || !this.store.getAgent(agentId)) {
       throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     }
-    const assigned = this.store.listRegistrySkillsForAgent(agentId).filter(skill =>
+    const assigned = this.store.listRegistrySkills().filter(skill =>
       !this.sessionAbilityPreferences?.isDisabled(options.sessionReference, "skill", skill.skillId));
     if (assigned.length === 0) return {};
     const result = new Map();
@@ -745,14 +745,14 @@ export class SkillRegistryService {
         skillId: skill.skillId,
         agentId,
         providerId,
-        reason: "Assigned Skill MCP dependency resolved for the authenticated Tool Host gateway.",
+        reason: "Enabled Skill MCP dependency resolved for the authenticated Tool Host gateway.",
         serverNames: Object.keys(installed.mcp?.servers ?? {})
       });
       } catch (error) {
         error.stage ??= "mcp-loading";
         this.#recordRuntimeEvent({
           stage: "mcp-loading",
-          status: error?.code === "SKILL_NOT_ASSIGNED" ? "denied" : "failed",
+          status: error?.code === "SKILL_NOT_INSTALLED" ? "denied" : "failed",
           skillId: skill.skillId,
           agentId,
           providerId,
@@ -775,7 +775,7 @@ export class SkillRegistryService {
 
   mcpAssignmentRevisionForAgent(agentId) {
     if (!agentId || !this.store.getAgent(agentId)) return "none";
-    const assigned = this.store.listRegistrySkillsForAgent(agentId).map((skill) => ({
+    const assigned = this.store.listRegistrySkills().map((skill) => ({
       skillId: skill.skillId,
       contentHash: skill.contentHash ?? "",
       packageRevision: skill.packageRevision ?? "",
@@ -960,7 +960,7 @@ export class SkillRegistryService {
   // 启动时仅返回轻量索引；完整 Skill 由会话工具按需加载。
   async skillsForAgent(agentId, sessionReference) {
     if (!agentId) return [];
-    return this.store.listRegistrySkillsForAgent(agentId).filter(skill =>
+    return this.store.listRegistrySkills().filter(skill =>
       !this.sessionAbilityPreferences?.isDisabled(sessionReference, "skill", skill.skillId)).map((skill) => ({
       skillId: skill.skillId,
       name: skill.manifestName || skill.name,
@@ -983,8 +983,8 @@ export class SkillRegistryService {
       skillId: candidates[0]?.skillId ?? null,
       agentId,
       reason: candidates.length > 0
-        ? `Found ${candidates.length} assigned Skill candidate(s).`
-        : "No assigned Skill matched the authenticated Agent request.",
+        ? `Found ${candidates.length} enabled Skill candidate(s).`
+        : "No enabled Skill matched the authenticated Session request.",
       details: { candidateCount: candidates.length }
     });
     return { found: candidates.length > 0, candidates };
@@ -993,17 +993,17 @@ export class SkillRegistryService {
   async loadForAgent(agentId, skillId, sessionReference) {
     this.sessionAbilityPreferences?.assertEnabled(sessionReference, "skill", skillId);
     if (!agentId || !this.store.getAgent(agentId)) throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
-    const allowed = this.store.listRegistrySkillIdsForAgent(agentId);
+    const allowed = this.store.listRegistrySkills().map(skill => skill.skillId);
     if (!allowed.includes(skillId)) {
       this.#recordRuntimeEvent({
         stage: "skill-load",
         status: "denied",
         skillId: this.store.getRegistrySkill(skillId) ? skillId : null,
         agentId,
-        errorCode: "SKILL_NOT_ASSIGNED",
-        reason: `Skill is not assigned to Agent ${agentId}: ${skillId}`
+        errorCode: "SKILL_NOT_INSTALLED",
+        reason: `Skill is not installed for Session ${sessionReference}: ${skillId}`
       });
-      throw skillError("SKILL_NOT_ASSIGNED", `Skill is not assigned to Agent ${agentId}: ${skillId}`);
+      throw skillError("SKILL_NOT_INSTALLED", `Skill is not installed for Session ${sessionReference}: ${skillId}`);
     }
     const skill = this.store.getRegistrySkill(skillId);
     if (!skill) throw skillError("NOT_FOUND", `Skill not found: ${skillId}`);
@@ -1017,7 +1017,7 @@ export class SkillRegistryService {
       status: "success",
       skillId,
       agentId,
-      reason: "Assigned Skill instructions loaded for authenticated Agent."
+      reason: "Enabled Skill instructions loaded for authenticated Agent."
     });
     return {
       skillId,

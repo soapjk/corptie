@@ -140,7 +140,7 @@ test("缓存 key 含 agentId：同 task 不同 agent 不误命中", async () => 
   }
 });
 
-test("hub search indexes only Registry Skills assigned to the Agent and invalidates on replacement", async () => {
+test("legacy hub excludes installed Registry Skills even when historical Role links exist", async () => {
   const { store, directory } = await createStore();
   try {
     const agent = store.createAgent({ name: "Investor", provider: "codex-app-server" });
@@ -156,9 +156,15 @@ test("hub search indexes only Registry Skills assigned to the Agent and invalida
     store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
     const hub = new HubService({ store });
 
+    // Previous releases cached Role-linked Registry Skills. The legacy cache
+    // must not bypass dedicated dynamic Skill search's Session activation gate.
+    store.cacheHubIntent({ agentId: agent.agentId, intentHash: hub.hashIntent("investment"),
+      result: { found: true, candidates: [{ skillId: skill.skillId, kind: "registered_skill" }] } });
     const assigned = hub.search("investment", { agentId: agent.agentId });
-    assert.equal(assigned.found, true);
-    assert.equal(assigned.candidates.find((item) => item.skillId === skill.skillId)?.toolName, "investrace");
+    assert.equal(assigned.found, false);
+    assert.deepEqual(assigned.candidates, []);
+    assert.equal(assigned.cached, false);
+    assert.equal(hub.search("investment", { agentId: agent.agentId }).cached, true);
     assert.equal(hub.search("investment", { agentId: other.agentId }).found, false);
 
     store.setAgentRegistrySkills(agent.agentId, []);

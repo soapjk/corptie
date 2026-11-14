@@ -1,3 +1,4 @@
+import { coordinationDelegation } from "../domain/coordinationDelegation.mjs";
 import { randomUUID } from "node:crypto";
 
 const fail = code => { throw Object.assign(new Error(code), { code, statusCode: 409 }); };
@@ -140,7 +141,7 @@ export class ShadowSessionService {
     if (!row || row.state !== "ready") fail("SHADOW_DELEGATION_UNAVAILABLE");
     const { task, session: main } = this.owner(row.main_session_id);
     const logical = this.store.getLogicalSession(shadowId), session = logical && this.store.getSession(logical.legacySessionId);
-    if (!session || logical.archived || session.archived || session.deletedAt || logical.activeBinding?.state !== "active"
+    if (!coordinationDelegation(this.store, shadowId) || !session || logical.archived || session.archived || session.deletedAt || logical.activeBinding?.state !== "active"
       || session.taskId !== task.id || session.workId !== task.work_id || session.agentId !== main.agentId
       || capability && !JSON.parse(row.scope_json).includes(capability)) fail("SHADOW_DELEGATION_INVALID");
     return row;

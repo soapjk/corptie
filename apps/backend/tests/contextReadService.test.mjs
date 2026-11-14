@@ -17,13 +17,12 @@ async function fixture() {
   store.createWork({ id: "work:a", name: "Source", contributorAgentIds: [agent.agentId] });
   store.createWork({ id: "work:b", name: "llmay", description: "Public relay design",
     contributorAgentIds: [agent.agentId] });
-  store.createTask({ id: "task:b", workId: "work:b", title: "Relay forwarding",
-    description: "TLS long connection", acceptanceCriteria: "Pinned certificate" });
+  store.createTask({ id: "task:b", workId: "work:b", title: "Relay_forwarding"});
   store.createSession({ id: "session:assistant", title: "Assistant", sessionKind: "assistantChat",
     agentId: agent.agentId });
   store.createSession({ id: "session:work", title: "Source chat", sessionKind: "workChat",
     workId: "work:a", agentId: agent.agentId });
-  store.createTask({ id: "task:a", workId: "work:a", title: "Read reference" });
+  store.createTask({ id: "task:a", workId: "work:a", title: "Read_reference" });
   store.createSession({ id: "session:worker", title: "Worker", sessionKind: "worker",
     workId: "work:a", taskId: "task:a", agentId: agent.agentId });
   store.createSession({ id: "session:target", title: "Relay discussion", sessionKind: "worker",
@@ -88,14 +87,10 @@ test("all authenticated Session kinds discover and read another Work without mut
     const definition = await f.catalog.execute({ tool: "corptie_context_read",
       metadata: { sessionId: "session:assistant" },
       arguments: { target_type: "task", target_id: "task:b", section: "definition" } });
-    assert.equal(definition.item.field, "description");
-    assert.ok(definition.nextCursor);
-    const criterion = await f.catalog.execute({ tool: "corptie_context_read",
-      metadata: { sessionId: "session:assistant" },
-      arguments: { target_type: "task", target_id: "task:b", section: "definition",
-        cursor: definition.nextCursor } });
-    assert.equal(criterion.item.field, "acceptanceCriteria");
-    assert.equal(criterion.item.text, "Pinned certificate");
+    assert.equal(definition.item.field, "title");
+    assert.equal(definition.item.text, "Relay_forwarding");
+    assert.equal(definition.nextCursor, null);
+    assert.equal(JSON.stringify(definition).includes("acceptanceCriteria"), false);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
@@ -176,7 +171,7 @@ test("large Work results stay page-bounded and continue without loading the whol
   try {
     for (let index = 0; index < 35; index += 1) {
       f.store.createTask({ id: `task:bulk-${index}`, workId: "work:b",
-        title: `Forwarding ${index}`, description: "传输".repeat(500) });
+        title: `Forwarding_${index}`});
     }
     const metadata = { sessionId: "session:assistant" };
     const first = await f.catalog.execute({ tool: "corptie_context_search", metadata,

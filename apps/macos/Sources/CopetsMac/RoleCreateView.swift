@@ -22,8 +22,6 @@ struct RoleCreateView: View {
     @State private var capabilitiesText = ""
     @State private var workDir = ""
     @State private var showAdvanced = false
-    @State private var selectedSkillIds: Set<String> = []
-    @State private var showSkillRegister = false
     @State private var submission = RoleCreationSubmission()
 
     var body: some View {
@@ -96,8 +94,6 @@ struct RoleCreateView: View {
                                 field(L10n("工作目录（可选）")) {
                                     TextField(L10n("留空则为此 角色 自动生成独立目录"), text: $workDir)
                                 }
-
-                                skillSection
                             }
                             .padding(.top, 4)
                         }
@@ -133,17 +129,6 @@ struct RoleCreateView: View {
             if client.roles.isEmpty {
                 await client.refreshRoles()
             }
-            if client.skills.isEmpty {
-                await client.refreshSkills()
-            }
-        }
-        .sheet(isPresented: $showSkillRegister) {
-            SkillRegisterView { skill in
-                if let skill { selectedSkillIds.insert(skill.skillId) }
-            }
-        }
-        .onChange(of: client.skills.map(\.skillId)) { _, availableSkillIds in
-            selectedSkillIds.formIntersection(availableSkillIds)
         }
     }
 
@@ -197,7 +182,6 @@ struct RoleCreateView: View {
             systemPrompt = ""
             capabilitiesText = ""
             workDir = ""
-            selectedSkillIds = []
             return
         }
         name = base.name
@@ -205,18 +189,6 @@ struct RoleCreateView: View {
         systemPrompt = base.systemPrompt
         capabilitiesText = base.capabilities.joined(separator: ", ")
         workDir = base.workDir ?? ""
-        selectedSkillIds = Set(base.skillIds ?? [])
-    }
-
-    // MARK: - Skill 预装
-
-    private var skillSection: some View {
-        RoleSkillSelectionView(
-            skills: client.skills,
-            selectedSkillIds: $selectedSkillIds,
-            isEnabled: true,
-            onRegister: { showSkillRegister = true }
-        )
     }
 
     // MARK: - 创建
@@ -239,7 +211,6 @@ struct RoleCreateView: View {
             .filter { !$0.isEmpty }
         let requestDescription = detail
         let requestSystemPrompt = systemPrompt
-        let requestSkillIds = Array(selectedSkillIds)
         let trimmedWorkDir = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestWorkDir = trimmedWorkDir.isEmpty ? nil : trimmedWorkDir
 
@@ -254,7 +225,6 @@ struct RoleCreateView: View {
                     description: requestDescription,
                     systemPrompt: requestSystemPrompt,
                     capabilities: capabilities,
-                    skillIds: requestSkillIds,
                     workDir: requestWorkDir,
                     idempotencyKey: idempotencyKey
                 ) != nil else {
@@ -272,7 +242,6 @@ struct RoleCreateView: View {
                 description: requestDescription,
                 systemPrompt: requestSystemPrompt,
                 capabilities: capabilities,
-                skillIds: requestSkillIds,
                 workDir: requestWorkDir,
                 idempotencyKey: idempotencyKey
             ) {

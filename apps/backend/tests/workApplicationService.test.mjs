@@ -35,9 +35,9 @@ test("Work CRUD：创建 / 列表 / 更新 / 删除", async () => {
 
     assert.throws(() => createWork(service, { name: "  " }), TypeError);
 
-    const work = createWork(service, { name: "重构 Corptie" });
+    const work = createWork(service, { name: "重构Corptie" });
     assert.ok(work.id);
-    assert.equal(work.name, "重构 Corptie");
+    assert.equal(work.name, "重构Corptie");
     assert.equal(work.status, "active");
 
     assert.equal(service.listWorks().length, 1);
@@ -110,8 +110,7 @@ test("稳定创建 ID 使 Work 和 Task 重试幂等，冲突输入明确失败"
     const taskInput = {
       id: "task:background-create",
       workId: firstWork.id,
-      title: "后台工作项",
-      description: "保持弹窗可用"
+      title: "后台工作项"
     };
     const firstTask = service.createTask(taskInput);
     const retriedTask = service.createTask(taskInput);

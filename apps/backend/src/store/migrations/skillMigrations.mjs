@@ -147,6 +147,7 @@ export function ensureSkillTables({ db, selectOne, selectAll, ensureColumn }) {
   ensureColumn("mcp_server_registry", "package_root", "TEXT");
   ensureColumn("mcp_server_registry", "package_hash", "TEXT");
   ensureColumn("mcp_server_registry", "descriptor_path", "TEXT");
+  ensureColumn("mcp_server_registry", "runtime_profile", "TEXT");
   ensureColumn("mcp_server_registry", "config_revision", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("mcp_server_registry", "credential_ref", "TEXT");
   ensureColumn("mcp_server_registry", "credential_names_json", "TEXT NOT NULL DEFAULT '[]'");

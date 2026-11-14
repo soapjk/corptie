@@ -12,6 +12,7 @@ final class ComposerMentionSearch {
         let draftRevision: UInt64
         let selectedMentions: [ConversationMention] // bounded by the existing eight-mention limit
         let active: Bool
+        var abilityRevision: UInt64 = 0
     }
 
     private(set) var matches: [ComposerMentionCatalog.Index.Match] = []
@@ -20,6 +21,7 @@ final class ComposerMentionSearch {
     private(set) var isLoading = false
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var directoryRevision: UInt64?
+    @ObservationIgnored private var abilityRevision: UInt64?
     @ObservationIgnored private var worker: Task<Result, Error>?
     @ObservationIgnored private var lastRequest: Request?
     @ObservationIgnored private(set) var searchCount = 0
@@ -42,14 +44,14 @@ final class ComposerMentionSearch {
     }
 
     func search(_ request: Request, sessionID: String, sessions: [TaskSession],
-                works: [Work], draft: String) async {
+                works: [Work], draft: String, abilities: [ComposerMentionCatalog.Ability] = []) async {
         guard request.active, let query = request.query else { invalidate(); return }
         guard request != lastRequest else { return }
         lastRequest = request
         generation &+= 1
         let currentGeneration = generation
         worker?.cancel()
-        let retainedDirectory = directoryRevision == request.catalogRevision ? directory : nil
+        let retainedDirectory = directoryRevision == request.catalogRevision && abilityRevision == request.abilityRevision ? directory : nil
         let previousSelection = matches.indices.contains(selectedIndex) ? matches[selectedIndex].id : nil
         matches = []; selectedIndex = 0; isLoading = true
         searchCount += 1
@@ -64,7 +66,7 @@ final class ComposerMentionSearch {
                 let sourceSessions = sessions.filter { $0.archived != true }.map {
                     ComposerMentionCatalog.Session(id: $0.id, title: $0.title, workId: $0.workId)
                 }
-                index = try ComposerMentionCatalog.Index(works: sourceWorks, sessions: sourceSessions, workLabel: workLabel)
+                index = try ComposerMentionCatalog.Index(works: sourceWorks, sessions: sourceSessions, workLabel: workLabel, abilities: abilities)
             }
             let excluded = Set(request.selectedMentions.filter {
                 draft.contains("@\($0.displayName)")
@@ -82,7 +84,7 @@ final class ComposerMentionSearch {
                 isLoading = false; worker = nil; lastRequest = nil
                 return
             }
-            directory = result.directory; directoryRevision = request.catalogRevision
+            directory = result.directory; directoryRevision = request.catalogRevision; abilityRevision = request.abilityRevision
             matches = result.matches
             if let previousSelection, let index = matches.firstIndex(where: { $0.id == previousSelection }) {
                 selectedIndex = index
@@ -100,10 +102,11 @@ final class ComposerMentionSearch {
     }
 
     func candidate(for match: ComposerMentionCatalog.Index.Match) -> ComposerMentionCandidate? {
-        guard let value = directory?.suggestion(for: match) else { return nil }
+        guard let value = directory?.suggestion(for: match),
+              let targetType = ConversationMention.TargetType(rawValue: value.kind.rawValue) else { return nil }
         candidateResolutionCount &+= 1
         return ComposerMentionCandidate(mention: ConversationMention(
-            targetType: value.kind == .work ? .work : .session,
+            targetType: targetType,
             targetId: value.targetId, displayName: value.displayName),
             detail: value.kind == .work ? L10n("Work") : value.detail, symbol: value.symbol)
     }

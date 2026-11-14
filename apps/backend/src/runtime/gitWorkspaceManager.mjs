@@ -1624,7 +1624,16 @@ export class GitWorkspaceManager {
   }
 
   async createIntegrationWorktreeForProject(input) {
-    let snapshot = await this.operationSnapshot(absolutePath(input.workingDirectory), input);
+    // A later graph target has a different scoped inventory. Explicitly include
+    // the plan's retained workspace and targets before checking their identity
+    // and verifying that its previous result has been delivered.
+    const job = input.runId && this.store.getWorktreeIntegrationJob?.(input.runId);
+    const firstWorkspace = job?.details?.audit?.find(entry => entry.event === "conflict_workspace_created");
+    const workspaceId = firstWorkspace?.worktreeId ?? job?.details?.conflictAutomation?.workspaceId;
+    const scope = { ...input, worktreeIds: [...new Set([
+      ...(input.worktreeIds ?? []), workspaceId, ...(job?.details?.plan?.reservedWorktreeIds ?? [])
+    ].filter(Boolean))] };
+    let snapshot = await this.operationSnapshot(absolutePath(input.workingDirectory), scope);
     if (snapshot.repository.id !== input.repositoryId) {
       throw new Error("The integration project no longer belongs to the registered repository.");
     }
@@ -1632,9 +1641,6 @@ export class GitWorkspaceManager {
     if (!main) throw new Error("The repository's main worktree is unavailable.");
     // The job owns one conflict workspace across all graph targets. Recover its
     // original identity from existing job records, including pre-fix jobs.
-    const job = input.runId && this.store.getWorktreeIntegrationJob?.(input.runId);
-    const firstWorkspace = job?.details?.audit?.find(entry => entry.event === "conflict_workspace_created");
-    const workspaceId = firstWorkspace?.worktreeId ?? job?.details?.conflictAutomation?.workspaceId;
     if (workspaceId) {
       const workspace = snapshot.worktrees.find(tree => tree.worktreeId === workspaceId);
       const stored = this.store.getGitWorktree(workspaceId);

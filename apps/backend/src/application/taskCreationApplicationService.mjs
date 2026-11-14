@@ -200,9 +200,6 @@ function assertTaskCreationReplay(existing, input) {
   const comparisons = [
     ["workId", existing.work_id, input.workId],
     ["title", existing.title, input.title],
-    ["description", existing.description, input.description],
-    ["acceptanceCriteria", existing.acceptance_criteria, input.acceptanceCriteria],
-    ["verificationCriteria", existing.verification_criteria, input.verificationCriteria],
     ["priority", existing.priority, input.priority],
     ["mainAgentId", existing.main_agent_id, input.mainAgentId]
   ];

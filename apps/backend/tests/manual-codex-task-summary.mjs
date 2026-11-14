@@ -230,8 +230,7 @@ async function main() {
     const agent = store.createAgent({ id: "agent:synthetic-summary", name: "SyntheticSummary", workDir: workspace });
     store.createWork({ id: "work:synthetic-summary", name: "SyntheticSummary", contributorAgentIds: [agent.agentId] });
     store.createTask({ id: taskID, workId: "work:synthetic-summary", mainAgentId: agent.agentId,
-      title: "SyntheticSummary", description: "Synthetic summary integration fixture.",
-      acceptanceCriteria: "Persist the synthetic summary.", verificationCriteria: "Reopen the isolated Store." });
+      title: "SyntheticSummary"});
     store.createSession({ id: sessionID, title: "SyntheticSummary", provider: CODEX_APP_SERVER_PROVIDER_ID,
       agentId: agent.agentId, workId: "work:synthetic-summary", taskId: taskID,
       // Match initialized Store metadata: startup fills null sort_order values.

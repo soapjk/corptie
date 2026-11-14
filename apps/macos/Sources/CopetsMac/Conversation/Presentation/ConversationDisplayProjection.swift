@@ -632,6 +632,7 @@ func detailItemSignature(_ item: CodexThreadItem) -> String {
         String(text.suffix(96)),
         "\(presentationText.count)",
         String(presentationText.suffix(96)),
+        item.subagentActivity.map { "\($0.childId):\($0.event):\($0.status):\($0.name)" } ?? "",
         rawMetadataCount,
         rawMetadataSuffix,
         fileChangesSignature(item)

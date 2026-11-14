@@ -959,8 +959,7 @@ private func makeCorptieTask(id: String, lifecycleState: String) -> CorptieTask 
         id: id,
         workId: "work:1",
         title: id,
-        description: "",
-        acceptanceCriteria: "",
+
         priority: "medium",
         lifecycleState: lifecycleState,
         mainRoleId: nil,

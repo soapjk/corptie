@@ -7,9 +7,6 @@ struct PadTaskDraft: Codable {
     var parentTaskId: String?
     var expectedParentResourceVersion: Int?
     var title = ""
-    var description = ""
-    var acceptanceCriteria = ""
-    var verificationCriteria = ""
     var roleID = ""
     var providerID = ""
     var model = ""
@@ -81,8 +78,7 @@ final class PadTaskCreationState {
         }
         let title = draft.title
         guard !title.isEmpty, title.utf16.count <= 512,
-              EntityTitlePolicy.isValid(title),
-              [draft.description, draft.acceptanceCriteria, draft.verificationCriteria].allSatisfy({ $0.utf16.count <= 16000 }) else { return false }
+              EntityTitlePolicy.isValid(title) else { return false }
         if !draft.model.isEmpty {
             guard let model = options.models.first(where: { $0.id == draft.model }),
                   draft.reasoning.isEmpty || model.reasoningLevels.contains(draft.reasoning) else { return false }
@@ -134,8 +130,7 @@ final class PadTaskCreationState {
         defer { submitting = false }
         var input = ClientTaskCreation(requestId: UUID().uuidString, workId: workID,
             title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines), mainRoleId: draft.roleID, providerId: draft.providerID)
-        input.description = draft.description; input.acceptanceCriteria = draft.acceptanceCriteria
-        input.verificationCriteria = draft.verificationCriteria; input.priority = draft.priority
+        input.priority = draft.priority
         input.model = draft.model.isEmpty ? nil : draft.model
         input.parentTaskId=draft.parentTaskId; input.expectedParentResourceVersion=draft.expectedParentResourceVersion
         input.reasoningLevel = draft.reasoning.isEmpty ? nil : draft.reasoning

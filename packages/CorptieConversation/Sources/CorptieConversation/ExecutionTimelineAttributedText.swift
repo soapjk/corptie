@@ -37,6 +37,10 @@ public enum ExecutionTimelineAttributedText {
                     .foregroundColor: secondaryText
                 ]
             ))
+            if let child = step.subagent {
+                let events = child.activities.suffix(8).map { localize(["started": "Subagent started", "interacted": "Subagent follow-up sent", "completed": "Subagent completed"][$0.event] ?? "Subagent status unknown") }.joined(separator: " → ")
+                result.append(NSAttributedString(string: "\n" + events, attributes: [.font: ExecutionFont.systemFont(ofSize: 10), .foregroundColor: mutedText]))
+            }
             if let detail = step.detail {
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.headIndent = 20

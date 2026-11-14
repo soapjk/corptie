@@ -14,6 +14,7 @@ import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscu
 import { clientChatCreationOptions, createClientChat } from "./clientChatCreation.mjs";
 import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand, clientWorkCreationOptions, createClientWork } from "./clientEntityCommands.mjs";
 import { clientWorkLocalState } from "./clientEntityCommands.mjs";
+import { publicSubagentActivity } from "../adapters/subagentActivityProjection.mjs";
 import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
 import { publicChangeSet } from "../utils/changeSetProjection.mjs";
 import { publicUserInput, validateInteractionAnswers, withSubmittedUserInputAnswers } from "./interactionInput.mjs";
@@ -100,8 +101,17 @@ function publicPresentationString(value, maximumLength = 4_000) {
 }
 
 function publicClientMessage(item) {
+  let replyAssociation;
+  try {
+    const metadata = JSON.parse(item.rawMetadataJSON ?? "null");
+    if (typeof metadata?.replyToMessageId === "string" && metadata.replyToMessageId.trim()) {
+      replyAssociation = { replyToMessageId: metadata.replyToMessageId.slice(0, 1024),
+        requestId: typeof metadata.requestId === "string" ? metadata.requestId.slice(0, 512) : null,
+        sourceSessionId: typeof metadata.sourceSessionId === "string" ? metadata.sourceSessionId.slice(0, 512) : null };
+    }
+  } catch { /* Legacy/provider metadata is not a public message contract. */ }
   const message = {
-    id: item.id, turnId: item.turnId ?? null, type: item.type,
+    id: item.id, turnId: item.turnId ?? null, type: item.type, replyAssociation,
     text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
     createdAt: item.createdAt ?? null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
@@ -129,6 +139,7 @@ function publicClientMessage(item) {
         ...normalizedImageGeometry(image.pixelWidth, image.pixelHeight) })) : [],
     coordinationProgress: item.type === "coordinationProgress" ? item.coordinationProgress ?? null : null,
     executionPlan: ["executionPlan", "executionChecklist"].includes(item.type) ? publicExecutionPlan(item.executionPlan) : null,
+    subagentActivity: publicSubagentActivity(item.subagentActivity),
     toolExecution: publicToolExecution(item.toolExecution),
     changeSet: publicChangeSet(item.changeSet),
     userInput: item.type === "userInput" ? publicUserInput(item.userInput) : null,
@@ -257,13 +268,14 @@ export class ClientSessionAPI {
 
   async messages(identity, sessionId, query) {
     sessionId = this.session(sessionId).sessionId;
-    if ([...query.keys()].some(k => !["limit", "before"].includes(k))
-        || query.getAll("limit").length > 1 || query.getAll("before").length > 1) throw deviceError("INVALID_QUERY", 400);
+    if ([...query.keys()].some(k => !["limit", "before", "around"].includes(k))
+        || query.getAll("limit").length > 1 || query.getAll("before").length > 1 || query.getAll("around").length > 1
+        || query.has("around") && query.has("before")) throw deviceError("INVALID_QUERY", 400);
     const rawLimit = query.get("limit") ?? "40";
     if (!/^[1-9]$|^[1-4][0-9]$|^50$/.test(rawLimit)) throw deviceError("INVALID_LIMIT", 400);
-    const limit = Number(rawLimit), anchor = query.get("before");
+    const limit = Number(rawLimit), around = query.get("around"), anchor = around ?? query.get("before");
     if (anchor != null && (!anchor || anchor.length > 1024)) throw deviceError("INVALID_ANCHOR", 400);
-    return this.messageWindow(sessionId, { limit, anchor });
+    return this.messageWindow(sessionId, { limit, anchor, around: around !== null });
   }
 
   async userMessageNavigation(identity, sessionId, query) {
@@ -283,21 +295,21 @@ export class ClientSessionAPI {
     return result;
   }
 
-  async messageWindow(sessionId, { limit, anchor = null }) {
+  async messageWindow(sessionId, { limit, anchor = null, around = false }) {
     const window = await this.readWindow(sessionId, { anchorKind: "item", anchorId: anchor,
-      before: limit, after: 0, limit: limit + (anchor ? 1 : 0) });
+      before: around ? 15 : limit, after: around ? 15 : 0, limit: around ? 31 : limit + (anchor ? 1 : 0) });
     if (anchor && (window.anchor?.status === "missing" || !window.items.some(item => item.id === anchor))) throw deviceError("ANCHOR_NOT_FOUND", 409);
     // The shared timeline window may include newer rows even for after=0.
     // v1 history pagination is strictly before the anchor, never a mixed window.
-    const candidates = anchor ? window.items.slice(0, window.items.findIndex(item => item.id === anchor)) : window.items;
-    const projected = candidates.slice(-limit).map(publicClientMessage);
+    const candidates = anchor && !around ? window.items.slice(0, window.items.findIndex(item => item.id === anchor)) : window.items;
+    const projected = (around ? candidates : candidates.slice(-limit)).map(publicClientMessage);
     // Bound normal history pages by bytes as well as rows. Keep an oversized
     // individual item intact (the existing 8MiB safety limit still applies),
     // rather than silently truncating its text or structured presentation.
     let bytes = 1024, start = projected.length;
     while (start > 0) {
       const nextBytes = Buffer.byteLength(JSON.stringify(projected[start - 1])) + 1;
-      if (start < projected.length && bytes + nextBytes > 128 * 1024) break;
+      if (!around && start < projected.length && bytes + nextBytes > 128 * 1024) break;
       bytes += nextBytes;
       start -= 1;
     }
@@ -812,7 +824,7 @@ export class ClientSessionAPI {
     if (images.length && !this.images?.available(resolved.session)) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
     if (!Array.isArray(mentions) || mentions.length > 8 || mentions.some(mention => !mention
       || Object.keys(mention).some(key => !["targetType", "targetId", "displayName"].includes(key))
-      || !["work", "session"].includes(mention.targetType) || typeof mention.targetId !== "string"
+      || !["work", "session", "skill", "mcp"].includes(mention.targetType) || typeof mention.targetId !== "string"
       || !mention.targetId.trim() || mention.targetId.length > 200 || typeof mention.displayName !== "string"
       || !mention.displayName || mention.displayName.length > 200)) throw deviceError("INVALID_MENTIONS", 400);
     if (input.schedule !== undefined) {

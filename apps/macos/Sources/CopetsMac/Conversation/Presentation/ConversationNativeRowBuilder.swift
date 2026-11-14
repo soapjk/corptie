@@ -11,6 +11,7 @@ struct ConversationNativeRowBuilder {
     let allowsFork: Bool
     let forkUnavailableReason: String?
     let imageURL: (String) -> URL?
+    var replyQuestions: [String: String] = [:]
     var replyIdentity: ConversationReplyIdentity? = nil
 
     func applyingReplyIdentity(to rows: [AppKitChatTimelineRow], entries: [ChatDisplayEntry]) -> [AppKitChatTimelineRow] {
@@ -70,6 +71,7 @@ struct ConversationNativeRowBuilder {
         let metadata: String
         let expandableTurnId: String?
         let isExpanded: Bool
+        var processSubagentCount = 0
         var processCount: Int?
         var processDuration: String?
         var processStartedAt: Date?
@@ -168,7 +170,15 @@ struct ConversationNativeRowBuilder {
             processCount = nil
             processDuration = nil
             processStartedAt = nil
-            actions = nativeTimelineActions(for: item)
+            if presentationKind == .agentMessage,
+               let reply = ConversationMessageReply(rawMetadataJSON: item.rawMetadataJSON) {
+                actions = [.init(id: item.id + ":original-question",
+                    label: reply.label(question: replyQuestions[reply.replyToMessageId]),
+                    isDestructive: false, kind: .locateMessage(messageID: reply.replyToMessageId))]
+                    + nativeTimelineActions(for: item)
+            } else {
+                actions = nativeTimelineActions(for: item)
+            }
             isPendingInteraction = (item.type == "approval" || item.type == "choice" || item.type == "userInput")
                 && item.status == "pending"
             showsCollaborationSentStatus = collaboration != nil
@@ -207,7 +217,8 @@ struct ConversationNativeRowBuilder {
             metadata = ""
             expandableTurnId = entry.processDisclosureID
             isExpanded = expanded
-            processCount = items.count
+            processSubagentCount = ConversationExecutionProjection.subagentCount(for: items)
+            processCount = ConversationExecutionProjection.displayedCount(for: items)
             processDuration = executionProcessDurationText(for: items)
             processState = entry.processReplyState
                 ?? (entry.processReplyCompleted ? .completed : projectedProcessState(for: items))
@@ -251,6 +262,7 @@ struct ConversationNativeRowBuilder {
             collaborationRoute: collaborationRoute,
             expandableTurnId: expandableTurnId,
             isExpanded: isExpanded,
+            processSubagentCount: processSubagentCount,
             processCount: processCount,
             processDuration: processDuration,
             processStartedAt: processStartedAt,
@@ -454,6 +466,13 @@ struct ConversationNativeRowBuilder {
         expandedTurnIds: Set<String>
     ) -> Int {
         var hasher = Hasher()
+        if case .message(let item) = entry.kind,
+           let reply = ConversationMessageReply(rawMetadataJSON: item.rawMetadataJSON) {
+            hasher.combine(reply.requestId)
+            hasher.combine(reply.replyToMessageId)
+            hasher.combine(reply.sourceSessionId)
+            hasher.combine(replyQuestions[reply.replyToMessageId])
+        }
         hasher.combine(entry.id)
         hasher.combine(AppLanguageController.shared.languageCode)
         hasher.combine(forkItemID(for: entry))
@@ -463,11 +482,12 @@ struct ConversationNativeRowBuilder {
             hasher.combine(itemSignature(item))
             hasher.combine(expandedTurnIds.contains(ScheduledTriggerPresentation.expansionID(for: item.id)))
         case .process(let turnId, let items):
+            let expanded = expandedTurnIds.contains(entry.processDisclosureID)
             hasher.combine(entry.processReplyCompleted)
             hasher.combine(entry.processReplyState)
             hasher.combine(AppLanguageController.shared.languageCode)
             hasher.combine(turnId)
-            hasher.combine(expandedTurnIds.contains(turnId))
+            hasher.combine(expanded)
             hasher.combine(items.count)
             hasher.combine(items.first?.processStartedAt)
             hasher.combine(items.first?.processEndedAt)
@@ -481,7 +501,7 @@ struct ConversationNativeRowBuilder {
                 // current-step summary does not remain on the old revision.
                 hasher.combine(last.executionPlan?.revision)
             }
-            if expandedTurnIds.contains(turnId) {
+            if expanded {
                 items.forEach { hasher.combine(itemSignature($0)) }
             }
         }

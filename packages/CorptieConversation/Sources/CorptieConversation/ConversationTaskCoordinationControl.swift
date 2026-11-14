@@ -1,29 +1,42 @@
 import SwiftUI
 import CorptieClientCore
 
+/// Local presentation only. Requests stay in server order with stable IDs.
+struct ConversationRequestWindow {
+    static let pageSize = 10
+    static let maximumCount = 100
+    private(set) var limit = ConversationRequestWindow.pageSize
+    mutating func showMore() { limit = min(Self.maximumCount, limit + Self.pageSize) }
+    mutating func collapse() { limit = Self.pageSize }
+}
+
 /// One shared native control; no timer, global observation or optimistic state.
 public struct ConversationTaskCoordinationControl: View {
     public let enabled: Bool
     public let updating: Bool
+    public let canChangeMode: Bool
     public let onChange: (Bool) -> Void
     public let dispatches: [ClientTaskCoordinationDispatch]
     public let execution: ClientCoordinationExecution?
     public var onRequestControl: ((String, String) -> Void)?
     @State private var reportsExpanded = false
+    @State private var requestWindow = ConversationRequestWindow()
     private var explanation: String {
         if let reason = execution?.reason, !reason.isEmpty { return reason }
         return "开发由子任务执行，当前会话负责讨论与派发；关闭后已派发任务仍会继续。"
     }
-    public init(enabled: Bool, updating: Bool = false, dispatches: [ClientTaskCoordinationDispatch] = [], execution: ClientCoordinationExecution? = nil, onRequestControl: ((String, String) -> Void)? = nil, onChange: @escaping (Bool) -> Void) {
+    public init(enabled: Bool, updating: Bool = false, canChangeMode: Bool = true, dispatches: [ClientTaskCoordinationDispatch] = [], execution: ClientCoordinationExecution? = nil, onRequestControl: ((String, String) -> Void)? = nil, onChange: @escaping (Bool) -> Void) {
         self.enabled = enabled; self.updating = updating; self.onChange = onChange
+        self.canChangeMode = canChangeMode
         self.execution = execution
         self.onRequestControl = onRequestControl
         self.dispatches = Array(dispatches.prefix(5))
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
-                .disabled(updating || (!enabled && execution?.status == "unsupported"))
+            TaskCoordinationToggle(enabled: enabled, updating: updating,
+                supported: execution?.status != "unsupported", onChange: onChange)
+                .disabled(!canChangeMode)
             if enabled {
                 Text(execution?.statusLabel ?? "执行限制尚未验证")
                     .font(.caption).foregroundStyle(.secondary)
@@ -31,7 +44,7 @@ public struct ConversationTaskCoordinationControl: View {
             Text(explanation)
                 .font(.caption).foregroundStyle(.secondary)
             if let requests = execution?.requests, !requests.isEmpty {
-                ForEach(requests) { request in
+                ForEach(requests.prefix(requestWindow.limit)) { request in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(request.question ?? "请求").lineLimit(2)
@@ -41,11 +54,23 @@ public struct ConversationTaskCoordinationControl: View {
                         }
                         Spacer(minLength: 0)
                         Text(request.statusLabel).foregroundStyle(.secondary)
-                        if let onRequestControl, request.status != "failed" || request.phase != "admitting" {
+                        if let onRequestControl, let operation = request.controlAction {
                             Button(request.status == "failed" ? "重试" : "停止") {
-                                onRequestControl(request.requestId, request.status == "failed" ? "retry" : "cancel")
+                                onRequestControl(request.requestId, operation)
                             }.buttonStyle(.borderless)
                             .accessibilityLabel("\(request.status == "failed" ? "重试" : "停止")此请求")
+                        }
+                    }.font(.caption)
+                }
+                if requests.count > ConversationRequestWindow.pageSize {
+                    HStack(spacing: 12) {
+                        Text("已显示 \(min(requestWindow.limit, requests.count))/\(requests.count) 条")
+                            .foregroundStyle(.secondary)
+                        if requestWindow.limit < min(requests.count, ConversationRequestWindow.maximumCount) {
+                            Button("显示更多") { requestWindow.showMore() }.buttonStyle(.borderless)
+                        }
+                        if requestWindow.limit > ConversationRequestWindow.pageSize {
+                            Button("收起") { requestWindow.collapse() }.buttonStyle(.borderless)
                         }
                     }.font(.caption)
                 }
@@ -83,5 +108,22 @@ public struct ConversationTaskCoordinationControl: View {
                 }.font(.caption)
             }
         }
+        .onChange(of: execution?.requests?.isEmpty) { _, empty in
+            if empty != false { requestWindow.collapse() }
+        }
+    }
+}
+
+/// The same capability-aware switch, without operational reports in the compact Detail card.
+struct TaskCoordinationToggle: View {
+    let enabled: Bool
+    var updating = false
+    var supported = true
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
+            .disabled(updating || (!enabled && !supported))
+            .accessibilityIdentifier("task.coordination.toggle")
     }
 }

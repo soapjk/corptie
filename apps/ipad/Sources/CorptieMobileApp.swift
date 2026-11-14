@@ -711,8 +711,9 @@ struct ConversationView: View {
         }
         .overlay(alignment: .bottomTrailing) {
             // The native container's geometry is the only bottom authority.
-            if nativeTimeline.showsJump {
+            if nativeTimeline.showsJump || workspace.isNavigatingHistory {
                 Button {
+                    workspace.returnToLatestMessages()
                     preserveSavedPosition = false
                     explicitJumpRevision &+= 1
                     nativeTimeline.jump?()
@@ -767,6 +768,7 @@ struct ConversationView: View {
             requestNativeHistoryIfNeeded()
         }
         .onChange(of: workspace.scrollRequest) {
+            workspace.returnToLatestMessages()
             preserveSavedPosition = false
             explicitJumpRevision &+= 1
             nativeTimeline.jump?()
@@ -855,6 +857,7 @@ struct ConversationView: View {
             }
             let decoration = messages.map {
                 "\(workspace.outgoingStates[$0.id] ?? ""):\(workspace.timeSeparatorTextByMessageID[$0.id] ?? "")"
+                    + ($0.replyAssociation.flatMap { workspace.replyQuestions[$0.replyToMessageId] } ?? "")
             }.joined(separator: "|") + ":\(connection.connected):\(connection.busy):\(scenePhase == .active)"
             result[entry.id] = .init(messages: messages, decoration: decoration,
                 expanded: expandedProcessEntryIDs.contains(entry.id),
@@ -864,6 +867,19 @@ struct ConversationView: View {
                 replyEndedAt: workspace.processReplyBounds[entry.id]?.endedAt)
         }
         return result
+    }
+
+    private func locateReplyAction(_ reply: ConversationMessageReply?) -> (() -> Void)? {
+        guard let reply else { return nil }
+        return {
+            cancelNativeHistory()
+            Task { @MainActor in
+                guard let rowID = await workspace.locateMessage(reply.replyToMessageId, connection: connection),
+                      workspace.selection == sessionID else { return }
+                preserveSavedPosition = false
+                nativeTimeline.scrollToEntry?(rowID)
+            }
+        }
     }
 
     @ViewBuilder private func timelineRow(id: String, width: CGFloat) -> some View {
@@ -918,7 +934,9 @@ struct ConversationView: View {
                                       let plan = message.executionPlan {
                                 PadExecutionPlanTimelineCard(plan: plan, laneWidth: width)
                             } else {
-                                MobileMessageBubble(message: message, groupedMessages: entry.mediaItems, deliveryState: workspace.outgoingStates[message.id],
+                                MobileMessageBubble(message: message,
+                                    replyQuestion: message.replyAssociation.flatMap { workspace.replyQuestions[$0.replyToMessageId] },
+                                    locateReply: locateReplyAction(message.replyAssociation), groupedMessages: entry.mediaItems, deliveryState: workspace.outgoingStates[message.id],
                                     timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
                                     laneWidth: width, connection: connection, sessionID: sessionID,
                                     images: messageImages,
@@ -949,7 +967,7 @@ struct ConversationView: View {
     }
 
     private func persistNativePosition(_ position: PadTimelineReadingPosition, scope: [String]) {
-        guard timelineReady, !preserveSavedPosition, readingScope.count == 3, scope == readingScope else { return }
+        guard timelineReady, !workspace.isNavigatingHistory, !preserveSavedPosition, readingScope.count == 3, scope == readingScope else { return }
         workspace.saveReadingPosition(position, serverID: readingScope[0],
             deviceID: readingScope[1], sessionID: readingScope[2])
     }
@@ -1629,7 +1647,7 @@ private struct PadProcessCard: View {
         ConversationProcessPresentation(
             state: presentation.state,
             count: presentation.count,
-            duration: presentation.duration
+            duration: presentation.duration, subagentCount: presentation.subagentCount
         ).summary(languageCode: languageCode)
     }
     private var progressLabel: String? {
@@ -1669,7 +1687,7 @@ private struct PadProcessCard: View {
 
     private var staticSummary: String {
         ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: presentation.duration).summary(languageCode: languageCode)
+            duration: presentation.duration, subagentCount: presentation.subagentCount).summary(languageCode: languageCode)
     }
 
     private var pausedSummary: String {
@@ -1684,7 +1702,7 @@ private struct PadProcessCard: View {
             startedAt: startedAt, endingAt: date, showSeconds: true, fractionDigits: 0)
             ?? presentation.duration
         return ConversationProcessPresentation(state: presentation.state, count: presentation.count,
-            duration: duration).summary(languageCode: languageCode)
+            duration: duration, subagentCount: presentation.subagentCount).summary(languageCode: languageCode)
     }
 
     private func processCard(summary: String, liveSummary: ((Date) -> String)? = nil) -> some View {
@@ -2371,6 +2389,8 @@ private struct PadExecutionPlanTimelineCard: View {
 
 private struct MobileMessageBubble: View {
     let message: ClientMessage
+    var replyQuestion: String? = nil
+    var locateReply: (() -> Void)? = nil
     var groupedMessages: [ClientMessage] = []
     var deliveryState: String? = nil
     var timeSeparatorText: String? = nil
@@ -2484,6 +2504,9 @@ private struct MobileMessageBubble: View {
                         delete: fromUser ? delete : nil, cancelQueued: fromUser ? cancelQueued : nil),
                     copy: { UIPasteboard.general.string = copyText }) { isTextSelectionEnabled in
                         VStack(alignment: .leading, spacing: MessageImageStripMetrics.bottomSpacing) {
+                            if message.presentationKind == .agentMessage, let reply = message.replyAssociation {
+                                ConversationMessageReplySummary(reply: reply, question: replyQuestion, locate: locateReply)
+                            }
                             if message.messageOrigin == "scheduled_task" {
                                 Label(ConversationEventText(languageCode: Locale.preferredLanguages.first ?? "en")
                                     .messageSource(name: message.automationName), systemImage: "clock")

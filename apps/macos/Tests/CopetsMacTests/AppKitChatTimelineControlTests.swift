@@ -162,6 +162,47 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(h.coordinator.resizeLayoutCommitCount, immediate)
     }
 
+    func testFollowingGeometrySettlesBeforeQueuedWorkAndDoesNotStealHistoryIntent() async throws {
+        let h = makeHarness(followsLatest: true, useSharedTextCards: true, height: 400)
+        h.coordinator.apply(rows: (0..<40).map {
+            row(id: "geometry-\($0)", text: String(repeating: "Wrapped 中文 history. ", count: 8), showsHeader: false)
+        })
+        h.coordinator.setBottomClearance(84)
+        h.coordinator.jumpToLatest()
+        await settlePositionPublication()
+        let scroll = try XCTUnwrap(h.scrollView as? FirstLayoutRestoringScrollView)
+        func assertBottom() {
+            XCTAssertEqual((scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.maxY, 0, accuracy: 0.5,
+                "Native layout must finish before queued work or another display frame")
+        }
+        for size in [NSSize(width: 380, height: 370), .init(width: 700, height: 500),
+                     .init(width: 321, height: 350), .init(width: 420, height: 400)] {
+            h.window.setContentSize(size)
+            scroll.layoutSubtreeIfNeeded()
+            assertBottom()
+            h.coordinator.setBottomClearance(size.width < 400 ? 126 : 84)
+            assertBottom()
+        }
+        await settlePositionPublication()
+        let syncs = h.coordinator.documentHeightSyncCount, resets = h.coordinator.sdkRowResetCount
+        let bounds = scroll.contentView.bounds
+        for _ in 0..<16 { scroll.needsLayout = true; scroll.layoutSubtreeIfNeeded() }
+        XCTAssertEqual(scroll.contentView.bounds, bounds)
+        XCTAssertEqual(h.coordinator.documentHeightSyncCount, syncs)
+        XCTAssertEqual(h.coordinator.sdkRowResetCount, resets)
+
+        h.coordinator.userScrollEventWillBegin()
+        scroll.contentView.scroll(to: .init(x: 0, y: scroll.contentView.bounds.minY - 150))
+        h.coordinator.userScrollEventDidEnd()
+        XCTAssertFalse(h.coordinator.followsLatest)
+        h.coordinator.setBottomClearance(140)
+        h.window.setContentSize(.init(width: 410, height: 370))
+        scroll.layoutSubtreeIfNeeded()
+        await settlePositionPublication()
+        XCTAssertFalse(h.coordinator.followsLatest)
+        XCTAssertGreaterThan((scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.maxY, 100)
+    }
+
     func testCoordinatorWidthChangesNeverReloadWholeHistory() async throws {
         let h = makeHarness(followsLatest: true, height: 300)
         h.coordinator.apply(rows: (0..<300).map {
@@ -538,8 +579,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.coordinator.applySearchTarget(rowID: "reading-20", revision: 1)
             await settleMainQueue()
             XCTAssertEqual(harness.tableView.selectedRow, 20)
+            let maximumY = max(0, (harness.scrollView.documentView?.frame.height ?? 0)
+                - harness.scrollView.contentView.bounds.height)
             XCTAssertEqual(harness.scrollView.contentView.bounds.minY,
-                harness.tableView.rect(ofRow: 20).minY - 10, accuracy: 1)
+                min(maximumY, harness.tableView.rect(ofRow: 20).minY - 10), accuracy: 1)
         }
     }
 
@@ -2072,9 +2115,13 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
             styleMask: [.borderless], backing: .buffered, defer: false
         )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        host.sizingOptions = []
         window.contentView = host
+        window.orderBack(nil)
         window.layoutIfNeeded()
-        await settleMainQueue()
+        await settlePositionPublication()
         window.layoutIfNeeded()
         await settleMainQueue()
 

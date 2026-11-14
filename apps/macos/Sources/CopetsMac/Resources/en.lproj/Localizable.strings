@@ -2296,3 +2296,13 @@
 "重试原操作" = "Retry original operation";
 
 "进入会话" = "Open conversation";
+"Installed globally. Enable with @ or the Session abilities card." = "Installed globally. Enable with @ or the Session abilities card.";
+"Install globally; enable in a Session with @ or its abilities card." = "Install globally; enable in a Session with @ or its abilities card.";
+"Install a Server, then enable it in a Session." = "Install a Server, then enable it in a Session.";
+"Subagent started" = "Subagent started";
+
+"Subagent follow-up sent" = "Subagent follow-up sent";
+
+"Subagent completed" = "Subagent completed";
+
+"Subagent status unknown" = "Subagent status unknown";

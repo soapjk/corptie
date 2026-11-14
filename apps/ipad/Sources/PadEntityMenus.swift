@@ -388,9 +388,6 @@ struct PadEditTaskSheet: View {
     private let roleChoices: [RoleChoice]
     let onFinished: () -> Void
     @State private var title: String
-    @State private var description: String
-    @State private var acceptance: String
-    @State private var verification: String
     @State private var priority: String
     @State private var mainRoleID: String
     @State private var management: ClientTaskManagement?
@@ -412,18 +409,12 @@ struct PadEditTaskSheet: View {
             return RoleChoice(id: id, name: value["name"].text ?? id)
         }
         _title = State(initialValue: detailDefinition?["title"].text ?? task.title)
-        _description = State(initialValue: detailDefinition?["description"].text ?? task.description ?? "")
-        _acceptance = State(initialValue: detailDefinition?["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "")
-        _verification = State(initialValue: detailDefinition?["verificationCriteria"].text ?? task.verificationCriteria ?? "")
         _priority = State(initialValue: detailDefinition?["priority"].text ?? "medium")
         _mainRoleID = State(initialValue: detailDefinition?["mainAgentId"].text ?? "")
     }
     private var detailHasChanges: Bool {
         guard let definition = detailDefinition else { return true }
         return title.trimmingCharacters(in: .whitespacesAndNewlines) != (definition["title"].text ?? task.title)
-            || description != (definition["description"].text ?? task.description ?? "")
-            || acceptance != (definition["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "")
-            || verification != (definition["verificationCriteria"].text ?? task.verificationCriteria ?? "")
             || priority != (definition["priority"].text ?? "medium") || mainRoleID != (definition["mainAgentId"].text ?? "")
     }
 
@@ -434,9 +425,6 @@ struct PadEditTaskSheet: View {
                     TextField("标题", text: $title)
                 }
                 if let definition = detailDefinition {
-                    Section("描述") { TextEditor(text: $description).frame(minHeight: 100, maxHeight: 180).accessibilityLabel("描述") }
-                    Section("验收标准") { TextEditor(text: $acceptance).frame(minHeight: 100, maxHeight: 180).accessibilityLabel("验收标准") }
-                    Section("验证标准") { TextEditor(text: $verification).frame(minHeight: 100, maxHeight: 180).accessibilityLabel("验证标准") }
                     Section("执行设置") {
                         Picker("优先级", selection: $priority) {
                             ForEach(["low", "medium", "high", "urgent"], id: \.self) { Text($0).tag($0) }
@@ -482,9 +470,6 @@ struct PadEditTaskSheet: View {
                                 var req = ClientTaskUpdate(requestId: requestID)
                                 if title != (detailDefinition?["title"].text ?? task.title) { req.title = trimmed }
                                 if let definition = detailDefinition {
-                                    if description != (definition["description"].text ?? task.description ?? "") { req.description = description }
-                                    if acceptance != (definition["acceptanceCriteria"].text ?? task.acceptanceCriteria ?? "") { req.acceptanceCriteria = acceptance }
-                                    if verification != (definition["verificationCriteria"].text ?? task.verificationCriteria ?? "") { req.verificationCriteria = verification }
                                     if priority != (definition["priority"].text ?? "medium") { req.priority = priority }
                                     if mainRoleID != (definition["mainAgentId"].text ?? "") { req.mainRoleId = mainRoleID }
                                 }

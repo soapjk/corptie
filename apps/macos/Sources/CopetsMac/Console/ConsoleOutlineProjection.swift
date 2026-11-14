@@ -61,7 +61,7 @@ struct ConsoleOutlineProjection {
 }
 
 struct ConsoleOutlineTaskRecord: Equatable, Sendable {
-    let id: String, workID: String, parentID: String?, title: String, description: String, updatedAt: String
+    let id: String, workID: String, parentID: String?, title: String, updatedAt: String
     let archived: Bool, done: Bool
 }
 
@@ -106,7 +106,7 @@ struct ConsoleOutlineSnapshot: Sendable {
         let searching = !key.search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         self.tasks = tasks.map {
             ConsoleOutlineTaskRecord(id: $0.id, workID: $0.workId, parentID: $0.parentTaskId,
-                title: searching || key.sort == .name ? $0.title : "", description: searching ? $0.description : "",
+                title: searching || key.sort == .name ? $0.title : "",
                 updatedAt: key.sort == .updated ? $0.updatedAt : "", archived: $0.archived == true, done: $0.lifecycleState == "done")
         }
         self.works = works.map { WorkRecord(id: $0.id) }
@@ -127,8 +127,7 @@ struct ConsoleOutlineSnapshot: Sendable {
         func groups(archived: Bool, old: [String: ConsoleOutlineComputedGroup]) -> [String: ConsoleOutlineComputedGroup] {
             let matching = tasks.filter {
                 $0.archived == archived && (archived || !$0.done)
-                    && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)
-                        || (!archived && $0.description.localizedCaseInsensitiveContains(query)))
+                    && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query))
             }
             var result: [String: ConsoleOutlineComputedGroup] = [:]
             for (workID, direct) in Dictionary(grouping: matching, by: \.workID) {
