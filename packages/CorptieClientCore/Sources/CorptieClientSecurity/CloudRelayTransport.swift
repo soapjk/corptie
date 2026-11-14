@@ -755,7 +755,7 @@ public actor CloudRelayMacAgent {
             if request.value(forHTTPHeaderField: "Accept")?.hasPrefix("text/event-stream") == true {
                 let (bytes, response) = try await localTransport.bytes(for: request)
                 Self.log.info("Local stream head: connection=\(connectionID, privacy: .public) request=\(message.id, privacy: .public) status=\(response.statusCode) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
-                try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
+                try await send(.response(id: message.id, status: response.statusCode, headers: Self.responseHeaders(response)), on: connectionID)
                 var buffer = CloudRelaySSEBuffer()
                 var lastFlushLog = ContinuousClock.now
                 var flushedBytes = 0
@@ -782,7 +782,7 @@ public actor CloudRelayMacAgent {
                 // Pull at most one chunk ahead. Awaiting the shared writer
                 // propagates history pacing back to the local HTTP producer.
                 let (bytes, response) = try await localTransport.bytes(for: request)
-                try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
+                try await send(.response(id: message.id, status: response.statusCode, headers: Self.responseHeaders(response)), on: connectionID)
                 var chunk = Data()
                 var total = 0
                 for try await byte in bytes {
@@ -800,7 +800,7 @@ public actor CloudRelayMacAgent {
                 let (body, response) = try await localTransport.data(for: request)
                 Self.log.debug("Local response: request=\(message.id, privacy: .public) status=\(response.statusCode) bytes=\(body.count) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
                 guard body.count <= CloudRelayHTTPClient.maximumResponseBytes else { throw CloudRelayTransportError.responseTooLarge }
-                try await send(.response(id: message.id, status: response.statusCode, headers: responseHeaders(response)), on: connectionID)
+                try await send(.response(id: message.id, status: response.statusCode, headers: Self.responseHeaders(response)), on: connectionID)
                 if body.isEmpty {
                     try await send(.chunk(id: message.id, body: Data(), final: true), on: connectionID)
                 } else {
@@ -912,8 +912,8 @@ public actor CloudRelayMacAgent {
         try? await send(.chunk(id: id, body: data, final: true), on: connectionID)
     }
 
-    private func responseHeaders(_ response: HTTPURLResponse) -> [String: String] {
-        let allowed = Set(["content-type", "content-length", "content-encoding", "content-range", "accept-ranges", "etag", "cache-control", "x-corptie-revision"])
+    static func responseHeaders(_ response: HTTPURLResponse) -> [String: String] {
+        let allowed = Set(["content-type", "content-length", "content-encoding", "content-range", "accept-ranges", "etag", "cache-control", "x-corptie-revision", "x-corptie-image-variant"])
         return response.allHeaderFields.reduce(into: [:]) { result, entry in
             guard let name = entry.key as? String, let value = entry.value as? String, allowed.contains(name.lowercased()) else { return }
             result[name] = value

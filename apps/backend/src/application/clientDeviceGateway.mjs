@@ -622,7 +622,9 @@ export class ClientDeviceGateway {
           if (request.method !== "GET") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
           const resource = await this.sessionAPI.resource(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);
-          const transfer = messageImageResponse(request, resource, url.searchParams.get("path"));
+          const preview = url.searchParams.get("variant") === "preview";
+          const transfer = messageImageResponse(request, resource, preview ? "" : url.searchParams.get("path"));
+          if (preview) transfer.headers["x-corptie-image-variant"] = "preview";
           response.writeHead(transfer.status, transfer.headers);
           return response.end(transfer.data);
         }
@@ -630,6 +632,7 @@ export class ClientDeviceGateway {
           const image = await this.sessionAPI.image(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);
           response.writeHead(200, { "content-type": image.contentType, "content-length": image.byteLength,
+            ...(url.searchParams.get("variant") === "preview" ? { "x-corptie-image-variant": "preview" } : {}),
             "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
           return response.end(image.data);
         }

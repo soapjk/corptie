@@ -53,7 +53,7 @@ import CorptieClientCore
         case .publicRemote(let value): source = "remote:" + value.absoluteString
         }
         // Length-prefix existing identities; no digest or generated file name.
-        return [resource.sessionID, resource.sourceItemID, source].map { "\($0.utf8.count):\($0)" }.joined()
+        return [resource.sessionID, resource.sourceItemID, source, resource.variant.rawValue].map { "\($0.utf8.count):\($0)" }.joined()
     }
 
     private func request(_ resource: ClientMessageImageResource, fetch: @escaping Fetch) -> ImageRequest {

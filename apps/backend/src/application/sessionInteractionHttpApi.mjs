@@ -1,3 +1,4 @@
+import { imageVariant, deliverImageVariant } from "./messageImagePreview.mjs";
 import { randomUUID } from "node:crypto";
 import { logSessionMessageLatency, logSessionMessageFailure, sessionMessageLatencyTraceFromHeaders } from "../utils/sessionMessageLatency.mjs";
 
@@ -10,11 +11,11 @@ export function handleSessionInteractionHttpRequest({
   const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
   const resourceMatch = url.pathname.match(/^\/sessions\/([^/]+)\/resources$/);
   if (request.method === "GET" && resourceMatch) {
-    Promise.resolve().then(() => chatResourceService.readMessageResource(
+    Promise.resolve().then(() => deliverImageVariant(imageVariant(url.searchParams), () => chatResourceService.readMessageResource(
       requireSessionReference(decodeURIComponent(resourceMatch[1])),
-      url.searchParams.get("itemId"), url.searchParams.get("path")))
+      url.searchParams.get("itemId"), url.searchParams.get("path"))))
       .then(resource => {
-        response.writeHead(200, { "content-type": resource.mimeType, "content-length": resource.byteLength,
+        response.writeHead(200, { ...(url.searchParams.get("variant") === "preview" ? { "x-corptie-image-variant": "preview" } : {}), "content-type": resource.mimeType, "content-length": resource.byteLength,
           "cache-control": "no-store", "x-content-type-options": "nosniff",
           "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(resource.fileName)}` });
         response.end(resource.data);
@@ -93,12 +94,13 @@ export function handleSessionInteractionHttpRequest({
     }
     if (request.method === "GET") {
       Promise.resolve()
-        .then(() => chatResourceService.readImage(
+        .then(() => deliverImageVariant(imageVariant(url.searchParams), () => chatResourceService.readImage(
           requireSessionReference(sessionId),
           url.searchParams.get("path")
-        ))
+        )))
         .then((image) => {
           response.writeHead(200, {
+            ...(url.searchParams.get("variant") === "preview" ? { "x-corptie-image-variant": "preview" } : {}),
             "content-type": image.mimeType,
             "content-length": image.byteLength,
             "cache-control": "private, max-age=31536000, immutable"

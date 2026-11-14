@@ -4,6 +4,22 @@ import Testing
 @testable import CorptieClientCore
 
 struct ClientImageDownloadTests {
+    @Test func previewsNeverFetchRemoteOriginalsOrAcceptLegacyBytes() async throws {
+        let endpoint = try BackendEndpoint(URL(string: "http://127.0.0.1")!)
+        let api = ClientSessionAPI(transport: BackendTransport(endpoint: endpoint,
+            data: { _ in throw URLError(.unsupportedURL) }, bytes: { request in
+                #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(.init(name: "variant", value: "preview")) == true)
+                let chunks = AsyncThrowingStream<Data, Error> { $0.yield(Data([1,2,3])); $0.finish() }
+                return (BackendByteStream(chunks: chunks), HTTPURLResponse(url: request.url!, statusCode: 200,
+                    httpVersion: nil, headerFields: ["Content-Length":"3"])!)
+            }))
+        let preview = ClientMessageImageResource(sessionID: "s", sourceItemID: "m", source: .managed(path: "owned"), variant: .preview)
+        await #expect(throws: URLError.self) { try await api.messageImage(preview) }
+        let remote = ClientMessageImageResource(sessionID: "s", sourceItemID: "m", source: .publicRemote(url: URL(string: "https://invalid.invalid/original")!), variant: .preview)
+        await #expect(throws: URLError.self) { try await api.messageImage(remote) }
+        #expect(ClientImageTransfer(resource: preview) == nil)
+    }
+
     @Test func immutableImageResumesVerifiedOffsetAndChecksHash() async throws {
         let data = Data(repeating: 37, count: 32_768)
         let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

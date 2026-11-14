@@ -68,8 +68,7 @@ struct PadComposer<Header: View>: View {
     }
     private var isSendDisabled: Bool {
         let text = draft.wrappedValue
-        return connection.busy || workspace.pending != nil || isSubmitting || workspace.outboxSaving
-            || workspace.capabilities?.send.available != true
+        return !workspace.sendControlEnabled(connection, sessionID: sessionID) || isSubmitting
             || workspace.importingImagesForSession == sessionID
             || (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachedImages.isEmpty)
             || text.utf16.count > 16000
@@ -93,8 +92,7 @@ struct PadComposer<Header: View>: View {
                 .padding(.horizontal, 8)
             }
             ConversationQuickMessages(items: quickMessages,
-                enabled: !connection.busy && workspace.pending == nil && !workspace.outboxSaving
-                    && workspace.capabilities?.send.available == true
+                enabled: workspace.sendControlEnabled(connection, sessionID: sessionID)
                     && workspace.importingImagesForSession != sessionID,
                 dragScope: quickMessageDragScope, singleTap: quickMessageSingleTap, send: sendQuickMessage)
         ConversationComposerChrome(verticalPadding: isPhone ? 3 : 6,
@@ -320,10 +318,7 @@ struct PadComposer<Header: View>: View {
         }
         .task(id: photos) { await importPhotos() }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: importFiles)
-        .task(id: "\(sessionID)|\(workspace.capabilities?.composer == true)") {
-            guard workspace.composerConfiguration == nil, workspace.capabilities?.composer == true else { return }
-            await workspace.configureComposer(connection)
-        }
+
     }
 
     // MARK: Mentions
@@ -368,7 +363,7 @@ struct PadComposer<Header: View>: View {
         mentionQuery = nil
         guard !isSendDisabled else { return }
         Task {
-            await workspace.command(connection, stop: false)
+            await workspace.command(connection, stop: false, expectedSessionID: sessionID)
         }
     }
 

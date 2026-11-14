@@ -759,7 +759,9 @@ struct ConversationView: View {
         .task(id: [connection.serverID, connection.deviceID ?? "", sessionID]) {
             await prepareNativeTimeline()
             guard !Task.isCancelled else { return }
-            await workspace.repairMissingUsage(connection)
+        }
+        .task(id: workspace.presentationReadKey(connection)) {
+            await workspace.loadPresentation(connection)
         }
         .task(id: workspace.selectedCapabilityKey(connection)) {
             await workspace.refreshSelectedCapabilities(connection)
@@ -795,7 +797,7 @@ struct ConversationView: View {
             PadCommandConfirmationView(connection: connection, workspace: workspace, proposal: proposal)
         }
         .sheet(item: $attachmentPreview) { preview in
-            PadAttachmentViewer(connection: connection, preview: preview)
+            PadAttachmentViewer(connection: connection, preview: preview, images: messageImages)
         }
         .task(id: "\(connection.serverID):\(connection.address):\(sessionID)") {
             headerMetadata = .null
@@ -1329,9 +1331,7 @@ struct ConversationView: View {
             : max(nativeTimeline.composerHeight, timelineScrollView?.adjustedContentInset.bottom ?? 0)
     }
     private var canSendQuickMessage: Bool {
-        !connection.busy && workspace.pending == nil && !workspace.outboxSaving
-            && workspace.capabilities?.send.available == true
-            && workspace.importingImagesForSession != sessionID
+        workspace.sendControlEnabled(connection, sessionID: sessionID)
     }
     private func sendQuickMessage(_ text: String) {
         guard canSendQuickMessage else { return }
@@ -2591,7 +2591,7 @@ private struct MobileMessageBubble: View {
                 itemID: message.id, resource: resource)
         }
         .fullScreenCover(item: $selectedGallery) { preview in
-            MobileImageGalleryViewer(connection: connection, sessionID: sessionID, itemID: message.id, preview: preview)
+            MobileImageGalleryViewer(connection: connection, sessionID: sessionID, itemID: message.id, preview: preview, images: images)
         }
         .alert("无法打开链接", isPresented: $linkFailed) {
             Button("好", role: .cancel) { }
@@ -2692,8 +2692,7 @@ private struct MobileImageGalleryViewer: View {
     let connection: PadConnection
     @Environment(\.dismiss) private var dismiss
     @State private var gallery: PadImageGallerySession
-    @State private var retry = 0
-    init(connection: PadConnection, sessionID: String, itemID: String, preview: MobileImageGalleryPreview) {
+    init(connection: PadConnection, sessionID: String, itemID: String, preview: MobileImageGalleryPreview, images: PadMessageImageStore? = nil) {
         self.connection = connection
         let resources = preview.items.map { item -> ClientMessageImageResource in
             switch item {
@@ -2704,44 +2703,34 @@ private struct MobileImageGalleryViewer: View {
                     path: ConversationLocalResource(url: ref.url)?.path ?? ref.url.absoluteString, itemID: itemID)
             }
         }
-        _gallery = State(initialValue: PadImageGallerySession(resources: resources, selected: preview.selected))
+        let previews: [UIImage?] = resources.map { resource in
+            let path: String
+            let item: String?
+            switch resource.source {
+            case .managed(let value): path = value; item = nil
+            case .messageReference(let value): path = value; item = itemID
+            case .publicRemote(let url): path = url.absoluteString; item = itemID
+            }
+            if case .loaded(let image) = images?.entry(sessionID: sessionID, managedPath: path, itemID: item) { return image }
+            return nil
+        }
+        _gallery = State(initialValue: PadImageGallerySession(resources: resources, selected: preview.selected, previews: previews))
     }
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 12) {
                 if let image = gallery.image {
                     PadZoomableImage(image: image)
-                        .contextMenu {
-                            Button { Task { await gallery.save() } } label: {
-                                Label("保存原图到相册", systemImage: "square.and.arrow.down")
-                            }.disabled(gallery.saving)
-                        }
-                } else if let failure = gallery.failure {
-                    ContentUnavailableView {
-                        Label("图片暂时无法打开", systemImage: "photo")
-                    } description: { Text(failure) }
-                    actions: { Button("重试") { retry += 1 } }
                 } else {
-                    VStack(spacing: 12) {
-                        if gallery.retryAttempt > 0 {
-                            ProgressView("连接中断，正在重试（\(gallery.retryAttempt)/2）…")
-                        } else if gallery.decoding {
-                            ProgressView("下载完成，正在打开…")
-                        } else if let fraction = gallery.progress?.fraction {
-                            ProgressView(value: fraction).frame(maxWidth: 220)
-                            Text(fraction, format: .percent.precision(.fractionLength(0))).monospacedDigit()
-                            if let progress = gallery.progress, let total = progress.total {
-                                Text("\(ByteCountFormatter.string(fromByteCount: progress.received, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
-                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                            }
-                        } else {
-                            ProgressView("正在加载原图…")
-                            if let progress = gallery.progress {
-                                Text("已下载 \(ByteCountFormatter.string(fromByteCount: progress.received, countStyle: .file))")
-                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                            }
-                        }
-                    }
+                    ContentUnavailableView("暂无预览", systemImage: "photo",
+                        description: Text("可点击底部按钮加载原图。"))
+                }
+                if let failure = gallery.failure { Text(failure).font(.caption).foregroundStyle(.secondary) }
+                if gallery.loading {
+                    if let fraction = gallery.progress?.fraction {
+                        ProgressView(value: fraction).padding(.horizontal)
+                        Text(fraction, format: .percent.precision(.fractionLength(0))).monospacedDigit()
+                    } else { ProgressView(gallery.decoding ? "正在打开原图…" : "正在加载原图…") }
                 }
             }
             .navigationTitle(gallery.resources[gallery.selection].name)
@@ -2752,17 +2741,20 @@ private struct MobileImageGalleryViewer: View {
                     Button { gallery.selection -= 1 } label: { Image(systemName: "chevron.left") }
                         .disabled(gallery.selection == 0)
                     Spacer()
-                    Text("\(gallery.selection + 1) / \(gallery.resources.count)").monospacedDigit()
+                    Button(gallery.canSave ? "原图已加载" : (gallery.failure == nil ? "加载原图" : "重试原图")) { gallery.requestOriginal(connection: connection) }
+                        .disabled(gallery.loading || gallery.canSave)
+                        .accessibilityIdentifier("load-original-image")
                     Spacer()
                     Button { Task { await gallery.save() } } label: { Image(systemName: "square.and.arrow.down") }
-                        .disabled(gallery.image == nil || gallery.saving).accessibilityLabel("保存原图到相册")
+                        .disabled(!gallery.canSave || gallery.saving).accessibilityLabel("保存原图到相册")
                     Spacer()
                     Button { gallery.selection += 1 } label: { Image(systemName: "chevron.right") }
                         .disabled(gallery.selection == gallery.resources.count - 1)
                 }
             }
         }
-        .task(id: "\(connection.messageImageOwnerID):\(gallery.selection):\(retry)") { await gallery.load(connection: connection) }
+        .onDisappear { gallery.cancel() }
+        .onChange(of: connection.messageImageOwnerID) { _, _ in gallery.cancel(); dismiss() }
         .alert("保存图片", isPresented: Binding(get: { gallery.saveMessage != nil }, set: { if !$0 { gallery.saveMessage = nil } })) {
             Button("好") { gallery.saveMessage = nil }
         } message: { Text(gallery.saveMessage ?? "") }
@@ -2775,9 +2767,10 @@ private struct MobileImageGalleryViewer: View {
 struct PadAttachmentViewer: View {
     let connection: PadConnection
     let preview: PadAttachmentPreview
+    let images: PadMessageImageStore
     var body: some View {
         MobileImageGalleryViewer(connection: connection, sessionID: preview.sessionID, itemID: "",
-            preview: .init(items: [.managed(preview.image)], selected: 0))
+            preview: .init(items: [.managed(preview.image)], selected: 0), images: images)
             .accessibilityIdentifier("attachment-viewer")
     }
 }

@@ -16,7 +16,9 @@ extension PadConnection {
         let transfer = ClientImageTransfer(resource: resource)
         for attempt in 0..<3 {
             do {
+                try Task.checkCancellation()
                 let transport = try await transport()
+                try Task.checkCancellation()
                 guard owner == messageImageOwnerID else { throw CancellationError() }
                 let result = try await messageImageRepository.data(resource, fetch: { callback in
                     try await ClientSessionAPI(transport: transport).messageImage(resource, transfer: transfer, progress: callback)
@@ -40,8 +42,35 @@ extension PadConnection {
 }
 
 @MainActor @Observable final class PadImageGallerySession {
+    typealias Download = @MainActor (ClientMessageImageResource, @escaping @MainActor (ClientImageProgress) -> Void) async throws -> Data
+    @ObservationIgnored private let download: Download?
     let resources: [ClientMessageImageResource]
-    var selection: Int
+    var selection: Int {
+        didSet {
+            guard oldValue != selection else { return }
+            cancel()
+            image = previewImage(); bytes = nil; failure = nil; progress = nil
+        }
+    }
+    private let previews: [UIImage?]
+    private var request: Task<Void, Never>?
+    private var requestID = UUID()
+    private(set) var loading = false
+    var canSave: Bool { bytes != nil && !loading }
+    private func previewImage() -> UIImage? { previews.indices.contains(selection) ? previews[selection] : nil }
+    func cancel() {
+        request?.cancel(); request = nil; requestID = UUID()
+        loading = false; decoding = false
+    }
+    func requestOriginal(connection: PadConnection) {
+        guard !loading, !canSave else { return }
+        loading = true
+        let token = UUID(); requestID = token
+        request = Task {
+            await load(connection: connection, token: token)
+            if requestID == token { loading = false; request = nil }
+        }
+    }
     private(set) var image: UIImage?
     private(set) var progress: ClientImageProgress?
     private(set) var failure: String?
@@ -51,40 +80,52 @@ extension PadConnection {
     private static let log = Logger(subsystem: "com.corptie.client", category: "ImageGallery")
     var saveMessage: String?
     private var bytes: Data?
-    private var loadedSelection: Int?
-    private var loadedOwner: String?
-    init(resources: [ClientMessageImageResource], selected: Int) {
+    init(resources: [ClientMessageImageResource], selected: Int, previews: [UIImage?] = [], download: Download? = nil) {
+        self.download = download
+        self.previews = previews
         self.resources = resources; selection = selected
+        image = previews.indices.contains(selected) ? previews[selected] : nil
     }
-    func load(connection: PadConnection) async {
-        guard resources.indices.contains(selection) else { return }
+    private func load(connection: PadConnection, token: UUID) async {
+        guard !Task.isCancelled, requestID == token, resources.indices.contains(selection) else { return }
         let owner = connection.messageImageOwnerID
-        if loadedSelection == selection, loadedOwner == owner, image != nil { return }
         let current = selection
-        image = nil; bytes = nil; progress = nil; failure = nil; decoding = false; retryAttempt = 0
-        let requestID = UUID().uuidString
-        Self.log.info("Image load started: request=\(requestID, privacy: .public)")
+        bytes = nil; progress = nil; failure = nil; decoding = false; retryAttempt = 0
+        let traceID = UUID().uuidString
+        Self.log.info("Image load started: request=\(traceID, privacy: .public)")
         do {
-            let data = try await connection.messageImageData(resources[current], progress: { [weak self] value in
-                guard self?.selection == current, connection.messageImageOwnerID == owner else { return }
+            let receive: @MainActor (ClientImageProgress) -> Void = { [weak self] value in
+                guard self?.requestID == token, self?.selection == current, connection.messageImageOwnerID == owner else { return }
                 self?.retryAttempt = 0
                 self?.progress = value
-            }, recovering: { [weak self] attempt in
-                guard self?.selection == current, connection.messageImageOwnerID == owner else { return }
-                self?.retryAttempt = attempt
-                self?.progress = nil
-            })
-            decoding = true
-            Self.log.info("Image download completed: request=\(requestID, privacy: .public) bytes=\(data.count)")
-            let decoded = try await Task.detached(priority: .userInitiated) { try Self.decode(data) }.value
+            }
+            let data: Data
+            if let download {
+                data = try await download(resources[current], receive)
+            } else {
+                data = try await connection.messageImageData(resources[current].withVariant(.original),
+                    progress: receive, recovering: { [weak self] attempt in
+                        guard self?.requestID == token, self?.selection == current,
+                              connection.messageImageOwnerID == owner else { return }
+                        self?.retryAttempt = attempt
+                        self?.progress = nil
+                    })
+            }
             try Task.checkCancellation()
-            guard current == selection, owner == connection.messageImageOwnerID else { return }
+            guard requestID == token else { return }
+            decoding = true
+            Self.log.info("Image download completed: request=\(traceID, privacy: .public) bytes=\(data.count)")
+            let decodeTask = Task.detached(priority: .userInitiated) { try Self.decode(data) }
+            let decoded = try await withTaskCancellationHandler { try await decodeTask.value } onCancel: { decodeTask.cancel() }
+            try Task.checkCancellation()
+            guard requestID == token, current == selection, owner == connection.messageImageOwnerID else { return }
             decoding = false
-            Self.log.info("Image decode completed: request=\(requestID, privacy: .public)")
-            bytes = data; image = decoded; loadedSelection = current; loadedOwner = owner
+            Self.log.info("Image decode completed: request=\(traceID, privacy: .public)")
+            bytes = data; image = decoded
         } catch {
+            guard requestID == token else { return }
             decoding = false
-            ClientFailureDiagnostics.log(error, operation: "image.gallery.\(requestID)")
+            ClientFailureDiagnostics.log(error, operation: "image.gallery.\(traceID)")
             if !Task.isCancelled, current == selection {
                 if let error = error as? URLError {
                     switch error.code {
@@ -109,6 +150,7 @@ extension PadConnection {
         for index in 0..<count {
             try Task.checkCancellation()
             let edge = count > 1 ? 1024 : 3456
+            guard cost <= 48 * 1024 * 1024 - edge * edge * 4 else { throw URLError(.dataLengthExceedsMaximum) }
             guard let bitmap = CGImageSourceCreateThumbnailAtIndex(source, index, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
@@ -127,7 +169,7 @@ extension PadConnection {
         return count > 1 ? (UIImage.animatedImage(with: frames, duration: duration) ?? first) : first
     }
     func save() async {
-        guard !saving, let bytes else { return }
+        guard canSave, !saving, let bytes else { return }
         saving = true
         defer { saving = false }
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
