@@ -14,6 +14,11 @@ private struct SessionTimelineRevisionIndex: Decodable {
 final class SessionTimelineSyncController {
     private var routeTimelineSyncTasks: [String: Task<Void, Never>] = [:]
     private var knownTimelineRevisionBySessionID: [String: Int] = [:]
+    /// Sessions with an in-flight background display projection. Parallel
+    /// streams otherwise stack one detached full projection per delta, and the
+    /// revision check below discards every superseded result after it has
+    /// already paid for the work.
+    private var warmingPresentationSessionIDs: Set<String> = []
     private let baseURL: URL
     private let appState: AppStateStore
     private let timelineDeltaProcessor: SessionTimelineDeltaProcessor
@@ -231,6 +236,12 @@ final class SessionTimelineSyncController {
         // The active page owns its projection. Prewarming it duplicates work
         // and can overwrite a larger user-requested display window.
         guard selectedSession?.id != sessionID else { return }
+        // One projection per Session at a time. A newer delta makes any
+        // in-flight result stale (the revision gate below would drop it), so
+        // coalescing here removes the N-way amplification during parallel runs.
+        // Prewarming is best-effort: the active page recomputes on selection.
+        guard warmingPresentationSessionIDs.insert(sessionID).inserted else { return }
+        defer { warmingPresentationSessionIDs.remove(sessionID) }
         let state = SessionTimelineRepository.shared.state(for: sessionID)
         guard let detail = state.presentationDetail else { return }
         let revision = state.presentationRevision

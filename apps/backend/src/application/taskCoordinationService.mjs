@@ -106,7 +106,7 @@ export class TaskCoordinationService {
         const receipt=this.acceptDispatch(metadata,actorId,{items:input.items.slice(offset,offset+10)},{...progressContext,sourceTurnId,batchId});
         batchId=receipt.batchId;dispatches.push(...receipt.dispatches);
       }
-      return {accepted:true,batchId,dispatches,instruction:"受理完成。立即交还控制权；不要轮询。"};
+      return {accepted:true,batchId,dispatches,instruction:"派发已受理，子任务正在准备，尚不代表已开始执行。立即交还控制权；不要轮询。"};
     }
     const prepared = input.items.map(item => this.collaboration.prepareCoordinationDispatch(scope, item, {
       replay: Boolean(this.store.selectOne("SELECT 1 FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, item?.idempotencyKey ?? null]))
@@ -122,6 +122,7 @@ export class TaskCoordinationService {
         const old = this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, request.idempotencyKey]);
         if (old) {
           const saved = JSON.parse(old.request_json);
+          delete saved.retryStartupOperationId; // Internal recovery cursor is not user intent.
           if (saved.text === null && old.mailbox_message_id) saved.text = this.store.selectOne("SELECT body FROM session_mailbox_messages WHERE message_id=?", [old.mailbox_message_id])?.body;
           if (JSON.stringify(saved) !== JSON.stringify(request)) fail("IDEMPOTENCY_CONFLICT", "Use the original dispatch key only for the same instruction.");
           rows.push(old); continue;
@@ -153,7 +154,7 @@ export class TaskCoordinationService {
     this.store.scheduleSave();
     for (const row of rows) if (row.status === "accepted") setImmediate(() => this.runDispatch(row.dispatch_id));
     this.changed(scope.parent.id);
-    return { accepted: true, batchId:batch.batch_id, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "受理完成。立即将控制权交还用户，不要轮询等待子任务。" };
+    return { accepted: true, batchId:batch.batch_id, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "派发已受理，子任务正在准备，尚不代表已开始执行。立即将控制权交还用户，不要轮询等待子任务。" };
   }
   reportOwner(row) {
     return this.shadow?.forShadow(row.source_session_id)?.main_session_id
@@ -177,7 +178,8 @@ export class TaskCoordinationService {
     const promise = this.execute(id).catch(error => {
       const row=this.get(id);
       const waiting=error.code === "TASK_HIERARCHY_BUSY" && !row?.target_task_id && !error.creationRecovery?.taskId;
-      this.update(id, { status: waiting ? "waiting_workspace" : "failed", error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
+      this.update(id, { status: error.creationPending ? "preparing" : waiting ? "waiting_workspace" : "failed",
+        error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
       this.scheduleReports();
     }).finally(() => this.running.delete(id));
     this.running.set(id, promise);
@@ -189,7 +191,7 @@ export class TaskCoordinationService {
     const {metadata}=this.sourceContext(row);
     return this.collaboration.createTaskAndSession(metadata,row.source_role_id,{
       ...request.creation,parentTaskId:row.parent_task_id,providerId:runtime.providerId,idempotencyKey
-    },{runtimeConfiguration:runtime});
+    },{runtimeConfiguration:runtime, retryStartupOperationId:request.retryStartupOperationId});
   }
 
   async execute(id) {
@@ -219,6 +221,7 @@ export class TaskCoordinationService {
       pending.then(cleanup, cleanup);
       const created = await pending;
       if (!created) return;
+      if (this.get(id)?.status !== "preparing") return;
       this.update(id, { target_task_id: created.task.id });
       row = this.get(id);
     }
@@ -307,7 +310,17 @@ export class TaskCoordinationService {
       return {...this.receipt(this.get(id)),reused:true, retryAction:this.get(id).status === "queued" ? "requeue_unaccepted" : "reconcile_unknown", originalOperationId:operation.taskId, originalTurnId:null};
     }
     if(row.status!=="failed") return {...this.receipt(row),reused:true,retryAction:"reuse_existing",originalOperationId:row.operation_id};
-    this.update(id, { status: "accepted", error_code: null, error_message: null, report_message_id: null });
+    const request = JSON.parse(row.request_json);
+    // A failed startup is terminal under its original idempotency key. Bind
+    // this explicit retry to that attempt before asynchronous work begins.
+    // The Task is not a dispatch target until its Session is actually ready.
+    const startup = !row.target_task_id && this.store.selectOne(`SELECT o.startup_operation_id
+      FROM tasks t JOIN work_session_startup_operations o ON o.task_id=t.id
+      WHERE t.created_by_session_id=? AND t.idempotency_key=? ORDER BY o.rowid DESC LIMIT 1`,
+      [row.source_session_id, `coordination:${id}`]);
+    if (startup) request.retryStartupOperationId = startup.startup_operation_id;
+    this.update(id, { status: "accepted", error_code: null, error_message: null, report_message_id: null,
+      request_json: JSON.stringify(request) });
     setImmediate(() => this.runDispatch(id));
     return {...this.receipt(this.get(id)),retryAction:"restart_preparation",originalOperationId:row.operation_id};
   }
@@ -315,6 +328,13 @@ export class TaskCoordinationService {
     if(type==="TaskChanged" && payload?.entity?.id){
       this.progress.adoptManualTask(payload.entity.id);
       this.progress.scheduleTask(payload.entity.id);
+      if (["startup-ready", "startup-failed"].includes(payload.action)) {
+        for (const row of this.store.selectAll(`SELECT d.dispatch_id FROM task_coordination_dispatches d
+          JOIN tasks t ON t.created_by_session_id=d.source_session_id AND t.idempotency_key='coordination:'||d.dispatch_id
+          WHERE t.id=? AND d.status='preparing' AND d.target_task_id IS NULL`, [payload.entity.id])) {
+          setImmediate(() => this.runDispatch(row.dispatch_id));
+        }
+      }
     }
     if (["WorktreeIntegrationJobChanged", "GitWorktreeChanged", "WorkspaceChanged"].includes(type)) {
       for (const row of this.store.selectAll("SELECT dispatch_id FROM task_coordination_dispatches WHERE status='waiting_workspace'")) {
