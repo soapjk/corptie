@@ -15,12 +15,18 @@ export class ShadowSessionService {
   }
   forMain(id) { return this.store.selectOne("SELECT * FROM coordination_shadow_sessions WHERE main_session_id=?", [id]); }
   forShadow(id) { return this.store.selectOne("SELECT * FROM coordination_shadow_sessions WHERE shadow_session_id=?", [id]); }
-  // History lookup never implies that a delegation is live or that mode is on.
+  needsManagement(mainId) {
+    if (this.forMain(mainId)) return true;
+    const { task } = this.owner(mainId);
+    return Boolean(this.store.selectOne(`SELECT 1 FROM tasks WHERE parent_task_id=? AND archived=0
+      AND COALESCE(deletion_status,'')='' LIMIT 1`, [task.id])
+      || this.store.selectOne("SELECT 1 FROM task_coordination_dispatches WHERE parent_task_id=? AND report_message_id IS NULL LIMIT 1", [task.id]));
+  }
+  // Summary delegation is independent of how the main Session handles user input.
   inspect(mainId) {
-    let owner;
-    try { owner = this.owner(mainId); } catch (error) { return { status: "unavailable", mainId, reason: error.code }; }
+    try { this.owner(mainId); } catch (error) { return { status: "unavailable", mainId, reason: error.code }; }
     const row = this.forMain(mainId);
-    if (owner.task.coordination_enabled !== 1) return { status: "ready", role: "parent", mainId, sessionId: mainId, row };
+
     if (!row?.shadow_session_id) return { status: "recovering", mainId, row, reason: "SHADOW_SESSION_MISSING" };
     const logical = this.store.getLogicalSession(row.shadow_session_id);
     const session = logical && this.store.getSession(logical.legacySessionId);
@@ -159,13 +165,12 @@ export class ShadowSessionService {
     if (!row) return null;
     const route = row.shadow_session_id && this.store.getLogicalSession(row.shadow_session_id);
     const session = route && this.store.getSession(route.legacySessionId);
-    const task = this.store.getTask(row.parent_task_id);
     const reports = this.store.selectAll(`SELECT report_id AS id,substr(body,1,1200) AS text,created_at AS createdAt
       FROM coordination_shadow_reports WHERE main_session_id=? ORDER BY created_at DESC,report_id DESC LIMIT 3`, [mainId]);
     const pendingDecisions = this.store.selectOne(`SELECT COUNT(*) AS count FROM coordination_shadow_reports
       WHERE main_session_id=? AND decision_json IS NOT NULL AND json_extract(decision_json,'$.answerMessageId') IS NULL`, [mainId]).count;
     const target = this.inspect(mainId);
-    const status = task?.coordination_enabled !== 1 ? "off" : this.creating.has(mainId) || this.recovering.has(mainId) ? "recovering"
+    const status = this.creating.has(mainId) || this.recovering.has(mainId) ? "recovering"
       : target.status !== "ready" || row.last_error ? "failed" : ["running", "blocked"].includes(session?.status) ? "running" : "idle";
     return { sessionId: target.status === "ready" && target.role === "summary-shadow" ? row.shadow_session_id : null, status,
       recoveryReason: status === "failed" ? row.last_error ?? target.reason : null, canRecover: status === "failed" && target.status !== "unavailable",
@@ -196,8 +201,7 @@ export class ShadowSessionService {
     return flight;
   }
   async create(mainId) {
-    const initial = this.owner(mainId);
-    if (initial.task.coordination_enabled !== 1) return this.forMain(mainId);
+    this.owner(mainId);
     let row = this.reserve(mainId);
     const current = this.inspect(mainId);
     if (current.status === "ready") return row;
@@ -215,7 +219,6 @@ export class ShadowSessionService {
         WHERE main_session_id=? AND shadow_session_id IS ?`, [new Date().toISOString(), mainId, oldId]);
       this.store.scheduleSave(); this.changed(mainId);
       const { session, logical, task } = this.owner(mainId);
-      if (task.coordination_enabled !== 1) return this.forMain(mainId);
       created = await this.createSession(logical.activeBinding.providerId, {
         title: this.title(mainId), cwd: session.external?.cwd,
         model: session.external?.currentModel, reasoningLevel: session.external?.currentReasoningLevel,
@@ -225,7 +228,7 @@ export class ShadowSessionService {
       const shadowId = this.store.getLogicalSessionByLegacySessionId(created.id)?.logicalSessionId;
       if (!shadowId) fail("SHADOW_BINDING_UNAVAILABLE");
       const latest = this.owner(mainId);
-      if (latest.task.coordination_enabled !== 1 || latest.logical.activeBinding.bindingId !== logical.activeBinding.bindingId) {
+      if (latest.logical.activeBinding.bindingId !== logical.activeBinding.bindingId) {
         await this.deleteSession?.(created.id); created = null;
         this.store.db.run("UPDATE coordination_shadow_sessions SET shadow_session_id=NULL,state='pending',last_error=NULL WHERE main_session_id=? AND shadow_session_id=?", [mainId, shadowId]);
         this.store.scheduleSave();
@@ -267,11 +270,15 @@ export class ShadowSessionService {
     const senderRoute = this.store.getLogicalSession(envelope.message.senderSessionId);
     const sender = senderRoute && this.store.getSession(senderRoute.legacySessionId);
     const child = sender?.taskId && this.store.getTask(sender.taskId);
-    if (!parent || parent.current_session_id !== main.id || child?.parent_task_id !== parent.id || child.work_id !== parent.work_id) return null;
-    const target = this.resolveRecipient(mainId);
-    if (target.status === "ready") return target.role === "parent" ? null : target.sessionId;
+    let ownerId = null;
+    if (parent && parent.current_session_id === main.id && child?.parent_task_id === parent.id && child.work_id === parent.work_id) ownerId = mainId;
+    else if (child && child.current_session_id === sender.id && parent?.parent_task_id === child.id && parent.work_id === child.work_id) ownerId = senderRoute.logicalSessionId;
+    if (!ownerId) return null;
+    this.reserve(ownerId);
+    const target = this.resolveRecipient(ownerId);
+    if (target.status === "ready") return target.sessionId;
     if (target.status === "recovering") {
-      void this.requestRecovery(mainId);
+      void this.requestRecovery(ownerId);
       fail("SHADOW_SESSION_PREPARING");
     }
     fail(target.reason ?? "SHADOW_SESSION_PREPARING");
