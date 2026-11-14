@@ -209,8 +209,10 @@ export class SessionMailboxService {
   }
 
   canRetarget(row) {
-    if (!row || row.channel_delivery_id || row.disposition !== "pending" || row.adopted_turn_id) return false;
-    const work = row.operation_id && this.store.getAgentTask(row.operation_id);
+    if (!row || row.disposition !== "pending" || row.adopted_turn_id) return false;
+    if (row.channel_delivery_id && this.store.selectOne("SELECT 1 FROM session_collaboration_batch_items WHERE delivery_id=?", [row.channel_delivery_id])) return false;
+    const work = row.operation_id ? this.store.getAgentTask(row.operation_id)
+      : row.channel_delivery_id ? this.store.getAgentTaskForDelivery(row.channel_delivery_id) : null;
     if (!work || work.targetTurnId || work.startedAt || work.source?.mailboxDispatchAttempted || work.source?.deleted) return false;
     const receipt = work.deliveryId && this.store.getMessageDelivery(work.deliveryId);
     if (receipt) return false;
@@ -230,7 +232,7 @@ export class SessionMailboxService {
       if (!this.canRetarget(row)) return;
       previousId = row.recipient_session_id;
       const auth = { ...decode(row.authorization_json), ...authorization, ownerLogicalSessionId: logical.logicalSessionId };
-      operation = this.store.getAgentTask(row.operation_id);
+      operation = row.operation_id ? this.store.getAgentTask(row.operation_id) : this.store.getAgentTaskForDelivery(row.channel_delivery_id);
       previousSessionId = operation.sessionId;
       if (previousId === logical.logicalSessionId && operation.sessionId === logical.legacySessionId
         && JSON.stringify(auth) === row.authorization_json && operation.status === "queued") { operation = null; return; }
@@ -300,6 +302,15 @@ export class SessionMailboxService {
   }
 
   dispatchDecision(operation) {
+    if (this.channelService?.resolveDelegatedRecipient && operation.source?.type === "session_channel" && operation.deliveryId) {
+      const message = this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE channel_delivery_id=?", [operation.deliveryId]);
+      if (message && this.canRetarget(message)) {
+        try {
+          const route = this.channelService.resolveDeliveryRoute(operation.deliveryId);
+          if (route.sessionId !== message.recipient_session_id) this.retargetUnstarted(message.message_id, route.sessionId, {});
+        } catch (error) { return dispatchBlocked(error.code ?? "MAILBOX_ROUTE_UNAVAILABLE", "waiting"); }
+      }
+    }
     this.reconcileCoordination?.(operation);
     const current = this.store.getAgentTask(operation.taskId);
     if (current && current.sessionId !== operation.sessionId) return dispatchBlocked("MAILBOX_ROUTE_CHANGED", "waiting");

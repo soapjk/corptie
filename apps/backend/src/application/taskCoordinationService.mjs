@@ -113,7 +113,7 @@ export class TaskCoordinationService {
     }));
     if (new Set(prepared.map(item => item.request.idempotencyKey)).size !== prepared.length) fail("DUPLICATE_TASK_BATCH_KEY");
     const rows = [], reused = new Map(), amendments = [];
-    const shadowOwner = this.shadow && !delegation && scope.parent.coordination_enabled === 1
+    const shadowOwner = this.shadow && !delegation
       ? this.shadow.reserve(scope.logicalSessionId) : null;
     const sourceTurnId = progressContext.sourceTurnId ?? scope.session.external?.activeTurnId ?? `dispatch-admission:${randomUUID()}`;
     let batch;
@@ -152,6 +152,7 @@ export class TaskCoordinationService {
       }
     });
     this.store.scheduleSave();
+    if (shadowOwner) setImmediate(() => this.shadow.requestRecovery(scope.logicalSessionId));
     for (const row of rows) if (row.status === "accepted") setImmediate(() => this.runDispatch(row.dispatch_id));
     this.changed(scope.parent.id);
     return { accepted: true, batchId:batch.batch_id, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "派发已受理，子任务正在准备，尚不代表已开始执行。立即将控制权交还用户，不要轮询等待子任务。" };
@@ -328,6 +329,9 @@ export class TaskCoordinationService {
     if(type==="TaskChanged" && payload?.entity?.id){
       this.progress.adoptManualTask(payload.entity.id);
       this.progress.scheduleTask(payload.entity.id);
+      if (payload.entity.parent_task_id && ["created", "creation-ready", "startup-ready", "session-bound"].includes(payload.action)) {
+        this.handleModeChanged(payload.entity.parent_task_id);
+      }
       if (["startup-ready", "startup-failed"].includes(payload.action)) {
         for (const row of this.store.selectAll(`SELECT d.dispatch_id FROM task_coordination_dispatches d
           JOIN tasks t ON t.created_by_session_id=d.source_session_id AND t.idempotency_key='coordination:'||d.dispatch_id
@@ -378,8 +382,10 @@ export class TaskCoordinationService {
     if (!this.shadow) return;
     const task = this.store.getTask(taskId), main = task?.current_session_id && this.store.getLogicalSessionByLegacySessionId(task.current_session_id);
     if (!main) return;
+    if (task.coordination_enabled !== 1 && !this.shadow.needsManagement(main.logicalSessionId)) return;
     this.shadow.retryAfterLifecycleChange(main.logicalSessionId);
-    if (task.coordination_enabled === 1) this.shadow.reserve(main.logicalSessionId);
+    this.shadow.reserve(main.logicalSessionId);
+    void this.shadow.requestRecovery(main.logicalSessionId);
     this.shadow.recover(this.mailbox, main.logicalSessionId);
     this.scheduleReports(); this.changed(taskId);
   }
@@ -485,13 +491,20 @@ export class TaskCoordinationService {
       this.update(row.dispatch_id, { report_message_id: receipt.mailbox_message_id });
       return true;
     }
-    // Only exact content from the same authenticated execution is a duplicate.
-    // A question, partial update or similar wording must not hide a final result.
+    // An unstarted Channel item can carry the final result from the same execution.
+    // Keep both payloads via the existing result receipt; already consumed messages
+    // deduplicate only exact content, never swallow a later substantive result.
     const channel = this.store.selectOne(`SELECT m.message_id,mm.message_id AS mailbox_message_id
       FROM session_collaboration_messages m JOIN session_collaboration_deliveries d ON d.message_id=m.message_id
       JOIN session_mailbox_messages mm ON mm.channel_delivery_id=d.delivery_id
       WHERE m.recipient_session_id=? AND m.sender_provider_session_id=? AND m.sender_turn_id=?
-      AND m.sender_operation_id=? AND m.body=? AND m.delivery_intent IN ('action_required','response_required','notification')
+      AND m.sender_operation_id=? AND m.delivery_intent IN ('action_required','response_required','notification')
+      AND (m.body=? OR (mm.disposition='pending' AND mm.adopted_turn_id IS NULL
+        AND m.message_kind<>'question' AND EXISTS(SELECT 1 FROM agent_operations channel_op
+          WHERE (channel_op.task_id=mm.operation_id OR channel_op.delivery_id=d.delivery_id OR channel_op.channel_delivery_id=d.delivery_id) AND channel_op.status='queued'
+          AND channel_op.started_at IS NULL AND channel_op.target_turn_id IS NULL
+          AND COALESCE(json_extract(channel_op.source_json,'$.mailboxDispatchAttempted'),0)=0)
+        AND NOT EXISTS(SELECT 1 FROM session_collaboration_batch_items bi WHERE bi.delivery_id=d.delivery_id)))
       AND d.status IN ('pending','queued','delivered') AND mm.disposition IN ('pending','adopted')
       ORDER BY m.created_at LIMIT 1`,[row.source_session_id,operation.sessionId,operation.targetTurnId,operation.taskId,result.text]);
     if (!channel) return false;
@@ -505,7 +518,9 @@ export class TaskCoordinationService {
   recover() {
     if (this.shadow) for (const task of this.store.selectAll(`SELECT DISTINCT t.id FROM tasks t
       LEFT JOIN coordination_shadow_sessions sh ON sh.parent_task_id=t.id
-      WHERE (t.coordination_enabled=1 OR sh.main_session_id IS NOT NULL) AND t.archived=0
+      WHERE (t.coordination_enabled=1 OR sh.main_session_id IS NOT NULL
+        OR EXISTS(SELECT 1 FROM tasks child WHERE child.parent_task_id=t.id AND child.archived=0 AND COALESCE(child.deletion_status,'')='')
+        OR EXISTS(SELECT 1 FROM task_coordination_dispatches d WHERE d.parent_task_id=t.id AND d.report_message_id IS NULL)) AND t.archived=0
         AND COALESCE(t.deletion_status,'')='' AND t.current_session_id IS NOT NULL`)) this.handleModeChanged(task.id);
     for(const row of this.store.selectAll(`SELECT b.batch_id FROM coordination_progress_batches b
       JOIN logical_sessions l ON l.logical_session_id=b.source_session_id JOIN sessions s ON s.id=l.legacy_session_id
