@@ -400,9 +400,9 @@ struct UnifiedConsoleView: View {
         .modifier(ConsoleTopEdgeEffectModifier())
     }
 
-    /// Two fixed rows: navigation controls above, Create across the lower row.
+    /// Keep the first row aligned across panes; the sidebar alone grows for Create.
     private var consoleSidebarHeader: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: MainWindowPageLayoutMetrics.sidebarHeaderRowSpacing) {
             HStack(spacing: 4) {
                 Spacer(minLength: 8)
                 searchToggleButton
@@ -428,7 +428,7 @@ struct UnifiedConsoleView: View {
                 .padding(.trailing, 16)
         }
         .platformWorkOutlineToolbarDensity(.titlebar)
-        .frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)
+        .padding(.bottom, MainWindowPageLayoutMetrics.sidebarHeaderBottomInset)
     }
 
     var navigationMode: ConsoleNavigationMode {
@@ -952,7 +952,7 @@ struct UnifiedConsoleView: View {
             }
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 20)
+            .frame(minHeight: MainWindowPageLayoutMetrics.sidebarCreationRowHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
