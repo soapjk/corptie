@@ -312,3 +312,36 @@ test("terminal Deliveries preserve outcomes and exact Turn correlation on replay
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('worker admission commits atomically and rejects a changed binding without partial state', async () => {
+  const { directory, store } = await fixture();
+  try {
+    const route=store.createLogicalSessionRoute({logicalSessionId:'logical:one',legacySessionId:'session:one',
+      providerThreadId:'thread:one',providerId:'provider:test',providerSessionId:'thread:one',bindingId:'binding:one',
+      boundCwd:directory,title:'Delivery'});
+    const actual=store.getLogicalSession('logical:one').activeBinding;
+    const input={deliveryId:'delivery:worker',messageId:'message:worker',sessionId:'session:one',
+      binding:actual,agentId:'agent:one',text:'atomic worker admission',source:{type:'desktop'}};
+    const first=await store.createUserMessageDeliveryAsync(input);
+    assert.equal(first.inserted,true);
+    assert.equal(store.getAgentTask(input.messageId).status,'queued');
+    assert.equal(store.getMessageDelivery(input.deliveryId).status,'queued');
+    const second=await store.createUserMessageDeliveryAsync(input);
+    assert.equal(second.inserted,false);
+    assert.equal(store.listSessionEvents(input.sessionId).filter(e=>e.type==='SessionUserMessageCreated').length,1);
+    await assert.rejects(store.createUserMessageDeliveryAsync({...input,messageId:'message:stale',deliveryId:'delivery:stale',
+      binding:{...actual,bindingId:'binding:stale'}}),{code:'STALE_WORKSPACE_ROUTE'});
+    assert.equal(store.getMessageDelivery('delivery:stale'),null);
+  } finally { await store.close(); await rm(directory,{recursive:true,force:true}); }
+});
+
+test('concurrent worker claims reserve a Session once',async()=>{
+  const {directory,store}=await fixture();
+  try {
+    for(const id of ['one','two']) store.createUserMessageDelivery({
+      deliveryId:'delivery:'+id,messageId:'message:'+id,sessionId:'session:one',binding,agentId:'agent:one',text:id});
+    const claims=await Promise.all([store.claimAgentTaskAsync('message:one'),store.claimAgentTaskAsync('message:two')]);
+    assert.equal(claims.filter(Boolean).length,1);
+    assert.equal(store.listQueuedAgentTasksForSession('session:one',10).length,1);
+  } finally {await store.close();await rm(directory,{recursive:true,force:true});}
+});

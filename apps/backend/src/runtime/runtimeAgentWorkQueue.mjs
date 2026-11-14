@@ -315,10 +315,20 @@ export function createRuntimeAgentWorkQueue({
     if (pendingTimer) { clearTimeout(pendingTimer); mailboxTimers.delete(sessionId); }
     const admissionDecision = mailboxDecision(next);
     if (!admissionDecision.allowed) { recordBlocked(next, admissionDecision); return; }
-    let claimed = store.claimAgentTask(next.taskId);
+    let claimed = await (store.claimAgentTaskAsync ?? store.claimAgentTask).call(store, next.taskId);
     if (!claimed) {
       const current=store.getAgentTask(next.taskId);
       if(current?.status === "queued") recordBlocked(current,dispatchBlocked("OPERATION_CLAIM_UNAVAILABLE"));
+      return;
+    }
+    const currentClaim = store.getAgentTask(claimed.taskId);
+    if (!currentClaim || currentClaim.status !== "running" || currentClaim.sessionId !== sessionId) return;
+    claimed = currentClaim;
+    // An asynchronous database claim opens a new scheduling boundary. A
+    // Worktree mutation or mailbox pause may have started while it was queued.
+    // Release the reservation before any Provider side effect in that case.
+    if (holdForWorkspace(sessionId) || !mailboxDecision(claimed).allowed) {
+      store.updateAgentTask(claimed.taskId, {status:"queued",startedAt:null});
       return;
     }
     claimed=clearBlocked(claimed);

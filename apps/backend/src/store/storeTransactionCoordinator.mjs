@@ -92,8 +92,8 @@ export class StoreTransactionCoordinator {
     this.transactionDepth = 0;
     // Listener failures happen after SQLite has committed and must never be
     // mistaken for a transactional failure (or trigger a second ROLLBACK).
-    this.flushCommittedDirtyNotifications();
     const callbacks = this.commitCallbacks.splice(0);
+    this.flushCommittedDirtyNotifications();
     for (const callback of callbacks) notifyCommittedListener(callback);
     return result;
   }

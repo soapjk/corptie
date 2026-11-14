@@ -1,3 +1,5 @@
+import { SessionWritePool } from "./sessionWritePool.mjs";
+import { CoordinationCleanupPool } from "./coordinationCleanupPool.mjs";
 import { BackgroundReadPool } from "./backgroundReadPool.mjs";
 import { initializeUnifiedSearch } from "./unifiedSearch.mjs";
 import { initializeQuickMessageIndex } from "./quickMessageIndex.mjs";
@@ -173,7 +175,7 @@ export class CorptieStore {
       }
       // Schema migration can run in a short-lived Worker. The long-lived Store
       // must own/resume history construction even when migrations already ran.
-      if (!readOnly) this.quickMessageBuild = initializeQuickMessageIndex(this);
+      if (!readOnly && options.initializeRuntimeIndexes !== false) this.quickMessageBuild = initializeQuickMessageIndex(this);
     } catch (error) {
       this.db.close();
       this.db = null;
@@ -552,12 +554,43 @@ export class CorptieStore {
   runInTransaction(operation) { return this.transactions.runInTransaction(operation); }
   flushCommittedDirtyNotifications() { return this.transactions.flushCommittedDirtyNotifications(); }
 
+  getSessionWritePool() {
+    if (!this.db) throw new Error("Store is closed.");
+    return this.sessionWritePool ??= new SessionWritePool({ dbPath:this.dbPath, configPath:this.configPath, dataRoot:this.dataRoot });
+  }
+
+  async claimAgentTaskAsync(taskId) {
+    if (this.transactions.transactionDepth) throw new Error("Async claim cannot be nested in a synchronous transaction.");
+    const result = await this.getSessionWritePool().claimSessionWork({taskId});
+    if (result) this.scheduleSave();
+    return result;
+  }
+
+  async createUserMessageDeliveryAsync(input) {
+    if (this.transactions.transactionDepth) throw new Error("Async admission cannot be nested in a synchronous transaction.");
+    const result = await this.getSessionWritePool().admitUserMessage(input);
+    this.scheduleSave();
+    this.notifyTimelineDirty(input.sessionId, { quickMessagesChanged:true });
+    return result;
+  }
+
+  getCoordinationCleanupPool() {
+    if (!this.db) throw new Error("Store is closed.");
+    return this.coordinationCleanupPool ??= new CoordinationCleanupPool({ dbPath: this.dbPath });
+  }
+
   getBackgroundReadPool() {
     if (!this.db) throw new Error("Store is closed.");
     return this.backgroundReadPool ??= new BackgroundReadPool({ dbPath: this.dbPath });
   }
 
   async close(options = {}) {
+    const writer = this.sessionWritePool;
+    this.sessionWritePool = null;
+    await writer?.close();
+    const cleanup = this.coordinationCleanupPool;
+    this.coordinationCleanupPool = null;
+    await cleanup?.close();
     const reads = this.backgroundReadPool;
     this.backgroundReadPool = null;
     await reads?.close();
