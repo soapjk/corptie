@@ -140,6 +140,7 @@ struct SessionConversationSurface: View {
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
     @State private var pendingFork: SessionForkSelection?
+    @State private var withdrawingMessageIDs: Set<String> = []
     @State private var hasSubmittedMessage = false
     let sessionId: String
     let renderInputs: SessionPageRenderInputs?
@@ -1066,6 +1067,23 @@ struct SessionConversationSurface: View {
     private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
         guard allowsPageActions else { return }
         switch action.kind {
+        case .withdrawMessage(let messageID):
+            guard let session = selectedSession, withdrawingMessageIDs.insert(messageID).inserted else { return }
+            Task {
+                defer { withdrawingMessageIDs.remove(messageID) }
+                do {
+                    try await backendClient.withdrawMessage(sessionID: sessionId, messageID: messageID)
+                    _ = await backendClient.fetchDetail(for: session)
+                } catch { backendClient.presentChatImageError(error) }
+            }
+        case .editWithdrawnMessage(let messageID):
+            guard let message = displayedDetail?.items.first(where: { $0.id == messageID })?.withdrawnMessage else { return }
+            let draft = composerDraftRepository.draft(for: sessionId)
+            guard draft.restoreWithdrawnMessage(id: messageID, message: message) else {
+                backendClient.presentChatImageError(BackendError.message("图片总数超过 8 张，请先处理当前草稿的图片，再编辑已撤回消息。"))
+                return
+            }
+            composerDraftRepository.requestFocus(for: sessionId)
         case .deleteUnreceivedMessage(let messageID):
             let alert = NSAlert()
             alert.messageText = "删除这条消息？"

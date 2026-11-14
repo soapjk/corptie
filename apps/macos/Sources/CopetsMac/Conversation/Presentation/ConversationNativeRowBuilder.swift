@@ -94,7 +94,7 @@ struct ConversationNativeRowBuilder {
         case .message(let item):
             let presentationKind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
             let isCollaborationMessage = presentationKind == .collaborationMessage || presentationKind == .collaborationConfirmation
-            messageStatus = presentationKind == .userMessage ? UserMessageStatusPresentation(
+            messageStatus = presentationKind == .userMessage && item.withdrawnMessage == nil ? UserMessageStatusPresentation(
                 authoritativeStatus: item.userMessageStatus,
                 legacyStatus: item.status,
                 queuePosition: item.queuePosition,
@@ -298,6 +298,17 @@ struct ConversationNativeRowBuilder {
             row.queuedMessageTaskID = item.taskId
         }
         if row.nativeStyle == .process { row.processLanguageCode = AppLanguageController.shared.languageCode }
+        if case .message(let item) = entry.kind, item.type == "userMessage" {
+            if item.withdrawnMessage != nil {
+                row.withdrawnMessageID = item.id
+                row.nativeText = L10n("已撤回")
+                row.forkItemID = nil
+                row.deletableMessageID = nil
+                row.queuedMessageTaskID = nil
+            } else if item.withdrawalAvailable == true || item.deletionAvailable == true || item.userMessageStatus == "queued" {
+                row.withdrawableMessageID = item.id
+            }
+        }
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
         if case .message(let item) = entry.kind {
             row.showsReplyActions = item.type == "agentMessage" && item.presentationRole == "final_answer"
@@ -531,6 +542,8 @@ struct ConversationNativeRowBuilder {
             item.type,
             item.status ?? "",
             item.userMessageStatus ?? "",
+            item.withdrawalAvailable == true ? "withdrawable" : "",
+            item.withdrawnMessage != nil ? "withdrawn" : "",
             item.messageOrigin ?? "",
             item.automationName ?? "",
             item.automationRunStatus ?? "",

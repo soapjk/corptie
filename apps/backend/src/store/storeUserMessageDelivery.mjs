@@ -18,6 +18,9 @@ export function createUserMessageDelivery(store, {
     if (store.selectOne("SELECT 1 FROM deleted_user_messages WHERE session_id=? AND message_id=?", [sessionId, messageId])) {
       throw Object.assign(new Error("Message was deleted."), { code: "MESSAGE_DELETED", status: 410 });
     }
+    if (store.getSessionItem(sessionId, messageId)?.withdrawnMessage) {
+      throw Object.assign(new Error("Message was withdrawn."), { code: "MESSAGE_WITHDRAWN", status: 410 });
+    }
     if (source.clientReceipt) {
       const receipt = source.clientReceipt;
       store.db.run(`INSERT INTO client_message_receipts

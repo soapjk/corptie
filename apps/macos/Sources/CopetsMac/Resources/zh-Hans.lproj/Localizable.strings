@@ -2656,3 +2656,9 @@
 "Subagent completed" = "子 agent 已完成";
 
 "Subagent status unknown" = "子 agent 状态待确认";
+
+"撤回" = "撤回";
+
+"已撤回" = "已撤回";
+
+"编辑已撤回的消息" = "编辑已撤回的消息";
