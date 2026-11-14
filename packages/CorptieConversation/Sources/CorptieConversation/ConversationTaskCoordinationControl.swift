@@ -122,7 +122,10 @@ struct TaskCoordinationToggle: View {
     let onChange: (Bool) -> Void
 
     var body: some View {
-        Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
+        Toggle(isOn: Binding(get: { enabled }, set: onChange)) {
+            Text("Super Agent 模式", bundle: .module)
+        }
+            .toggleStyle(.switch)
             .disabled(updating || (!enabled && !supported))
             .accessibilityIdentifier("task.coordination.toggle")
     }

@@ -62,7 +62,7 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
     // Keep legacy uncertain commands recoverable without blocking a new explicit
     // user action after the desktop updateTask wiring was repaired.
     if (editors) actions.push({ id: "task-coordination-setting", kind: "command", operation: "task.coordination.update",
-      label: { fallback: "协调模式" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
+      label: { fallback: "Super Agent 模式" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
     if (editors && data.coordinationExecution?.requests?.length) actions.push({ id: "task-request-control", kind: "command", operation: "task.request.control",
       label: { fallback: "管理请求" }, available: true, target: { resourceType: "task", id: task.id }, expectedResourceRevision: String(task.resource_version) });
     if (editors && data.coordinationExecution?.shadow?.canRecover) actions.push({ id: "task-shadow-recover", kind: "command", operation: "task.shadow.recover",

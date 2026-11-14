@@ -15,3 +15,5 @@
 "需要你决定：%@" = "Your decision: %@";
 "查看全部 %lld 项" = "View all %lld tasks";
 "已交付或验收 %lld 项，共 %lld 项" = "Delivered or accepted %lld of %lld tasks";
+
+"Super Agent 模式" = "Super Agent mode";
