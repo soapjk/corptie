@@ -13,7 +13,7 @@ function fixture({ readOnly = false } = {}) {
       getLogicalSessionByLegacySessionId: (id) => id === "one" ? { activeBinding: {
         bindingId: "binding:one", providerId: "test-provider", routingVersion: 3
       } } : null,
-      getSessionContextUsage: () => ({ providerId: "test-provider", bindingId: "binding:one", context: stored.context }),
+      getSessionContextUsage: () => ({ providerId: "test-provider", bindingId: "binding:one", model: stored.contextModel ?? "model", context: stored.context }),
       getProviderModelUsage: () => ({ account: stored.account }),
       upsertProviderModelUsage: (value) => { calls.push(["persist", value]); return value; }
     },
@@ -42,7 +42,7 @@ test("failed account refresh returns stored quota without writing or publishing"
   const f = fixture();
   f.service.readAccountUsage = async () => { throw new Error("offline"); };
   assert.deepEqual(await f.reader.readSessionUsage("one"), {
-    account: f.stored.account, accountFresh: false, context: f.stored.context, resetForecast: null,
+    account: f.stored.account, accountFresh: false, accountLoadFailed: true, contextLoadFailed: false, context: f.stored.context, resetForecast: null,
     route: { providerId: "test-provider", model: "model", bindingId: "binding:one", routingVersion: 3 }
   });
   assert.deepEqual(f.calls, []);
@@ -70,6 +70,7 @@ test("read-only preview returns cached context and quota without calling a Provi
   assert.deepEqual(usage.context, f.stored.context);
   assert.deepEqual(usage.account, f.stored.account);
   assert.equal(usage.accountFresh, false);
+  assert.equal(usage.accountLoadFailed, false);
   assert.equal(providerReads, 0);
   assert.deepEqual(f.calls, []);
   await assert.rejects(f.reader.readSessionUsage("one", undefined, { requireFreshAccount: true }), {
@@ -87,6 +88,18 @@ test("read-only preview without cached quota returns unavailable without contact
   const usage = await f.reader.readSessionUsage("one");
   assert.deepEqual(usage.account, { available: false, provider: "test-provider", model: "model" });
   assert.equal(usage.accountFresh, false);
+  assert.equal(usage.accountLoadFailed, false);
   assert.equal(providerReads, 0);
   assert.deepEqual(f.calls, []);
+});
+
+
+test("model switches hide the previous context until a matching measurement arrives", async () => {
+  const f = fixture();
+  f.stored.contextModel = "previous-model";
+  const switched = await f.reader.readSessionUsage("one");
+  assert.equal(switched.context, null);
+  assert.equal(switched.account.model, "model");
+  f.stored.contextModel = "model";
+  assert.deepEqual((await f.reader.readSessionUsage("one")).context, f.stored.context);
 });

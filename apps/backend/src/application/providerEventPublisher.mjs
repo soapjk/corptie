@@ -71,7 +71,7 @@ export function createProviderEventPublisher({
       if (usage?.context) {
         const usageEvent = eventLog.append({
           type: "SessionUsageUpdated",
-          payload: { sessionId, context: usage.context },
+          payload: { sessionId, context: usage.context, providerId: usage.providerId, model: usage.model },
           createdAt: createdAt ?? providerEvent.receivedAt ?? now()
         });
         const usageFrame = `id: ${usageEvent.id}\nevent: ${usageEvent.type}\ndata: ${JSON.stringify(usageEvent)}\n\n`;
