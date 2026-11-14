@@ -84,10 +84,24 @@ final class SessionCommandController: ObservableObject {
     @Published var sendStatusMessage: String?
     @Published private(set) var sendFailures: [String: String] = [:]
 
-    func setSendFailure(_ message: String?, sessionID: String) {
+    private var failedMessageIDs: [String: String] = [:]
+
+    func setSendFailure(_ message: String?, sessionID: String, messageID: String? = nil) {
+        failedMessageIDs[sessionID] = message == nil ? nil : messageID
         if sendFailures[sessionID] == message { return }
         sendFailures[sessionID] = message
     }
+    func reconcileSendFailure(sessionID: String, items: [CodexThreadItem]) {
+        guard let id = failedMessageIDs[sessionID],
+              let item = items.first(where: { $0.id == id }),
+              item.sourceType != "local_submission", item.sourceType != "local_acknowledgement",
+              let status = item.userMessageStatus,
+              ["queued", "preparing", "processing", "consumed"].contains(status) else { return }
+        let previous = sendFailures[sessionID]
+        setSendFailure(nil, sessionID: sessionID)
+        if sendStatusMessage == previous { sendStatusMessage = nil }
+    }
+
     @Published var scheduledTaskMutationIds = Set<String>()
     @Published var scheduledTaskError: String?
     @Published var isSwitchingModel = false

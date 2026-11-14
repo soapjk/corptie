@@ -104,8 +104,8 @@ export async function acceptReliableMessage(api, identity, targetId, input, auth
     if (Date.parse(expiresAt) <= Date.now()) throw deviceError("MESSAGE_EXPIRED", 410);
     const receipt = { deviceId: identity.deviceId, requestId: input.requestId, payloadHash: fingerprint,
       expiresAt, acceptedAt: new Date().toISOString() };
-    // Admission is synchronous. Receipt, message and queued work commit in one transaction.
-    api.admitReliableMessage(resolved.sessionId, { text: input.text,
+    // Await the atomic receipt/message/work commit before acknowledging admission.
+    await api.admitReliableMessage(resolved.sessionId, { text: input.text,
       ...(attachments.length ? { images: attachments } : {}), ...(mentions.length ? { mentions } : {}) },
     { type: "remote-client", deviceId: identity.deviceId,
       messageId: `client:${createHash("sha256").update(key).digest("hex")}`, clientReceipt: receipt });

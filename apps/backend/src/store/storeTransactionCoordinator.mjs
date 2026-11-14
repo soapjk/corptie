@@ -7,6 +7,7 @@ export class StoreTransactionCoordinator {
     this.stateDirtyListener = null;
     this.timelineDirtyListener = null;
     this.transactionDepth = 0;
+    this.commitCallbacks = [];
     this.pendingStateDirty = false;
     this.pendingTimelineDirty = new Set();
     this.pendingQuickMessagesDirty = new Set();
@@ -48,11 +49,22 @@ export class StoreTransactionCoordinator {
     });
   }
 
+  afterCommit(callback) {
+    if (this.transactionDepth > 0) this.commitCallbacks.push(callback);
+    else callback();
+  }
+
   runInTransaction(operation) {
+    if (operation?.constructor?.name === "AsyncFunction") throw new TypeError("Store transactions require synchronous operations.");
     if (this.transactionDepth > 0) {
       this.transactionDepth += 1;
       try {
-        return operation();
+        const result = operation();
+        if (result && typeof result.then === "function") {
+          Promise.resolve(result).catch(() => {});
+          throw new TypeError("Store transactions cannot return a Promise.");
+        }
+        return result;
       } finally {
         this.transactionDepth -= 1;
       }
@@ -62,10 +74,15 @@ export class StoreTransactionCoordinator {
     let result;
     try {
       result = operation();
+      if (result && typeof result.then === "function") {
+        Promise.resolve(result).catch(() => {});
+        throw new TypeError("Store transactions cannot return a Promise.");
+      }
       this.readDatabase().run("COMMIT");
     } catch (error) {
       this.readDatabase().run("ROLLBACK");
       this.transactionDepth = 0;
+      this.commitCallbacks = [];
       this.pendingStateDirty = false;
       this.pendingTimelineDirty.clear();
       this.pendingQuickMessagesDirty.clear();
@@ -75,7 +92,9 @@ export class StoreTransactionCoordinator {
     this.transactionDepth = 0;
     // Listener failures happen after SQLite has committed and must never be
     // mistaken for a transactional failure (or trigger a second ROLLBACK).
+    const callbacks = this.commitCallbacks.splice(0);
     this.flushCommittedDirtyNotifications();
+    for (const callback of callbacks) notifyCommittedListener(callback);
     return result;
   }
 

@@ -1,7 +1,8 @@
 import { normalizeConversationMessage } from "./application/conversationMessage.mjs";
 import { McpInteractionBroker } from "./application/mcpInteractionBroker.mjs";
-import { computerUseBridgePreset, computerUseBridgeFingerprint } from "./application/computerUseBridge.mjs";
-import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig } from "./application/computerUseGatewayPolicy.mjs";
+import { computerUseBridgeFingerprint } from "./application/computerUseBridge.mjs";
+import { builtinComputerUseConfig, computerUseEnginePreset, computerUseEngineFingerprint } from "./application/computerUseEngine.mjs";
+import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig, isBuiltinComputerUseConfig } from "./application/computerUseGatewayPolicy.mjs";
 import { InitialMessageTitleService } from "./application/initialMessageTitleService.mjs";
 import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
@@ -537,6 +538,7 @@ const channelMailbox = new SessionChannelMailboxService({
 });
 
 const sessionMailbox = new SessionMailboxService({ store, channelService: sessionChannelService, channelMailbox,
+  moveQueuedWork: (...args) => moveRuntimeQueuedWork(...args),
   resolveActor: id => collaborationCore.getAgentForSession(id)?.agentId,
   wake: (sessionId, taskId) => {
     if (taskId) scheduleAgentWorkDrain(sessionId, null, taskId);
@@ -703,7 +705,10 @@ function mcpAssignmentRevisionForAgent(agentId) {
 const sessionAbilityPreferences = new SessionAbilityPreferences({ store, registry: mcpRegistryService });
 skillRegistryService.sessionAbilityPreferences = sessionAbilityPreferences;
 const mcpInteractions = new McpInteractionBroker({ store, emitEvent });
-const computerUsePreset = () => computerUseBridgePreset({ dataDir: store.dataDir });
+const computerUsePreset = async () => {
+  const selected = await computerUseEnginePreset({ dataDir: store.dataDir });
+  return { ...selected, config: selected.config ? builtinComputerUseConfig(store.dataDir) : null };
+};
 
 const skillMcpGateway = new SkillMcpGateway({
   connectComputerUseServer: (config, context, onElicitation) => agentProviderRegistry.invoke(
@@ -743,6 +748,7 @@ const skillMcpGateway = new SkillMcpGateway({
     for (const config of Object.values(servers)) {
       if (!isComputerUseMcpConfig(config)) continue;
       if (isComputerUseBridgeConfig(config)) config.observationRevision = await computerUseBridgeFingerprint(config);
+      if (isBuiltinComputerUseConfig(config)) config.observationRevision = await computerUseEngineFingerprint(config);
       const identity = createHash("sha256").update(`${reference}:${context.providerBindingId ?? context.bindingId}`).digest("hex");
       const home = join(store.dataDir, "computer-use", "sessions", identity);
       await mkdir(home, { recursive: true });
@@ -1782,7 +1788,13 @@ const {
 });
 taskExecutionOrchestrator = composedTaskExecutionOrchestrator;
 const shadowSessionService = new ShadowSessionService({ store, emitEvent,
-  createSession: (...args) => createSessionThroughApplication(...args) });
+  createSession: (...args) => createSessionThroughApplication(...args),
+  deleteSession: id => sessionApplicationService.deleteSession(id, { source: "coordination-shadow-reclamation" }),
+  recoverSession: id => {
+    const logical = store.getLogicalSession(id), session = logical && store.getSession(logical.legacySessionId);
+    return sessionRecoveryCoordinator.recover({ logicalSessionId: id, providerId: session?.provider,
+      idempotencyKey: `shadow-binding-recovery:${id}:${logical?.routingVersion}`, reason: "SHADOW_BINDING_UNAVAILABLE" });
+  } });
 sessionChannelService.resolveDelegatedRecipient = envelope => shadowSessionService.channelRecipient(envelope);
 taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService, emitEvent,
   shadow: shadowSessionService,
@@ -1790,6 +1802,23 @@ taskCoordinationService = new TaskCoordinationService({ store, collaboration: se
   changed: taskId => { if (taskId) emitEvent("TaskChanged", { taskId, action: "coordination-state",
     entity: { ...store.getTask(taskId), coordinationDispatches: store.listTaskCoordinationDispatches(taskId) } }); } });
 sessionCollaborationService.taskCoordinationService = taskCoordinationService;
+shadowSessionService.onRecovered = mainId => {
+  shadowSessionService.recover(sessionMailbox, mainId);
+  taskCoordinationService.scheduleReports();
+  if (childTaskDeliveryService) for (const row of store.selectAll(`SELECT d.operation_id FROM child_task_delivery_operations d
+    JOIN coordination_shadow_reclamation r ON r.task_id=d.child_task_id
+    WHERE r.main_session_id=? AND d.state='blocked' LIMIT 100`, [mainId])) {
+    const operation = childTaskDeliveryService.repository.getOperation(row.operation_id);
+    void shadowSessionService.deliveryBlocked(operation, sessionMailbox).catch(error => logError("shadow.delivery.recovery", error));
+  }
+  void tickAgentWorkQueue().catch(error => logError("shadow.recovered", error));
+};
+sessionMailbox.reconcileCoordination = operation => {
+  if (!["shadow_request", "shadow_requirement", "shadow_report", "parent_report", "shadow_decision", "shadow_delivery_blocked"].includes(operation.source?.coordinationPurpose)) return;
+  const session = store.getSession(operation.sessionId), task = session?.taskId && store.getTask(session.taskId);
+  const main = task?.current_session_id && store.getLogicalSessionByLegacySessionId(task.current_session_id);
+  if (main) shadowSessionService.reconcileMailbox(sessionMailbox, main.logicalSessionId);
+};
 sessionApplicationService.coordinationTurns = new CoordinationTurnService({
   store, registry: agentProviderRegistry, planner: backgroundAgentService,
   dispatch: taskCoordinationService, contextRead: contextReadService, emitEvent, resolveReference: requireSessionReference,
@@ -1822,10 +1851,16 @@ sessionApplicationService.coordinationTurns.requests = coordinationRequestServic
 taskCoordinationService.requests = coordinationRequestService;
 workService.controlCoordinationRequest = (mainId, requestId, action) => action === "cancel"
   ? coordinationRequestService.cancel(mainId, requestId) : coordinationRequestService.retry(mainId, requestId);
+workService.recoverCoordinationShadow = async mainId => {
+  const result = await shadowSessionService.requestRecovery(mainId, { force: true });
+  shadowSessionService.recover(sessionMailbox, mainId);
+  taskCoordinationService.scheduleReports();
+  return { recovered: Boolean(result), shadow: shadowSessionService.summary(mainId) };
+};
 workService.assertCoordinationCanEnable = task => sessionApplicationService.coordinationTurns.assertCanEnable(task);
 workService.onCoordinationChanged = taskId => {
   sessionApplicationService.coordinationTurns.policyChanged(taskId);
-  taskCoordinationService.activateShadow(taskId);
+  taskCoordinationService.handleModeChanged(taskId);
   const sessionId = store.getTask(taskId)?.current_session_id;
   const main = sessionId && store.getLogicalSessionByLegacySessionId(sessionId);
   if (main) coordinationRequestService.migrateQueued(main.logicalSessionId);
@@ -1894,8 +1929,8 @@ taskCompletionService.childDelivery = childTaskDeliveryService;
 workService.childTaskDeliveryService = childTaskDeliveryService;
 shadowSessionService.deliverChild = taskId => childTaskDeliveryService.requestShadowDelivery(taskId);
 childTaskDeliveryService.onShadowBlocked = operation => {
-  try { shadowSessionService.deliveryBlocked(operation, sessionMailbox); }
-  catch (error) { console.warn(`[shadow-delivery-report] ${error.code ?? error.message}`); }
+  void shadowSessionService.deliveryBlocked(operation, sessionMailbox)
+    .catch(error => console.warn(`[shadow-delivery-report] ${error.code ?? error.message}`));
 };
 const childTaskReclamationService = new ChildTaskReclamationService({ store, resources: chatResourceService });
 childTaskDeliveryService.reclaimChild = taskId => childTaskReclamationService.schedule(taskId);
@@ -2317,13 +2352,13 @@ function assertSessionRecoveryMessageBoundary(reference) {
 
 function scheduleAgentWorkDrain(sessionId, latencyTrace = null, taskId = null) {
   if (taskId) registerRuntimeQueuedWork(sessionId, taskId);
-  queueMicrotask(() => {
+  store.afterCommit(() => queueMicrotask(() => {
     logSessionMessageLatency(latencyTrace, "queue_drain_dispatched");
     drainAgentWork(sessionId).catch((error) => {
       logError("agent-work.drain", error, { sessionId, stage: "drain" });
       console.error(`[agent-work] session=${sessionId} drain failed: ${error.message}`);
     });
-  });
+  }));
 }
 
 
@@ -2696,6 +2731,13 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+// Resource registration is independent of desktop dependencies and never starts
+// an input service. Read-only Development snapshots retain their existing data.
+if (!developmentPreview && process.platform === "darwin") {
+  const builtin = builtinComputerUseConfig(store.dataDir);
+  await mkdir(builtin.cwd, { recursive: true, mode: 0o700 });
+  mcpRegistryService.ensureBuiltinComputerUse(builtin);
+}
 // Installed Skills are loaded through the Session-authorized gateway. Remove
 // historical registry mirrors from native scanners, leaving other runtime skills intact.
 for (const skill of store.listRegistrySkills()) {

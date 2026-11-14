@@ -105,6 +105,7 @@ export class DataRootMigrationCoordinator {
 
       await this.transition("quiescing");
       await this.quiesce();
+      await this.store.closeClaimWriter?.();
       quiesced = true;
       await waitForStableDataRoot(sourceLayout);
       this.store.db.setWriteBlocked(true);

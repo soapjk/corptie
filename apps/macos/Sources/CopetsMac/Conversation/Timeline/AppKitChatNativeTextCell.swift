@@ -825,7 +825,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         // The represented row is reconfigured atomically, so the visible button
         // index always maps to the current row's attachment.
         guard sender.tag < representedImages.count else { return }
-        ChatImageGalleryViewer.shared.show(representedImages, selected: sender.tag)
+        ChatImageExternalOpener.shared.show(representedImages, selected: sender.tag)
         return
     }
 

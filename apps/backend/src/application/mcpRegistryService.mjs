@@ -1,4 +1,5 @@
 import { COMPUTER_USE_BRIDGE_PROFILE } from "./computerUseBridge.mjs";
+import { BUILTIN_COMPUTER_USE_PROFILE, BUILTIN_COMPUTER_USE_SERVER_ID } from "./computerUseProfiles.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { createMcpCredentialMigration } from "./mcpCredentialMigration.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -63,6 +64,40 @@ export class McpRegistryService {
              (SELECT COUNT(*) FROM agent_mcp_assignments a WHERE a.server_id = s.server_id) AS assignment_count
       FROM mcp_server_registry s ORDER BY created_at DESC, server_id DESC
     `).map(presentServer);
+  }
+
+  // Startup-only resource installation: never launches a helper or implies OS permission.
+  ensureBuiltinComputerUse(config) {
+    const existing = this.list().find(s => s.builtin)
+      ?? this.list().find(s => s.runtimeProfile === COMPUTER_USE_BRIDGE_PROFILE
+        && s.name === "Computer Use" && !s.hasCredentials && s.sourceKind === "direct"
+        && s.args.some(arg => arg.includes("codex-computer-use-mcp/dist/mcp-server.js")));
+    const serverId = existing?.serverId ?? BUILTIN_COMPUTER_USE_SERVER_ID;
+    const args = JSON.stringify(config.args);
+    if (existing?.builtin && existing.command === config.command && existing.cwd === config.cwd
+      && JSON.stringify(existing.args) === args) return existing;
+    const now = new Date().toISOString();
+    if (existing) {
+      this.store.db.run(`UPDATE mcp_server_registry SET command = ?, args_json = ?, cwd = ?,
+        runtime_profile = ?, source_kind = 'builtin', tool_count = 0, verified_at = '',
+        last_checked_at = NULL, last_check_status = 'not_checked', last_error_code = NULL,
+        observed_tool_names_json = '[]', config_revision = config_revision + 1, updated_at = ?
+        WHERE server_id = ?`, [config.command, args, config.cwd, BUILTIN_COMPUTER_USE_PROFILE, now, serverId]);
+    } else {
+      this.store.db.run(`INSERT INTO mcp_server_registry
+        (server_id, name, url, transport, command, args_json, cwd, enabled, tool_count,
+         verified_at, last_check_status, source_kind, runtime_profile, created_at, updated_at)
+        VALUES (?, 'Computer Use', '', 'stdio', ?, ?, ?, 1, 0, '', 'not_checked', 'builtin', ?, ?, ?)`,
+      [serverId, config.command, args, config.cwd, BUILTIN_COMPUTER_USE_PROFILE, now, now]);
+    }
+    this.store.scheduleSave();
+    return this.get(serverId);
+  }
+
+  defaultEnabledServerIds() {
+    return this.store.selectAll(`SELECT server_id FROM mcp_server_registry
+      WHERE runtime_profile = ? AND source_kind = 'builtin' AND enabled = 1`, [BUILTIN_COMPUTER_USE_PROFILE])
+      .map(row => row.server_id);
   }
 
   get(serverId) {
@@ -571,6 +606,7 @@ export class McpRegistryService {
   async updateConfig(serverId, input = {}) {
     const current = this.get(serverId);
     if (!current) throw registryError("MCP_SERVER_NOT_FOUND", "MCP Server not found.", 404);
+    if (current.builtin) throw registryError("MCP_BUILTIN_CONFIG_MANAGED", "The built-in runtime is managed by Corptie. Use its enable toggle instead.", 409);
     if (current.sourceKind !== "direct") {
       throw registryError("MCP_PACKAGE_UPDATE_UNSUPPORTED", "Package MCP Servers must be rescanned before updating.", 409);
     }
@@ -910,6 +946,7 @@ export class McpRegistryService {
   async remove(serverId) {
     const server = this.get(serverId);
     if (!server) return { serverId, removed: false, cleanupPending: (await this.drainCleanup({ serverId })) > 0 };
+    if (server.builtin) throw registryError("MCP_BUILTIN_REQUIRED", "Built-in Computer Use can be disabled, but not uninstalled.", 409);
     const history = this.store.selectAll(`SELECT package_root, credential_ref
       FROM mcp_server_package_versions WHERE server_id = ?`, [serverId]);
     const packagePaths = [...new Set([server.packageRoot, ...history.map((row) => row.package_root)]
@@ -943,7 +980,7 @@ export class McpRegistryService {
   serversForSession(reference, preferences) {
     if (!reference || !preferences) return {};
     const rows = this.store.selectAll(`
-      SELECT server_id, name, url, transport, command, args_json, cwd,
+      SELECT server_id, name, url, transport, command, args_json, cwd, runtime_profile,
              verified_at, credential_ref, NULL AS assignment_credential_ref,
              NULL AS tool_allowlist_json
       FROM mcp_server_registry WHERE enabled = 1 ORDER BY server_id
@@ -1196,6 +1233,8 @@ function presentServer(row) {
     command: row.command, args: JSON.parse(row.args_json ?? "[]"), cwd: row.cwd,
     verifiedAt: row.verified_at, assignmentCount: row.assignment_count,
     configRevision: row.config_revision, runtimeProfile: row.runtime_profile ?? null,
+    builtin: row.source_kind === "builtin" && row.runtime_profile === BUILTIN_COMPUTER_USE_PROFILE,
+    defaultEnabled: row.source_kind === "builtin" && row.runtime_profile === BUILTIN_COMPUTER_USE_PROFILE,
     lastCheckedAt: row.last_checked_at, lastCheckStatus: row.last_check_status,
     lastErrorCode: row.last_error_code, observedToolNames: JSON.parse(row.observed_tool_names_json ?? "[]"),
     sourceKind: row.source_kind, sourceLocator: row.source_locator, sourceRevision: row.source_revision,

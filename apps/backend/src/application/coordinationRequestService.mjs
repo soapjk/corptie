@@ -325,11 +325,14 @@ export class CoordinationRequestService {
       const logical = this.store.getLogicalSession(row.shadow_session_id);
       if (logical?.activeBinding?.state === "active") await this.deleteSession(row.shadow_session_id);
       const ids = [...new Set([row.shadow_session_id, logical?.legacySessionId].filter(Boolean))];
+      if (this.store.getCoordinationCleanupPool) {
+        for (const sessionId of ids) await this.store.getCoordinationCleanupPool().reclaimSessionRows(sessionId);
+      }
       this.store.runInTransaction(() => {
         for (const sessionId of ids) {
-          for (const table of ["session_items", "session_events", "session_logs", "provider_event_inbox", "event_outbox", "message_deliveries", "session_turns", "session_execution_plan_state", "session_memory_topics", "memory_extraction_progress", "memory_backfill_progress", "memory_extraction_jobs"])
+          if (!this.store.getCoordinationCleanupPool) for (const table of ["session_items", "session_events", "session_logs", "provider_event_inbox", "event_outbox", "message_deliveries", "session_turns", "session_execution_plan_state", "session_memory_topics", "memory_extraction_progress", "memory_backfill_progress", "memory_extraction_jobs"])
             this.store.db.run(`DELETE FROM ${table} WHERE session_id=?`, [sessionId]);
-          this.store.db.run("DELETE FROM session_context_references WHERE owner_session_id=?", [sessionId]);
+          if (!this.store.getCoordinationCleanupPool) this.store.db.run("DELETE FROM session_context_references WHERE owner_session_id=?", [sessionId]);
           this.store.db.run("UPDATE agent_operations SET text='',source_json='{}',execution_evidence_json=NULL,last_error=NULL WHERE session_id=?", [sessionId]);
           this.store.db.run("UPDATE logical_sessions SET session_name='',session_name_key=NULL WHERE logical_session_id=?", [sessionId]);
           this.store.db.run("UPDATE sessions SET title='',summary='',raw_json='{}' WHERE id=?", [sessionId]);

@@ -2,12 +2,13 @@ import Foundation
 import OSLog
 
 enum CloudRelaySendPriority: Int, Sendable {
-    case control, interactive, background
+    case control, interactive, image, background
 
     static func response(to request: URLRequest) -> Self {
         let path = request.url?.path ?? ""
         if request.httpMethod != "GET" || path.contains("/commands/") || path.hasSuffix("/me") { return .control }
-        if path.hasSuffix("/messages") || path.hasSuffix("/images") || path.hasSuffix("/resources")
+        if path.hasSuffix("/images") || path.hasSuffix("/resources") { return .image }
+        if path.hasSuffix("/messages")
             || path.contains("/inspector") { return .background }
         return .interactive
     }
@@ -30,6 +31,8 @@ actor CloudRelaySendScheduler {
     private var wakeup: Task<Void, Never>?
     private var nextBackgroundAt = ContinuousClock.now
     private var foregroundStreak = 0
+    private var imageStreak = 0
+    private static let bulkPriority = CloudRelaySendPriority.image.rawValue
     private var lastLog = ContinuousClock.now
     private var sentBytes = 0
     private static let log = Logger(subsystem: "com.corptie.connection", category: "RelaySendScheduler")
@@ -50,8 +53,8 @@ actor CloudRelaySendScheduler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 guard !closed else { continuation.resume(throwing: CloudRelayTransportError.disconnected); return }
                 // Background producers cannot consume the control reserve.
-                let limit = priority == .background ? maximumQueuedBytes * 3 / 4 : maximumQueuedBytes
-                let countLimit = priority == .background ? 192 : 256
+                let limit = priority.rawValue >= Self.bulkPriority ? maximumQueuedBytes * 3 / 4 : maximumQueuedBytes
+                let countLimit = priority.rawValue >= Self.bulkPriority ? 192 : 256
                 guard bytes >= 0, bytes <= limit - queuedBytes, queue.count < countLimit else {
                     continuation.resume(throwing: CloudRelayTransportError.responseTooLarge); return
                 }
@@ -82,12 +85,13 @@ actor CloudRelaySendScheduler {
     private func startWriter() {
         guard !writing, !closed, !queue.isEmpty else { return }
         let now = ContinuousClock.now
-        let background = queue.firstIndex(where: { $0.priority == .background })
-        let foreground = queue.indices.filter { queue[$0].priority != .background }
+        let history = queue.firstIndex(where: { $0.priority == .background })
+        let image = queue.firstIndex(where: { $0.priority == .image })
+        let background = imageStreak >= 8 ? (history ?? image) : (image ?? history)
+        let foreground = queue.indices.filter { queue[$0].priority.rawValue < Self.bulkPriority }
             .min { queue[$0].priority.rawValue < queue[$1].priority.rawValue }
         let index: Int
-        if let background, now >= nextBackgroundAt,
-           foreground == nil || (foregroundStreak >= 8 && !queue.contains(where: { $0.priority == .control })) {
+        if let background, foreground == nil || (now >= nextBackgroundAt && foregroundStreak >= 8 && !queue.contains(where: { $0.priority == .control })) {
             index = background
         } else if let foreground {
             index = foreground
@@ -103,7 +107,8 @@ actor CloudRelaySendScheduler {
         }
         let entry = queue.remove(at: index)
         queuedBytes -= entry.bytes
-        if entry.priority == .background {
+        if entry.priority.rawValue >= Self.bulkPriority {
+            imageStreak = entry.priority == .image ? imageStreak + 1 : 0
             foregroundStreak = 0
             nextBackgroundAt = now.advanced(by: .seconds(Double(entry.bytes) / backgroundBytesPerSecond))
         } else { foregroundStreak += 1 }

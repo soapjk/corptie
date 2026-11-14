@@ -127,3 +127,25 @@ struct TaskCoordinationToggle: View {
             .accessibilityIdentifier("task.coordination.toggle")
     }
 }
+
+/// Small shared status surface; no independent observation, polling or animation.
+struct ShadowCoordinationStatus: View {
+    let shadow: ClientShadowCoordination
+    let canRecover: Bool
+    let recover: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(shadow.statusLabel).foregroundStyle(.secondary)
+                if shadow.canRecover == true {
+                    Button("恢复汇总", action: recover)
+                        .buttonStyle(.borderless).disabled(!canRecover)
+                        .accessibilityIdentifier("task.shadow.recover")
+                }
+            }
+            if let reason = shadow.recoveryReason, !reason.isEmpty {
+                Text(reason).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            }
+        }.font(.caption)
+    }
+}

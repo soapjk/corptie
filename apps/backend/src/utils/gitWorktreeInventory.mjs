@@ -90,14 +90,16 @@ export async function inspectGitWorkspace(workingDirectory, options = {}) {
   const run = options.execFile ?? execFileAsync;
   const resolveRealpath = options.realpath ?? realpath;
   const requestedPath = resolve(String(workingDirectory));
+  const inspectionStartedAt = performance.now();
   const result = await run(
     "git",
     [
       "-C", requestedPath, "rev-parse", "--path-format=absolute",
       "--show-toplevel", "--git-dir", "--git-common-dir"
     ],
-    { encoding: "utf8", maxBuffer: 1024 * 1024 }
+    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: options.timeoutMs ?? 10000 }
   );
+  const gitCompletedAt = performance.now();
   const [topLevel, gitDir, commonGitDir, ...unexpected] = String(result.stdout ?? "")
     .split(/\r?\n/u)
     .filter((value) => value.length > 0);
@@ -111,6 +113,11 @@ export async function inspectGitWorkspace(workingDirectory, options = {}) {
     resolveRealpath(gitDir),
     resolveRealpath(commonGitDir)
   ]);
+  const completedAt = performance.now();
+  if (completedAt - inspectionStartedAt > 100) console.warn(`[workspace-identity-latency] ${JSON.stringify({
+    timestamp: new Date().toISOString(), gitAndCallbackMs: Math.round(gitCompletedAt-inspectionStartedAt),
+    realpathAndCallbackMs: Math.round(completedAt-gitCompletedAt)
+  })}`);
   const repositoryId = stableId("repository", commonGitDirCanonicalPath);
   return {
     repositoryId,

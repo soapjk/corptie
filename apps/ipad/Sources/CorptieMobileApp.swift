@@ -2723,10 +2723,24 @@ private struct MobileImageGalleryViewer: View {
                     actions: { Button("重试") { retry += 1 } }
                 } else {
                     VStack(spacing: 12) {
-                        if let fraction = gallery.progress?.fraction {
+                        if gallery.retryAttempt > 0 {
+                            ProgressView("连接中断，正在重试（\(gallery.retryAttempt)/2）…")
+                        } else if gallery.decoding {
+                            ProgressView("下载完成，正在打开…")
+                        } else if let fraction = gallery.progress?.fraction {
                             ProgressView(value: fraction).frame(maxWidth: 220)
                             Text(fraction, format: .percent.precision(.fractionLength(0))).monospacedDigit()
-                        } else { ProgressView("正在加载原图…") }
+                            if let progress = gallery.progress, let total = progress.total {
+                                Text("\(ByteCountFormatter.string(fromByteCount: progress.received, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
+                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            }
+                        } else {
+                            ProgressView("正在加载原图…")
+                            if let progress = gallery.progress {
+                                Text("已下载 \(ByteCountFormatter.string(fromByteCount: progress.received, countStyle: .file))")
+                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            }
+                        }
                     }
                 }
             }
