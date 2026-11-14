@@ -2352,13 +2352,13 @@ function assertSessionRecoveryMessageBoundary(reference) {
 
 function scheduleAgentWorkDrain(sessionId, latencyTrace = null, taskId = null) {
   if (taskId) registerRuntimeQueuedWork(sessionId, taskId);
-  queueMicrotask(() => {
+  store.afterCommit(() => queueMicrotask(() => {
     logSessionMessageLatency(latencyTrace, "queue_drain_dispatched");
     drainAgentWork(sessionId).catch((error) => {
       logError("agent-work.drain", error, { sessionId, stage: "drain" });
       console.error(`[agent-work] session=${sessionId} drain failed: ${error.message}`);
     });
-  });
+  }));
 }
 
 

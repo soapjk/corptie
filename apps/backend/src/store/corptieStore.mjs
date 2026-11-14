@@ -1,4 +1,6 @@
 import { AgentClaimPool } from "./agentClaimPool.mjs";
+import { SessionWritePool } from "./sessionWritePool.mjs";
+import { CoordinationCleanupPool } from "./coordinationCleanupPool.mjs";
 import { BackgroundReadPool } from "./backgroundReadPool.mjs";
 import { initializeUnifiedSearch } from "./unifiedSearch.mjs";
 import { initializeQuickMessageIndex } from "./quickMessageIndex.mjs";
@@ -176,7 +178,7 @@ export class CorptieStore {
       }
       // Schema migration can run in a short-lived Worker. The long-lived Store
       // must own/resume history construction even when migrations already ran.
-      if (!readOnly) this.quickMessageBuild = initializeQuickMessageIndex(this);
+      if (!readOnly && options.initializeRuntimeIndexes !== false) this.quickMessageBuild = initializeQuickMessageIndex(this);
     } catch (error) {
       this.db.close();
       this.db = null;
@@ -571,14 +573,38 @@ export class CorptieStore {
     await writer?.close();
   }
 
+  getSessionWritePool() {
+    if (!this.db || this.closing) throw new Error("Store is closed.");
+    return this.sessionWritePool ??= new SessionWritePool({ dbPath:this.dbPath, configPath:this.configPath, dataRoot:this.dataRoot });
+  }
+
+  async createUserMessageDeliveryAsync(input) {
+    if (this.transactions.transactionDepth) throw new Error("Async admission cannot be nested in a synchronous transaction.");
+    const result = await this.getSessionWritePool().admitUserMessage(input);
+    this.scheduleSave();
+    this.notifyTimelineDirty(input.sessionId, { quickMessagesChanged:true });
+    return result;
+  }
+
+  getCoordinationCleanupPool() {
+    if (!this.db || this.closing) throw new Error("Store is closed.");
+    return this.coordinationCleanupPool ??= new CoordinationCleanupPool({ dbPath: this.dbPath });
+  }
+
   getBackgroundReadPool() {
-    if (!this.db) throw new Error("Store is closed.");
+    if (!this.db || this.closing) throw new Error("Store is closed.");
     return this.backgroundReadPool ??= new BackgroundReadPool({ dbPath: this.dbPath });
   }
 
   async close(options = {}) {
     this.closing = true;
     await this.closeClaimWriter();
+    const writer = this.sessionWritePool;
+    this.sessionWritePool = null;
+    await writer?.close();
+    const cleanup = this.coordinationCleanupPool;
+    this.coordinationCleanupPool = null;
+    await cleanup?.close();
     const reads = this.backgroundReadPool;
     this.backgroundReadPool = null;
     await reads?.close();
