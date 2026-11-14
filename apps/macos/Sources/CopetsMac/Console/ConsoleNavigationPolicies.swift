@@ -45,12 +45,13 @@ struct ConsoleOutlineRowSurface: ViewModifier {
     /// NSOutlineView rows are fixed at 30pt. Flat-list rows carry a project
     /// subtitle, so they need their intrinsic height instead of being clipped.
     var fixesHeightToNativeRow = true
+    var nativeRowHeight: CGFloat = 30
     /// Header-level controls may align with the native source-list title origin.
     /// The feedback rectangle keeps the same outer inset for every caller.
     var leadingInset: CGFloat = 16
 
     func body(content: Content) -> some View {
-        let height: CGFloat? = fixesHeightToNativeRow ? 30 : nil
+        let height: CGFloat? = fixesHeightToNativeRow ? nativeRowHeight : nil
         return content
             // Native List supplies hierarchy indentation. The default leaves
             // 8pt of content padding inside the surface's 8pt outer inset.
@@ -65,9 +66,10 @@ struct ConsoleOutlineRowSurface: ViewModifier {
 extension View {
     func consoleOutlineRowSurface(isSelected: Bool,
                                   fixesHeightToNativeRow: Bool = true,
-                                  leadingInset: CGFloat = 16) -> some View {
+                                  leadingInset: CGFloat = 16,
+                                  nativeRowHeight: CGFloat = 30) -> some View {
         modifier(ConsoleOutlineRowSurface(isSelected: isSelected,
-            fixesHeightToNativeRow: fixesHeightToNativeRow, leadingInset: leadingInset))
+            fixesHeightToNativeRow: fixesHeightToNativeRow, nativeRowHeight: nativeRowHeight, leadingInset: leadingInset))
     }
 }
 

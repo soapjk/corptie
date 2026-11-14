@@ -25,6 +25,19 @@ struct MacResourcePage: View {
                     throw EntityLaunchError(message: "文档位置不是有效的本机文件路径。", code: "ARTIFACT_PATH_INVALID")
                 }
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: receipt.path)])
+            }, openFile: { focus in
+                guard let version = focus.version, let hash = focus.hash else {
+                    throw EntityLaunchError(message: "请选择要打开的文档版本。", code: "RESOURCE_VERSION_INVALID")
+                }
+                let receipt = try await ArtifactAPIClient.shared.localFile(
+                    artifactID: focus.id, version: version, contentHash: hash)
+                try Task.checkCancellation()
+                guard (receipt.path as NSString).isAbsolutePath else {
+                    throw EntityLaunchError(message: "文档位置不是有效的本机文件路径。", code: "ARTIFACT_PATH_INVALID")
+                }
+                if let message = await ArtifactSystemApplicationOpener.open(receipt) {
+                    throw EntityLaunchError(message: message, code: "ARTIFACT_SYSTEM_OPEN_FAILED")
+                }
             }, columnLayout: ResourceBrowserColumnLayout(
                 sidebarBackground: WorkbenchStyle.sidebarColor,
                 readingBackground: WorkbenchStyle.canvas,

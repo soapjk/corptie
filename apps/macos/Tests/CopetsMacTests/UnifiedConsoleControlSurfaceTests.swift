@@ -329,7 +329,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(controls.contains(".padding(.bottom, MainWindowPageLayoutMetrics.sidebarHeaderBottomInset)"))
         #expect(MainWindowPageLayoutMetrics.sidebarCreationRowHeight == 34)
         #expect(MainWindowPageLayoutMetrics.headerPrimaryRowHeight + MainWindowPageLayoutMetrics.sidebarHeaderRowSpacing
-            + MainWindowPageLayoutMetrics.sidebarCreationRowHeight + MainWindowPageLayoutMetrics.sidebarHeaderBottomInset == 72)
+            + MainWindowPageLayoutMetrics.sidebarCreationRowHeight + MainWindowPageLayoutMetrics.sidebarHeaderBottomInset == 66)
         #expect(source.contains(".frame(minHeight: MainWindowPageLayoutMetrics.sidebarCreationRowHeight)"))
         #expect(MainWindowPageLayoutMetrics.headerRowHeight == 48)
         #expect(source.contains("Menu(\"视图\") {\n            navigationModeOption(.workOutline, title: \"分组\")"))

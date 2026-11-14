@@ -57,12 +57,17 @@ struct ConsoleFlatSessionList<MenuContent: View>: View {
             switch entry {
             case .session(let row):
                 let isChat = row.session.resolvedSessionKind == .assistantChat
+                if isChat {
+                    ConsoleChatSessionRow(row: row, isActive: isActive, isSelected: selectedSessionID == row.id,
+                        select: select, menuContent: menuContent)
+                } else {
                 ConsoleSessionRow(projectName: isChat ? nil : ConsoleFlatSessionList<EmptyView>.projectName(
                     for: row.session, workNames: workNames, taskWorks: taskWorks),
                     showsHoverFeedback: false, isActive: isActive, row: row,
                     selectionRequested: select, menuContent: menuContent)
                     .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id,
                         fixesHeightToNativeRow: isChat)
+                }
             case .moreChats:
                 ConsoleChatPreviewButton(showsAll: showsAllChats, toggle: toggleChats)
             case .empty(_, let title):

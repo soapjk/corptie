@@ -45,6 +45,13 @@ extension UnifiedConsoleView {
             showingArchive: isShowingWorkerArchive, sidebarActive: sidebarState.isSelected,
             showsAllChats: showsAllChatSessions)) { entry in
             switch entry {
+            case .session(let row) where row.session.resolvedSessionKind == .assistantChat:
+                ConsoleChatSessionRow(row: row, isActive: sidebarState.isSelected,
+                    isSelected: selectionController.presentationSessionID == row.id,
+                    select: { selectSessionAfterHighlight($0, focusComposer: true) },
+                    menuContent: { session, isRenaming in
+                        sessionContextMenuContent(for: session, isRenaming: isRenaming)
+                    })
             case .session(let row):
                 sessionRow(row, showsHoverFeedback: false)
                     .consoleOutlineRowSurface(isSelected: selectionController.presentationSessionID == row.session.id)
