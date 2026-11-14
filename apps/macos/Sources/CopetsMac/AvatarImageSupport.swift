@@ -1,4 +1,5 @@
 import AppKit
+import CorptieConversation
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -35,6 +36,7 @@ enum AvatarImageSupport {
 
     /// Cached, display-sized image for `AnimatedAvatarImage`.
     @MainActor static func displayImage(at path: String) -> NSImage? {
+        if BuiltinRoleAvatarCatalog.id(from: path) != nil { return BuiltinRoleAvatarImage.image(for: path) }
         let key = cacheKey(for: path)
         if let cached = displayCache.object(forKey: key) { return cached }
         guard let image = decodeDisplayImage(at: path) else { return nil }

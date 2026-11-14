@@ -19,15 +19,10 @@ struct AgentsSkillsLayoutTests {
         #expect(RolesSkillsLayoutMetrics.mode(for: 600) == .compact)
     }
 
-    @Test("A split layout reserves room for two complete role cards")
+    @Test("Skills column retains its existing split boundary")
     func splitBoundary() {
         #expect(RolesSkillsLayoutMetrics.mode(for: 868) == .compact)
         #expect(RolesSkillsLayoutMetrics.mode(for: 869) == .split)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 568) == 2)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 567) == 1)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 899) == 3)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 420) == 1)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 180) == 1)
     }
 
     @Test("An open Skills sheet never duplicates the inline registry")
@@ -89,6 +84,24 @@ struct AgentsSkillsLayoutTests {
 @MainActor
 @Suite("Role page window-filling columns", .serialized)
 struct RolePageColumnsTests {
+    @Test("Retained role drafts preserve Skill edits and builtin avatars independently")
+    func retainedRoleDraft() {
+        var role = Role(roleId: "role:draft", name: "Role", description: "Description",
+                        status: "available", systemPrompt: "Prompt", capabilities: [],
+                        createdAt: "", updatedAt: "")
+        role.skillIds = ["skill:original"]
+        let avatar = role.resolvedAvatarPath
+        let drafts = [role.id: RoleEditDraft(agent: role)]
+        let draft = drafts[role.id]!
+        #expect(draft.selectedSkillIds == ["skill:original"])
+        draft.name = "Edited"
+        draft.selectedSkillIds = ["skill:new"]
+        #expect(drafts[role.id]?.name == "Edited")
+        #expect(drafts[role.id]?.selectedSkillIds == ["skill:new"])
+        #expect(role.skillIds == ["skill:original"])
+        #expect(role.resolvedAvatarPath == avatar)
+    }
+
     @Test("Both panes keep the full available height while the window is resized")
     func panesFollowTheViewport() throws {
         _ = NSApplication.shared
@@ -161,6 +174,109 @@ struct RolePageColumnsTests {
         #expect(probe("skills", in: host) == nil)
     }
 
+    @Test("Canvas keeps compact cards square and clears an expanded card")
+    func canvasClearance() throws {
+        _ = NSApplication.shared
+        for width in [280.0, 568.0, 1080.0] {
+            for expanded in [false, true] {
+                let host = NSHostingView(rootView: RoleCardCanvasLayout() {
+                    RoleColumnLayoutProbe(name: "first").frame(width: 136, height: 136)
+                    RoleColumnLayoutProbe(name: "selected")
+                        .frame(width: expanded ? min(600, width) : 136, height: expanded ? 340 : 136)
+                        .layoutValue(key: RoleCardExpandedKey.self, value: expanded)
+                    RoleColumnLayoutProbe(name: "last").frame(width: 136, height: 136)
+                }.frame(width: width, height: 1000, alignment: .topLeading))
+                host.sizingOptions = []
+                host.frame = CGRect(x: 0, y: 0, width: width, height: 1000)
+                host.layoutSubtreeIfNeeded()
+                let frames = try ["first", "selected", "last"].map { name in
+                    let view = try #require(probe(name, in: host))
+                    return view.convert(view.bounds, to: host)
+                }
+                for rect in frames { #expect(rect.minX >= 0) }
+                #expect(frames[0].size == CGSize(width: 136, height: 136))
+                #expect(frames[2].size == CGSize(width: 136, height: 136))
+                for i in frames.indices {
+                    for j in frames.indices where j > i { #expect(!frames[i].intersects(frames[j])) }
+                }
+            }
+        }
+    }
+
+    @Test("Native intrinsic and maximum sizing proposals remain finite")
+    func unconstrainedCardCanvasBounds() {
+        _ = NSApplication.shared
+        let host = NSHostingView(rootView: RoleCardCanvasLayout {
+            Color.clear.frame(width: 136, height: 136)
+            Color.clear.frame(width: 136, height: 136)
+        })
+        let size = host.fittingSize
+        #expect(size.width.isFinite && size.height.isFinite)
+        #expect(size.width >= 136 && size.height >= 136)
+    }
+
+    @Test("Canvas preserves both coordinates of the selected card across viewport widths")
+    func selectedCanvasOriginIsStable() throws {
+        _ = NSApplication.shared
+        for width in [568.0, 735.0, 1080.0] {
+            let columns = RoleCardCanvasLayout.columns
+            for selected in [columns - 1, columns * 2 - 1] {
+                let host = NSHostingView(rootView: RoleCardCanvasLayout {
+                    ForEach(0..<(columns * 3), id: \.self) { index in
+                        RoleColumnLayoutProbe(name: "card-\(index)")
+                            .frame(width: index == selected ? min(600, width) : 136,
+                                   height: index == selected ? 340 : 136)
+                            .layoutValue(key: RoleCardExpandedKey.self, value: index == selected)
+                    }
+                }.frame(width: width, height: 2000, alignment: .topLeading))
+                host.sizingOptions = []
+                host.frame = CGRect(x: 0, y: 0, width: width, height: 2000)
+                host.layoutSubtreeIfNeeded()
+                let cards = try (0..<(columns * 3)).map { index in
+                    let view = try #require(probe("card-\(index)", in: host))
+                    return view.convert(view.bounds, to: host)
+                }
+                #expect(abs(topDistance(cards[selected], in: host) - CGFloat(selected / columns) * 148) <= 1)
+                #expect(abs(cards[selected].minX - CGFloat(selected % columns) * 148) <= 1)
+                for i in cards.indices {
+                    for j in cards.indices where j > i { #expect(!cards[i].intersects(cards[j])) }
+                }
+            }
+        }
+    }
+
+    @Test("Long role names and descriptions do not enlarge the compact card")
+    func compactCardBounds() throws {
+        let role = Role(roleId: "role:long", name: String(repeating: "长名称", count: 20),
+            description: String(repeating: "完整描述用于检查截断。", count: 60), status: "available",
+            systemPrompt: "", capabilities: ["long capability"], createdAt: "", updatedAt: "")
+        let host = NSHostingView(rootView: CompactRoleCardProbe(role: role))
+        #expect(host.fittingSize == CGSize(width: 136, height: 136))
+    }
+
+    @Test("Expanded role width is independent of text; short roles stay natural and long roles are bounded")
+    func expandedCardBounds() throws {
+        _ = NSApplication.shared
+        for width in [360.0, 600.0] {
+            var heights: [CGFloat] = []
+            for description in ["Short description", String(repeating: "Long description wraps onto another line. ", count: 200)] {
+                let role = Role(roleId: "role:bounds", name: "Role", description: description,
+                    status: "available", systemPrompt: "", capabilities: [], createdAt: "", updatedAt: "")
+                let host = NSHostingView(rootView: ExpandedRoleCardProbe(role: role, width: width))
+                // Exercise the real canvas's unconstrained-height proposal,
+                // not a standalone fixed-height facsimile of the card.
+                host.frame = CGRect(x: 0, y: 0, width: width, height: 1000)
+                host.layoutSubtreeIfNeeded()
+                let size = host.fittingSize
+                #expect(abs(size.width - width) <= 1)
+                #expect(size.height <= 560)
+                heights.append(size.height)
+            }
+            #expect(heights[0] < 560)
+            #expect(abs(heights[1] - 560) <= 1)
+        }
+    }
+
     private func topDistance(_ rect: CGRect, in host: NSView) -> CGFloat {
         host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
     }
@@ -179,4 +295,24 @@ private struct RoleColumnLayoutProbe: NSViewRepresentable {
         return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private struct CompactRoleCardProbe: View {
+    let role: Role
+    @FocusState private var focused: String?
+    var body: some View {
+        RoleCard(agent: role, focusedRoleID: $focused, onOpenDetail: {}, onStartSession: {})
+    }
+}
+
+private struct ExpandedRoleCardProbe: View {
+    let role: Role
+    let width: CGFloat
+    @FocusState private var focused: String?
+    var body: some View {
+        RoleCardCanvasLayout {
+            RoleCard(agent: role, expanded: true, expandedWidth: width, focusedRoleID: $focused,
+                     onOpenDetail: {}, onStartSession: {})
+        }.frame(width: width)
+    }
 }

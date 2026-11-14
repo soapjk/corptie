@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { builtinRoleAvatarId } from "../src/domain/builtinRoleAvatar.mjs";
 import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { WorkDiscussionApplicationService } from "../src/application/workDiscussionApplicationService.mjs";
 import { HubService } from "../src/application/hubService.mjs";
@@ -3054,5 +3055,70 @@ test("DELETE /agents/:id 删除 Agent", async () => {
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+
+test("Role avatar create, replay, selection, upload and removal share the server contract", async () => {
+  const services = await createServices();
+  const previousHome = process.env.CORPTIE_HOME;
+  process.env.CORPTIE_HOME = join(services.directory, "avatar-home");
+  try {
+    const reference = "corptie-role-avatar://v1/ink-boy";
+    const request = { method: "POST", pathname: "/agents", body: { name: "AvatarRole", avatarPath: reference },
+      headers: { "idempotency-key": "avatar-create" }, ...services };
+    const created = await callApi(request);
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.body.agent.avatarPath, reference);
+    const replay = await callApi(request);
+    assert.equal(replay.body.agent.agentId, created.body.agent.agentId);
+    assert.equal(replay.body.agent.avatarPath, reference);
+    const changedRetry = await callApi({ ...request, body: { ...request.body, avatarPath: "corptie-role-avatar://v1/pixel-robot" } });
+    assert.equal(changedRetry.statusCode, 409);
+    const path = `/agents/${encodeURIComponent(created.body.agent.agentId)}`;
+    const source = join(services.directory, "upload.png");
+    await writeFile(source, "test-image-bytes");
+    const upload = await callApi({ method: "PATCH", pathname: path, body: { avatarPath: source }, ...services });
+    assert.equal(upload.statusCode, 200);
+    assert.equal(await readFile(upload.body.agent.avatarPath, "utf8"), "test-image-bytes");
+    const renamed = await callApi({ method: "PATCH", pathname: path, body: { name: "AvatarRenamed" }, ...services });
+    assert.equal(renamed.body.agent.avatarPath, upload.body.agent.avatarPath);
+    const clear = await callApi({ method: "PATCH", pathname: path, body: { avatarPath: null }, ...services });
+    assert.ok(builtinRoleAvatarId(clear.body.agent.avatarPath));
+    const choose = await callApi({ method: "PATCH", pathname: path, body: { avatarPath: reference }, ...services });
+    assert.equal(choose.body.agent.avatarPath, reference);
+    const invalid = await callApi({ method: "PATCH", pathname: path, body: { avatarPath: "corptie-role-avatar://v1/missing" }, ...services });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(services.store.getAgent(created.body.agent.agentId).avatarPath, reference);
+  } finally {
+    if (previousHome === undefined) delete process.env.CORPTIE_HOME; else process.env.CORPTIE_HOME = previousHome;
+    await services.store.close(); await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Role avatar upload failure resumes the same creation receipt without redrawing or duplicating", async () => {
+  const services = await createServices();
+  const previousHome = process.env.CORPTIE_HOME;
+  process.env.CORPTIE_HOME = join(services.directory, "avatar-home");
+  try {
+    const source = join(services.directory, "late.png");
+    const request = { method: "POST", pathname: "/agents", body: { name: "UploadRetry", avatarPath: source },
+      headers: { "idempotency-key": "avatar-upload-retry" }, ...services };
+    const failed = await callApi(request);
+    assert.equal(failed.statusCode, 400);
+    assert.equal(failed.body.code, "ENOENT");
+    const role = services.store.listRoles().find(item => item.name === "UploadRetry");
+    assert.ok(role.avatarPath.startsWith("corptie-role-avatar://"));
+    await writeFile(source, "recovered-image");
+    const responses = await Promise.all([callApi(request), callApi(request)]);
+    assert.ok(responses.every(item => item.statusCode === 200));
+    assert.ok(responses.every(item => item.body.agent.agentId === role.roleId));
+    assert.equal(responses[0].body.agent.avatarPath, responses[1].body.agent.avatarPath);
+    assert.equal(await readFile(responses[0].body.agent.avatarPath, "utf8"), "recovered-image");
+    assert.equal(services.store.listRoles().filter(item => item.name === "UploadRetry").length, 1);
+    assert.equal(services.store.getRole(role.roleId).avatarPath, responses[0].body.agent.avatarPath);
+  } finally {
+    if (previousHome === undefined) delete process.env.CORPTIE_HOME; else process.env.CORPTIE_HOME = previousHome;
+    await services.store.close(); await rm(services.directory, { recursive: true, force: true });
   }
 });

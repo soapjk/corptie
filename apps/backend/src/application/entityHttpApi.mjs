@@ -1,3 +1,4 @@
+import { builtinRoleAvatarId, validateRoleAvatarReference } from "../domain/builtinRoleAvatar.mjs";
 import { legacyAgentToRole, roleToLegacyAgentWire } from "../store/repositories/roleRepository.mjs";
 // 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：work/task/memory/hub 路由）。
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
@@ -23,6 +24,23 @@ import os from "node:os";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 import { readTaskHierarchyPage } from "./taskHierarchyService.mjs";
 import { handleChildTaskDeliveryHttp } from "./childTaskDeliveryHttp.mjs";
+
+// Scope concurrent imports to one Role, without subscriptions or polling.
+const roleAvatarImports = new Map();
+async function importCreatedRoleAvatar(store, role, sourcePath) {
+  const current = store.getRole(role.roleId) ?? role;
+  if (!builtinRoleAvatarId(current.avatarPath)) return { role: current, imported: false };
+  if (roleAvatarImports.has(role.roleId)) return { role: await roleAvatarImports.get(role.roleId), imported: false };
+  const pending = (async () => {
+    const managedPath = await saveAgentAvatar(role.roleId, sourcePath, {
+      environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+    });
+    return store.updateRole(role.roleId, { avatarPath: managedPath });
+  })();
+  roleAvatarImports.set(role.roleId, pending);
+  try { return { role: await pending, imported: true }; }
+  finally { if (roleAvatarImports.get(role.roleId) === pending) roleAvatarImports.delete(role.roleId); }
+}
 
 function encodeTaskCursor(cursor) {
   return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
@@ -351,7 +369,9 @@ export function handleEntityHttpRequest({
           capabilities: Array.isArray(input.capabilities) ? input.capabilities : [],
           workDir: input.workDir
         };
-        const requestHash = agentCreationRequestHash(agentInput, skillIds);
+        const requestedAvatar = validateRoleAvatarReference(input.avatarPath);
+        if (builtinRoleAvatarId(requestedAvatar)) agentInput.avatarPath = requestedAvatar;
+        const requestHash = agentCreationRequestHash({ ...agentInput, ...(requestedAvatar ? { avatarPath: requestedAvatar } : {}) }, skillIds);
         const audit = {
           timestamp: new Date().toISOString(),
           requestId,
@@ -376,7 +396,15 @@ export function handleEntityHttpRequest({
             skillIds,
             { idempotencyKey, requestHash, requestId, deviceId }
           );
-          const { role, ...receipt } = roleReceipt;
+          let { role, ...receipt } = roleReceipt;
+          let avatarImported = false;
+          // A failed upload can resume through the same persisted creation
+          // receipt. Never create a second Role or replace an already imported image.
+          if (requestedAvatar && !builtinRoleAvatarId(requestedAvatar) && builtinRoleAvatarId(role.avatarPath)) {
+            const imported = await importCreatedRoleAvatar(workService.store, role, requestedAvatar);
+            role = imported.role;
+            avatarImported = imported.imported;
+          }
           const result = { ...receipt, agent: roleToLegacyAgentWire(role) };
           auditLog({
             ...audit,
@@ -384,8 +412,8 @@ export function handleEntityHttpRequest({
             agentId: result.agent.agentId,
             originalRequestId: result.originalRequestId
           });
-          if (!result.replayed) {
-            onEntityChanged?.("AgentChanged", { action: "created", entity: result.agent });
+          if (!result.replayed || avatarImported) {
+            onEntityChanged?.("AgentChanged", { action: result.replayed ? "updated" : "created", entity: result.agent });
           }
           return sendJson(
             response,
@@ -1629,6 +1657,7 @@ function agentCreationRequestHash(agentInput, skillIds) {
       ? agentInput.workDir.trim()
       : null
   };
+  if (agentInput.avatarPath) canonical.avatarPath = agentInput.avatarPath;
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 

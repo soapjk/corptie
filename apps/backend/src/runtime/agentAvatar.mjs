@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { builtinRoleAvatarId, validateRoleAvatarReference } from "../domain/builtinRoleAvatar.mjs";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import { extname, join, resolve } from "node:path";
@@ -25,6 +27,11 @@ export function resolveAgentAvatarsRoot(options = {}) {
 // 将一个已存在的头像源文件复制到托管目录，返回规范化后的目标绝对路径。
 // 会先清理该 Agent 名下旧的托管头像文件，避免残留。
 export async function saveAgentAvatar(agentId, sourcePath, options = {}) {
+  const reference = validateRoleAvatarReference(sourcePath);
+  if (builtinRoleAvatarId(reference)) {
+    await clearAgentAvatarFiles(agentId, options);
+    return reference;
+  }
   const { avatarsRoot } = resolveAgentAvatarsRoot(options);
   const source = resolve(String(sourcePath ?? ""));
   if (!source) {
@@ -34,9 +41,14 @@ export async function saveAgentAvatar(agentId, sourcePath, options = {}) {
   const safeExt = AVATAR_EXTENSIONS.includes(ext) ? ext : ".png";
   const targetDir = join(avatarsRoot, "agents", String(agentId));
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
-  await clearAgentAvatarFiles(agentId, options);
-  const target = join(targetDir, `avatar${safeExt}`);
+  const target = join(targetDir, `avatar-${randomUUID()}${safeExt}`);
+  // Import before replacing the old reference. A failed copy keeps the current
+  // upload intact; a new path also invalidates every client's static image cache.
   await copyFile(source, target);
+  for (const entry of await readdir(targetDir)) {
+    const previous = join(targetDir, entry);
+    if (previous !== target) await rm(previous, { force: true });
+  }
   return target;
 }
 

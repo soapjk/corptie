@@ -54,6 +54,7 @@ let package = Package(
             resources: [
                 .copy("Resources/AppIcon.png"),
                 .copy("Resources/ProviderIcons"),
+                .copy("Resources/BuiltinRoleAvatars"),
                 .process("Resources/en.lproj"),
                 .process("Resources/zh-Hans.lproj")
             ],

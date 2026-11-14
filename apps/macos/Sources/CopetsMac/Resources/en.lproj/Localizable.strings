@@ -2306,3 +2306,14 @@
 "Subagent completed" = "Subagent completed";
 
 "Subagent status unknown" = "Subagent status unknown";
+
+"选择头像" = "Choose avatar";
+"上传图片…" = "Upload image…";
+"机器人头像 %@" = "Robot avatar %@";
+
+"少女头像" = "Anime girl avatar";
+"陶瓷机器人头像" = "Ceramic robot avatar";
+"老者头像" = "Elderly man avatar";
+"小狗头像" = "Dog avatar";
+"少年头像" = "Boy avatar";
+"像素机器人头像" = "Pixel robot avatar";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import test from "node:test";
 
 import { saveAgentAvatar, saveWorkAvatar } from "../src/runtime/agentAvatar.mjs";
@@ -35,9 +35,30 @@ test("Agent avatars preserve the SVG extension", async () => {
       corptieHome: join(directory, "corptie"),
       environmentName: "development"
     });
-    assert.equal(managed.endsWith("/agents/agent:svg/avatar.svg"), true);
+    assert.equal(dirname(managed).endsWith("/agents/agent:svg"), true);
+    assert.equal(extname(managed), ".svg");
     assert.equal(await readFile(managed, "utf8"), svg);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+
+test("replacing a Role upload uses a new display-cache reference and failed imports preserve it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-role-avatar-replace-"));
+  const source = join(directory, "image.png");
+  const options = { corptieHome: join(directory, "corptie"), environmentName: "development" };
+  try {
+    await writeFile(source, "first-image");
+    const first = await saveAgentAvatar("role:one", source, options);
+    await assert.rejects(saveAgentAvatar("role:one", join(directory, "missing.png"), options));
+    assert.equal(await readFile(first, "utf8"), "first-image");
+    await writeFile(source, "second-image");
+    const second = await saveAgentAvatar("role:one", source, options);
+    assert.notEqual(first, second);
+    assert.equal(await readFile(second, "utf8"), "second-image");
+    const builtin = "corptie-role-avatar://v1/robot-03";
+    assert.equal(await saveAgentAvatar("role:one", builtin, options), builtin);
+    await assert.rejects(readFile(second));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

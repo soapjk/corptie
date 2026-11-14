@@ -20,7 +20,7 @@ struct AgentAvatarView: View {
 
     var body: some View {
         Group {
-            if let avatarPath = boundAgent?.avatarPath, !avatarPath.isEmpty {
+            if let avatarPath = boundAgent?.resolvedAvatarPath, !avatarPath.isEmpty {
                 AnimatedAvatarImage(path: avatarPath)
                     .background(Color.white.opacity(0.16))
             } else {

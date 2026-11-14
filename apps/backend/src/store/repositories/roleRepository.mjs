@@ -1,3 +1,4 @@
+import { defaultRoleAvatarReference, randomRoleAvatarReference, validateRoleAvatarReference } from "../../domain/builtinRoleAvatar.mjs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { resolveAgentWorkDir } from "../../runtime/agentWorkDir.mjs";
@@ -320,7 +321,7 @@ export class RoleRepository {
         JSON.stringify(input.capabilities ?? []),
         input.systemPrompt ?? "",
         workDir,
-        typeof input.avatarPath === "string" && input.avatarPath.trim() ? input.avatarPath.trim() : null,
+        validateRoleAvatarReference(input.avatarPath) ?? randomRoleAvatarReference(),
         input.currentSessionId ?? null,
         now,
         now
@@ -341,7 +342,7 @@ export class RoleRepository {
     // avatarPath 需区分「未传」与「显式置空」：传入 null / 空串表示清除头像，
     // 未传（不含该键）则保持原值。其余字段沿用 ?? 回退。
     const avatarPath = Object.prototype.hasOwnProperty.call(input, "avatarPath")
-      ? (typeof input.avatarPath === "string" && input.avatarPath.trim() ? input.avatarPath.trim() : null)
+      ? (validateRoleAvatarReference(input.avatarPath) ?? defaultRoleAvatarReference(agentId))
       : existing.avatarPath;
     this.db.run(
       `UPDATE agents SET name = ?, description = ?, role = ?, status = ?, system_prompt = ?, capabilities_json = ?, work_dir = ?, avatar_path = ?, updated_at = ? WHERE agent_id = ?`,
@@ -426,7 +427,7 @@ function roleFromRow(row) {
     systemPrompt: row.system_prompt ?? "",
     capabilities: parseJson(row.capabilities_json, []),
     workDir: row.work_dir ?? null,
-    avatarPath: row.avatar_path ?? null,
+    avatarPath: row.avatar_path || defaultRoleAvatarReference(row.agent_id),
     currentSessionId: row.current_session_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
