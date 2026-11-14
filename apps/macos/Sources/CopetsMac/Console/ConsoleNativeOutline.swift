@@ -36,6 +36,7 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var dataRevision: Int = 0
     var chatPreviewExpanded: Bool? = nil
     var rowHeight: (Row) -> CGFloat = { _ in 30 }
+    var headerHeight: CGFloat = 30
     var childRows: (Row) -> [Row] = { _ in [] }
     var rowIsExpanded: (Row) -> Bool = { _ in false }
     var rowExpansionChanged: (Row, Bool) -> Void = { _, _ in }
@@ -238,7 +239,9 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         }
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-            guard let node = item as? Node, let row = node.row, let group = node.owner?.group else { return 30 }
+            guard let node = item as? Node else { return 30 }
+            if let group = node.group { return group.headerHeight }
+            guard let row = node.row, let group = node.owner?.group else { return 30 }
             return group.rowHeight(row)
         }
 

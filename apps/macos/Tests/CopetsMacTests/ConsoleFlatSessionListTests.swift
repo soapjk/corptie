@@ -33,11 +33,28 @@ final class ConsoleFlatSessionListTests: XCTestCase {
         }
         let outline = try XCTUnwrap(find(host))
         XCTAssertEqual(outline.numberOfRows, 9)
-        XCTAssertEqual(outline.rect(ofRow: 1).height, 30 + outline.intercellSpacing.height)
+        XCTAssertEqual(outline.rect(ofRow: 1).height, 26 + outline.intercellSpacing.height)
         XCTAssertEqual(outline.rect(ofRow: 8).height, 44 + outline.intercellSpacing.height)
         let chatHeader = try XCTUnwrap(outline.view(atColumn: 0, row: 0, makeIfNecessary: true))
         let projectHeader = try XCTUnwrap(outline.view(atColumn: 0, row: 7, makeIfNecessary: true))
         XCTAssertEqual(chatHeader.frame.minX, projectHeader.frame.minX, accuracy: 0.5)
+        let chatRow = try XCTUnwrap(outline.view(atColumn: 0, row: 1, makeIfNecessary: true))
+        let groupedProjects = ConsoleNativeOutlineGroup<ConsoleNativeOutlineEntry>(id: "projects-heading",
+            header: AnyView(Text("项目")), isSection: true, showsDisclosureIndicator: false)
+        let groupedHost = NSHostingView(rootView: ConsoleNativeOutline(groups: { [collapsed, groupedProjects] }) { Text($0.id) })
+        let groupedWindow = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 300, height: 500),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        groupedWindow.isReleasedWhenClosed = false; groupedWindow.contentView = groupedHost
+        defer { groupedWindow.contentView = nil; groupedWindow.orderOut(nil) }
+        groupedHost.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        let groupedOutline = try XCTUnwrap(find(groupedHost))
+        let groupedHeader = try XCTUnwrap(groupedOutline.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        let groupedRow = try XCTUnwrap(groupedOutline.view(atColumn: 0, row: 1, makeIfNecessary: true))
+        XCTAssertEqual(chatRow.frame.minX - chatHeader.frame.minX,
+            groupedRow.frame.minX - groupedHeader.frame.minX, accuracy: 0.5)
+        XCTAssertEqual(outline.rect(ofRow: 1).height, groupedOutline.rect(ofRow: 1).height)
+        XCTAssertEqual(outline.rect(ofRow: 0).height, 24 + outline.intercellSpacing.height)
     }
 
     private func session(_ id: String, workID: String? = nil, taskID: String? = nil) throws -> TaskSession {

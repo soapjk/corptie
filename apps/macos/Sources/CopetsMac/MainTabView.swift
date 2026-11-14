@@ -28,7 +28,7 @@ enum MainWindowPageLayoutMetrics {
     static let headerRowHeight: CGFloat = 48
     static let sidebarCreationRowHeight: CGFloat = 34
     static let sidebarHeaderRowSpacing: CGFloat = 4
-    static let sidebarHeaderBottomInset: CGFloat = 6
+    static let sidebarHeaderBottomInset: CGFloat = 0
     static let cardCornerRadius: CGFloat = 10
     static let cardBorderOpacity = 0.10
     static let increasedContrastCardBorderOpacity = 0.40

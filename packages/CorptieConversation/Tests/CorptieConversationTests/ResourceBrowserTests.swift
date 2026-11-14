@@ -8,6 +8,23 @@ import CorptieClientCore
 @testable import CorptieConversation
 
 @MainActor @Suite struct ResourceBrowserTests {
+    @Test func labelledToolbarActionsWrapAndRemainWithinNarrowReaders() {
+        let sizes = [CGSize(width: 180, height: 28), .init(width: 156, height: 28),
+            .init(width: 100, height: 28), .init(width: 108, height: 28),
+            .init(width: 172, height: 28), .init(width: 70, height: 28)]
+        for width: CGFloat in [240, 320, 400, 700, 1100] {
+            let layout = ResourceToolbarLayout.arrangement(sizes: sizes, width: width)
+            #expect(layout.frames.count == sizes.count)
+            #expect(layout.frames.allSatisfy { $0.minX >= 0 && $0.maxX <= width && $0.height == 28 })
+            #expect(layout.frames.last!.maxY == layout.size.height)
+            for pair in zip(layout.frames, layout.frames.dropFirst()) {
+                #expect(!pair.0.intersects(pair.1))
+            }
+            if width == 1100 { #expect(layout.size.height == 28) }
+            if width == 240 { #expect(layout.size.height > 28) }
+        }
+    }
+
     @Test func columnWidthPreservesReaderSpaceWhenWindowShrinks() {
         for width in [700.0, 701, 780, 900, 1200, 1920] {
             for preferred in [100.0, 240, 300, 480, 700] {

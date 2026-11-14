@@ -86,6 +86,7 @@ public struct ResourceBrowser: View {
     let api: @MainActor () async throws -> ClientResourceAPI
     let openSession: (String) -> Void
     let revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
+    let openFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
     let columnLayout: ResourceBrowserColumnLayout?
     @State private var store = ResourceBrowserStore()
     @State private var query = ""
@@ -108,10 +109,12 @@ public struct ResourceBrowser: View {
                 works: [(id: String, name: String)], currentWorkId: String? = nil,
                 api: @escaping @MainActor () async throws -> ClientResourceAPI, openSession: @escaping (String) -> Void,
                 revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)? = nil,
+                openFile: (@MainActor (ClientResourceFocus) async throws -> Void)? = nil,
                 columnLayout: ResourceBrowserColumnLayout? = nil) {
         _focus = focus; self.active = active; self.connected = connected; self.works = works
         self.currentWorkId = currentWorkId; self.api = api; self.openSession = openSession
         self.revealFile = revealFile
+        self.openFile = openFile
         self.columnLayout = columnLayout
         _work = State(initialValue: focus.wrappedValue?.workId ?? "")
     }
@@ -224,7 +227,7 @@ public struct ResourceBrowser: View {
     @ViewBuilder private var selected: some View {
         if let focus, !focus.id.isEmpty, connected {
             ResourceDetail(focus: focus, active: active, api: api, openSession: openSession,
-                           revealFile: revealFile,
+                           revealFile: revealFile, openFile: openFile,
                            changed: { refreshID &+= 1 }, removed: { self.focus = nil; refreshID &+= 1 }).id(focus)
         } else {
             ContentUnavailableView {
@@ -271,6 +274,7 @@ private struct ResourceDetail: View {
     let api: @MainActor () async throws -> ClientResourceAPI
     let openSession: (String) -> Void
     let revealFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
+    let openFile: (@MainActor (ClientResourceFocus) async throws -> Void)?
     let changed: () -> Void
     let removed: () -> Void
     @State private var detail: ClientResourceDetail?
@@ -306,36 +310,60 @@ private struct ResourceDetail: View {
                 if let detail {
                     Text(detail.resource.title).font(.title2).textSelection(.enabled)
                     Text(detail.resource.workName.isEmpty ? "会话资源" : detail.resource.workName).font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Picker("版本", selection: $version) { ForEach(detail.versions) { value in Text("v\(value.version)\(value.approvalStatus == "draft" ? " · 草稿" : "")").tag(value.version) } }.frame(maxWidth: 260)
-                        Spacer()
+                    ResourceToolbarLayout {
+                        Picker("版本", selection: $version) {
+                            ForEach(detail.versions) { value in
+                                Text("v\(value.version)\(value.approvalStatus == "draft" ? " · 草稿" : "")").tag(value.version)
+                            }
+                        }.frame(maxWidth: 180)
+                        if openFile != nil {
+                            Button("使用系统 App 打开", systemImage: "arrow.up.forward.app") { Task { await openSelectedFile() } }
+                                .disabled(selectedVersion == nil || !detail.resource.capabilities.contains("read"))
+                        }
+                        Button(offset == nil ? "复制正文" : "复制已载入正文", systemImage: "doc.on.doc") {
+                            copyResourceText(chunks.map(\.text).joined())
+                        }.disabled(binary || chunks.isEmpty)
+                        if detail.resource.capabilities.contains("export") {
+                            Button("导出此版本…", systemImage: "square.and.arrow.up") { Task { await exportVersion() } }
+                                .disabled((selectedVersion?.byteLength ?? 0) > 16 * 1024 * 1024)
+                                .help("导出当前所选版本，直接导出上限 16 MiB")
+                        }
+                        if detail.resource.capabilities.contains("publish") {
+                            Button("编辑并发布新版本", systemImage: "square.and.pencil") {
+                                editingResource = detail.resource; approvePublication = false
+                                editedContent = chunks.map(\.text).joined(); editor = .publish
+                            }.disabled(offset != nil || binary || chunks.isEmpty || version != detail.resource.currentVersion)
+                        }
                         Menu {
                             if revealFile != nil {
                                 Button("打开所在文件夹", systemImage: "folder") { Task { await revealSelectedFile() } }
                                     .disabled(selectedVersion == nil || !detail.resource.capabilities.contains("read"))
                             }
-                            Button(offset == nil ? "复制正文" : "复制已载入正文") { copyResourceText(chunks.map(\.text).joined()) }.disabled(binary || chunks.isEmpty)
-                            if detail.resource.capabilities.contains("metadata") { Button("编辑信息") { editingResource = detail.resource; editedTitle = detail.resource.title; editedSummary = detail.resource.summary; editor = .metadata } }
-                            if detail.resource.capabilities.contains("publish") {
-                                Button("编辑并发布新版本") { editingResource = detail.resource; approvePublication = false; editedContent = chunks.map(\.text).joined(); editor = .publish }
-                                    .disabled(offset != nil || binary || chunks.isEmpty || version != detail.resource.currentVersion)
+                            if detail.resource.capabilities.contains("metadata") {
+                                Button("编辑信息") {
+                                    editingResource = detail.resource; editedTitle = detail.resource.title
+                                    editedSummary = detail.resource.summary; editor = .metadata
+                                }
                             }
-                            if detail.resource.capabilities.contains("export") {
-                                Button("导出此版本…") { Task { await exportVersion() } }.disabled((selectedVersion?.byteLength ?? 0) > 16 * 1024 * 1024)
-                                if (selectedVersion?.byteLength ?? 0) > 16 * 1024 * 1024 { Text("直接导出上限 16 MiB") }
+                            if detail.resource.capabilities.contains("revoke") {
+                                Divider()
+                                Button("删除资源…", role: .destructive) { deleteConfirm = true }
                             }
-                            if detail.resource.capabilities.contains("revoke") { Button("删除资源…", role: .destructive) { deleteConfirm = true } }
-                        } label: { Image(systemName: "ellipsis") }.disabled(busy)
+                        } label: { Label("更多", systemImage: "ellipsis") }
+                        .menuIndicator(.hidden)
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(busy)
+                    .accessibilityIdentifier("resource.document.actions")
                     if focus.version == version { Text("正在查看会话引用的固定版本，不会自动跟随更新").font(.caption).foregroundStyle(.secondary) }
                     else if focus.version != nil { Text("正在预览其他版本，原会话引用未改变").font(.caption).foregroundStyle(.secondary) }
                     if version > 0 && detail.resource.currentVersion > version { Text("有更新版本，可从版本菜单选择；当前阅读内容保持不变").font(.caption).foregroundStyle(.secondary) }
-                    if binary { Text("此版本无法直接预览，请从右上角菜单导出原文件。").foregroundStyle(.secondary) }
+                    if binary { Text("此版本无法直接预览，请点击“导出此版本”获取原文件。").foregroundStyle(.secondary) }
                     if selectedVersion?.mimeType == "application/vnd.corptie.repository-reference" { Text("此资源引用仓库中的文件，不存储独立正文。").foregroundStyle(.secondary) }
                     ForEach(chunks) { chunk in ResourceDocumentView(chunk: chunk) }
                     if let error { Text(error).font(.caption).foregroundStyle(.red); Button("重试") { beginRead() } }
                     if offset != nil && !binary && error == nil {
-                        if loadedPages >= 32 { Text("已达到预览上限，请从右上角菜单导出全文").font(.caption) }
+                        if loadedPages >= 32 { Text("已达到预览上限，请点击“导出此版本”导出全文").font(.caption) }
                         else { Button(loading ? "读取中…" : "继续读取") { beginRead() }.disabled(loading) }
                     }
                     DisclosureGroup("来源与关联") {
@@ -466,6 +494,16 @@ private struct ResourceDetail: View {
             changed(); NotificationCenter.default.post(name: .corptieResourceCatalogChanged, object: nil)
             if action == "revoke" { removed() } else { await loadDetail() }
         } catch is CancellationError { } catch { fail(error) }
+    }
+    private func openSelectedFile() async {
+        guard !busy, active, let openFile, let selectedVersion,
+              let resource = detail?.resource, resource.capabilities.contains("read") else { return }
+        let requested = ClientResourceFocus(id: resource.id, version: selectedVersion.version,
+            hash: selectedVersion.contentHash, workId: resource.workId)
+        busy = true
+        defer { busy = false }
+        do { try await openFile(requested) }
+        catch { self.error = "无法使用系统 App 打开：\(error.localizedDescription)" }
     }
     private func revealSelectedFile() async {
         guard !busy, active, let revealFile, let selectedVersion,
