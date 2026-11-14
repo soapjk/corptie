@@ -323,7 +323,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(creationPosition.lowerBound > archivePosition.lowerBound)
         #expect(controls.contains("VStack(spacing: 0)"))
         #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)"))
-        #expect(controls.contains(".padding(.leading, navigationMode == .sessionList ? 8 : 13)"))
+        #expect(controls.contains(".padding(.leading, 13)"))
         #expect(!source.contains("consoleSidebarCreationRow"))
         #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)"))
         #expect(MainWindowPageLayoutMetrics.headerRowHeight == 48)
@@ -904,8 +904,9 @@ struct UnifiedConsoleControlSurfaceTests {
     func flatSessionListSharesTheOutlineRowSurfaceInsteadOfPaintingItsOwnHighlight() throws {
         let flat = try source(named: "Console/ConsoleFlatSessionList.swift")
         #expect(flat.contains(".consoleOutlineRowSurface(isSelected:"))
-        #expect(flat.contains("fixesHeightToNativeRow: false"))
-        #expect(flat.contains(".listRowInsets(EdgeInsets())"))
+        #expect(flat.contains("fixesHeightToNativeRow: isChat"))
+        #expect(flat.contains("ConsoleNativeOutline(groups:"))
+        #expect(flat.contains("ConsoleChatSection.group("))
         #expect(!flat.contains(".consoleHoverFeedback(isSelected:"))
         #expect(!flat.contains("horizontalInset: 0"))
 
