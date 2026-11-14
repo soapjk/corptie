@@ -1368,7 +1368,13 @@ struct SessionTimelineWindowResponse: Decodable, Sendable {
 struct SessionUsageResponse: Decodable, Equatable {
     let account: CodexAccountUsage
     let context: CodexContextUsage?
+    func matching(provider: String?, model: String?) -> Self? {
+        guard account.provider == provider, account.model == model else { return nil }
+        return self
+    }
     var accountFresh: Bool? = nil
+    var accountLoadFailed: Bool? = nil
+    var contextLoadFailed: Bool? = nil
     var resetForecast: CodexResetForecastSnapshot? = nil
 }
 
@@ -1394,6 +1400,8 @@ struct SessionUsageEventEnvelope: Decodable {
 }
 
 struct SessionUsageEventPayload: Decodable {
+    let providerId: String?
+    let model: String?
     let sessionId: String
     let context: CodexContextUsage
 }
@@ -1457,6 +1465,20 @@ struct CodexRateLimitWindow: Decodable, Equatable {
 }
 
 struct CodexContextUsage: Decodable, Equatable {
+    /// Missing counters are unknown, while an explicitly reported zero is valid.
+    var displayValues: (used: Double, window: Double, percent: Double)? {
+        guard let window = contextWindow, window.isFinite, window > 0 else { return nil }
+        let used: Double
+        if let tokens = usedTokens, tokens.isFinite, tokens >= 0 {
+            used = min(tokens, window)
+        } else if let remaining = remainingTokens, remaining.isFinite, remaining >= 0, remaining <= window {
+            used = window - remaining
+        } else { return nil }
+        let percent = usedPercent.flatMap { $0.isFinite && $0 >= 0 && $0 <= 100 ? $0 : nil }
+            ?? used / window * 100
+        return (used, window, percent)
+    }
+
     let usedTokens: Double?
     let contextWindow: Double?
     let remainingTokens: Double?

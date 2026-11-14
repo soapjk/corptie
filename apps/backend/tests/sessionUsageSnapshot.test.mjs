@@ -13,6 +13,8 @@ test("session usage keeps context data when account quota loading fails", async 
   assert.deepEqual(snapshot, {
     account: { available: true, provider: "codex", cached: true },
     accountFresh: false,
+    accountLoadFailed: true,
+    contextLoadFailed: false,
     context: { usedTokens: 25, contextWindow: 100, remainingTokens: 75 },
     resetForecast: null
   });
@@ -31,6 +33,8 @@ test("session usage keeps account quota when context loading fails", async () =>
   assert.deepEqual(snapshot, {
     account: { available: true, provider: "claude", rateLimits: { primary: {} } },
     accountFresh: true,
+    accountLoadFailed: false,
+    contextLoadFailed: true,
     context: null,
     resetForecast: { forecast: null }
   });
@@ -46,4 +50,26 @@ test("strict account refresh rejects cached quota after Provider failure", async
     fallbackAccount: { available: true, provider: "codex", rateLimitResetCredits: { availableCount: 2 } },
     requireFreshAccount: true
   }), { code: "ACCOUNT_USAGE_REFRESH_FAILED" });
+});
+
+
+test("missing and cached account snapshots are not request failures", async () => {
+  const snapshot = await loadSessionUsageSnapshot({
+    loadAccount: async () => null, loadContext: async () => null,
+    fallbackAccount: { available: false, provider: "fixture" }
+  });
+  assert.equal(snapshot.accountFresh, false);
+  assert.equal(snapshot.accountLoadFailed, false);
+  assert.equal(snapshot.contextLoadFailed, false);
+  assert.equal(snapshot.context, null);
+});
+
+
+test("unsupported account capability is distinct from a failed request", async () => {
+  const snapshot = await loadSessionUsageSnapshot({
+    loadAccount: async () => { throw Object.assign(new Error("unsupported"), { code: "CAPABILITY_UNSUPPORTED" }); },
+    loadContext: async () => null, fallbackAccount: { available: false }
+  });
+  assert.equal(snapshot.accountFresh, false);
+  assert.equal(snapshot.accountLoadFailed, false);
 });
