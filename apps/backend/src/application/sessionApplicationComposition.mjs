@@ -9,7 +9,7 @@ import { resolveMessageMentionContext } from "./messageMentionContext.mjs";
 import { buildDirectUserMessageEvidence } from "./directUserMessageEvidence.mjs";
 import { skillMcpTurnContext } from "./skillMcpTurnContext.mjs";
 import { desiredToolDomainIds, appliedToolDomainIds } from "./sessionToolBindingProjection.mjs";
-import { assertNoAutomaticWorktreeMutation } from "./worktreeAutoFollowService.mjs";
+import { conversationWorktreeBlocker } from "./workChatReadOnlyTurnService.mjs";
 import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
 
 // Product policy wired into the common Session service. Later-created services
@@ -50,7 +50,8 @@ export function createSessionApplicationComposition({
     resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
     assertMessageDispatchAllowed: (reference, context) => {
       assertForkDispatchAllowed(reference.sessionId);
-      assertNoAutomaticWorktreeMutation(store, reference);
+      const blocker = conversationWorktreeBlocker(store, agentProviderRegistry, reference);
+      if (blocker) throw Object.assign(new Error(blocker.message), { code: "SESSION_BUSY", reason: blocker.reason, statusCode: 409 });
       return assertSessionRecoveryMessageBoundary(reference);
     },
     recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {

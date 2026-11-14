@@ -704,6 +704,7 @@ export class SessionApplicationService {
     } catch (error) {
       throw withDispatchStateNotSent(error);
     }
+    if (this.workChatReadOnlyTurns?.required(reference)) return this.workChatReadOnlyTurns.send(reference, message, context);
     // This check precedes native tool preparation and ordinary Provider send.
     // The host owns the route: a failed restricted turn never falls back.
     this.coordinationTurns?.continuationFor?.(reference, context);
@@ -771,6 +772,10 @@ export class SessionApplicationService {
       if (this.coordinationTurns?.enabled(dispatchReference)) {
         contextReceipt.reject();
         return this.coordinationTurns.send(dispatchReference, message, context);
+      }
+      if (this.workChatReadOnlyTurns?.required(dispatchReference)) {
+        contextReceipt.reject();
+        return this.workChatReadOnlyTurns.send(dispatchReference, message, context);
       }
       result = await this.registry.invoke(
         dispatchReference.providerId,
@@ -876,6 +881,8 @@ export class SessionApplicationService {
 
   async interrupt(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const readOnly = await this.workChatReadOnlyTurns?.interrupt(reference);
+    if (readOnly) return readOnly;
     const coordinated = await this.coordinationTurns?.interrupt(reference);
     if (coordinated) return coordinated;
     return this.registry.invoke(

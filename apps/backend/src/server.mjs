@@ -3,7 +3,7 @@ import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
 import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.mjs";
 import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
-import { worktreeDispatchBlocker } from "./application/worktreeExecutionBarrier.mjs";
+import { conversationWorktreeBlocker, WorkChatReadOnlyTurnService } from "./application/workChatReadOnlyTurnService.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
@@ -1744,6 +1744,14 @@ sessionApplicationService.coordinationTurns = new CoordinationTurnService({
     logicalRoute: store.getLogicalSession(reference.logicalSessionId)
   })
 });
+sessionApplicationService.workChatReadOnlyTurns = new WorkChatReadOnlyTurnService({
+  store, registry: agentProviderRegistry, planner: backgroundAgentService, emitEvent,
+  onTerminal: ({ reference, turnId, status }) => handleCommittedProviderTerminalLifecycle({
+    event: { type: `turn.${status}`, turnId, source: "host-readonly-discussion" },
+    projection: { session: store.getSession(reference.sessionId), terminalStatus: status },
+    logicalRoute: store.getLogicalSession(reference.logicalSessionId)
+  })
+});
 const coordinationRequestService = new CoordinationRequestService({ store,
   resolveMessage: async (reference, message) => ({ ...message, images: await Promise.all((message.images ?? []).map(async image => {
     const stored = await chatResourceService.readImage(reference, image.managedPath);
@@ -1900,7 +1908,7 @@ const {
   scheduleAgentWorkDrain, dispatchSessionChannelDelivery, sendUnifiedSessionMessage, emitEvent,
   syncSessionChannelDeliveriesIntoAgentWorkQueue, syncCollaborationDeliveriesIntoAgentWorkQueue,
   isWorkspaceMutationActive: sessionId => automaticWorktreeMutationActive(store, { sessionId }),
-  inspectWorkspaceDispatchBlocker: sessionId => worktreeDispatchBlocker(store,{sessionId})
+  inspectWorkspaceDispatchBlocker: sessionId => conversationWorktreeBlocker(store, agentProviderRegistry, {sessionId})
 });
 function cancelQueuedUserMessage(sessionId, taskId) {
   const request = store.selectOne("SELECT request_id,main_session_id FROM coordination_requests WHERE operation_id=?", [taskId]);
