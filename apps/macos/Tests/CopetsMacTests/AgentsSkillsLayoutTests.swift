@@ -84,6 +84,24 @@ struct AgentsSkillsLayoutTests {
 @MainActor
 @Suite("Role page window-filling columns", .serialized)
 struct RolePageColumnsTests {
+    @Test("Retained role drafts preserve Skill edits and builtin avatars independently")
+    func retainedRoleDraft() {
+        var role = Role(roleId: "role:draft", name: "Role", description: "Description",
+                        status: "available", systemPrompt: "Prompt", capabilities: [],
+                        createdAt: "", updatedAt: "")
+        role.skillIds = ["skill:original"]
+        let avatar = role.resolvedAvatarPath
+        let drafts = [role.id: RoleEditDraft(agent: role)]
+        let draft = drafts[role.id]!
+        #expect(draft.selectedSkillIds == ["skill:original"])
+        draft.name = "Edited"
+        draft.selectedSkillIds = ["skill:new"]
+        #expect(drafts[role.id]?.name == "Edited")
+        #expect(drafts[role.id]?.selectedSkillIds == ["skill:new"])
+        #expect(role.skillIds == ["skill:original"])
+        #expect(role.resolvedAvatarPath == avatar)
+    }
+
     @Test("Both panes keep the full available height while the window is resized")
     func panesFollowTheViewport() throws {
         _ = NSApplication.shared

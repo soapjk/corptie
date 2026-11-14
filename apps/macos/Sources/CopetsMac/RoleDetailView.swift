@@ -1,7 +1,7 @@
 import SwiftUI
 import CorptieConversation
 
-// Role 详情页：承载 Profile、操作和 Memory。
+// Role 详情页：承载 Profile、已安装 Skill、操作和 Memory。
 // 角色管理页原位嵌入；其他入口保留独立展示。
 
 /// Owned by the gallery while a role is edited, so collapsing, switching cards
@@ -10,11 +10,13 @@ final class RoleEditDraft: ObservableObject {
     @Published var name: String
     @Published var detail: String
     @Published var systemPrompt: String
+    @Published var selectedSkillIds: Set<String>
 
     init(agent: Role) {
         name = agent.name
         detail = agent.description
         systemPrompt = agent.systemPrompt
+        selectedSkillIds = Set(agent.skillIds ?? [])
     }
 }
 
@@ -28,6 +30,8 @@ struct RoleDetailView: View {
     private let embedded: Bool
     private let onClose: (() -> Void)?
     @State private var showsAvatarPicker = false
+    @State private var showSkillPicker = false
+    @State private var showMcpManager = false
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
@@ -76,6 +80,25 @@ struct RoleDetailView: View {
                 close()
                 router.openSession(session.id, source: .createdSession)
             }
+        }
+        .sheet(isPresented: $showSkillPicker) {
+            RoleSkillPickerView(skills: client.skills, selectedSkillIds: draft.selectedSkillIds) { selection in
+                draft.selectedSkillIds = selection
+            }
+        }
+        .sheet(isPresented: $showMcpManager) {
+            McpManagementView(roles: [agent], initialRoleId: agent.roleId)
+        }
+        .task {
+            guard !embedded else { return }
+            await client.refreshSkills()
+            await client.refreshRoles()
+            if let latest = client.roles.first(where: { $0.roleId == agent.roleId }) {
+                draft.selectedSkillIds = Set(latest.skillIds ?? [])
+            }
+        }
+        .onChange(of: client.skills.map(\.skillId)) { _, availableSkillIds in
+            if !embedded { draft.selectedSkillIds.formIntersection(availableSkillIds) }
         }
     }
 
@@ -191,6 +214,22 @@ struct RoleDetailView: View {
                 } trailing: {
                     AgentAssistButton(fieldLabel: "System Prompt", text: $draft.systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(draft.name)；描述：\(draft.detail)")
                 }
+                RoleInstalledSkillsView(
+                    skills: client.skills,
+                    selectedSkillIds: $draft.selectedSkillIds,
+                    isEnabled: true,
+                    onAdd: { showSkillPicker = true }
+                )
+                field("MCP") {
+                    HStack {
+                        Text(L10n("Manage MCP assignments, tool permissions, and credentials for this role."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L10n("Manage MCP")) { showMcpManager = true }
+                            .accessibilityIdentifier("role-manage-mcp")
+                    }
+                }
 
             }
             if let saveError {
@@ -236,7 +275,8 @@ struct RoleDetailView: View {
                             roleId: agent.roleId,
                             name: draft.name == agent.name ? nil : draft.name,
                             description: draft.detail,
-                            systemPrompt: draft.systemPrompt
+                            systemPrompt: draft.systemPrompt,
+                            skillIds: Array(draft.selectedSkillIds)
                         )
                     }
                     isSaving = false
