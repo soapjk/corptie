@@ -112,7 +112,7 @@ public struct CloudRelayApplicationMessage: Codable, Equatable, Sendable {
 
 public actor CloudRelayHTTPClient {
     public static let maximumRequestBytes = 8 * 1_024 * 1_024
-    public static let maximumResponseBytes = 16 * 1_024 * 1_024
+    public static let maximumResponseBytes = 20 * 1_024 * 1_024
     public static let maximumChunkBytes = 16 * 1_024
 
     private struct PendingData {
@@ -289,6 +289,7 @@ public actor CloudRelayHTTPClient {
             if final {
                 pending.removeValue(forKey: message.id)
                 deadlines.removeValue(forKey: message.id)?.cancel()
+                Self.log.info("Stream complete: request=\(message.id, privacy: .public) receivedBytes=\(value.receivedBytes)")
                 value.stream.finish()
                 return
             }
@@ -314,7 +315,7 @@ public actor CloudRelayHTTPClient {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.scheme = nil; components.host = nil; components.port = nil; components.user = nil; components.password = nil; components.fragment = nil
         guard let path = components.string, path.hasPrefix("/"), path.utf8.count <= 8_192 else { throw CloudRelayTransportError.unsupportedRequest }
-        let allowed = Set(["accept", "content-type", "if-none-match", "if-match", "last-event-id", "x-corptie-request-id"])
+        let allowed = Set(["accept", "content-type", "if-none-match", "if-match", "last-event-id", "x-corptie-request-id", "range", "if-range"])
         let headers = (request.allHTTPHeaderFields ?? [:]).reduce(into: [String: String]()) { result, entry in
             let name = entry.key.lowercased()
             if allowed.contains(name) { result[name] = entry.value }
@@ -747,6 +748,10 @@ public actor CloudRelayMacAgent {
                 ? cloudGrantRequest(message, peer: connection.peer)
                 : Self.localRequest(message, peerID: connection.peer.id, endpoint: localTransport.endpoint)
             let responsePriority = CloudRelaySendPriority.response(to: request)
+            if responsePriority == .image {
+                let trace = request.value(forHTTPHeaderField: "X-Corptie-Request-Id").flatMap(UUID.init(uuidString:))?.uuidString ?? "absent"
+                Self.log.info("Image relay started: request=\(message.id, privacy: .public) clientRequest=\(trace, privacy: .public)")
+            }
             if request.value(forHTTPHeaderField: "Accept")?.hasPrefix("text/event-stream") == true {
                 let (bytes, response) = try await localTransport.bytes(for: request)
                 Self.log.info("Local stream head: connection=\(connectionID, privacy: .public) request=\(message.id, privacy: .public) status=\(response.statusCode) elapsed=\(String(describing: started.duration(to: .now)), privacy: .public)")
@@ -891,7 +896,7 @@ public actor CloudRelayMacAgent {
         var request = URLRequest(url: relative.absoluteURL)
         request.httpMethod = method
         request.httpBody = message.body
-        let allowed = Set(["accept", "content-type", "if-none-match", "if-match", "last-event-id", "x-corptie-request-id"])
+        let allowed = Set(["accept", "content-type", "if-none-match", "if-match", "last-event-id", "x-corptie-request-id", "range", "if-range"])
         for (name, value) in message.headers ?? [:] where allowed.contains(name.lowercased()) {
             request.setValue(value, forHTTPHeaderField: name)
         }
@@ -908,7 +913,7 @@ public actor CloudRelayMacAgent {
     }
 
     private func responseHeaders(_ response: HTTPURLResponse) -> [String: String] {
-        let allowed = Set(["content-type", "etag", "cache-control", "x-corptie-revision"])
+        let allowed = Set(["content-type", "content-length", "content-encoding", "content-range", "accept-ranges", "etag", "cache-control", "x-corptie-revision"])
         return response.allHeaderFields.reduce(into: [:]) { result, entry in
             guard let name = entry.key as? String, let value = entry.value as? String, allowed.contains(name.lowercased()) else { return }
             result[name] = value

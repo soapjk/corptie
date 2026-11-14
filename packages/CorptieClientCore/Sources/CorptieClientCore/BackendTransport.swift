@@ -83,8 +83,8 @@ public struct BackendByteStream: AsyncSequence, Sendable {
         return AsyncIterator(chunks: chunks!.makeAsyncIterator())
     }
 
-    fileprivate func collectImage(total: Int64?, progress: @escaping @Sendable (ClientImageProgress) -> Void) async throws -> Data {
-        guard let chunks else { return try await ClientImageDataCollector.collect(self, total: total, progress: progress) }
+    fileprivate func collectImage(total: Int64?, progress: @escaping @Sendable (ClientImageProgress) -> Void, chunkReceived: @Sendable (Data) throws -> Void = { _ in }) async throws -> Data {
+        guard let chunks else { return try await ClientImageDataCollector.collect(self, total: total, progress: progress, chunk: chunkReceived) }
         guard total == nil || total! <= ClientImageDataCollector.maximum else { throw URLError(.dataLengthExceedsMaximum) }
         var data = Data(), last = ContinuousClock.now
         if let total { data.reserveCapacity(Int(total)) }
@@ -93,6 +93,7 @@ public struct BackendByteStream: AsyncSequence, Sendable {
             try Task.checkCancellation()
             guard chunk.count <= ClientImageDataCollector.maximum - data.count else { throw URLError(.dataLengthExceedsMaximum) }
             data.append(chunk)
+            try chunkReceived(chunk)
             if last.duration(to: .now) >= .milliseconds(100) {
                 last = .now
                 progress(.init(received: Int64(data.count), total: total))
@@ -100,6 +101,7 @@ public struct BackendByteStream: AsyncSequence, Sendable {
         }
         try Task.checkCancellation()
         guard !data.isEmpty else { throw URLError(.zeroByteResource) }
+        guard total == nil || Int64(data.count) == total else { throw URLError(.networkConnectionLost) }
         progress(.init(received: Int64(data.count), total: total))
         return data
     }
@@ -226,24 +228,30 @@ public final class BackendTransport: Sendable {
 
     /// Images retain relay chunks and native URLSession AsyncBytes directly.
     /// Do not pass a multi-megabyte body through the SSE per-byte stream adapter.
-    public func imageData(for request: URLRequest,
+    public func imageData(for request: URLRequest, transfer: ClientImageTransfer? = nil,
         progress: @escaping @Sendable (ClientImageProgress) -> Void = { _ in }) async throws -> Data {
-        let prepared = try prepare(request)
+        let prepared = try prepare(transfer?.prepare(request) ?? request)
         func length(_ response: HTTPURLResponse) -> Int64? {
             let encoding = response.value(forHTTPHeaderField: "Content-Encoding")?.lowercased()
             return response.expectedContentLength > 0 && (encoding == nil || encoding == "identity")
                 ? response.expectedContentLength : nil
         }
+        let stream: BackendByteStream
+        let response: HTTPURLResponse
         if let byteHandler {
-            let (stream, response) = try await byteHandler(prepared)
-            try await Self.requireByteSuccess(stream, response: response)
-            return try await stream.collectImage(total: length(response), progress: progress)
+            (stream, response) = try await byteHandler(prepared)
+        } else {
+            guard let session else { throw ClientConnectionError.invalidResponse }
+            let (native, rawResponse) = try await session.bytes(for: prepared)
+            guard let http = rawResponse as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
+            stream = BackendByteStream(native: native); response = http
         }
-        guard let session else { throw ClientConnectionError.invalidResponse }
-        let (stream, response) = try await session.bytes(for: prepared)
-        guard let response = response as? HTTPURLResponse else { throw ClientConnectionError.invalidResponse }
         try await Self.requireByteSuccess(stream, response: response)
-        return try await ClientImageDataCollector.collect(stream, total: length(response), progress: progress)
+        let offset = try transfer?.begin(response) ?? 0
+        let data = try await stream.collectImage(total: length(response), progress: { value in
+            progress(.init(received: offset + value.received, total: value.total.map { offset + $0 }))
+        }, chunkReceived: { try transfer?.append($0) })
+        return transfer?.complete() ?? data
     }
 
     // Relay GETs use the streaming path too. Preserve their structured error
