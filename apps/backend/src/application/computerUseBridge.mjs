@@ -70,7 +70,19 @@ export async function prepareComputerUseBridge(config, { runtime, discover = dis
   await writeFile(runtimeConfig, JSON.stringify({ mcpServers: { cua_repl: {
     command: runtime.paths.nodeReplPath, args: [], env
   } } }), { mode: 0o600 });
-  await writeFile(join(root, "config.json"), JSON.stringify({ cuaReplConfigPath: runtimeConfig }), { mode: 0o600 });
+  let codexPath;
+  if (runtime.paths.appPath) {
+    for (const suffix of ["codex-cli/CodexCLI.app/Contents/MacOS/codex", "codex"]) {
+      const candidate = join(runtime.paths.appPath, "Contents/Resources", suffix);
+      try { if ((await stat(candidate)).isFile()) { codexPath = candidate; break; } } catch {}
+    }
+    if (!codexPath) throw Object.assign(new Error("The selected official application has no bundled tool host."),
+      { code: "COMPUTER_USE_APP_SERVER_MISSING" });
+  }
+  // Pin the same app chosen by the product's discovery; never let an older
+  // ChatGPT.app shadow a compatible renamed Codex.app during broker startup.
+  await writeFile(join(root, "config.json"), JSON.stringify({ cuaReplConfigPath: runtimeConfig,
+    ...(codexPath ? { codexPath } : {}) }), { mode: 0o600 });
   return { ...config, cwd: root, stateRoot: root, env: {
     ...Object.fromEntries(["PATH", "TMPDIR", "LANG", "USER", "LOGNAME"].filter(k => process.env[k]).map(k => [k, process.env[k]])),
     CODEX_COMPUTER_USE_HOME: root

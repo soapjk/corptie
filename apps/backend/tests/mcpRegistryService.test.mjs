@@ -12,6 +12,47 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { McpRegistryService } from "../src/application/mcpRegistryService.mjs";
 import { SkillMcpGateway } from "../src/application/skillMcpGateway.mjs";
 import { handleMcpRegistryHttpRequest } from "../src/application/mcpRegistryHttpApi.mjs";
+import { builtinComputerUseConfig } from "../src/application/computerUseEngine.mjs";
+
+test("shipped Computer Use registers once without launching tools and preserves user disable", async () => {
+  const { directory, store, service } = await fixture();
+  service.verify = () => { throw Error("startup must not launch or request permission"); };
+  try {
+    const config = builtinComputerUseConfig(directory);
+    const installed = service.ensureBuiltinComputerUse(config);
+    assert.equal(installed.builtin, true);
+    assert.equal(installed.defaultEnabled, true);
+    assert.equal(installed.lastCheckStatus, "not_checked");
+    assert.equal(installed.verifiedAt, "");
+    assert.equal(installed.toolCount, 0);
+    assert.deepEqual(service.defaultEnabledServerIds(), [installed.serverId]);
+    service.setEnabled(installed.serverId, false);
+    const restarted = service.ensureBuiltinComputerUse(config);
+    assert.equal(restarted.serverId, installed.serverId);
+    assert.equal(restarted.enabled, false);
+    assert.equal(service.list().length, 1);
+    assert.deepEqual(service.defaultEnabledServerIds(), []);
+    await assert.rejects(service.remove(installed.serverId), { code: "MCP_BUILTIN_REQUIRED" });
+    await assert.rejects(service.updateConfig(installed.serverId, { name: "override", expectedConfigRevision: 1 }),
+      { code: "MCP_BUILTIN_CONFIG_MANAGED" });
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("existing official Computer Use installation is adopted without duplicate resources or enabling it", async () => {
+  const { directory, store, service } = await fixture();
+  service.verify = async input => ({ ...input, toolCount: 1, toolNames: ["list_apps"] });
+  try {
+    const installed = await service.register({ name: "Computer Use", transport: "stdio", command: process.execPath,
+      args: ["/bundle/node_modules/codex-computer-use-mcp/dist/mcp-server.js"], cwd: directory,
+      runtimeProfile: "official-computer-use-mcp/v1" });
+    service.setEnabled(installed.serverId, false);
+    const adopted = service.ensureBuiltinComputerUse(builtinComputerUseConfig(directory));
+    assert.equal(adopted.serverId, installed.serverId);
+    assert.equal(adopted.builtin, true);
+    assert.equal(adopted.enabled, false);
+    assert.equal(service.list().length, 1);
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
 
 test("MCP verification rejects a null or array configuration as client input", async () => {
   const service = new McpRegistryService({ store: {} });
@@ -19,7 +60,7 @@ test("MCP verification rejects a null or array configuration as client input", a
   await assert.rejects(() => service.verify([]), { code: "INVALID_INPUT", statusCode: 400 });
 });
 
-test("desktop protocol profile persists across assignment and direct configuration edits", async () => {
+test("desktop protocol profile persists across Session activation, legacy assignments and configuration edits", async () => {
   const { directory, store, service } = await fixture();
   service.verify = async input => ({ ...input, toolCount: 1, toolNames: ["js"] });
   try {
@@ -29,13 +70,19 @@ test("desktop protocol profile persists across assignment and direct configurati
       args: ["fixture.mjs"], cwd: directory, runtimeProfile: profile });
     assert.equal(installed.runtimeProfile, profile);
     assert.equal(service.list()[0].runtimeProfile, profile);
+    const preferences = { isDisabled: reference => reference !== "logical:desktop" };
+    assert.deepEqual(service.serversForSession("logical:disabled", preferences), {});
+    const sessionConfig = () => Object.values(service.serversForSession("logical:desktop", preferences))[0];
+    assert.equal(sessionConfig().runtimeProfile, profile);
     await service.setAssignment(role.agentId, installed.serverId, true);
     assert.equal(Object.values(service.serversForAgent(role.agentId))[0].runtimeProfile, profile);
     const updated = await service.updateConfig(installed.serverId, { expectedConfigRevision: installed.configRevision, name: "Renamed" });
     assert.equal(updated.runtimeProfile, profile);
+    assert.equal(sessionConfig().runtimeProfile, profile);
     const remote = await service.updateConfig(installed.serverId, { expectedConfigRevision: updated.configRevision,
       transport: "http", url: "https://example.test/mcp" });
     assert.equal(remote.runtimeProfile, null);
+    assert.equal(sessionConfig().runtimeProfile, null);
   } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

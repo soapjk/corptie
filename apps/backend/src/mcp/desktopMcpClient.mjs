@@ -5,6 +5,8 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { rm } from "node:fs/promises";
 import { prepareComputerUseBridge, computerUseBridgeFingerprint } from "../application/computerUseBridge.mjs";
+import { prepareBuiltinComputerUse, computerUseEngineFingerprint } from "../application/computerUseEngine.mjs";
+import { isBuiltinComputerUseConfig } from "../application/computerUseGatewayPolicy.mjs";
 
 const exec = promisify(execFile);
 async function waitForExit(exited, ms) {
@@ -82,8 +84,10 @@ async function processes() {
 
 // A facade can reopen after a Turn boundary while ordinary MCP connections in
 // the same gateway entry remain alive. Every reopen gets a fresh private state.
-export async function connectDesktopMcp(config, onElicitation, { prepare = prepareComputerUseBridge,
-  transportFactory = c => new DesktopStdioTransport(c), fingerprint = computerUseBridgeFingerprint } = {}) {
+export async function connectDesktopMcp(config, onElicitation, { prepare = isBuiltinComputerUseConfig(config)
+  ? prepareBuiltinComputerUse : prepareComputerUseBridge,
+  transportFactory = c => new DesktopStdioTransport(c), fingerprint = isBuiltinComputerUseConfig(config)
+    ? computerUseEngineFingerprint : computerUseBridgeFingerprint } = {}) {
   let connection, opening, instructions = "", closing;
   const facade = {
     getInstructions: () => instructions,

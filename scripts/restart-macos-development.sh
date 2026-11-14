@@ -145,6 +145,12 @@ swift build \
   --disable-build-manifest-caching \
   --build-system native \
   --sdk "${MACOS_SDK_PATH}"
+# The independent native helper shares Corptie's signing identity. SwiftPM's
+# default build includes both executable products; never copy official helpers.
+source "${ROOT_DIR}/scripts/macos-signing-policy.sh"
+COMPUTER_USE_SIGNING_IDENTITY="$(corptie_resolve_macos_signing_identity)"
+codesign --force --sign "${COMPUTER_USE_SIGNING_IDENTITY}" --identifier com.corptie.computer-use \
+  "${MACOS_PACKAGE_DIR}/.build/${MACOS_BUILD_TRIPLE}/debug/CorptieComputerUse"
 LINKED_SDK_VERSION="$(linked_macos_sdk_version "${APP_BIN}")"
 if [[ "${LINKED_SDK_VERSION}" != "${MACOS_SDK_VERSION}" ]]; then
   echo "CorptieMac linked against SDK ${LINKED_SDK_VERSION:-unknown}, expected ${MACOS_SDK_VERSION}." >&2

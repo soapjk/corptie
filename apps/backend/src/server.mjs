@@ -1,7 +1,8 @@
 import { normalizeConversationMessage } from "./application/conversationMessage.mjs";
 import { McpInteractionBroker } from "./application/mcpInteractionBroker.mjs";
-import { computerUseBridgePreset, computerUseBridgeFingerprint } from "./application/computerUseBridge.mjs";
-import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig } from "./application/computerUseGatewayPolicy.mjs";
+import { computerUseBridgeFingerprint } from "./application/computerUseBridge.mjs";
+import { builtinComputerUseConfig, computerUseEnginePreset, computerUseEngineFingerprint } from "./application/computerUseEngine.mjs";
+import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig, isBuiltinComputerUseConfig } from "./application/computerUseGatewayPolicy.mjs";
 import { InitialMessageTitleService } from "./application/initialMessageTitleService.mjs";
 import { logError } from "./utils/errorDiagnostics.mjs";
 import { CodexAccountManager } from "./adapters/codexAccountManager.mjs";
@@ -703,7 +704,10 @@ function mcpAssignmentRevisionForAgent(agentId) {
 const sessionAbilityPreferences = new SessionAbilityPreferences({ store, registry: mcpRegistryService });
 skillRegistryService.sessionAbilityPreferences = sessionAbilityPreferences;
 const mcpInteractions = new McpInteractionBroker({ store, emitEvent });
-const computerUsePreset = () => computerUseBridgePreset({ dataDir: store.dataDir });
+const computerUsePreset = async () => {
+  const selected = await computerUseEnginePreset({ dataDir: store.dataDir });
+  return { ...selected, config: selected.config ? builtinComputerUseConfig(store.dataDir) : null };
+};
 
 const skillMcpGateway = new SkillMcpGateway({
   connectComputerUseServer: (config, context, onElicitation) => agentProviderRegistry.invoke(
@@ -743,6 +747,7 @@ const skillMcpGateway = new SkillMcpGateway({
     for (const config of Object.values(servers)) {
       if (!isComputerUseMcpConfig(config)) continue;
       if (isComputerUseBridgeConfig(config)) config.observationRevision = await computerUseBridgeFingerprint(config);
+      if (isBuiltinComputerUseConfig(config)) config.observationRevision = await computerUseEngineFingerprint(config);
       const identity = createHash("sha256").update(`${reference}:${context.providerBindingId ?? context.bindingId}`).digest("hex");
       const home = join(store.dataDir, "computer-use", "sessions", identity);
       await mkdir(home, { recursive: true });
@@ -2696,6 +2701,13 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+// Resource registration is independent of desktop dependencies and never starts
+// an input service. Read-only Development snapshots retain their existing data.
+if (!developmentPreview && process.platform === "darwin") {
+  const builtin = builtinComputerUseConfig(store.dataDir);
+  await mkdir(builtin.cwd, { recursive: true, mode: 0o700 });
+  mcpRegistryService.ensureBuiltinComputerUse(builtin);
+}
 // Installed Skills are loaded through the Session-authorized gateway. Remove
 // historical registry mirrors from native scanners, leaving other runtime skills intact.
 for (const skill of store.listRegistrySkills()) {

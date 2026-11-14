@@ -142,6 +142,7 @@ trap cleanup EXIT
 
 APP_DIR="${STAGING_ROOT}/Applications/${APP_NAME}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/Helpers"
+cp "${BUILD_BIN_DIR}/CorptieComputerUse" "${APP_DIR}/Contents/Helpers/CorptieComputerUse"
 cp "${NODE_DISTRIBUTION}/bin/node" "${APP_DIR}/Contents/Helpers/node"
 mkdir -p "${APP_DIR}/Contents/Resources/licenses"
 cp "${NODE_DISTRIBUTION}/LICENSE" "${APP_DIR}/Contents/Resources/licenses/Node.js-LICENSE"
@@ -394,6 +395,7 @@ while IFS= read -r -d '' native_file; do
     esac
   fi
 done < <(find "${BACKEND_DEST}" -type f -print0)
+codesign "${SIGN_FLAGS[@]}" --identifier com.corptie.computer-use "${APP_DIR}/Contents/Helpers/CorptieComputerUse"
 codesign "${SIGN_FLAGS[@]}" --identifier com.corptie.backend.node \
   --entitlements "${ROOT}/scripts/bundled-node-entitlements.plist" "${APP_DIR}/Contents/Helpers/node"
 if [[ "${CLOUD_KEYCHAIN_ENABLED}" == true ]]; then
