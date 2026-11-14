@@ -424,7 +424,7 @@ struct UnifiedConsoleView: View {
             .frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)
             .padding(.horizontal, 16)
             outlineCreationMenu
-                .padding(.leading, navigationMode == .sessionList ? 8 : 13)
+                .padding(.leading, 13)
                 .padding(.trailing, 16)
         }
         .platformWorkOutlineToolbarDensity(.titlebar)
