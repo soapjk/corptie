@@ -189,13 +189,13 @@ export class SessionCollaborationService {
       return inFlight.promise;
     }
     const entry = { fingerprint: intent.fingerprint };
-    entry.promise = this.#createTaskAndSession(metadata, actorId, input, scope, authorization, intent, options.runtimeConfiguration);
+    entry.promise = this.#createTaskAndSession(metadata, actorId, input, scope, authorization, intent, options);
     this.taskCreations.set(key, entry);
     try { return await entry.promise; }
     catch (error) {
       const task = this.store.selectOne("SELECT id FROM tasks WHERE created_by_session_id=? AND idempotency_key=?", [scope.logicalSessionId, input.idempotencyKey]);
       if (task) {
-        const startup = this.store.selectOne("SELECT startup_operation_id,state,error_retryable FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?", [task.id, `task-create:${input.idempotencyKey}`]);
+        const startup = this.store.selectOne("SELECT startup_operation_id,state,error_retryable FROM work_session_startup_operations WHERE task_id=? ORDER BY rowid DESC LIMIT 1", [task.id]);
         const sandbox = !startup && this.store.selectOne("SELECT execution_space_id,status FROM execution_spaces WHERE task_id=? AND idempotency_key=?", [task.id, `task-create:${input.idempotencyKey}`]);
         error.creationRecovery = { ...error.creationRecovery, taskId: task.id, parentTaskId: input.parentTaskId ?? null,
           startupOperationId: startup?.startup_operation_id ?? sandbox?.execution_space_id ?? null,
@@ -207,7 +207,8 @@ export class SessionCollaborationService {
     finally { if (this.taskCreations.get(key) === entry) this.taskCreations.delete(key); }
   }
 
-  async #createTaskAndSession(metadata, actorId, input, scope, authorization, intent, frozenRuntime) {
+  async #createTaskAndSession(metadata, actorId, input, scope, authorization, intent, options) {
+    const frozenRuntime = options.runtimeConfiguration;
     const prior = this.#creationReplay(scope, input, intent);
     const taskInput = prior?.creation_intent_fingerprint
       ? { id: prior.id, workId: prior.work_id, parentTaskId: prior.parent_task_id ?? null }
@@ -229,6 +230,10 @@ export class SessionCollaborationService {
       workService: this.workService,
       startWorkSession: (command) => {
         revalidate();
+        if (prior && options.retryStartupOperationId) {
+          return this.workSessionStartApplicationService.resumeTaskStartup({ taskId: command.taskId,
+            sourceSessionId: scope.logicalSessionId, retryStartupOperationId: options.retryStartupOperationId });
+        }
         const row = this.store.getTask(command.taskId);
         const saved = row?.creation_intent_json ? JSON.parse(row.creation_intent_json) : null;
         const allocated = this.store.selectOne("SELECT startup_operation_id FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?", [command.taskId, command.idempotencyKey])
