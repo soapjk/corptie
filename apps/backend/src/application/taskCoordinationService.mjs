@@ -90,8 +90,12 @@ export class TaskCoordinationService {
       scope = this.collaboration.coordinationScope({ sessionId: main.logicalSessionId, providerBindingId: main.activeBinding.bindingId }, actorId);
     }
     const delegation = this.shadow?.forShadow(scope.logicalSessionId);
-    if (delegation) this.shadow.assertDelegate(scope.logicalSessionId, "dispatch_children");
-    const progressScope = delegation ? { ...scope, logicalSessionId: delegation.main_session_id } : scope;
+    if (delegation) {
+      this.shadow.assertDelegate(scope.logicalSessionId, "dispatch_children");
+      const main = this.store.getLogicalSession(delegation.main_session_id);
+      scope = this.collaboration.coordinationScope({ sessionId: main.logicalSessionId, providerBindingId: main.activeBinding.bindingId }, actorId);
+    }
+    const progressScope = scope;
     if (!input || Object.keys(input).some(key => key !== "items")) fail("INVALID_DISPATCH", "Only items may be supplied.", 400);
     if (!Array.isArray(input?.items) || input.items.length < 1 || input.items.length > 100) fail("INVALID_TASK_BATCH_SIZE", "Dispatch accepts 1-100 items, internally admitted in groups of ten.", 400);
     if(input.items.length>10) {
@@ -129,7 +133,7 @@ export class TaskCoordinationService {
           (dispatch_id,source_session_id,parent_task_id,source_role_id,idempotency_key,request_json,runtime_json,mode_at_admission,target_task_id,created_at,updated_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?)`, [id, scope.logicalSessionId, scope.session.taskId, actorId, request.idempotencyKey,
           JSON.stringify(request), JSON.stringify(runtime), scope.parent.coordination_enabled === 1 ? 1 : 0, request.taskId ?? null, now, now]);
-        if (requestOwner) this.store.db.run("UPDATE task_coordination_dispatches SET executor_session_id=? WHERE dispatch_id=?", [executorSessionId, id]);
+        if (requestOwner || delegation) this.store.db.run("UPDATE task_coordination_dispatches SET executor_session_id=? WHERE dispatch_id=?", [executorSessionId, id]);
         rows.push(this.get(id));
         if (request.action === "send") amendments.push({ id, taskId: request.taskId, text: request.text.slice(0, 2400) });
       }
@@ -141,12 +145,9 @@ export class TaskCoordinationService {
       if (shadowOwner && amendments.length) {
         this.store.db.run("UPDATE coordination_shadow_sessions SET requirement_revision=requirement_revision+1,updated_at=? WHERE main_session_id=?",
           [new Date().toISOString(), scope.logicalSessionId]);
-        if (shadowOwner.shadow_session_id) this.mailbox.receiveEvent({ recipientSessionId: shadowOwner.shadow_session_id,
-          sourceType: "background", sourceId: amendments[0].id, intent: "response_required", priority: 50,
-          idempotencyKey: `shadow-amendment:${amendments[0].id}`,
-          body: `主会话已给下列子任务追加要求。只更新受影响任务的协调计划，不重发这些指令，不让无关批次重新验收。\n${JSON.stringify(amendments)}`,
-          authorization: { ownerLogicalSessionId: shadowOwner.shadow_session_id, sourceId: amendments[0].id,
-            coordinationDispatchId: amendments[0].id, purpose: "shadow_requirement" } });
+        this.shadow.admit(scope.logicalSessionId, `shadow-amendment:${amendments[0].id}`,
+          `主会话已给下列子任务追加要求。只更新受影响任务的协调计划，不重发这些指令。\n${JSON.stringify(amendments)}`,
+          { coordinationDispatchId: amendments[0].id }, this.mailbox);
       }
     });
     this.store.scheduleSave();
@@ -154,8 +155,17 @@ export class TaskCoordinationService {
     this.changed(scope.parent.id);
     return { accepted: true, batchId:batch.batch_id, dispatches: rows.map((row, index) => reused.get(index) ?? this.receipt(row)), instruction: "受理完成。立即将控制权交还用户，不要轮询等待子任务。" };
   }
+  reportOwner(row) {
+    return this.shadow?.forShadow(row.source_session_id)?.main_session_id
+      ?? this.store.selectOne("SELECT main_session_id FROM coordination_shadow_reports WHERE shadow_session_id=? LIMIT 1", [row.source_session_id])?.main_session_id
+      // Older dispatches used the summary executor as source. Their progress
+      // batch already records the main Session, even if no report was published.
+      ?? this.store.selectOne("SELECT source_session_id FROM coordination_progress_batches WHERE batch_id=? AND parent_task_id=?",
+        [row.progress_batch_id, row.parent_task_id])?.source_session_id
+      ?? row.source_session_id;
+  }
   sourceContext(row) {
-    const logical = this.store.getLogicalSession(row.source_session_id);
+    const logical = this.store.getLogicalSession(this.reportOwner(row));
     if (!logical || logical.archived || logical.activeBinding?.state !== "active") fail("SOURCE_SESSION_UNAVAILABLE");
     const metadata = { sessionId: logical.logicalSessionId, providerBindingId: logical.activeBinding.bindingId };
     const scope = this.collaboration.coordinationScope(metadata, row.source_role_id);
@@ -234,20 +244,18 @@ export class TaskCoordinationService {
     if (!dispatch || dispatch.dispatch_id !== row.source_id) fail("COORDINATION_AUTHORIZATION_REVOKED");
     const { scope } = this.sourceContext(dispatch);
     if (authorization.purpose === "shadow_requirement") {
-      const delegation = this.shadow?.assertDelegate(row.recipient_session_id);
-      if (!delegation || delegation.main_session_id !== dispatch.source_session_id) fail("COORDINATION_REPORT_SCOPE_INVALID");
+      this.shadow?.assertRecipient(row, this.reportOwner(dispatch));
       return;
     }
     if (authorization.purpose === "shadow_report") {
-      const delegation = this.shadow?.assertDelegate(row.recipient_session_id, "review_results");
-      if (!delegation || ![delegation.main_session_id, delegation.shadow_session_id].includes(dispatch.source_session_id)
-        || !terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
+      this.shadow?.assertRecipient(row, this.reportOwner(dispatch));
+      if (!terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
       return;
     }
     if (authorization.purpose === "parent_report") {
       if (authorization.statusNotice && (!Number.isSafeInteger(authorization.reportGeneration)
         || authorization.reportGeneration < 0 || authorization.reportGeneration > dispatch.report_generation)) fail("COORDINATION_REPORT_SCOPE_INVALID");
-      if (row.recipient_session_id !== dispatch.source_session_id
+      if (row.recipient_session_id !== this.reportOwner(dispatch)
         || (!authorization.statusNotice && (!terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation))) fail("COORDINATION_REPORT_SCOPE_INVALID");
       return;
     }
@@ -345,60 +353,53 @@ export class TaskCoordinationService {
     this.reportScheduled = true;
     setImmediate(() => { this.reportScheduled = false; Promise.resolve(this.flushReports()).catch(error => console.warn(`[coordination-report] ${error.code ?? error.message}`)); });
   }
-  activateShadow(taskId) {
-    if (!this.shadow || this.store.getTask(taskId)?.coordination_enabled !== 1) return;
-    const task = this.store.getTask(taskId), main = this.store.getLogicalSessionByLegacySessionId(task.current_session_id);
+  activateShadow(taskId) { this.handleModeChanged(taskId); }
+  handleModeChanged(taskId) {
+    if (!this.shadow) return;
+    const task = this.store.getTask(taskId), main = task?.current_session_id && this.store.getLogicalSessionByLegacySessionId(task.current_session_id);
     if (!main) return;
-    this.shadow.reserve(main.logicalSessionId);
+    this.shadow.retryAfterLifecycleChange(main.logicalSessionId);
+    if (task.coordination_enabled === 1) this.shadow.reserve(main.logicalSessionId);
     this.shadow.recover(this.mailbox, main.logicalSessionId);
-    // Only unadopted queued events can move. Never replay an accepted turn.
-    const queued = this.store.selectAll(`SELECT mm.message_id,mm.operation_id FROM session_mailbox_messages mm
-      JOIN agent_operations op ON op.task_id=mm.operation_id
-      WHERE mm.recipient_session_id=? AND mm.disposition='pending' AND op.status='queued'
-        AND json_extract(mm.authorization_json,'$.purpose')='parent_report'
-        AND COALESCE(json_extract(op.source_json,'$.mailboxDispatchAttempted'),0)=0`, [main.logicalSessionId]);
-    this.store.runInTransaction(() => {
-      for (const row of queued) {
-        this.store.updateAgentTask(row.operation_id, { status: "cancelled", lastError: "Delegated to shadow Session" });
-        this.store.db.run("UPDATE session_mailbox_messages SET disposition='ignored' WHERE message_id=?", [row.message_id]);
-        this.store.db.run("DELETE FROM coordination_result_receipts WHERE mailbox_message_id=?", [row.message_id]);
-        this.store.db.run("UPDATE task_coordination_dispatches SET report_message_id=NULL,report_generation=report_generation+1 WHERE report_message_id=?", [row.message_id]);
-      }
-    });
-    this.store.scheduleSave();
-    this.scheduleReports();
+    this.scheduleReports(); this.changed(taskId);
   }
   flushReports() {
+    const cursor = this.reportCursor;
     const rows = this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
-      JOIN logical_sessions l ON l.logical_session_id=d.source_session_id JOIN sessions s ON s.id=l.legacy_session_id
-      WHERE d.status='completed' AND d.report_message_id IS NULL
-      AND EXISTS(SELECT 1 FROM agent_operations result_op JOIN session_items result_item
-        ON result_item.session_id=result_op.session_id AND result_item.turn_id=result_op.target_turn_id
-        WHERE result_op.task_id=d.operation_id AND result_item.type='agentMessage'
-          AND COALESCE(result_item.presentation_role,'') NOT IN ('commentary','reasoning'))
+      JOIN tasks parent ON parent.id=d.parent_task_id JOIN sessions s ON s.id=parent.current_session_id
+      WHERE d.status IN ('completed','failed','cancelled') AND d.report_message_id IS NULL
+      AND EXISTS(SELECT 1 FROM agent_operations result_op WHERE result_op.task_id=d.operation_id
+        AND EXISTS(SELECT 1 FROM session_items result_item WHERE result_item.session_id=result_op.session_id
+          AND result_item.turn_id=result_op.target_turn_id AND result_item.type='agentMessage'
+          AND COALESCE(result_item.presentation_role,'') NOT IN ('commentary','reasoning')))
       AND s.archived=0 AND s.deleted_at IS NULL
-      ORDER BY d.created_at LIMIT 100`);
+      ${cursor ? "AND (d.created_at>? OR (d.created_at=? AND d.dispatch_id>?))" : ""}
+      ORDER BY d.created_at,d.dispatch_id LIMIT 100`, cursor ? [cursor.created_at, cursor.created_at, cursor.dispatch_id] : []);
+    this.reportCursor = rows.length === 100 ? rows.at(-1) : null;
+    let capacitySkipped = false, delivered = false;
     const groups = new Map();
     for (const row of rows) {
       if (this.reconcileReportedResult(row)) continue;
-      const key = row.source_session_id;
+      const key = this.reportOwner(row);
       const group = groups.get(key) ?? [];
-      if (group.length < 8) group.push(row);
+      if (group.length < 8) group.push(row); else capacitySkipped = true;
       groups.set(key, group);
     }
     for (const group of groups.values()) {
-      let recipientSessionId = group[0].source_session_id;
-      const logical = this.store.getLogicalSession(recipientSessionId), session = logical && this.store.getSession(logical.legacySessionId);
-      const useShadow = this.shadow && (this.store.getTask(group[0].parent_task_id)?.coordination_enabled === 1 || this.shadow.forMain(recipientSessionId) || this.shadow.forShadow(recipientSessionId));
-      if (!useShadow && this.shadow && (this.shadow.forMain(recipientSessionId) || this.shadow.forShadow(recipientSessionId))) continue;
-      if (useShadow) {
-        const delegation = this.shadow.forShadow(recipientSessionId) ?? this.shadow.forMain(recipientSessionId);
-        if (!delegation?.shadow_session_id) {
-          this.shadow.ensure(recipientSessionId).then(() => this.scheduleReports()).catch(error => console.warn(`[coordination-shadow] ${error.code ?? error.message}`));
+      const ownerId = this.reportOwner(group[0]);
+      let recipientSessionId = ownerId, useShadow = false;
+      const logical = this.store.getLogicalSession(ownerId), session = logical && this.store.getSession(logical.legacySessionId);
+      if (this.shadow) {
+        const target = this.shadow.resolveRecipient(ownerId);
+        if (target.status !== "ready") {
+          if (target.status === "recovering") this.shadow.requestRecovery(ownerId).then(row => {
+            if (row && this.shadow.resolveRecipient(ownerId).status === "ready") {
+              this.shadow.recover(this.mailbox, ownerId); this.scheduleReports();
+            }
+          });
           continue;
         }
-        recipientSessionId = delegation.shadow_session_id;
-        try { this.shadow.assertDelegate(recipientSessionId, "review_results"); } catch { continue; }
+        recipientSessionId = target.sessionId; useShadow = target.role === "summary-shadow";
       }
       if (!session || session.archived || session.deletedAt) continue;
       if (!useShadow && (sessionHasActiveRun(session) || this.store.getRunningAgentTaskForSession(session.id)
@@ -430,7 +431,9 @@ export class TaskCoordinationService {
           this.progress.correlateReports(row.dispatch_id,result?.finalMessageId??null);
         }
       });
+      delivered = true;
     }
+    if (this.reportCursor || capacitySkipped && delivered) this.scheduleReports();
   }
   recordResultReceipt(row, result, mailboxMessageId, channelMessageId = null) {
     if (!result?.finalMessageId || !result.turnId || !result.childSessionId) return;
@@ -450,7 +453,16 @@ export class TaskCoordinationService {
       WHERE recipient_session_id=? AND execution_session_id=? AND turn_id=? AND final_message_id=?`,
       [row.source_session_id,operation.sessionId,operation.targetTurnId,result.id]);
     if (receipt) {
-      this.update(row.dispatch_id,{report_message_id:receipt.mailbox_message_id});
+      const message = this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [receipt.mailbox_message_id]);
+      if (message) {
+        this.shadow?.reconcileMailbox(this.mailbox, this.reportOwner(row));
+        this.update(row.dispatch_id,{report_message_id:receipt.mailbox_message_id});
+        return true;
+      }
+      // Without the original mailbox evidence we cannot prove it was never
+      // processed. Preserve the result identity rather than replaying it.
+      console.warn(`[coordination-report] RESULT_MAILBOX_MISSING ${row.dispatch_id}`);
+      this.update(row.dispatch_id, { report_message_id: receipt.mailbox_message_id });
       return true;
     }
     // Only exact content from the same authenticated execution is a duplicate.
@@ -471,7 +483,10 @@ export class TaskCoordinationService {
     return true;
   }
   recover() {
-    if (this.shadow) for (const task of this.store.selectAll("SELECT id FROM tasks WHERE coordination_enabled=1 AND archived=0 AND COALESCE(deletion_status,'')='' AND current_session_id IS NOT NULL")) this.activateShadow(task.id);
+    if (this.shadow) for (const task of this.store.selectAll(`SELECT DISTINCT t.id FROM tasks t
+      LEFT JOIN coordination_shadow_sessions sh ON sh.parent_task_id=t.id
+      WHERE (t.coordination_enabled=1 OR sh.main_session_id IS NOT NULL) AND t.archived=0
+        AND COALESCE(t.deletion_status,'')='' AND t.current_session_id IS NOT NULL`)) this.handleModeChanged(task.id);
     for(const row of this.store.selectAll(`SELECT b.batch_id FROM coordination_progress_batches b
       JOIN logical_sessions l ON l.logical_session_id=b.source_session_id JOIN sessions s ON s.id=l.legacy_session_id
       WHERE s.archived=0 AND s.deleted_at IS NULL ORDER BY b.created_at DESC LIMIT 1000`)) this.progress.schedule(row.batch_id);

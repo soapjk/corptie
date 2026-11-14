@@ -45,6 +45,7 @@ export function createCollaborationDeliveryQueue({
         if (existingWork.source?.batchedInto || existingWork.source?.mailboxDisposition || (batch && batch.status !== "prepared")) continue;
         if (existingWork.status === "queued") {
           if (existingWork.sessionId !== route.providerSessionId) {
+            if (existingWork.targetTurnId || existingWork.source?.mailboxDispatchAttempted) continue;
             store.updateAgentTask(existingWork.taskId, { sessionId: route.providerSessionId });
             moveRuntimeQueuedWork(existingWork.sessionId, route.providerSessionId, existingWork.taskId);
           }
@@ -52,6 +53,9 @@ export function createCollaborationDeliveryQueue({
           wake(route.providerSessionId, existingWork.taskId);
         }
         if (["failed", "cancelled"].includes(existingWork.status)) {
+          const receipt = existingWork.deliveryId && store.getMessageDelivery(existingWork.deliveryId);
+          if (existingWork.targetTurnId || receipt?.providerTurnId || existingWork.source?.mailboxDispatchAttempted
+            || existingWork.startedAt && batch?.status !== "prepared") continue;
           store.updateAgentTask(existingWork.taskId, {
             status: "queued", sessionId: route.providerSessionId, startedAt: null,
             completedAt: null, targetTurnId: null, lastError: null

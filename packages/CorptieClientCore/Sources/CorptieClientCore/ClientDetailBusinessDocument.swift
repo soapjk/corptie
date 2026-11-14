@@ -95,6 +95,8 @@ public struct ClientShadowCoordination: Decodable, Equatable, Sendable {
     public let status: String
     public let lastReportAt: String?
     public let pendingDecisions: Int
+    public var recoveryReason: String? = nil
+    public var canRecover: Bool? = nil
     public let reports: [Report]
     public struct Report: Decodable, Equatable, Identifiable, Sendable {
         public let id: String
@@ -103,6 +105,8 @@ public struct ClientShadowCoordination: Decodable, Equatable, Sendable {
     }
     public var statusLabel: String {
         switch status {
+        case "off": "普通模式，由父会话处理结果"
+        case "recovering": "正在恢复汇总"
         case "running": "影子会话处理中"
         case "paused": "影子会话已暂停"
         case "failed": "影子会话需恢复"
@@ -184,7 +188,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 (action.target?.id.count ?? 1000) <= 512,
                 action.kind == "navigation" && ["resource.open", "editor.open"].contains(action.operation)
                 || action.kind == "read" && ["detail.collection.page", "artifact.content"].contains(action.operation)
-                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control"].contains(action.operation)
+                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control", "task.shadow.recover"].contains(action.operation)
             else { throw ClientDetailFailure.invalidGraph }
         }
         switch payload {
@@ -199,7 +203,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 else { throw ClientDetailFailure.invalidGraph }
             }
             guard dispatches.count <= 5, Set(dispatches.map(\.id)).count == dispatches.count,
-                actions.filter({ ["task.coordination.update", "task.request.control"].contains($0.operation) }).allSatisfy({
+                actions.filter({ ["task.coordination.update", "task.request.control", "task.shadow.recover"].contains($0.operation) }).allSatisfy({
                     $0.target?.resourceType == "task" && $0.target?.id == task.taskId
                 }) else { throw ClientDetailFailure.invalidGraph }
             guard !task.taskId.isEmpty, [task.title, task.status, task.resourceRevision].allSatisfy({ validText($0) }),
