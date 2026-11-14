@@ -150,10 +150,6 @@ struct UnifiedConversationCreateView: View {
                             onSubmit: { _ in })
                             .frame(height: 60).padding(.horizontal, 10)
                     }
-                    DraftComposerUsageSurface(provider: providerID,
-                        model: modelID.isEmpty ? catalog.defaultModel(for: providerID) : modelID,
-                        supported: selectedProvider?.supports("usage.account.read"), baseURL: backend.baseURL)
-                        .id("\(providerID):\(modelID)")
                 }
             } else if editingWork {
                 VStack(spacing: 0) {
@@ -235,12 +231,6 @@ struct UnifiedConversationCreateView: View {
                     }.padding(.horizontal, 10)
                 }
                 .background(ComposerTransitionAnchor(sessionID: nil))
-                DraftComposerUsageSurface(provider: providerID,
-                    model: modelID.isEmpty ? catalog.defaultModel(for: providerID) : modelID,
-                    supported: selectedProvider?.supports("usage.account.read"),
-                    baseURL: backend.baseURL)
-                    .id("\(providerID):\(modelID.isEmpty ? catalog.defaultModel(for: providerID) ?? "" : modelID)")
-                    .padding(.horizontal, 12)
 
                 creationDestination
                     .padding(.horizontal, 16).padding(.vertical, 10)
@@ -273,7 +263,11 @@ struct UnifiedConversationCreateView: View {
                 Image(systemName: "plus").font(.system(size: 16))
                     .frame(width: 28, height: 28).contentShape(Rectangle())
             }.buttonStyle(.plain).help(L10n("添加图片")).disabled(submissionStarted)
-            Spacer(minLength: 8)
+            DraftComposerUsageSurface(provider: providerID,
+                model: modelID.isEmpty ? catalog.defaultModel(for: providerID) : modelID,
+                supported: selectedProvider?.supports("usage.account.read"), baseURL: backend.baseURL)
+                .id("\(providerID):\(modelID.isEmpty ? catalog.defaultModel(for: providerID) ?? "" : modelID)")
+            Spacer(minLength: 0)
             if selectedProvider?.supports("configuration.permissions.update") == true {
                 ComposerPermissionMenu(selection: draftState.permission, disabled: submissionStarted) {
                     draftState.permission = $0
@@ -296,19 +290,21 @@ struct UnifiedConversationCreateView: View {
                 Button(L10n("加载模型列表")) { Task { await backend.loadModels(for: providerID) } }
             } label: {
                 HStack(spacing: 4) {
-                    if let icon = ProviderBrandIcon.image(for: providerID, providers: providers) {
+                    if let icon = ProviderBrandIcon.menuImage(for: providerID, providers: providers) {
                         Image(nsImage: icon).resizable().scaledToFit().frame(width: 14, height: 14).accessibilityHidden(true)
                     }
-                    Text((ComposerServiceTier.isFast(draftState.serviceTier) ? "⚡ " : "") + (modelID.isEmpty ? (providers.first { $0.id == providerID }?.displayName ?? L10n("执行引擎")) : modelID))
+                    Text((ComposerServiceTier.isFast(draftState.serviceTier) ? "⚡ " : "") + ComposerModelLabel.compact(modelID.isEmpty ? (selectedProvider?.displayName ?? L10n("执行引擎")) : modelID))
                         .lineLimit(1).truncationMode(.middle)
                 }
-            }.menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 176).disabled(submissionStarted)
+            }.menuStyle(.borderlessButton).fixedSize().disabled(submissionStarted)
+                .help(modelID.isEmpty ? (selectedProvider?.displayName ?? L10n("执行引擎")) : modelID)
+                .accessibilityIdentifier("creation-provider-model-menu")
             ComposerSendControl(disabled: busy || validation != nil || (!hasSendableText && imageURLs.isEmpty),
                                 busy: busy, action: submit)
                 .keyboardShortcut(.return, modifiers: .command)
         }
         .font(WorkbenchTypography.font(for: .composerInput))
+        .accessibilityIdentifier("creation-composer-toolbar")
     }
 
     private var creationDestination: some View {
@@ -372,6 +368,7 @@ struct UnifiedConversationCreateView: View {
         .menuStyle(.borderlessButton)
         .font(.system(size: 12)).foregroundStyle(.secondary)
         .disabled(submissionStarted)
+        .accessibilityIdentifier("creation-destination")
     }
 
     private func reconcile() {

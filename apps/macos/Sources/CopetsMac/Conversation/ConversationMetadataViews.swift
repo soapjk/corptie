@@ -41,7 +41,7 @@ struct ThreadMetaView: View {
             executionState: status?.sharedExecutionState,
             activity: restartState.activityBySessionID[sessionID]?.text ?? activityStatus
         ) {
-            ChatUsageBar(sessionID: sessionID, usage: supplementaryData.selectedSessionID == sessionID ? supplementaryData.selectedSessionUsage?.matching(provider: BackendClient.shared.selectedSession?.external?.provider, model: BackendClient.shared.selectedSession?.external?.currentModel) : nil, loadState: supplementaryData.usageLoadState, accountSupported: BackendClient.shared.modelCatalog.agentProviders.first { $0.id == BackendClient.shared.selectedSession?.external?.provider }?.supports("usage.account.read"),
+            ChatUsageBar(sessionID: sessionID, usage: supplementaryData.selectedSessionID == sessionID ? supplementaryData.selectedSessionUsage?.matching(provider: BackendClient.shared.selectedSession?.external?.provider, model: BackendClient.shared.selectedSession?.external?.currentModel) : nil, loadState: supplementaryData.usageLoadState, inline: true, accountSupported: BackendClient.shared.modelCatalog.agentProviders.first { $0.id == BackendClient.shared.selectedSession?.external?.provider }?.supports("usage.account.read"),
                 contextSupported: BackendClient.shared.modelCatalog.agentProviders.first { $0.id == BackendClient.shared.selectedSession?.external?.provider }?.supports("usage.session.read"))
         }
     }
