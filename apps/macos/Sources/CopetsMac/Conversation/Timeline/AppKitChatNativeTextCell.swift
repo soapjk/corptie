@@ -455,6 +455,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         representedProcessRow = row.nativeStyle == .process ? row : nil
         contentConfigurationCount += 1
         updateLinkContext(baseDirectory: baseDirectory)
+        let isCollaborationPreview = row.isCollaboration && row.expandableTurnId != nil && !row.isExpanded
+        label.textContainer?.maximumNumberOfLines = isCollaborationPreview ? 2 : 0
+        label.textContainer?.lineBreakMode = isCollaborationPreview ? .byTruncatingTail : .byWordWrapping
         label.textStorage?.setAttributedString(layout.attributedText)
         rawStatusTextView.string = row.rawStatusText
         apply(layout: layout)

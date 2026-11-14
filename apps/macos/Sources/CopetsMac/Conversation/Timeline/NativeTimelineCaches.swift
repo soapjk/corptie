@@ -372,6 +372,9 @@ final class NativeTimelineLayoutCache {
         } : [])
         let text = reusable?.attributedText ?? (row.withdrawnMessageID != nil
             ? NSAttributedString(string: row.nativeText, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])
+            : row.isCollaboration && row.expandableTurnId != nil && !row.isExpanded
+            ? NSAttributedString(string: row.nativeText, attributes: [
+                .font: NSFont.systemFont(ofSize: typography.bodySize), .foregroundColor: NSColor.labelColor])
             : row.userInput != nil || row.executionPlan != nil || row.coordinationProgress != nil
             || !processBlocks.isEmpty || hasRich || (row.nativeStyle == .process && !row.isExpanded)
             ? NSAttributedString(string: "")

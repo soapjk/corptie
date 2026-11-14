@@ -84,7 +84,7 @@ struct ConversationNativeRowBuilder {
         var messageDate: Date?
         let isCollaboration: Bool
         let collaborationRoute: NativeCollaborationRoutePresentation?
-        let actions: [AppKitChatTimelineRow.Action]
+        var actions: [AppKitChatTimelineRow.Action]
         let isPendingInteraction: Bool
         let showsCollaborationSentStatus: Bool
         let messageStatus: UserMessageStatusPresentation?
@@ -113,6 +113,11 @@ struct ConversationNativeRowBuilder {
                 for: item,
                 currentSessionTitle: sessionTitle
             )
+            let collaborationPreview = collaboration.map { CollaborationBodyPreview($0.messageText) }
+            let collaborationDisclosureID = collaborationPreview?.canExpand == true
+                ? CollaborationBodyPreview.expansionID(for: item.id) : nil
+            let collaborationExpanded = collaborationDisclosureID.map { expandedTurnIds.contains($0) } ?? false
+            let collapsedCollaboration = collaborationDisclosureID != nil && !collaborationExpanded
             let specialEvent = nativeAutomationCardPresentation(for: item)
                 ?? nativeSystemEventCardPresentation(for: item)
             if let specialEvent, specialEvent.detailsMarkdown != nil {
@@ -126,11 +131,13 @@ struct ConversationNativeRowBuilder {
                     ?? ChatTimelineRowRouting.copyText(for: item)
             let supplementalText = nativeTimelineSupplementalText(for: item)
             let displayedText = nativeTimelineText(for: item)
-            let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.detailsMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
+            let presentedText = collapsedCollaboration
+                ? (collaborationPreview?.text ?? "")
+                : collaboration?.bodyMarkdown ?? specialEvent?.detailsMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
                 ? displayedText
                 : "\(displayedText)\n\n\(supplementalText)")
             let existingImageURLs = Set(images.compactMap(\.displayURL))
-            let parsedImages = ConversationMessageImageReferenceCache.shared.references(messageID: item.id, text: presentedText)
+            let parsedImages = collapsedCollaboration ? [] : ConversationMessageImageReferenceCache.shared.references(messageID: item.id, text: presentedText)
             let markdownImages = MessageMarkdownImageResolver.references(
                 in: presentedText,
                 baseDirectory: workingDirectory, parsed: parsedImages
@@ -144,7 +151,7 @@ struct ConversationNativeRowBuilder {
                     originalPath: nil
                 )
             })
-            text = ClickableMessageText.markdown(
+            text = collapsedCollaboration ? presentedText : ClickableMessageText.markdown(
                 from: MessageImageGalleryLayout.bodyText(ConversationMessageImageReference.removing(
                         parsedImages.filter { markdownImageSources.contains($0.source) },
                         from: presentedText), hasImages: !images.isEmpty),
@@ -165,8 +172,9 @@ struct ConversationNativeRowBuilder {
             // its historical helper name does not change checklist semantics.
             let checklistDisclosureID = item.executionPlan?.taskId == nil ? nil
                 : ScheduledTriggerPresentation.expansionID(for: item.id)
-            expandableTurnId = scheduledTrigger?.expansionID ?? checklistDisclosureID
-            isExpanded = checklistDisclosureID.map { expandedTurnIds.contains($0) } ?? false
+            expandableTurnId = collaborationDisclosureID ?? scheduledTrigger?.expansionID ?? checklistDisclosureID
+            isExpanded = collaborationDisclosureID != nil ? collaborationExpanded
+                : checklistDisclosureID.map { expandedTurnIds.contains($0) } ?? false
             processCount = nil
             processDuration = nil
             processStartedAt = nil
@@ -178,6 +186,10 @@ struct ConversationNativeRowBuilder {
                     + nativeTimelineActions(for: item)
             } else {
                 actions = nativeTimelineActions(for: item)
+            }
+            if let id = collaborationDisclosureID {
+                actions.append(.init(id: id, label: isExpanded ? L10n("Collapse") : L10n("展开全文"),
+                    isDestructive: false, kind: .toggleMessageExpansion(id: id)))
             }
             isPendingInteraction = (item.type == "approval" || item.type == "choice" || item.type == "userInput")
                 && item.status == "pending"
@@ -492,6 +504,7 @@ struct ConversationNativeRowBuilder {
         case .message(let item):
             hasher.combine(itemSignature(item))
             hasher.combine(expandedTurnIds.contains(ScheduledTriggerPresentation.expansionID(for: item.id)))
+            hasher.combine(expandedTurnIds.contains(CollaborationBodyPreview.expansionID(for: item.id)))
         case .process(let turnId, let items):
             let expanded = expandedTurnIds.contains(entry.processDisclosureID)
             hasher.combine(entry.processReplyCompleted)

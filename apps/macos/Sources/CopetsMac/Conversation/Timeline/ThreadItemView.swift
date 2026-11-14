@@ -11,6 +11,7 @@ struct ThreadItemView: View {
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @State private var isActivityExpanded = false
     @State private var isCollaborationDetailsExpanded = false
+    @State private var isCollaborationBodyExpanded = false
     @State private var isHovering = false
     @State private var isConfirmingUndo = false
     @State private var isDiffActionRunning = false
@@ -374,7 +375,17 @@ struct ThreadItemView: View {
                                 .lineLimit(2)
                         }
 
-                        messageTextView(text: collaborationPresentationText, allowsSelection: true)
+                        let preview = CollaborationBodyPreview(collaborationPresentationText)
+                        if preview.canExpand && !isCollaborationBodyExpanded {
+                            Text(preview.text).lineLimit(2).textSelection(.enabled)
+                        } else {
+                            messageTextView(text: collaborationPresentationText, allowsSelection: true)
+                        }
+                        if preview.canExpand {
+                            Button(isCollaborationBodyExpanded ? L10n("Collapse") : L10n("展开全文")) {
+                                isCollaborationBodyExpanded.toggle()
+                            }.buttonStyle(.plain)
+                        }
 
                     }
 

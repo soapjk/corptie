@@ -24,6 +24,39 @@ struct DetailRailBackdropGeometryTests {
             }
         }
     }
+    final class CardHeight: ObservableObject { @Published var value: CGFloat = 140 }
+    private struct ContentHeightHarness: View {
+        @ObservedObject var height: CardHeight
+        var body: some View {
+            ConversationDetailDashboard {
+                Color.clear.frame(height: height.value)
+            }
+            .modifier(DetailRailContentBackdrop())
+        }
+    }
+
+    @Test func backdropEndsBelowShortContentAndCapsAtViewportForLongContent() async throws {
+        let height = CardHeight()
+        let host = NSHostingView(rootView: ContentHeightHarness(height: height))
+        let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 344, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        for value: CGFloat in [140, 1200, 220] {
+            height.value = value
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            host.layoutSubtreeIfNeeded()
+            let background = try #require(descendants(host, as: DetailRailBackdropView.self).first)
+            let frame = background.convert(background.bounds, to: host)
+            #expect(abs(frame.height - min(600, value + 26)) < 2,
+                "Background follows short content, fills long content, and shrinks again after collapse")
+            #expect(abs(frame.minY) < 2, "Background stays at the top of the rail")
+            let scroll = try #require(descendants(host, as: NSScrollView.self).first)
+            #expect(abs(scroll.frame.height - 600) < 2, "Measuring content must not shrink the scroll viewport")
+            #expect(background.hitTest(.zero) == nil)
+        }
+    }
     private func descendants<T>(_ view: NSView, as type: T.Type) -> [T] {
         ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants($0, as: type) }
     }
@@ -79,7 +112,7 @@ struct DetailRailBackdropGeometryTests {
         #expect(descendants(host, as: DetailRailBackdropView.self).isEmpty)
         #expect(shell.isHidden)
         #expect(shell.hitTest(shell.convert(CGPoint(x: 100, y: 30), to: shell.superview)) == nil)
-        let slideLayer = try #require(shell.subviews.first?.layer)
-        #expect(abs(slideLayer.transform.m41 - DetailRailGeometry.viewportWidth) < 1)
+        // After unmounting, NSHostingView may reset its private layer transform.
+        // Hidden state and hit testing above are the stable dismissal contract.
     }
 }

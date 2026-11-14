@@ -1131,6 +1131,8 @@ struct SessionConversationSurface: View {
             }
         case .locateMessage(let messageID):
             navigateToUserMessage(messageID)
+        case .toggleMessageExpansion(let id):
+            toggleNativeProcessExpansion(id)
         case .forkMessage(let itemID):
             pendingFork = SessionForkSelection(sessionID: sessionId, itemID: itemID)
         case .codexApproval(let option):
