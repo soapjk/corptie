@@ -59,6 +59,46 @@ enum ProviderBrandIcon {
     private static let codex = load("codex")
     private static let claudeCode = load("claude-code")
     private static let openClacky = load("openclacky")
+    private static let codexMenu = makeMenuImage(codex)
+    private static let claudeCodeMenu = makeMenuImage(claudeCode)
+    private static let openClackyMenu = makeMenuImage(openClacky)
+
+    /// Native macOS Menu can extract the NSImage and ignore SwiftUI's frame.
+    /// Keep its point size AND bitmap representations small; never resize the
+    /// shared source used by larger provider badges. Rasterize once per asset.
+    static func menuImage(for identity: String?, providers: [AgentProviderDescriptor], resourceBundle: Bundle? = nil) -> NSImage? {
+        if let resourceBundle {
+            return makeMenuImage(image(for: identity, providers: providers, resourceBundle: resourceBundle))
+        }
+        switch assetName(for: identity, providers: providers) {
+        case "codex": return codexMenu
+        case "claude-code": return claudeCodeMenu
+        case "openclacky": return openClackyMenu
+        default: return nil
+        }
+    }
+
+    private static func makeMenuImage(_ source: NSImage?) -> NSImage? {
+        guard let source else { return nil }
+        let size = NSSize(width: 14, height: 14)
+        let result = NSImage(size: size)
+        for scale in [1, 2] {
+            let pixels = 14 * scale
+            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                let context = NSGraphicsContext(bitmapImageRep: bitmap) else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            context.imageInterpolation = .high
+            source.draw(in: NSRect(x: 0, y: 0, width: CGFloat(pixels), height: CGFloat(pixels)),
+                from: .zero, operation: .copy, fraction: 1)
+            NSGraphicsContext.restoreGraphicsState()
+            bitmap.size = size
+            result.addRepresentation(bitmap)
+        }
+        return result
+    }
 
     static func assetName(for identity: String?, providers: [AgentProviderDescriptor]) -> String? {
         let canonical = providers.canonicalProviderId(for: identity)

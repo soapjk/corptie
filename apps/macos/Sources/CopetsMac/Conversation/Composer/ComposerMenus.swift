@@ -133,7 +133,7 @@ struct SessionModelMenuSurface: View {
                 if ComposerServiceTier.isFast(session?.external?.currentServiceTier) {
                     Image(systemName: "bolt.fill").accessibilityLabel("Fast")
                 }
-                if let icon = ProviderBrandIcon.image(for: currentProvider,
+                if let icon = ProviderBrandIcon.menuImage(for: currentProvider,
                     providers: renderInputs?.providers ?? backendClient.modelCatalog.agentProviders) {
                     Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
                         .frame(width: 14, height: 14).accessibilityHidden(true)
