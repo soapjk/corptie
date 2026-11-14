@@ -893,6 +893,25 @@ export class McpRegistryService {
         "MCP_CREDENTIAL_MISSING", "MCP_TOOL_RESULT_ERROR"].includes(input.errorCode)
         ? input.errorCode : input.stage === "tools-list" ? "MCP_CONNECTION_FAILED" : "MCP_TOOL_CALL_FAILED"
       : null;
+    const observedAt = new Date().toISOString();
+    if (input.stage === "tools-list") {
+      const names = input.toolNames;
+      const validNames = Array.isArray(names) && names.length > 0 && names.length <= 256
+        && names.length === input.toolCount && new Set(names).size === names.length
+        && names.every(name => typeof name === "string" && name.length > 0 && name.length <= 200);
+      if (input.status === "success" && validNames) {
+        // Observations must not change verified_at/config revision: those are
+        // connection-cache inputs and would force another tools/list forever.
+        this.store.db.run(`UPDATE mcp_server_registry SET tool_count = ?,
+          observed_tool_names_json = ?, last_checked_at = ?, last_check_status = 'available',
+          last_error_code = NULL WHERE server_id = ?`,
+        [names.length, JSON.stringify(names), observedAt, input.serverId]);
+      } else if (input.status === "failed") {
+        this.store.db.run(`UPDATE mcp_server_registry SET last_checked_at = ?,
+          last_check_status = 'unavailable', last_error_code = ? WHERE server_id = ?`,
+        [observedAt, safeCode, input.serverId]);
+      }
+    }
     this.store.db.run(`INSERT INTO mcp_runtime_events
       (event_id, server_id, agent_id, provider_id, logical_session_id, provider_binding_id,
        stage, status, error_code, tool_name, tool_count, created_at)

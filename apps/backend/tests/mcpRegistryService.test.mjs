@@ -635,6 +635,38 @@ test("standalone MCP registration, assignment and revocation change existing Age
   }
 });
 
+test("builtin catalog observations update displayed tools without invalidating the connection cache", async () => {
+  const { directory, store, service } = await fixture();
+  const installed = service.ensureBuiltinComputerUse(builtinComputerUseConfig(directory));
+  let opens = 0;
+  const gateway = new SkillMcpGateway({
+    resolveServers: async () => service.serversForSession("logical:catalog", { isDisabled: () => false }),
+    resolveRevision: () => service.installationRevision(),
+    onRuntimeEvent: event => service.recordRuntimeEvent(event),
+    connectServer: async () => { opens++; return {
+      listTools: async () => ({ tools: ["read", "click"].map(name => ({ name, inputSchema: { type: "object" } })) }),
+      close: async () => {}
+    }; }
+  });
+  try {
+    const revision = service.installationRevision();
+    const input = { actorId: "agent:catalog", providerId: "provider:test", metadata: { logicalSessionId: "logical:catalog" } };
+    await gateway.search(input);
+    const observed = service.get(installed.serverId);
+    assert.equal(observed.toolCount, 2);
+    assert.deepEqual(observed.observedToolNames, ["read", "click"]);
+    assert.equal(observed.lastCheckStatus, "available");
+    assert.ok(observed.lastCheckedAt);
+    assert.equal(observed.verifiedAt, "");
+    assert.equal(service.installationRevision(), revision);
+    await gateway.search(input);
+    assert.equal(opens, 1);
+    service.recordRuntimeEvent({ serverId: installed.serverId, stage: "tools-list", status: "failed", errorCode: "MCP_RUNTIME_TIMEOUT" });
+    assert.equal(service.get(installed.serverId).lastCheckStatus, "unavailable");
+    assert.equal(service.get(installed.serverId).toolCount, 2);
+  } finally { await gateway.close(); await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("standalone MCP runtime receipts correlate tools/list and calls without recording arguments", async () => {
   const { directory, store, service } = await fixture();
   try {

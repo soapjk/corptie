@@ -30,6 +30,17 @@ struct ManagedMcpServer: Decodable, Identifiable {
     let hasCredentials: Bool
     let credentialNames: [String]
     var id: String { serverId }
+    var toolCountLabel: String {
+        if lastCheckStatus == "not_checked" { return "工具数量待检测" }
+        if lastCheckStatus != "available" {
+            return observedToolNames.isEmpty ? "工具数量尚未确认" : "上次检测：\(toolCount) 个工具"
+        }
+        return "\(toolCount) 个工具"
+    }
+    var toolCheckLabel: String {
+        if lastCheckStatus == "not_checked" { return "尚未检测工具列表" }
+        return lastCheckStatus == "available" ? "工具列表检测成功" : "工具列表检测失败"
+    }
 }
 
 private struct McpCredentialInput: Identifiable {
@@ -895,13 +906,13 @@ struct McpManagementView: View {
                     .lineLimit(2)
             }
             HStack(spacing: 8) {
-                Text("\(server.toolCount) 个工具")
+                Text(server.toolCountLabel)
                     .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                if server.builtin != true {
-                    Button("重新检测") { Task { await model.check(server, roleId: selectedAgent?.roleId) } }
-                        .disabled(model.isWorking || model.isLoading)
+                Button(server.lastCheckStatus == "not_checked" ? "检测工具列表" : "重新检测") {
+                    Task { await model.check(server, roleId: selectedAgent?.roleId) }
                 }
+                .disabled(model.isWorking || model.isLoading)
                 Menu {
                     Button("运行记录") { eventServer = server }
                     if server.builtin != true {
@@ -946,7 +957,7 @@ struct McpManagementView: View {
             }
             Text(server.enabled ? "已启用" : "已禁用")
             Text(
-                server.builtin == true ? "工具列表检测：\(server.lastCheckStatus)"
+                server.builtin == true ? server.toolCheckLabel
                     : server.lastCheckedAt == nil
                         ? "安装时已验证" : server.lastCheckStatus == "available" ? "最近检测成功" : "最近检测失败"
             )

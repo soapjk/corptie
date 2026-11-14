@@ -437,7 +437,8 @@ export class SkillMcpGateway {
           tools = candidateTools;
           ambiguousToolNames = candidateAmbiguousNames;
           this.#emitRuntimeEvent({ ...context, serverId: config.serverId,
-            stage: "tools-list", status: "success", toolCount: listed.tools.length });
+            stage: "tools-list", status: "success", toolCount: listed.tools.length,
+            toolNames: listed.tools.map(tool => tool.name) });
         } catch (error) {
           if (client) await client.close().catch(() => {});
           unavailableServers.push(Object.freeze({
