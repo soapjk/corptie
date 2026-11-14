@@ -314,3 +314,34 @@ test('disabled providers pause queued work without consuming retries and enablin
   await f.queue.drainAgentWork('session');
   assert.equal(f.sends.length, 1);
 });
+
+for (const change of ['workspace', 'busy', 'cancelled', 'provider']) {
+  test(`asynchronous claim revalidates ${change} before Provider dispatch`, async () => {
+    let mutating = false, enabled = true;
+    const f = fixture({ isWorkspaceMutationActive: () => mutating,
+      providerDispatchDecision: () => enabled ? { allowed: true } : { allowed: false, code: 'PROVIDER_DISABLED', kind: 'paused', message: 'disabled' } });
+    f.add('message');
+    f.deps.store.claimAgentTaskAsync = async item => {
+      const claimed = f.deps.store.claimAgentTask(item.taskId);
+      if (change === 'workspace') mutating = true;
+      if (change === 'busy') f.deps.store.getSession = id => ({ id, status: 'running' });
+      if (change === 'cancelled') f.deps.store.updateAgentTask(item.taskId, { status: 'cancelled' });
+      if (change === 'provider') enabled = false;
+      return claimed;
+    };
+    const queue = createRuntimeAgentWorkQueue({ ...f.deps, inspectCollaborationSession: async () => 'running' });
+    queue.registerRuntimeQueuedWork('session', 'message');
+    await queue.drainAgentWork('session');
+    assert.equal(f.sends.length, 0);
+    assert.equal(f.tasks.get('message').status, change === 'cancelled' ? 'cancelled' : 'queued');
+  });
+}
+
+test('asynchronous claim tolerates reconciled stale running flags', async () => {
+  const f = fixture();
+  f.add('message');
+  f.deps.store.getSession = id => ({ id, status: 'running', external: { activeTurnId: 'stale' } });
+  f.deps.store.claimAgentTaskAsync = async item => f.deps.store.claimAgentTask(item.taskId);
+  await f.queue.drainAgentWork('session');
+  assert.equal(f.sends.length, 1);
+});

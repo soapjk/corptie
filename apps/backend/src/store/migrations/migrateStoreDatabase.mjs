@@ -1,3 +1,4 @@
+import { migrateAgentClaimReceipts } from "../agentClaimOperation.mjs";
 import { migrateDispatchReadIndexes } from "./dispatchReadIndexes.mjs";
 import { migrateExecutionChecklist } from "./executionChecklistMigrations.mjs";
 import { migrateSessionMailbox } from "./sessionMailboxMigrations.mjs";
@@ -314,5 +315,6 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     migrateChildTaskDelivery({ db, selectOne, runDataMigrationOnce });
     migrateTaskCoordination({ db, ensureColumn });
     migrateDispatchReadIndexes(db);
+    migrateAgentClaimReceipts(db);
 
 }

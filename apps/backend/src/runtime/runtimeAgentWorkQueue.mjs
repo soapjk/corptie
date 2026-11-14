@@ -292,7 +292,7 @@ export function createRuntimeAgentWorkQueue({
     }
 
     // Route verification and stale-run reconciliation above may await. Check
-    // again immediately before the synchronous claim, which reserves dispatch
+    // again immediately before the claim, which reserves dispatch
     // against integration's final idle check.
     if (holdForWorkspace(sessionId)) return;
 
@@ -315,11 +315,41 @@ export function createRuntimeAgentWorkQueue({
     if (pendingTimer) { clearTimeout(pendingTimer); mailboxTimers.delete(sessionId); }
     const admissionDecision = mailboxDecision(next);
     if (!admissionDecision.allowed) { recordBlocked(next, admissionDecision); return; }
-    let claimed = store.claimAgentTask(next.taskId);
+    const asynchronousClaim = typeof store.claimAgentTaskAsync === "function";
+    let claimed = asynchronousClaim ? await store.claimAgentTaskAsync(next) : store.claimAgentTask(next.taskId);
     if (!claimed) {
       const current=store.getAgentTask(next.taskId);
       if(current?.status === "queued") recordBlocked(current,dispatchBlocked("OPERATION_CLAIM_UNAVAILABLE"));
       return;
+    }
+    if (asynchronousClaim) {
+      // The asynchronous claim introduces a suspension boundary. Recheck mutable
+      // host policy before any Provider side effect; the worker rechecks row ownership.
+      const observedSession = store.getSession(sessionId);
+      const observedRun = JSON.stringify([observedSession?.status, observedSession?.external?.activeTurnId,
+        observedSession?.rawStatus?.activeTurnId, observedSession?.external?.workspace?.continuationState]);
+      let reconciledIdle = false;
+      if (sessionHasActiveRun(observedSession)) {
+        // Stale persisted running flags must not prevent an otherwise idle Session.
+        // Inspect again after the worker wait, then recheck all policy synchronously.
+        try { reconciledIdle = await inspectRunState(sessionId) === "idle"; }
+        catch { /* Release this undispatched claim below; do not strand it running. */ }
+      }
+      const current = store.getAgentTask(claimed.taskId);
+      if (!current || current.status !== "running" || current.startedAt !== claimed.startedAt || current.targetTurnId) return;
+      const decision = mailboxDecision(current);
+      const liveSession = store.getSession(sessionId);
+      const liveRun = JSON.stringify([liveSession?.status, liveSession?.external?.activeTurnId,
+        liveSession?.rawStatus?.activeTurnId, liveSession?.external?.workspace?.continuationState]);
+      if (current.sessionId !== sessionId || collaborationCore.getAgentForSession(sessionId)?.agentId !== current.agentId
+          || !decision.allowed || !liveSession || (sessionHasActiveRun(liveSession) && !(reconciledIdle && observedRun === liveRun))
+          || workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))
+          || (inspectWorkspaceDispatchBlocker ? inspectWorkspaceDispatchBlocker(sessionId) : isWorkspaceMutationActive(sessionId))) {
+        const paused = store.updateAgentTask(current.taskId, { status: "queued", startedAt: null });
+        recordBlocked(paused, decision.allowed ? dispatchBlocked("SESSION_STATE_CHANGED") : decision);
+        return;
+      }
+      claimed = current;
     }
     claimed=clearBlocked(claimed);
     forgetRuntimeQueuedWork(sessionId, next.taskId);

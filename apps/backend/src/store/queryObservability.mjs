@@ -74,6 +74,7 @@ export class SqliteQueryObservability {
       // Deliberately log only a one-way fingerprint and structural metadata.
       // Parameters, SQL literals, message text and payloads never enter this log.
       this.logger.warn?.(`[sqlite-slow] ${JSON.stringify({
+        timestamp: new Date().toISOString(),
         fingerprint,
         operation,
         source,
