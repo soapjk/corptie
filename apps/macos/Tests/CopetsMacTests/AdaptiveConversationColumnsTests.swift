@@ -430,6 +430,76 @@ struct AdaptiveConversationColumnsTests {
     }
 
     @MainActor @Test
+    func initialLayoutDocksInsideResizeHysteresis() async throws {
+        typealias Columns = AdaptiveConversationColumns<Color, Color, EmptyView>
+        for offset: CGFloat in [0, 12, 23] {
+            let width = Columns.minimumDockedWidth + offset
+            let transcript = NSView(), inspector = NSView()
+            let host = NSHostingView(rootView: AdaptiveConversationColumns(isVisible: .constant(true)) {
+                NativeProbe(view: transcript)
+            } detail: { NativeProbe(view: inspector) })
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                styleMask: .borderless, backing: .buffered, defer: false)
+            window.contentView = host
+            defer { window.contentView = nil }
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(280))
+            host.layoutSubtreeIfNeeded()
+            #expect(inspector.window === window)
+            #expect(abs(transcript.frame.width - (width - Columns.dockedReservedWidth)) < 2,
+                "Initial layout must reserve the rail whenever it fits, including at the exact threshold")
+        }
+    }
+
+    @MainActor @Test
+    func explicitOpenRechecksFitAndExplicitCloseSurvivesResize() async throws {
+        typealias Columns = AdaptiveConversationColumns<Color, Color, EmptyView>
+        let preference = Visibility()
+        let control = VisibilityControl(), transcript = NSView(), rail = NSView()
+        let host = NSHostingView(rootView: AdaptiveConversationColumns(isVisible: Binding(
+            get: { preference.isVisible }, set: { preference.isVisible = $0 })) {
+                NativeProbe(view: transcript)
+            } detail: { NativeProbe(view: rail) } header: { VisibilityProbe(control: control) })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.contentView = nil }
+        func settle() async throws {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(280))
+            host.layoutSubtreeIfNeeded()
+        }
+        try await settle()
+        let open = try #require(control.value)
+        open.wrappedValue = true
+        try await settle()
+        #expect(rail.window === window)
+        #expect(abs(transcript.frame.width - 900) < 2, "An actually narrow window still uses an overlay")
+
+        let width = Columns.minimumDockedWidth + 12
+        window.setContentSize(NSSize(width: width, height: 600))
+        try await settle()
+        #expect(abs(transcript.frame.width - width) < 2, "Passive resizing keeps hysteresis")
+        control.value?.wrappedValue = true
+        try await settle()
+        #expect(abs(transcript.frame.width - (width - Columns.dockedReservedWidth)) < 2,
+            "An explicit open must dock even when the overlay was already visible")
+        #expect(transcript.window === window)
+
+        window.setContentSize(NSSize(width: 900, height: 600))
+        try await settle()
+        control.value?.wrappedValue = true
+        try await settle()
+        control.value?.wrappedValue = false
+        try await settle()
+        #expect(!preference.isVisible, "Explicit close also clears the wide-window preference")
+        window.setContentSize(NSSize(width: Columns.redockWidth + 40, height: 600))
+        try await settle()
+        #expect(rail.window == nil, "Growing the window must not undo an explicit close")
+        #expect(transcript.window === window)
+    }
+
+    @MainActor @Test
     func boundaryJitterDoesNotFlickerTheRailOrReflowTheTranscript() async throws {
         typealias Columns = AdaptiveConversationColumns<Color, Color, EmptyView>
         let threshold = Columns.minimumDockedWidth
