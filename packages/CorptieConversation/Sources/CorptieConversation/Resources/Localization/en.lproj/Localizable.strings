@@ -15,3 +15,5 @@
 "需要你决定：%@" = "Your decision: %@";
 "查看全部 %lld 项" = "View all %lld tasks";
 "已交付或验收 %lld 项，共 %lld 项" = "Delivered or accepted %lld of %lld tasks";
+
+"开启后由请求影子承接用户指令；子任务始终由汇总影子管理，关闭后仍会交付和回收。" = "When enabled, request shadows handle user instructions. Summary shadows always manage, deliver, and reclaim child tasks, even when this mode is off.";

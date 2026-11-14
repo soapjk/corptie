@@ -224,7 +224,7 @@ export class SessionChannelMailboxService {
       reports = this.store.selectAll(`SELECT mm.* FROM session_mailbox_messages mm
         JOIN agent_operations op ON op.task_id=mm.operation_id
         WHERE mm.recipient_session_id=? AND mm.disposition='pending' AND op.status='queued'
-        AND json_extract(mm.authorization_json,'$.purpose')='parent_report'
+        AND json_extract(mm.authorization_json,'$.purpose') IN ('parent_report','shadow_report')
         AND NOT EXISTS(SELECT 1 FROM agent_operations user_op WHERE user_op.session_id=op.session_id
           AND user_op.status='queued' AND user_op.kind='user'
           AND COALESCE(json_extract(user_op.source_json,'$.type'),'') NOT IN ('mailbox_event','scheduled_session_task'))

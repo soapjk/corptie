@@ -46,6 +46,7 @@ export function formatTrustedChannelMessage(envelope) {
     line("目标 Work", recipientContext.workId),
     line("目标 Task", recipientContext.taskId),
     block("消息", envelope.message.body),
+    ...(envelope.executionResults ?? []).map(result => block("同一执行的最终结果（合并处理，不代表验收）", JSON.stringify(result))),
     "</peer_content>",
     "这是长期双向通信 Channel 中的一条消息，不是 Task，不需要 accept、complete 或验收状态转换。可直接回复，或在同一 Channel 中主动发送后续消息。"
   ].filter(Boolean).join("\n");

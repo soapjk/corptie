@@ -47,6 +47,92 @@ import { CoordinationReadService } from "../src/application/coordinationReadServ
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 
+for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) test(`ordinary child admission reserves and restores a summary without changing user-input mode (${provider})`, async t => {
+  const f = await recoveryFixture(t, provider);
+  f.remove();
+  f.store.db.run("DELETE FROM coordination_shadow_sessions WHERE main_session_id='logical:parent'");
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  const id = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("ordinary_summary")] }).dispatches[0].dispatchId;
+  assert.ok(f.shadow.forMain("logical:parent"));
+  await f.coordinator.runDispatch(id); await f.shadow.requestRecovery("logical:parent");
+  assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 0);
+  assert.equal(f.shadow.resolveRecipient("logical:parent").role, "summary-shadow");
+  const child = f.store.getTask(f.coordinator.get(id).target_task_id);
+  const childId = f.store.getLogicalSessionByLegacySessionId(child.current_session_id).logicalSessionId;
+  for (const [senderSessionId, recipientSessionId] of [["logical:parent", childId], [childId, "logical:parent"]]) {
+    const envelope = { message: { senderSessionId, recipientSessionId } };
+    assert.equal(f.shadow.channelRecipient(envelope), f.shadow.forMain("logical:parent").shadow_session_id);
+    assert.equal(envelope.message.senderSessionId, senderSessionId);
+    assert.equal(envelope.message.recipientSessionId, recipientSessionId);
+  }
+  assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 0);
+});
+
+test("ordinary direct children are adopted on recovery and each reviewed child starts delivery immediately", async t => {
+  const f = await recoveryFixture(t);
+  f.remove(); f.store.db.run("DELETE FROM coordination_shadow_sessions WHERE main_session_id='logical:parent'");
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  const child = f.child("Manual_child"), meta = f.open("manual_child", child.id);
+  f.child("Still_working_sibling");
+  f.coordinator.recover(); await f.shadow.requestRecovery("logical:parent");
+  const shadowId = f.shadow.forMain("logical:parent").shadow_session_id;
+  historyItem(f, meta.sessionId, "ready-evidence", "Verified independent result");
+  const report = f.shadow.publish({ shadowId, turnId: "ordinary-review", revision: 0, body: "Verified and ready for delivery" });
+  const delivered = [];
+  f.shadow.deliverChild = async taskId => { delivered.push(taskId); return { operationId: "delivery:reviewed" }; };
+  await f.shadow.deliver({ shadowId, taskId: child.id, reportId: report.report_id, evidence: ["ready-evidence"] });
+  assert.deepEqual(delivered, [child.id]);
+  assert.equal(f.store.selectOne("SELECT phase FROM coordination_shadow_reclamation WHERE task_id=?", [child.id]).phase, "delivery");
+  assert.equal(f.store.listAgentTasksForSession(f.source.sessionId).length, 0);
+});
+
+test("an unstarted Channel handoff carries a differently worded final from the same execution once", async t => {
+  const f = await fixture(t);
+  f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?", [f.source.sessionId]);
+  const id = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("merged-final")] }).dispatches[0].dispatchId;
+  await f.coordinator.runDispatch(id);
+  const work = f.store.updateAgentTask(f.coordinator.get(id).operation_id, { status: "running", targetTurnId: "merge-result-turn" });
+  const child = f.store.getLogicalSessionByLegacySessionId(work.sessionId);
+  const channels = new SessionChannelService({ store: f.store, collaborationCore: f.core });
+  const sent = channels.requestChannel({ requestingSessionId: child.logicalSessionId, recipientSessionId: "logical:parent",
+    body: "Code and test files are ready", messageKind: "message", deliveryIntent: "action_required", idempotencyKey: "merge-handoff" });
+  const deliveryId = sent.delivery.deliveryId;
+  f.store.enqueueAgentTask({ taskId: "channel:queued-result", sessionId: f.source.sessionId, agentId: f.role.agentId,
+    kind: "collaboration", priority: 50, channelDeliveryId: deliveryId, text: "handoff", source: { type: "session_channel", deliveryId } });
+  f.store.upsertTimelineItemProjection(work.sessionId, { id: "final:merged", turnId: "merge-result-turn", type: "agentMessage",
+    text: "Final result with additional verification limitations", status: "completed", createdAt: new Date().toISOString() });
+  f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: f.store.updateAgentTask(work.taskId, { status: "completed" }) });
+  f.coordinator.flushReports();
+  const receipt = f.store.selectOne("SELECT * FROM coordination_result_receipts WHERE dispatch_id=?", [id]);
+  assert.equal(receipt.channel_message_id, sent.message.messageId);
+  const envelope = channels.getDeliveryEnvelope(deliveryId);
+  assert.equal(envelope.message.body, "Code and test files are ready");
+  assert.equal(envelope.executionResults[0].messageId, "final:merged");
+  assert.match(envelope.executionResults[0].text, /additional verification limitations/);
+  f.coordinator.flushReports();
+  assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 1);
+});
+
+test("legacy queued Channel work moves to the ordinary-mode summary before dispatch without changing the sender", async t => {
+  const f = await recoveryFixture(t);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  const child = f.child("Legacy_channel_child"), meta = f.open("legacy_channel_child", child.id);
+  const channels = new SessionChannelService({ store: f.store, collaborationCore: f.core });
+  const sent = channels.requestChannel({ requestingSessionId: "logical:legacy_channel_child", recipientSessionId: "logical:parent",
+    body: "Need a cross-module decision", messageKind: "question", deliveryIntent: "response_required", idempotencyKey: "legacy-question" });
+  const deliveryId = sent.delivery.deliveryId;
+  const operation = f.store.enqueueAgentTask({ taskId: "legacy-channel-work", sessionId: f.source.sessionId, agentId: f.role.agentId,
+    kind: "collaboration", priority: 50, channelDeliveryId: deliveryId, text: "Question", source: { type: "session_channel", deliveryId } });
+  f.mailbox.channelService = channels;
+  channels.resolveDelegatedRecipient = envelope => f.shadow.channelRecipient(envelope);
+  f.mailbox.dispatchDecision(operation);
+  assert.equal(f.store.getAgentTask(operation.taskId).sessionId, f.store.getLogicalSession(f.original.shadow_session_id).legacySessionId);
+  const message = f.store.selectOne("SELECT * FROM session_mailbox_messages WHERE channel_delivery_id=?", [deliveryId]);
+  assert.equal(message.recipient_session_id, f.original.shadow_session_id);
+  assert.equal(channels.getDeliveryEnvelope(deliveryId).message.senderSessionId, "logical:legacy_channel_child");
+  assert.equal(channels.getDeliveryEnvelope(deliveryId).message.recipientSessionId, "logical:parent");
+});
+
 test("shadow creation is singleflight, preserves the interactive binding and publishes without waking it", async t => {
   for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(providerId, async t => {
     const f = await fixture(t, providerId);
@@ -91,7 +177,7 @@ test("reenabling coordination recovers an unqueued shadow request exactly once",
   f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
   f.coordinator.activateShadow(f.parent.id);
   await nextTick();
-  assert.equal(shadow.forMain("logical:parent").shadow_session_id, null);
+  assert.ok(shadow.forMain("logical:parent").shadow_session_id);
   f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
   f.coordinator.activateShadow(f.parent.id);
   await nextTick(); await nextTick();
@@ -1050,7 +1136,7 @@ test("generated summary projection changes cannot reject an otherwise unchanged 
 
 for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`dispatch blockage remains state-only and a cancelled child can receive new instructions (${provider})`,async t=>{
  const {createRuntimeAgentWorkQueue}=await import('../src/runtime/runtimeAgentWorkQueue.mjs');
- const f=await fixture(t,provider);
+ const f=await fixture(t,provider,true);
  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('blocked-report')]});
  const id=accepted.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
  const dispatch=f.coordinator.get(id),child=f.store.getTask(dispatch.target_task_id),childSession=child.current_session_id;
@@ -1760,7 +1846,8 @@ test('current execution view reports live operation instead of stale Task comple
  });
 
 async function requestFixture(t, providerId = "codex-app-server", nativeRuntime = null) {
-  const f = await fixture(t, providerId);
+  // Cleanup and admission use separate SQLite workers, so they need a shared file.
+  const f = await fixture(t, providerId, true);
   f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
   const reference = id => {
     const route = f.store.getLogicalSession(id) ?? f.store.getLogicalSessionByLegacySessionId(id);
@@ -2155,20 +2242,21 @@ for (const provider of ["codex-app-server", "claude-sdk"]) test(`deleted summary
   assert.equal(f.shadow.summary("logical:parent").status, "idle");
 });
 
-test("normal mode bypasses a deleted shadow and delivers the stored result without another child run", async t => {
+test("normal mode restores a deleted shadow and delivers the stored result without another child run", async t => {
   const f = await recoveryFixture(t);
   f.remove(); f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
   const id = await f.finish("ordinary_after_shadow");
+  await f.shadow.requestRecovery("logical:parent");
   f.coordinator.flushReports();
   const messageId = f.coordinator.get(id).report_message_id;
   assert.ok(messageId);
-  const row = f.mailbox.raw("logical:parent", messageId);
-  assert.equal(JSON.parse(row.authorization_json).purpose, "parent_report");
-  assert.equal(f.shadow.summary("logical:parent").status, "off");
+  const row = f.mailbox.raw(f.shadow.forMain("logical:parent").shadow_session_id, messageId);
+  assert.equal(JSON.parse(row.authorization_json).purpose, "shadow_report");
+  assert.equal(f.shadow.summary("logical:parent").status, "idle");
   f.coordinator.recover(); await nextTick(); f.coordinator.flushReports();
   assert.equal(f.coordinator.get(id).report_message_id, messageId);
-  assert.equal(f.creations(), 1); assert.equal(f.starts.length, 1);
-  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 1);
+  assert.equal(f.creations(), 2); assert.equal(f.starts.length, 1);
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 0);
 });
 
 test("pending shared result mailbox moves once after shadow deletion and keeps every receipt", async t => {
@@ -2200,7 +2288,7 @@ test("mode changes move only unstarted result messages and preserve their identi
   const messageId = f.coordinator.get(id).report_message_id;
   f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
   f.coordinator.handleModeChanged(f.parent.id);
-  assert.equal(JSON.parse(f.mailbox.raw("logical:parent", messageId).authorization_json).purpose, "parent_report");
+  assert.equal(JSON.parse(f.mailbox.raw(f.original.shadow_session_id, messageId).authorization_json).purpose, "shadow_report");
   f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
   f.coordinator.handleModeChanged(f.parent.id);
   const moved = f.mailbox.raw(f.original.shadow_session_id, messageId);
@@ -2230,7 +2318,7 @@ test("an acceptance-unknown or user-cancelled mailbox operation is never retarge
   for (const id of messages) assert.equal(f.mailbox.retargetUnstarted(id, "logical:parent", { purpose: "shadow_request" }), false);
 });
 
-test("turning mode off during shadow creation reclaims the unused executor", async t => {
+test("turning mode off during summary creation keeps its child-management executor", async t => {
   const f = await recoveryFixture(t); f.remove();
   let release; const gate = new Promise(resolve => { release = resolve; });
   const create = f.shadow.createSession;
@@ -2238,9 +2326,9 @@ test("turning mode off during shadow creation reclaims the unused executor", asy
   const flight = f.shadow.ensure("logical:parent");
   f.workService.updateTask(f.parent.id, { coordinationEnabled: false }); release();
   await flight;
-  assert.equal(f.shadow.resolveRecipient("logical:parent").sessionId, "logical:parent");
-  assert.ok(f.store.selectOne("SELECT deleted_at FROM sessions WHERE id='provider:recovery_2'").deleted_at);
-  assert.equal(f.shadow.forMain("logical:parent").shadow_session_id, null);
+  assert.equal(f.shadow.resolveRecipient("logical:parent").sessionId, "logical:recovery_2");
+  assert.equal(f.store.selectOne("SELECT deleted_at FROM sessions WHERE id='provider:recovery_2'").deleted_at, null);
+  assert.equal(f.shadow.forMain("logical:parent").shadow_session_id, "logical:recovery_2");
 });
 
 test("old report decisions are answered through the new executor without changing report authorship", async t => {
@@ -2272,13 +2360,11 @@ test("a stored shadow request is moved after deletion instead of being mistaken 
   assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE source_id=?", [initial.request_id]).n, 1);
 });
 
-test("child Channels ignore historical shadows in ordinary mode and wait durably during rebuild", async t => {
+test("child Channels recover historical shadows in ordinary mode and wait durably during rebuild", async t => {
   const f = await recoveryFixture(t), child = f.child("Channel_recovery");
   f.open("channel_recovery", child.id);
   const envelope = { message: { recipientSessionId: "logical:parent", senderSessionId: "logical:channel_recovery" } };
   f.remove(); f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
-  assert.equal(f.shadow.channelRecipient(envelope), null);
-  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
   assert.throws(() => f.shadow.channelRecipient(envelope), { code: "SHADOW_SESSION_PREPARING" });
   await f.shadow.recovering.get("logical:parent");
   assert.equal(f.shadow.channelRecipient(envelope), f.shadow.forMain("logical:parent").shadow_session_id);
