@@ -399,7 +399,7 @@ async function resolvedConversationMessage(reference, input, latencyTrace) {
   return { text: message.text, images, ...(message.mentions ? { mentions: message.mentions } : {}) };
 }
 
-function enqueueUserAgentWork(session, input, source, latencyTrace = null, reference = null) {
+async function enqueueUserAgentWork(session, input, source, latencyTrace = null, reference = null) {
   const message = normalizeConversationMessage(input);
   const agent = collaborationCore.getAgentForSession(session.id) ?? ensureCollaborationAgentForSession(session);
   if (!agent) {
@@ -427,7 +427,7 @@ function enqueueUserAgentWork(session, input, source, latencyTrace = null, refer
     messageContent: message,
     ...(latencyTrace ? { latencyTrace } : {})
   };
-  const created = store.createUserMessageDelivery({
+  const created = await (store.createUserMessageDeliveryAsync ?? store.createUserMessageDelivery).call(store, {
     deliveryId,
     messageId,
     sessionId: session.id,

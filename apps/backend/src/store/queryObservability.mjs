@@ -1,3 +1,4 @@
+import { threadId, isMainThread } from "node:worker_threads";
 import { createHash } from "node:crypto";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 
@@ -74,7 +75,7 @@ export class SqliteQueryObservability {
       // Deliberately log only a one-way fingerprint and structural metadata.
       // Parameters, SQL literals, message text and payloads never enter this log.
       this.logger.warn?.(`[sqlite-slow] ${JSON.stringify({
-        timestamp: new Date().toISOString(),
+        timestamp: new Date().toISOString(), threadId, isMainThread,
         fingerprint,
         operation,
         source,

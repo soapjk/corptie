@@ -345,3 +345,37 @@ test('asynchronous claim tolerates reconciled stale running flags', async () => 
   await f.queue.drainAgentWork('session');
   assert.equal(f.sends.length, 1);
 });
+
+test('known Session work dispatches while background discovery is stalled', async () => {
+  const f=fixture();
+  let finish;
+  let scans=0;
+  const pending=new Promise(resolve=>{finish=resolve;});
+  const queue=createRuntimeAgentWorkQueue({...f.deps,sessionMailbox:{
+    syncQueuedOperations:()=>{scans++;return pending;},
+    canDispatchOperation:()=>true, validateOperation:()=>{}
+  }});
+  f.add('message');
+  queue.registerRuntimeQueuedWork('session','message');
+  const first=queue.tickAgentWorkQueue();
+  const second=queue.tickAgentWorkQueue();
+  try {
+    for(let i=0;i<20 && !f.sends.length;i++) await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(scans,1);
+    assert.equal(f.sends.length,1);
+  } finally { finish(); await Promise.all([first,second]); }
+});
+
+test('workspace changes during worker claim release the reservation before Provider execution',async()=>{
+  let mutating=false;
+  const f=fixture({isWorkspaceMutationActive:()=>mutating});
+  f.deps.store.claimAgentTaskAsync=async item=>{
+    const claimed=f.deps.store.claimAgentTask(item.taskId);
+    mutating=true;
+    return claimed;
+  };
+  f.add('message');
+  await f.queue.drainAgentWork('session');
+  assert.equal(f.sends.length,0);
+  assert.equal(f.tasks.get('message').status,'queued');
+});

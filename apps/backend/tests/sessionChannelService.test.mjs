@@ -903,7 +903,7 @@ test("external notifications persist without waking and manual processing uses t
     f.unified.setPaused("session:b", true);
     f.unified.mutate("session:b", message.messageId, "process");
     const registered = [];
-    f.unified.syncQueuedOperations((...args) => registered.push(args));
+    await f.unified.syncQueuedOperations((...args) => registered.push(args));
     const operation = f.store.getAgentTask(registered[0][1]);
     assert.equal(operation.priority, 90);
     assert.equal(operation.source.mailboxMessageId, message.messageId);
@@ -1004,8 +1004,8 @@ test('restart registers paused mailbox work so it can report reasons, and pages 
   for(let i=0;i<505;i++) f.unified.receiveEvent({recipientSessionId:'session:b',sourceType:'background',sourceId:`source:${i}`,
    body:'Instruction',intent:'action_required',idempotencyKey:`key:${i}`,authorization:{ownerLogicalSessionId:'session:b',sourceId:`source:${i}`}});
   const ids=new Set(),register=(_session,id)=>ids.add(id);
-  f.unified.syncQueuedOperations(register);assert.equal(ids.size,500);
-  f.unified.syncQueuedOperations(register);assert.equal(ids.size,505);
+  await f.unified.syncQueuedOperations(register);assert.equal(ids.size,500);
+  await f.unified.syncQueuedOperations(register);assert.equal(ids.size,505);
   const first=f.store.getAgentTask([...ids][0]);assert.equal(f.unified.dispatchDecision(first).code,'MAILBOX_PAUSED');
  }finally{await f.close();}
 });
