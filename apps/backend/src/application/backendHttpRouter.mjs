@@ -234,7 +234,7 @@ export function routeBackendHttpRequest(request, response, ports) {
   })) return;
 
   if (handleSessionInteractionHttpRequest({
-    request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
+    request, response, url, store, sendUnifiedSessionMessage, userMessageCommandSource,
     chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, withdrawUserMessage,
     respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
     readJson, sendJson, unifiedErrorStatus

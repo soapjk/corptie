@@ -389,7 +389,7 @@ export class ArtifactService {
     if (requestedScope && !ARTIFACT_SCOPES.has(requestedScope)) {
       throw artifactError("ARTIFACT_SCOPE_INVALID", `Unsupported Artifact scope: ${requestedScope}`, 400);
     }
-    const matches = this.store.searchArtifactDocuments(null, query, Math.max(limit * 4, 50));
+    const matches = await this.store.searchArtifactDocumentsAsync(null, query, Math.max(limit * 4, 50));
     for (const match of matches) {
       const artifact = this.store.getArtifact(match.artifactId);
       if (!artifact) continue;
@@ -2274,7 +2274,7 @@ export class ArtifactService {
 
   #indexArtifact(artifact, body = undefined) {
     if (!artifact) return;
-    this.store.upsertArtifactSearchDocument({
+    this.store.enqueueArtifactSearchDocument({
       artifactId: artifact.artifactId,
       workId: artifact.workId,
       title: artifact.title,

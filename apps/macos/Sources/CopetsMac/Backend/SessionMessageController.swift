@@ -1,3 +1,4 @@
+import CorptieClientSecurity
 import CorptieClientCore
 import Foundation
 
@@ -60,6 +61,7 @@ final class SessionMessageController {
         self.loadWorkspaceRecoveryStatus = loadWorkspaceRecoveryStatus
         self.currentError = currentError
         self.reportError = reportError
+        Task { await LoopbackMessageSender.shared.resume(baseURL: baseURL) }
     }
 
     @discardableResult
@@ -142,7 +144,14 @@ final class SessionMessageController {
                 ])
 
                 latencyTrace.log(stage: "request_sent", requestStartedAtMs: requestStartedAtMs)
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let result: (Data, URLResponse)
+                if presentsAcknowledgedUserMessage && !trimmed.hasPrefix("/") {
+                    result = try await LoopbackMessageSender.shared.send(request, baseURL: baseURL,
+                        sessionID: session.id, messageID: messageID)
+                } else {
+                    result = try await URLSession.shared.data(for: request)
+                }
+                let (data, response) = result
                 latencyTrace.log(stage: "response_received", requestStartedAtMs: requestStartedAtMs)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
@@ -195,6 +204,12 @@ final class SessionMessageController {
                 } else {
                     sendStatusMessage = L10n("Sent to Codex")
                 }
+            } catch LoopbackSubmissionError.awaitingConfirmation {
+                submissionSettled = true
+                sendStatusMessage = L10n("正在确认发送结果")
+                // The encrypted outbox owns recovery; do not restore the draft
+                // and invite a second message with a different identity.
+                onSuccess()
             } catch {
                 ClientFailureDiagnostics.log(error, operation: "SessionMessageController.sendText", sessionID: session.id)
                 if presentsAcknowledgedUserMessage,

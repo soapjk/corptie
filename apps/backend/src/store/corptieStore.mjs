@@ -1,3 +1,4 @@
+import { DatabaseWorkerPool } from "./databaseWorkerPool.mjs";
 import { AgentClaimPool } from "./agentClaimPool.mjs";
 import { SessionWritePool } from "./sessionWritePool.mjs";
 import { CoordinationCleanupPool } from "./coordinationCleanupPool.mjs";
@@ -176,6 +177,7 @@ export class CorptieStore {
         this.migrate();
         initializeUnifiedSearch(this);
       }
+      if (!readOnly && options.initializeRuntimeIndexes !== false) this.scheduleArtifactIndex();
       // Schema migration can run in a short-lived Worker. The long-lived Store
       // must own/resume history construction even when migrations already ran.
       if (!readOnly && options.initializeRuntimeIndexes !== false) this.quickMessageBuild = initializeQuickMessageIndex(this);
@@ -573,6 +575,59 @@ export class CorptieStore {
     await writer?.close();
   }
 
+  async searchArtifactDocumentsAsync(workId,query,limit) {
+    await this.flushArtifactIndex();
+    if(!this.artifactIndexPool) throw new Error("Artifact search unavailable");
+    return this.artifactIndexPool.searchArtifactDocuments({workId,query,limit});
+  }
+
+  enqueueArtifactSearchDocument(input) {
+    const {body,...metadata}=input;
+    this.db.run(`INSERT INTO artifact_index_jobs(artifact_id,input_json,body) VALUES(?,?,?)
+      ON CONFLICT(artifact_id) DO UPDATE SET input_json=excluded.input_json,
+      body=COALESCE(excluded.body,artifact_index_jobs.body)`,
+      [input.artifactId,JSON.stringify(metadata),body ?? null]);
+    this.afterCommit(()=>this.scheduleArtifactIndex());
+  }
+
+  scheduleArtifactIndex() {
+    if(this.closing || this.migrationInProgress || this.readOnly || this.artifactIndexTimer || this.artifactIndexFlight) return;
+    this.artifactIndexTimer=setTimeout(()=>{
+      this.artifactIndexTimer=null;
+      this.flushArtifactIndex().catch(error=>{
+        console.warn('[artifact-index]',error.code ?? 'INDEX_UPDATE_FAILED');
+      });
+    },1000);
+    this.artifactIndexTimer.unref?.();
+  }
+
+  flushArtifactIndex() {
+    if(this.artifactIndexFlight) return this.artifactIndexFlight;
+    if(this.closing || this.migrationInProgress || this.readOnly) return Promise.resolve();
+    clearTimeout(this.artifactIndexTimer); this.artifactIndexTimer=null;
+    const pool=this.artifactIndexPool ??= new DatabaseWorkerPool({dbPath:this.dbPath,size:1,maxQueueDepth:2,
+      workerURL:new URL('./artifactIndexWorker.mjs',import.meta.url)});
+    const flight=(async()=>{
+      while(!this.closing && !this.migrationInProgress) {
+        const {processed}=await pool.drainArtifactIndex();
+        if(!processed) break;
+        await new Promise(resolve=>setImmediate(resolve));
+      }
+    })();
+    this.artifactIndexFlight=flight;
+    flight.catch(async()=>{
+      if(this.artifactIndexPool===pool) this.artifactIndexPool=null;
+      await pool.close();
+    }).finally(()=>{this.artifactIndexFlight=null;this.scheduleArtifactIndex();}).catch(()=>{});
+    return flight;
+  }
+
+  async closeArtifactIndex() {
+    clearTimeout(this.artifactIndexTimer); this.artifactIndexTimer=null;
+    await this.artifactIndexFlight?.catch(()=>{});
+    await this.artifactIndexPool?.close(); this.artifactIndexPool=null;
+  }
+
   getSessionWritePool() {
     if (!this.db || this.closing) throw new Error("Store is closed.");
     return this.sessionWritePool ??= new SessionWritePool({ dbPath:this.dbPath, configPath:this.configPath, dataRoot:this.dataRoot });
@@ -598,6 +653,7 @@ export class CorptieStore {
 
   async close(options = {}) {
     this.closing = true;
+    await this.closeArtifactIndex();
     await this.closeClaimWriter();
     const writer = this.sessionWritePool;
     this.sessionWritePool = null;

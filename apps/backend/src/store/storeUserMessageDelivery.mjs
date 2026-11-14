@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 // One transaction commits the user message projection, event, outbox and work.
@@ -20,6 +21,18 @@ export function createUserMessageDelivery(store, {
     }
     if (store.getSessionItem(sessionId, messageId)?.withdrawnMessage) {
       throw Object.assign(new Error("Message was withdrawn."), { code: "MESSAGE_WITHDRAWN", status: 410 });
+    }
+    const previous = store.getMessageDelivery(deliveryId) ?? store.getMessageDeliveryForMessage(messageId);
+    if (previous) {
+      const task = store.getAgentTask(messageId);
+      const original = task?.source?.messageContent ?? {text:task?.text,images:[]};
+      const incoming = content ?? {text,images:[]};
+      if (previous.sessionId !== sessionId || previous.messageId !== messageId || previous.deliveryId !== deliveryId
+          || !task || !isDeepStrictEqual(original,incoming)) {
+        throw Object.assign(new Error("Message identity conflicts with an existing submission."),
+          {code:"MESSAGE_DELIVERY_CONFLICT",statusCode:409});
+      }
+      return {inserted:false,delivery:previous,message:store.getSessionItem(sessionId,messageId),task,outbox:null};
     }
     if (source.clientReceipt) {
       const receipt = source.clientReceipt;

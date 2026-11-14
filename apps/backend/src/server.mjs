@@ -2689,7 +2689,27 @@ function route(request, response) {
   return routeBackendHttpRequest(request, response, backendHttpPorts);
 }
 
+let nextHttpConnectionId = 0;
 const server = http.createServer(route);
+server.on("connection", socket => {
+  const connectionId = ++nextHttpConnectionId;
+  const startedAt = Date.now();
+  socket.on("error", error => console.warn("[http-connection-error]", JSON.stringify({
+    timestamp:new Date().toISOString(),connectionId,code:error.code ?? "SOCKET_ERROR"
+  })));
+  socket.on("close", hadError => {
+    if(hadError) console.warn("[http-connection-close]", JSON.stringify({
+      timestamp:new Date().toISOString(),connectionId,hadError,
+      durationMs:Date.now()-startedAt,bytesRead:socket.bytesRead,bytesWritten:socket.bytesWritten
+    }));
+  });
+});
+server.on("request", request => {
+  request.once("aborted",()=>console.warn("[http-request-aborted]",JSON.stringify({
+    timestamp:new Date().toISOString(),method:request.method,
+    traceId:String(request.headers["x-corptie-message-trace-id"] ?? "").slice(0,128)
+  })));
+});
 
 // DSH 前端实时事件下行通道（WebSocket downlink）：/api/events.mux 与 /api/events.host。
 // 这两个 WebSocket 的「onOpen」是 DSH 前端严格就绪握手的组成部分——不建立则前端
