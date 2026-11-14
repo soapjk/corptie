@@ -92,6 +92,7 @@ struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
     var loadState: UsageLoadState = .ready
     var isDraft = false
+    var inline = false
     var accountSupported: Bool? = nil
     var contextSupported: Bool? = nil
     @State private var isResetNoticePresented = false
@@ -105,17 +106,27 @@ struct ChatUsageBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if loadState == .failed || usage?.accountLoadFailed == true || usage?.contextLoadFailed == true {
-                Text(L10n("用量加载失败")).foregroundStyle(.secondary)
-            }
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 6) { usageItems }
-                VStack(alignment: .leading, spacing: 2) { usageItems }
+        Group {
+            if inline {
+                HStack(spacing: 6) {
+                    if hasLoadFailure {
+                        Image(systemName: "exclamationmark.circle")
+                            .help(L10n("用量加载失败")).accessibilityLabel(L10n("用量加载失败"))
+                    }
+                    usageItems
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    if hasLoadFailure { Text(L10n("用量加载失败")).foregroundStyle(.secondary) }
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .center, spacing: 6) { usageItems }
+                        VStack(alignment: .leading, spacing: 2) { usageItems }
+                    }
+                }
             }
         }
         .font(.system(size: 9, weight: .semibold))
-        .lineLimit(2)
+        .lineLimit(inline ? 1 : 2)
         .task(id: "\(sessionID):\(isResetNoticePresented)") {
             guard !isDraft, isResetNoticePresented else {
                 bankedResetState = .idle
@@ -132,6 +143,10 @@ struct ChatUsageBar: View {
         }
         .onChange(of: usage?.account.model) { _, _ in isResetNoticePresented = false }
         .onChange(of: usage?.account.provider) { _, _ in isResetNoticePresented = false }
+    }
+
+    private var hasLoadFailure: Bool {
+        loadState == .failed || usage?.accountLoadFailed == true || usage?.contextLoadFailed == true
     }
 
     @ViewBuilder
