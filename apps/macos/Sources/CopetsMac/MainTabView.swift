@@ -29,6 +29,7 @@ enum MainWindowPageLayoutMetrics {
     /// a live resize. Sized to hug the header content (title 20 + 2 + path 15
     /// + 8 bottom padding ~= 45) instead of the old 72 that left 27pt of dead
     /// space below it.
+    static let headerPrimaryRowHeight: CGFloat = 28
     static let headerRowHeight: CGFloat = 48
     static let cardCornerRadius: CGFloat = 10
     static let cardBorderOpacity = 0.10
