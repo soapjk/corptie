@@ -29,6 +29,15 @@ final class UnifiedCreationDraft: ObservableObject {
     @Published var serviceTier = "default"
     var permissionInitialized = false
     var configurationApplied = false
+    var permissionsApplied = false
+    var serviceTierApplied = false
+    var operationTask: Task<Void, Never>?
+    var creationService: (any UnifiedCreationServing)?
+    var submission: UnifiedCreationSubmission?
+    var isPresented = false
+    var completionClaimed = false
+    @Published var stage: UnifiedCreationStage = .idle
+    let followupEditor = ComposerEditorController(draft: ComposerDraftBuffer())
     let editor = ComposerEditorController(draft: ComposerDraftBuffer())
     // Same buffer as the chat editor; keystrokes do not publish the whole page.
     var prompt: String {
@@ -65,7 +74,7 @@ struct UnifiedConversationCreateView: View {
     @ObservedObject private var backend = BackendClient.shared
     @ObservedObject private var catalog = BackendClient.shared.modelCatalog
     @ObservedObject private var draftState: UnifiedCreationDraft
-    var onSent: () -> Void
+    var onSent: (TaskSession, String) -> Void
     @State private var hasSendableText = false
     @State private var choosingRole = false
     private var context: UnifiedCreationContext { draftState.context }
@@ -88,7 +97,7 @@ struct UnifiedConversationCreateView: View {
     @Binding private var messageID: String
     @Binding private var deliveryID: String
 
-    init(draft: UnifiedCreationDraft, onSent: @escaping () -> Void) {
+    init(draft: UnifiedCreationDraft, onSent: @escaping (TaskSession, String) -> Void) {
         self.draftState = draft; self.onSent = onSent
         _workID = Binding(get: { draft.workID }, set: { draft.workID = $0 })
         _roleID = Binding(get: { draft.roleID }, set: { draft.roleID = $0 })
@@ -130,7 +139,23 @@ struct UnifiedConversationCreateView: View {
 
     var body: some View {
         Group {
-            if editingWork {
+            if submissionStarted {
+                UnifiedCreationProgressView(draft: draftState, retry: submit, open: completeVisibleCreation) {
+                    ConversationComposerChrome(verticalPadding: 10, contentSpacing: 8, headerAtBottom: true) {
+                        creationToolbar.disabled(true)
+                    } content: {
+                        ComposerInputTextView(controller: draftState.followupEditor,
+                            placeholder: L10n("准备期间可继续起草，完成后发送"),
+                            font: WorkbenchTypography.nativeFont(for: .composerInput),
+                            onSubmit: { _ in })
+                            .frame(height: 60).padding(.horizontal, 10)
+                    }
+                    DraftComposerUsageSurface(provider: providerID,
+                        model: modelID.isEmpty ? catalog.defaultModel(for: providerID) : modelID,
+                        supported: selectedProvider?.supports("usage.account.read"), baseURL: backend.baseURL)
+                        .id("\(providerID):\(modelID)")
+                }
+            } else if editingWork {
                 VStack(spacing: 0) {
                     HStack { Button { editingWork = false } label: { Label(L10n("返回"), systemImage: "chevron.left") }; Spacer() }.padding()
                     WorkCreateView(isFirstRun: true, dismissOnCreated: false, onCancel: { editingWork = false }, onCreated: { created in
@@ -141,10 +166,17 @@ struct UnifiedConversationCreateView: View {
                 draft
             }
         }
-        .frame(maxWidth: 760)
-        .padding(28)
+        .frame(maxWidth: submissionStarted ? .infinity : 760)
+        .padding(submissionStarted ? 16 : 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .interactiveDismissDisabled(busy)
+        .onAppear { draftState.isPresented = true }
+        .onDisappear {
+            draftState.isPresented = false
+            draftState.followupEditor.suspendPresentation()
+        }
+        .onChange(of: draftState.stage) { _, stage in
+            if stage == .completed { completeVisibleCreation() }
+        }
         .task {
             if !draftState.permissionInitialized {
                 let defaults = backend.settingsController.settings?.newSessionDefaults
@@ -203,6 +235,13 @@ struct UnifiedConversationCreateView: View {
                     }.padding(.horizontal, 10)
                 }
                 .background(ComposerTransitionAnchor(sessionID: nil))
+                DraftComposerUsageSurface(provider: providerID,
+                    model: modelID.isEmpty ? catalog.defaultModel(for: providerID) : modelID,
+                    supported: selectedProvider?.supports("usage.account.read"),
+                    baseURL: backend.baseURL)
+                    .id("\(providerID):\(modelID.isEmpty ? catalog.defaultModel(for: providerID) ?? "" : modelID)")
+                    .padding(.horizontal, 12)
+
                 creationDestination
                     .padding(.horizontal, 16).padding(.vertical, 10)
                     .background(ComposerTransitionAnchor(sessionID: nil, decoration: "footer"))
@@ -354,75 +393,27 @@ struct UnifiedConversationCreateView: View {
     }
 
     private func submit() {
+        let service = UnifiedCreationService(backend: backend)
+        if let submission = draftState.submission {
+            draftState.start(submission, service: service)
+            return
+        }
         guard !busy, validation == nil, let roleID,
               !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !imageURLs.isEmpty else { return }
-        busy = true; error = nil; submissionStarted = true
-        Task { @MainActor in
-            defer { busy = false }
-            do {
-                var session: TaskSession
-                if let createdSession { session = createdSession }
-                else if taskMode {
-                    guard let workID, let task = await client.createCorptieTask(
-                        id: "task:\(requestID)", workId: workID, title: "新任务_\(requestID.prefix(6))",
-                        description: nil, mainRoleId: roleID, providerId: providerID,
-                        model: modelID.isEmpty ? nil : modelID, parentTaskId: parentTaskID),
-                          let currentID = task.currentSessionId,
-                          let prepared = backend.sessions.first(where: { $0.id == currentID }) else {
-                        throw BackendError.message(client.errorMessage ?? L10n("任务创建结果尚未确认，请重试查询原操作。"))
-                    }
-                    session = prepared
-                } else {
-                    session = try await createChat(roleID: roleID)
-                }
-                createdSession = session
-                if !draftState.configurationApplied {
-                    if selectedProvider?.supports("configuration.permissions.update") == true {
-                        session = try await backend.configureComposer(session: session,
-                            route: "permissions", values: ["sandbox": draftState.permission.sandbox,
-                                                          "approvalPolicy": draftState.permission.approval])
-                        createdSession = session
-                    }
-                    if selectedProvider?.supports("configuration.serviceTier.switch") == true {
-                        session = try await backend.configureComposer(session: session,
-                            route: "service-tier", values: ["serviceTier": draftState.serviceTier])
-                        createdSession = session
-                    }
-                    draftState.configurationApplied = true
-                }
-                while importedImages.count < imageURLs.count {
-                    importedImages.append(try await backend.importChatImage(at: imageURLs[importedImages.count], to: session, preserveOriginal: false))
-                }
-                try await submitMessage(to: session)
-                ComposerCreationTransition.shared.begin(sessionID: session.id)
-                backend.acceptCreatedSession(session)
-                onSent()
-            } catch { self.error = error.localizedDescription }
+        let source = workID.flatMap { work in
+            CorptieTaskSessionSourcePolicy.resolve(workId: work, preferred: backend.selectedSession, sessions: backend.sessions)
+                .flatMap(CorptieTaskSessionSourcePolicy.sourceSessionId)
         }
+        draftState.start(UnifiedCreationSubmission(requestID: requestID, messageID: messageID, deliveryID: deliveryID,
+            text: prompt, imageURLs: imageURLs, workID: workID, parentTaskID: parentTaskID,
+            sourceSessionID: source, roleID: roleID, providerID: providerID, modelID: modelID,
+            permission: draftState.permission, serviceTier: draftState.serviceTier,
+            supportsPermissions: selectedProvider?.supports("configuration.permissions.update") == true,
+            supportsServiceTier: selectedProvider?.supports("configuration.serviceTier.switch") == true), service: service)
     }
 
-    private func createChat(roleID: String) async throws -> TaskSession {
-        var request = URLRequest(url: CorptieAppEnvironment.backendBaseURL.appending(path: "desktop/chats/create"))
-        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["requestId": requestID, "title": "新对话",
-            "agentId": roleID, "providerId": providerID, "model": modelID])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw BackendError.message(L10n("创建结果未确认，请重试查询原操作。")) }
-        let result = try JSONDecoder().decode(CreatedChat.self, from: data)
-        guard result.receipt.status == "completed", let session = result.session else {
-            throw BackendError.message(L10n("创建结果未确认，请勿重新创建。"))
-        }
-        return session
+    private func completeVisibleCreation() {
+        guard let session = draftState.claimVisibleCompletion() else { return }
+        onSent(session, draftState.followupEditor.draft.text)
     }
-    private func submitMessage(to session: TaskSession) async throws {
-        var request = URLRequest(url: CorptieAppEnvironment.backendBaseURL.appending(path: "sessions/\(session.id)/messages"))
-        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["text": prompt, "messageId": messageID, "deliveryId": deliveryID,
-            "images": importedImages.map { ["managedPath": $0.managedPath] }, "mentions": [], "isChoiceSelection": false])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code) else {
-            throw BackendError.message(BackendClient.errorMessage(from: data) ?? L10n("发送失败，重试会保留原会话。"))
-        }
-    }
-    private struct CreatedChat: Decodable { let receipt: ClientCommandReceipt; let session: TaskSession? }
 }

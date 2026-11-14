@@ -758,3 +758,57 @@ test("deletion interrupts startup before activation and waits for compensation",
     assert.equal(f.store.selectOne("SELECT state FROM work_session_startup_operations WHERE task_id=?",[f.task.id]).state,"failed_compensated");
   }finally{await cleanup(f);}
 });
+
+test("slow workspace and Provider preparation retain one creation identity without an initial message", async () => {
+  const f = await fixture();
+  let releaseWorkspace, releaseProvider, enteredWorkspace, enteredProvider;
+  const workspaceGate = new Promise(resolve => { releaseWorkspace = resolve; });
+  const providerGate = new Promise(resolve => { releaseProvider = resolve; });
+  const workspaceEntered = new Promise(resolve => { enteredWorkspace = resolve; });
+  const providerEntered = new Promise(resolve => { enteredProvider = resolve; });
+  const prepare = f.service.prepareWorktree;
+  const create = f.service.providerWorkSessionPort.createSession;
+  const durations = {};
+  f.service.prepareWorktree = async (...args) => {
+    const started = performance.now(); enteredWorkspace();
+    await workspaceGate;
+    const result = await prepare(...args);
+    durations.workspaceMs = performance.now() - started;
+    return result;
+  };
+  f.service.providerWorkSessionPort.createSession = async (...args) => {
+    const started = performance.now(); enteredProvider();
+    await providerGate;
+    const result = await create(...args);
+    durations.providerMs = performance.now() - started;
+    return result;
+  };
+  let first, duplicate;
+  try {
+    const command = { ...input("start:controlled-slow"), dispatchInitialTurn: false };
+    first = f.service.start(command);
+    await workspaceEntered;
+    duplicate = f.service.start(command);
+    assert.equal(f.calls.create, 0);
+    assert.equal(f.store.getTask("task:one").current_session_id, null);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    releaseWorkspace();
+    await providerEntered;
+    assert.equal(f.calls.prepare, 1);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    releaseProvider();
+    const [a, b] = await Promise.all([first, duplicate]);
+    assert.equal(a.status, "ready");
+    assert.equal(b.session.id, a.session.id);
+    assert.equal(f.calls.prepare, 1);
+    assert.equal(f.calls.create, 1);
+    assert.equal(f.store.selectOne("SELECT dispatch_initial_turn FROM work_session_startup_operations WHERE startup_operation_id=?", [a.receipt.startupOperationId]).dispatch_initial_turn, 0);
+    assert.ok(durations.workspaceMs >= 50);
+    assert.ok(durations.providerMs >= 50);
+    console.info(`[creation-delay-evidence] ${JSON.stringify(durations)}`);
+  } finally {
+    releaseWorkspace(); releaseProvider();
+    await Promise.allSettled([first, duplicate].filter(Boolean));
+    await cleanup(f);
+  }
+});

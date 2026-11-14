@@ -95,7 +95,10 @@ final class BackendEventRouter {
         if eventName == "TaskChanged", let bytes = data.data(using: .utf8),
            let event = try? JSONDecoder().decode(ChecklistTaskChangedEnvelope.self, from: bytes) {
             let taskID = event.payload.taskId ?? event.payload.entity?.id
-            if let taskID { NotificationCenter.default.post(name: .executionChecklistAssignmentChanged, object: taskID) }
+            if let taskID {
+                NotificationCenter.default.post(name: .executionChecklistAssignmentChanged, object: taskID)
+                UnifiedCreationProgressEvents.publish(taskID: taskID, action: event.payload.action)
+            }
             if let parentID = event.payload.entity?.parentTaskId ?? event.payload.entity?.parent_task_id, parentID != taskID {
                 NotificationCenter.default.post(name: .executionChecklistAssignmentChanged, object: parentID)
             }
@@ -228,6 +231,7 @@ private struct ChecklistTaskChangedEnvelope: Decodable {
     let payload: Payload
     struct Payload: Decodable {
         let taskId: String?
+        let action: String?
         let entity: Entity?
     }
     struct Entity: Decodable {

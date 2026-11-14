@@ -3,7 +3,7 @@ export function rejectDevelopmentPreviewWrite({ request, response, url, developm
   if (developmentPreview) {
     // Fail closed: GET alone is insufficient (some inventory APIs probe tools).
     const readable = ["/health", "/settings", "/settings/task-creation", "/first-run", "/events", "/sessions", "/search",
-      "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions",
+      "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions", "/provider-model-usage",
       "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/resources", "/memories",
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|quick-messages|user-message-navigation|context-references|images|resources|fork|worktree-detail)$/.test(url.pathname)

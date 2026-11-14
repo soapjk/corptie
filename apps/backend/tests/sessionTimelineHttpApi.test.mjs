@@ -112,3 +112,21 @@ test("usage failures and unmatched methods preserve existing contracts", async (
   assert.equal(f.dispatch("/sessions/public/history", "POST").handled, false);
   assert.equal(f.dispatch("/other").handled, false);
 });
+
+
+test("draft usage reads only the exact stored provider/model and never invents context", async () => {
+  const f = fixture();
+  const reads = [];
+  f.dependencies.store.getProviderModelUsage = (provider, model) => {
+    reads.push([provider, model]);
+    return provider === "fixture" && model === "model-a"
+      ? { account: { provider, model, available: true, rateLimits: { primary: { usedPercent: 35 } } } } : null;
+  };
+  const first = await f.dispatch("/provider-model-usage?provider=fixture&model=model-a").result;
+  assert.equal(first.body.account.rateLimits.primary.usedPercent, 35);
+  assert.equal(first.body.context, null);
+  const switched = await f.dispatch("/provider-model-usage?provider=other&model=model-b").result;
+  assert.deepEqual(switched.body, { account: { available: null, provider: "other", model: "model-b" }, context: null, accountFresh: false });
+  assert.deepEqual(reads, [["fixture", "model-a"], ["other", "model-b"]]);
+  assert.equal((await f.dispatch("/provider-model-usage").result).status, 400);
+});
