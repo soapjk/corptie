@@ -1,3 +1,4 @@
+import { childManagementRelation } from "./childManagementRoute.mjs";
 import { coordinationDelegation } from "../domain/coordinationDelegation.mjs";
 import { randomUUID } from "node:crypto";
 
@@ -264,16 +265,10 @@ export class ShadowSessionService {
   // Archived executors retain their names; replacement gets its own name.
   title(mainId) { return `影子会话_${mainId.replace(/[^a-zA-Z0-9_-]/g, "_")}_${randomUUID().slice(0, 8)}`; }
   channelRecipient(envelope) {
-    const mainId = envelope.message.recipientSessionId;
-    const route = this.store.getLogicalSession(mainId), main = route && this.store.getSession(route.legacySessionId);
-    const parent = main?.taskId && this.store.getTask(main.taskId);
-    const senderRoute = this.store.getLogicalSession(envelope.message.senderSessionId);
-    const sender = senderRoute && this.store.getSession(senderRoute.legacySessionId);
-    const child = sender?.taskId && this.store.getTask(sender.taskId);
-    let ownerId = null;
-    if (parent && parent.current_session_id === main.id && child?.parent_task_id === parent.id && child.work_id === parent.work_id) ownerId = mainId;
-    else if (child && child.current_session_id === sender.id && parent?.parent_task_id === child.id && parent.work_id === child.work_id) ownerId = senderRoute.logicalSessionId;
-    if (!ownerId) return null;
+    const relation = childManagementRelation(this.store, envelope.message.senderSessionId, envelope.message.recipientSessionId);
+    if (!relation) return null;
+    const ownerId = relation.mainSessionId;
+    if (!ownerId) fail("SHADOW_OWNER_UNAVAILABLE");
     this.reserve(ownerId);
     const target = this.resolveRecipient(ownerId);
     if (target.status === "ready") return target.sessionId;
@@ -282,6 +277,27 @@ export class ShadowSessionService {
       fail("SHADOW_SESSION_PREPARING");
     }
     fail(target.reason ?? "SHADOW_SESSION_PREPARING");
+  }
+
+  automationOwner(task) {
+    if (task?.policySpec?.childManagementMainSessionId) return task.policySpec.childManagementMainSessionId;
+    return task?.logicalSessionId ? this.forShadow(task.logicalSessionId)?.main_session_id ?? null : null;
+  }
+  captureAutomationOwner(sessionId, actor) {
+    if (actor?.type !== "agent") return null;
+    const shadow = this.forShadow(sessionId);
+    if (shadow) return { childManagementMainSessionId: shadow.main_session_id };
+    const logical = this.store.getLogicalSession(sessionId);
+    const operation = logical && this.store.getRunningAgentTaskForSession(logical.legacySessionId);
+    const source = operation?.source;
+    const dispatch = source?.coordinationDispatchId && this.store.selectOne("SELECT source_session_id FROM task_coordination_dispatches WHERE dispatch_id=?", [source.coordinationDispatchId]);
+    if (dispatch?.source_session_id === sessionId && ["parent_report", "shadow_report"].includes(source.coordinationPurpose)) return { childManagementMainSessionId: sessionId };
+    if (source?.type === "scheduled_session_task") {
+      const previous = this.store.getScheduledSessionTask(source.scheduledTaskId);
+      const owner = this.automationOwner(previous);
+      if (owner) return { childManagementMainSessionId: owner };
+    }
+    return null;
   }
 
   assertDelegate(shadowId, capability = null) {
@@ -364,23 +380,26 @@ export class ShadowSessionService {
     if (!review || row.source_id !== operation.operation_id || JSON.parse(operation.actor_json).id !== review.shadow_session_id) fail("SHADOW_DELIVERY_EVENT_INVALID");
     this.assertRecipient(row, review.main_session_id);
   }
-  publish({ shadowId, turnId, revision, body, decision = null }) {
+  publish({ shadowId, turnId, revision, body, decision = null, batchId = null }) {
     const row = this.assertDelegate(shadowId, "publish_reports");
-    const old = this.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE shadow_session_id=? AND source_turn_id=?", [shadowId, turnId]);
-    if (old) return old;
+    if (batchId && !this.store.selectOne("SELECT 1 FROM coordination_progress_batches WHERE batch_id=? AND parent_task_id=?", [batchId, row.parent_task_id])) fail("SHADOW_REPORT_BATCH_INVALID");
+    const reportKey = batchId && !decision ? `summary-batch:${batchId}:${revision}` : turnId;
+    const old = this.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE main_session_id=? AND source_turn_id=?", [row.main_session_id, reportKey]);
+    if (old && (!batchId || old.body === body)) return old;
     // A report derived from an older requirement must never replace current
     // user intent or claim the newer request has been completed.
     if (revision !== row.requirement_revision) fail("SHADOW_REQUIREMENT_CHANGED");
     if (typeof body !== "string" || !body.trim() || Buffer.byteLength(body) > 32 * 1024) fail("SHADOW_REPORT_INVALID");
-    const reportId = `shadow-report:${randomUUID()}`, createdAt = new Date().toISOString();
+    const reportId = old?.report_id ?? `shadow-report:${randomUUID()}`, createdAt = old?.created_at ?? new Date().toISOString();
     const { logical: main } = this.owner(row.main_session_id);
     const item = { id: reportId, turnId: reportId, bindingId: main.activeBinding.bindingId,
       type: "agentMessage", presentationRole: "final_answer", text: `**后台汇总**\n\n${body}`, status: "completed", turnStatus: "completed", createdAt,
       rawMetadataJSON: JSON.stringify({ executionMode: "shadow_report", sourceSessionId: shadowId, sourceTurnId: turnId, decision }) };
     this.store.runInTransaction(() => {
-      this.store.db.run(`INSERT INTO coordination_shadow_reports
+      if (old) this.store.db.run("UPDATE coordination_shadow_reports SET body=? WHERE report_id=?", [body, reportId]);
+      else this.store.db.run(`INSERT INTO coordination_shadow_reports
         (report_id,main_session_id,shadow_session_id,source_turn_id,requirement_revision,body,decision_json,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-        [reportId, row.main_session_id, shadowId, turnId, revision, body, decision ? JSON.stringify(decision) : null, createdAt]);
+        [reportId, row.main_session_id, shadowId, reportKey, revision, body, decision ? JSON.stringify(decision) : null, createdAt]);
       this.store.upsertTimelineItemProjection(main.legacySessionId, item);
       this.store.db.run("UPDATE coordination_shadow_sessions SET processed_revision=?,updated_at=? WHERE main_session_id=?", [revision, createdAt, row.main_session_id]);
     });

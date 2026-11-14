@@ -189,7 +189,11 @@ export class SessionMailboxService {
   validate(row) {
     const logical = this.logical(row.recipient_session_id);
     if (!logical.activeBinding || logical.activeBinding.state !== "active") fail("MAILBOX_ROUTE_UNAVAILABLE");
-    if (row.channel_delivery_id) return this.channelService.resolveDeliveryRoute(row.channel_delivery_id);
+    if (row.channel_delivery_id) {
+      const target = this.channelService.resolveDeliveryRoute(row.channel_delivery_id);
+      if (target.sessionId !== row.recipient_session_id) fail("SHADOW_HANDOFF_PENDING");
+      return target;
+    }
     const authorization = decode(row.authorization_json);
     if (this.validateExternal) return this.validateExternal(row, authorization);
     if (row.source_type === "automation") fail("MAILBOX_SOURCE_AUTHORIZATION_UNAVAILABLE", 503);
@@ -302,12 +306,28 @@ export class SessionMailboxService {
   }
 
   dispatchDecision(operation) {
+    if (this.verificationBudget?.operationPaused(operation.taskId)) {
+      return dispatchBlocked("VERIFICATION_BUDGET_EXHAUSTED", "waiting");
+    }
+    if (operation.source?.type === "scheduled_session_task" && this.resolveAutomationRecipient) {
+      try {
+        const target = this.resolveAutomationRecipient(operation);
+        const row = operation.source.mailboxMessageId && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [operation.source.mailboxMessageId]);
+        if (target && row && target !== row.recipient_session_id) {
+          if (!this.canRetarget(row)) return dispatchBlocked("SHADOW_HANDOFF_PENDING", "waiting");
+          this.retargetUnstarted(row.message_id, target, {});
+        }
+      } catch (error) { return dispatchBlocked(error.code ?? "SHADOW_SESSION_PREPARING", "waiting"); }
+    }
     if (this.channelService?.resolveDelegatedRecipient && operation.source?.type === "session_channel" && operation.deliveryId) {
       const message = this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE channel_delivery_id=?", [operation.deliveryId]);
-      if (message && this.canRetarget(message)) {
+      if (message) {
         try {
           const route = this.channelService.resolveDeliveryRoute(operation.deliveryId);
-          if (route.sessionId !== message.recipient_session_id) this.retargetUnstarted(message.message_id, route.sessionId, {});
+          if (route.sessionId !== message.recipient_session_id) {
+            if (!this.canRetarget(message)) return dispatchBlocked("SHADOW_HANDOFF_PENDING", "waiting");
+            this.retargetUnstarted(message.message_id, route.sessionId, {});
+          }
         } catch (error) { return dispatchBlocked(error.code ?? "MAILBOX_ROUTE_UNAVAILABLE", "waiting"); }
       }
     }

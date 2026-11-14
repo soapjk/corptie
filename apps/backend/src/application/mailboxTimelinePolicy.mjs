@@ -12,8 +12,13 @@ export function isMailboxTimelineInput(item, selectOne) {
   let metadata = {};
   try { metadata = JSON.parse(item.rawMetadataJSON ?? "{}"); } catch { /* Legacy metadata. */ }
   const data = { ...metadata, ...item };
-  // Outbound correspondence is a separate, existing sender-side presentation.
-  if (data.collaborationDirection === "outbound") return false;
+  // Internal child correspondence belongs to the mailbox, never the main chat.
+  if (data.collaborationDirection === "outbound") {
+    if (!selectOne) return false;
+    const sender = data.collaborationSourceTaskId, recipient = data.collaborationTargetTaskId;
+    return Boolean(sender && recipient && selectOne(`SELECT 1 FROM tasks a JOIN tasks b ON a.work_id=b.work_id
+      WHERE a.id=? AND b.id=? AND (a.parent_task_id=b.id OR b.parent_task_id=a.id)`, [sender, recipient]));
+  }
   if (data.mailboxMessageId || data.messageOrigin === "scheduled_task"
     || ["scheduled_session_task", "mailbox_event"].includes(data.sourceChannel)
     || (data.sourceChannel === "session_channel" && data.collaborationDirection === "inbound")) return true;

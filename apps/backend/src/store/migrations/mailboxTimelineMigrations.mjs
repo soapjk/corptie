@@ -4,7 +4,7 @@ import { TimelineMutationRepository } from "../repositories/timelineMutationRepo
 // Projection-only upgrade: originals, delivery receipts and Turns stay intact.
 // The existing delete triggers generate revisions for every connected client.
 export function migrateMailboxTimeline({ db, selectAll, selectOne, runDataMigrationOnce }) {
-  runDataMigrationOnce("mailbox-inputs-outside-conversation-v1", () => {
+  runDataMigrationOnce("mailbox-inputs-outside-conversation-v2", () => {
     const timeline = new TimelineMutationRepository({ getDatabase: () => db, selectAll, selectOne,
       scheduleSave() {}, notifyTimelineDirty() {} });
     let cursor = 0;

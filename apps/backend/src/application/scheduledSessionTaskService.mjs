@@ -67,6 +67,7 @@ export class ScheduledSessionTaskService {
     validateConditionResources(normalized.conditionSpec);
     const task = this.store.createScheduledSessionTask({
       ...normalized,
+      policySpec: { ...normalized.policySpec, ...(this.executionOwner?.(normalized.logicalSessionId, actor) ?? {}) },
       taskId: resolvedInput.taskId ?? `scheduled_task:${randomUUID()}`,
       creatorType: actor.type,
       creatorId: actor.id,
@@ -142,7 +143,8 @@ export class ScheduledSessionTaskService {
       triggerSpec: normalized.triggerSpec,
       conditionSpecs: normalized.conditionSpecs,
       actions: normalized.actions,
-      policySpec: normalized.policySpec,
+      policySpec: { ...normalized.policySpec, ...(task.policySpec?.childManagementMainSessionId ? { childManagementMainSessionId: task.policySpec.childManagementMainSessionId } : {}),
+        ...(task.policySpec?.verificationOperationId ? { verificationOperationId: task.policySpec.verificationOperationId } : {}) },
       risk: normalized.risk,
       runAt: normalized.runAt,
       nextRunAt: normalized.nextRunAt,

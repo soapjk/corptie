@@ -1,6 +1,7 @@
 import { handleDesktopChatCreation } from "./desktopChatCreationHttp.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { handleExecutionChecklistHttp } from "./executionChecklistHttpApi.mjs";
+import { handleVerificationBudgetHttp } from "./verificationBudgetHttpApi.mjs";
 import { handleSessionAbilityHttp } from "./sessionAbilityHttpApi.mjs";
 import { handleSessionMailboxHttp } from "./sessionMailboxHttpApi.mjs";
 import { handleDesktopDetail, handleDesktopDetailSync } from "./detailDocumentService.mjs";
@@ -9,7 +10,7 @@ import { handleDetailActionHttp } from "./detailActionHttpAdapter.mjs";
 export function routeBackendHttpRequest(request, response, ports) {
   const {
     clientDeviceGateway, sendJson, developmentPreview, clientCapabilities, backendStoreReady,
-    executionChecklistService, store, sessionMailbox, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
+    executionChecklistService, verificationBudgetService, store, sessionMailbox, detailActionService, detailWritesAllowed = false, taskCollaborationEdges, foundationModelSettings, rejectDevelopmentPreviewWrite, handleFoundationModelUpdateHttpRequest,
     agentProviderRegistry, backgroundAgentService, taskSummaryService, readJson, rejectUnavailableStoreRequest,
     dataRootMigrationCoordinator, handleSceneHttpRequest, sceneService, handleBackendRestartHttpRequest, shutdown,
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
@@ -83,6 +84,7 @@ export function routeBackendHttpRequest(request, response, ports) {
   if (handleDesktopChatCreation({ request, response, url, api: clientDeviceGateway?.sessionAPI, store, readJson, sendJson })) return;
 
   if (executionChecklistService && handleExecutionChecklistHttp({ request, response, url, service: executionChecklistService, sendJson, readJson, preview: developmentPreview })) return;
+  if (verificationBudgetService && handleVerificationBudgetHttp({ request, response, url, service: verificationBudgetService, sendJson, readJson, preview: developmentPreview })) return;
 
   if (sessionMailbox && handleSessionMailboxHttp({ request, response, url, service: sessionMailbox, sendJson, readJson, preview: developmentPreview })) return;
 

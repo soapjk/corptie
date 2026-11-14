@@ -1,3 +1,4 @@
+import { childManagementRelation } from "../application/childManagementRoute.mjs";
 import { collaborationMessagePresentationRoute } from "./collaborationPresentationRoute.mjs";
 import { collaborationWorkPresentation } from "./collaborationWorkPresentation.mjs";
 import { collaborationEnvelopeFailure } from "../utils/sessionEventPresentation.mjs";
@@ -160,6 +161,7 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
     if (!message?.messageId || !channel?.channelId || !message.senderSessionId || !message.recipientSessionId) {
       return null;
     }
+    if (childManagementRelation(store, message.senderSessionId, message.recipientSessionId)) return null;
     const senderLogical = store.getLogicalSession(message.senderSessionId);
     const recipientLogical = store.getLogicalSession(message.recipientSessionId);
     const senderSession = senderLogical?.legacySessionId ? store.getSession(senderLogical.legacySessionId) : null;

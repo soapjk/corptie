@@ -243,6 +243,9 @@ struct SessionDetailPanel: View {
                     .modifier(ConversationDetailModuleSurface())
             }
             if let taskID = session.taskId {
+                ConversationVerificationBudgetCard(taskID: taskID, refreshID: String(describing: session.status)) {
+                    ClientVerificationBudgetAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)))
+                }.id("verification:\(taskID)")
                 TaskExecutionChecklistDetailCard(taskID: taskID, width: railWidth - 28,
                     active: isPresentationActive)
             }
