@@ -14,6 +14,7 @@ export class TimelineReadPool {
     this.workerURL = options.workerURL ?? new URL("./timelineReadWorker.mjs", import.meta.url);
     this.slots = [];
     this.queue = [];
+    this.retiringWorkers = new Set();
     this.inFlightByKey = new Map();
     this.closing = false;
     for (let index = 0; index < this.size; index += 1) this.#spawn(index);
@@ -61,11 +62,13 @@ export class TimelineReadPool {
     const error = timelineReadError("Timeline read pool is closing.", "TIMELINE_READ_POOL_CLOSED", 503);
     for (const request of this.queue.splice(0)) request.reject(error);
     for (const slot of this.slots) {
+      if (!slot) continue;
+      clearTimeout(slot.startupTimer);
       if (slot.request) { clearTimeout(slot.request.timer); slot.request.reject(error); }
       slot.request = null;
     }
     this.inFlightByKey.clear();
-    await Promise.allSettled(this.slots.map((slot) => slot.worker.terminate()));
+    await Promise.allSettled([...this.slots.filter(Boolean).map((slot) => slot.worker.terminate()), ...this.retiringWorkers]);
     this.slots = [];
   }
 
@@ -89,6 +92,9 @@ export class TimelineReadPool {
         503
       ));
     }
+    if (!this.slots.some(Boolean) && !this.retiringWorkers.size) {
+      return Promise.reject(timelineReadError("Read Workers are unavailable.", "TIMELINE_READ_WORKER_UNAVAILABLE", 503));
+    }
     if (this.queue.length >= this.maxQueueDepth) {
       return Promise.reject(timelineReadError(
         "Timeline read queue is full; retry after current history reads finish.",
@@ -97,13 +103,19 @@ export class TimelineReadPool {
       ));
     }
     return new Promise((resolve, reject) => {
-      this.queue.push({
-        requestId: `timeline-read:${randomUUID()}`,
-        operation,
-        input,
-        resolve,
-        reject
-      });
+      const request = {
+        requestId: `timeline-read:${randomUUID()}`, operation, input,
+        resolve: value => { clearTimeout(request.queueTimer); resolve(value); },
+        reject: error => { clearTimeout(request.queueTimer); reject(error); }
+      };
+      request.queueTimer = setTimeout(() => {
+        const index = this.queue.indexOf(request);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        request.reject(timelineReadError("Read queue deadline exceeded.", "TIMELINE_READ_QUEUE_TIMEOUT", 503));
+      }, this.options.queueTimeoutMs ?? this.options.requestTimeoutMs ?? 30000);
+      request.queueTimer.unref?.();
+      this.queue.push(request);
       this.#drain();
     });
   }
@@ -122,6 +134,10 @@ export class TimelineReadPool {
     const slot = { index, worker, ready: false, request: null, restartCount };
     this.slots[index] = slot;
     worker.on("message", (message) => this.#onMessage(slot, message));
+    slot.startupTimer = setTimeout(() => this.#retire(slot,
+      timelineReadError("Read Worker startup deadline exceeded.", "TIMELINE_READ_WORKER_UNAVAILABLE", 503)),
+      this.options.startupTimeoutMs ?? 10000);
+    slot.startupTimer.unref?.();
     worker.on("error", (error) => this.#retire(slot, error));
     worker.on("exit", (code) => {
       if (!this.closing && this.slots[index] === slot) {
@@ -138,7 +154,7 @@ export class TimelineReadPool {
     if (this.slots[slot.index] !== slot) return;
     if (message?.type === "ready") {
       slot.ready = true;
-      slot.restartCount = 0;
+      clearTimeout(slot.startupTimer);
       this.#drain();
       return;
     }
@@ -150,6 +166,7 @@ export class TimelineReadPool {
     }
     if (message?.type !== "result" || message.requestId !== slot.request?.requestId) return;
     const request = slot.request;
+    slot.restartCount = 0;
     clearTimeout(request.timer);
     slot.request = null;
     if (message.error) request.reject(errorFromMessage(message.error, "Timeline read failed."));
@@ -169,17 +186,21 @@ export class TimelineReadPool {
     this.#drain();
   }
 
-  #retire(slot, error, respawn = true) {
+  async #retire(slot, error, respawn = true) {
     if (this.slots[slot.index] !== slot) return;
     this.slots[slot.index] = null;
+    clearTimeout(slot.startupTimer);
     if (slot.request) { clearTimeout(slot.request.timer); slot.request.reject(error); }
     slot.request = null;
-    void slot.worker.terminate().catch(() => {});
+    const termination = slot.worker.terminate().catch(() => {});
+    this.retiringWorkers.add(termination);
+    await termination;
+    this.retiringWorkers.delete(termination);
     if (!this.closing && respawn && slot.restartCount < 2) {
       this.#spawn(slot.index, slot.restartCount + 1);
       return;
     }
-    if (!this.closing && respawn) {
+    if (!this.closing && !this.slots.some(Boolean) && !this.retiringWorkers.size) {
       const unavailable = timelineReadError(
         `Timeline read Worker repeatedly failed: ${error.message}`,
         "TIMELINE_READ_WORKER_UNAVAILABLE",
@@ -194,6 +215,7 @@ export class TimelineReadPool {
     for (const slot of this.slots) {
       if (!slot?.ready || slot.request || this.queue.length === 0) continue;
       const request = this.queue.shift();
+      clearTimeout(request.queueTimer);
       slot.request = request;
       if (this.options.requestTimeoutMs > 0) {
         request.timer = setTimeout(() => {
