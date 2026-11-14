@@ -166,12 +166,17 @@ done < <(otool -L "${BUILD_BIN}" \
   | sort -u)
 # SwiftPM can embed the build machine's Xcode toolchain as a fallback RPATH.
 # Installed apps may search only system libraries or bundle-relative locations.
-while IFS= read -r runtime_path; do
-  case "${runtime_path}" in
-    /usr/lib/*|/System/Library/*|@*) ;;
-    *) install_name_tool -delete_rpath "${runtime_path}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}" ;;
-  esac
-done < <(otool -l "${BUILD_BIN}" | awk '/cmd LC_RPATH/ { getline; getline; sub(/^ *path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print }')
+# Apply the same policy to our independent Swift helper. Its Swift libraries
+# link directly to /usr/lib/swift; the Xcode fallback is not a runtime dependency.
+for swift_binary in "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}" \
+  "${APP_DIR}/Contents/Helpers/CorptieComputerUse"; do
+  while IFS= read -r runtime_path; do
+    case "${runtime_path}" in
+      /usr/lib/*|/System/Library/*|@*) ;;
+      *) install_name_tool -delete_rpath "${runtime_path}" "${swift_binary}" ;;
+    esac
+  done < <(otool -l "${swift_binary}" | awk '/cmd LC_RPATH/ { getline; getline; sub(/^ *path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print }')
+done
 RESOURCE_BUNDLE="${BUILD_BIN_DIR}/CorptieMac_CorptieMac.bundle"
 if [ ! -d "${RESOURCE_BUNDLE}" ]; then
   echo "Required SwiftPM resource bundle not found: ${RESOURCE_BUNDLE}" >&2
@@ -404,6 +409,10 @@ else
   codesign "${SIGN_FLAGS[@]}" "${APP_DIR}"
 fi
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+# EOF exits before dispatching any Computer Use operation or permission request,
+# while exercising dyld against the signed helper without Xcode fallback paths.
+/usr/bin/env -i HOME="${HOME}" PATH=/usr/bin:/bin \
+  "${APP_DIR}/Contents/Helpers/CorptieComputerUse" </dev/null
 # A valid signature does not mean dyld can launch the app: an @rpath dependency
 # that resolves only on the build machine produces a package that crashes on
 # every launch. Fail the build here instead of shipping it.
