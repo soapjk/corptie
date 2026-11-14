@@ -319,11 +319,12 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(sortPosition.lowerBound < togglePosition.lowerBound)
         #expect(searchPosition.lowerBound < sortPosition.lowerBound)
         #expect(togglePosition.lowerBound < archivePosition.lowerBound)
-        // Search / More own this row alone. The Create control has its own
-        // layout in the Work column; putting it back here would make the two
-        // panes' top rows different heights again.
-        #expect(!controls.contains("outlineCreationMenu"))
-        #expect(source.contains("consoleSidebarCreationRow"))
+        let creationPosition = try #require(controls.range(of: "outlineCreationMenu"))
+        #expect(creationPosition.lowerBound > archivePosition.lowerBound)
+        #expect(controls.contains("VStack(spacing: 0)"))
+        #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)"))
+        #expect(controls.contains(".padding(.leading, navigationMode == .sessionList ? 8 : 13)"))
+        #expect(!source.contains("consoleSidebarCreationRow"))
         #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)"))
         #expect(MainWindowPageLayoutMetrics.headerRowHeight == 48)
         #expect(source.contains("Menu(\"视图\") {\n            navigationModeOption(.workOutline, title: \"分组\")"))
@@ -336,7 +337,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!menuContent.contains("platformWorkOutlineToolbarControl"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
         #expect(controls.contains(".platformWorkOutlineToolbarDensity(.titlebar)"))
-        #expect(controls.contains(".padding(.top, 2)"))
+        #expect(!controls.contains(".padding(.top, 2)"))
         #expect(!controls.contains("MainWindowLayoutMetrics.titlebarHeight + 10"))
         #expect(!controls.contains(".padding(.top, 3)"))
         #expect(PlatformWorkOutlineLayout.controlSize == 44)

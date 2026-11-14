@@ -362,9 +362,6 @@ struct UnifiedConsoleView: View {
 
     var consoleNavigationContent: some View {
         VStack(spacing: 0) {
-            // Create belongs to the Work column itself, not to the thin top
-            // row shared with the conversation header across the divider.
-            consoleSidebarCreationRow
             // Keep one search field mounted as the query gains/loses results.
             // Replacing the field here would lose focus and marked input.
             if isSearching {
@@ -403,31 +400,34 @@ struct UnifiedConsoleView: View {
         .modifier(ConsoleTopEdgeEffectModifier())
     }
 
-    /// Search and More own this one row. Its height matches the conversation
-    /// header accessory on the other pane, so the two top rows line up as a
-    /// single thin band without measuring anything during a live resize.
+    /// Two fixed rows: navigation controls above, Create across the lower row.
     private var consoleSidebarHeader: some View {
-        HStack(spacing: 4) {
-            Spacer(minLength: 8)
-            searchToggleButton
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                Spacer(minLength: 8)
+                searchToggleButton
+                    .consoleHoverFeedback()
+                Menu {
+                    outlineSortMenu
+                    navigationModeToggle
+                    taskArchiveToggle
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 28, height: 28)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .consoleHoverFeedback()
-            Menu {
-                outlineSortMenu
-                navigationModeToggle
-                taskArchiveToggle
-            } label: {
-                Image(systemName: "ellipsis").frame(width: 28, height: 28)
+                .fixedSize().help(L10n("更多选项"))
+                WorkColumnCollapseButton()
+                    .frame(width: 28, height: 28)
+                    .consoleHoverFeedback()
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .consoleHoverFeedback()
-            .fixedSize().help(L10n("更多选项"))
-            WorkColumnCollapseButton()
-                .frame(width: 28, height: 28)
-                .consoleHoverFeedback()
+            .frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)
+            .padding(.horizontal, 16)
+            outlineCreationMenu
+                .padding(.leading, navigationMode == .sessionList ? 8 : 13)
+                .padding(.trailing, 16)
         }
         .platformWorkOutlineToolbarDensity(.titlebar)
-        .padding(.horizontal, 16)
-        .padding(.top, 2)
         .frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)
     }
 
@@ -940,33 +940,26 @@ struct UnifiedConsoleView: View {
         backendClient.select(session: session)
     }
 
-    /// Create is a Work-column control with its own layout: it sits below the
-    /// shared top band rather than thickening the row that has to line up
-    /// with the conversation title on the other side of the divider.
-    private var consoleSidebarCreationRow: some View {
-        outlineCreationMenu
-            .padding(.top, 4)
-            .padding(.bottom, 6)
-    }
-
     var outlineCreationMenu: some View {
         Button {
             creationDraft.prepare(.resolve(session: backendClient.selectedSession, workID: selectedWorkId, chatSpace: selectedCategory == .assistant))
             showNewSessionCreation = true
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "plus").font(.system(size: 13))
+                Image(systemName: "square.and.pencil").font(.system(size: 13))
                 Text(L10n("Create")).font(WorkbenchTypography.font(for: .navigation))
+                Spacer(minLength: 0)
             }
             .foregroundStyle(.primary)
-            .consoleOutlineRowSurface(isSelected: false,
-                leadingInset: navigationMode == .workOutline ? 13 : 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 20)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(L10n("新建会话"))
         .accessibilityLabel(L10n("新建会话"))
         .accessibilityIdentifier("work-outline-create")
+        .consoleHoverFeedback()
 
     }
 
