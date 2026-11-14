@@ -1,8 +1,66 @@
 import Foundation
 import XCTest
+import CorptieClientCore
 @testable import CorptieMac
 
 final class MessageLinkResolverTests: XCTestCase {
+    func testVersionedArtifactLinksPreserveTheExactResourceFocus() throws {
+        let hash = String(repeating: "ab", count: 32)
+        for destination in [
+            "artifact:picture?version=2&hash=\(hash)",
+            "artifact:picture?hash=\(hash)&version=2"
+        ] {
+            let url = try XCTUnwrap(URL(string: destination))
+            let result = try MessageLinkResolver.resolve(url, baseDirectory: nil).get()
+            XCTAssertEqual(result.kind, .artifact(.init(id: "artifact:picture", version: 2, hash: hash)))
+            XCTAssertEqual(result.url, url)
+        }
+    }
+
+    func testLegacyArtifactNamespacesAndEncodedIdentitiesRemainSupported() throws {
+        for (link, id) in [
+            ("artifact:report", "artifact:report"),
+            ("artifact:worker-work:report-1", "artifact:worker-work:report-1"),
+            ("artifact:worker-work%3Areport-1", "artifact:worker-work:report-1")
+        ] {
+            let result = try MessageLinkResolver.resolve(try XCTUnwrap(URL(string: link)), baseDirectory: nil).get()
+            XCTAssertEqual(result.kind, .artifact(.init(id: id)))
+        }
+    }
+
+    func testMalformedArtifactPinsDoNotFallBackToTheCurrentVersion() throws {
+        let hash = String(repeating: "b", count: 64)
+        for suffix in [
+            "?version=2", "?hash=\(hash)", "?version=0&hash=\(hash)",
+            "?version=-1&hash=\(hash)", "?version=1.5&hash=\(hash)",
+            "?version=999999999999999999999&hash=\(hash)",
+            "?version=2&hash=short", "?version=2&hash=\(String(repeating: "G", count: 64))",
+            "?version=2&version=3&hash=\(hash)", "?version=2&hash=\(hash)&hash=\(hash)",
+            "?version=2&hash=\(hash)&extra=1", "?version=&hash=\(hash)",
+            "?version=2&hash=", "?", "#section"
+        ] {
+            let result = MessageLinkResolver.resolve(try XCTUnwrap(URL(string: "artifact:report" + suffix)), baseDirectory: nil)
+            XCTAssertEqual(result, .failure(.invalidArtifactLink), suffix)
+        }
+        for link in ["artifact://host/report", "artifact:../report", "artifact:report%2Fchild", "artifact:a::b"] {
+            XCTAssertEqual(MessageLinkResolver.resolve(try XCTUnwrap(URL(string: link)), baseDirectory: nil),
+                .failure(.invalidArtifactLink), link)
+        }
+    }
+
+    @MainActor func testClickRoutesThePinnedArtifactToResourcesWithoutDroppingSelectors() throws {
+        let hash = String(repeating: "a", count: 64)
+        let url = try XCTUnwrap(URL(string: "artifact:report?version=2&hash=\(hash)"))
+        _ = try MessageLinkResolver.resolve(url, baseDirectory: nil).get()
+        let router = AppTabRouter.shared
+        let previousFocus = router.resourceFocus
+        let previousTab = router.selectedTab
+        defer { router.resourceFocus = previousFocus; router.selectTab(previousTab) }
+        XCTAssertTrue(MessageLinkOpener.handle(url, baseDirectory: nil))
+        XCTAssertEqual(router.selectedTab, .resources)
+        XCTAssertEqual(router.resourceFocus, .init(id: "artifact:report", version: 2, hash: hash))
+    }
+
     func testResolvesAbsoluteFileAndStripsExistingLineAndColumnSuffix() throws {
         try withTemporaryDirectory { directory in
             let file = directory.appendingPathComponent("Source.swift")
