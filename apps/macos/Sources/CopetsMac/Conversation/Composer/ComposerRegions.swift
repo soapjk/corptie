@@ -20,7 +20,7 @@ struct ComposerStatusSurface: View {
                 readinessMessage: notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."),
                 readinessCode: notReadyReason?.code, executionState: status?.sharedExecutionState,
                 activity: page.restart?.text ?? activityStatus) {
-                    ChatUsageBar(sessionID: sessionID, usage: page.usage?.matching(provider: page.session.external?.provider, model: page.session.external?.currentModel), loadState: page.usageLoadState, accountSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.account.read"),
+                    ChatUsageBar(sessionID: sessionID, usage: page.usage?.matching(provider: page.session.external?.provider, model: page.session.external?.currentModel), loadState: page.usageLoadState, inline: true, accountSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.account.read"),
                         contextSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.session.read"))
                 }
         } else {
@@ -202,7 +202,7 @@ struct DraftComposerUsageSurface: View {
 
     var body: some View {
         ChatUsageBar(sessionID: "", usage: usage, loadState: loadState,
-                     isDraft: true, accountSupported: supported)
+                     isDraft: true, inline: true, accountSupported: supported)
             .frame(maxWidth: .infinity, alignment: .leading)
             .task {
                 guard !provider.isEmpty else { loadState = .ready; return }
