@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { projectCoordinationAssignment, projectCoordinationProgress } from './coordinationProgressProjection.mjs';
 const instances=new WeakMap();
+function preparationFailureReason(row) {
+  const detail = row.error_code === 'START_WORKTREE_PREPARATION_FAILED'
+    && /Cannot read properties of (null|undefined)/.test(row.error_message ?? '')
+    ? '工作区准备失败，可重试原派发。' : row.error_message;
+  return `创建失败，尚未执行${detail ? '：'+detail : ''}`.slice(0,2000);
+}
 const fail=()=>{throw Object.assign(new Error('Coordination progress is outside this Session.'),{code:'COORDINATION_PROGRESS_NOT_FOUND',statusCode:404});};
 export function coordinationProgressFor(store){
   let service=instances.get(store);if(!service){service=new CoordinationProgressService(store);instances.set(store,service);}return service;
@@ -44,7 +50,9 @@ export class CoordinationProgressService {
       executionState:row.session_status,waitingInput:row.session_status==='blocked' && (!row.dispatch_state || row.dispatch_state==='running'),
       inconsistent:row.dispatch_state==='running' && ['complete','completed','failed','cancelled'].includes(row.session_status),
       deliveryVerified:row.delivery_state==='completed',acceptanceVerified:row.delivery_state==='completed'&&row.lifecycle_state==='done',
-      summary:row.summary,reason:['completed','queued','running'].includes(row.dispatch_state)?'':row.error_message??'',
+      summary:row.summary,reason:row.dispatch_state==='failed' && !row.target_task_id && !row.operation_id
+        ? preparationFailureReason(row)
+        : ['completed','queued','running'].includes(row.dispatch_state)?'':row.error_message??'',
       reportMessageId:row.report_message_id,updatedAt:row.updated_at??row.created_at
     }));
   }
