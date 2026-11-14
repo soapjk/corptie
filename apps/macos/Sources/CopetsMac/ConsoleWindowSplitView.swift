@@ -216,7 +216,7 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
                                     temporaryVisible = false
                                 })
                                 .frame(width: DetailRailGeometry.viewportWidth, alignment: .trailing)
-                                .background(DetailRailBackdrop())
+                                .modifier(DetailRailContentBackdrop())
                         }
                     }
                 }

@@ -53,6 +53,7 @@ struct AppKitChatTimelineRow: Identifiable {
 
     struct Action: Identifiable {
         enum Kind {
+            case toggleMessageExpansion(id: String)
             case cancelQueuedMessage(taskID: String)
             case deleteUnreceivedMessage(messageID: String)
             case withdrawMessage(messageID: String)

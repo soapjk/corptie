@@ -480,6 +480,54 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
         XCTAssertEqual(rows.map(\.id), entries.map(\.id))
     }
 
+    func testCollaborationBodyPreviewPreservesRouteCopyAndDisclosureAcrossDirections() throws {
+        let body = String(repeating: "中文 👨‍👩‍👧‍👦 **literal** `code` https://example.com/path\n", count: 100) + "END_SENTINEL"
+        for direction in ["inbound", "outbound"] {
+            let entry = ChatDisplayEntry(kind: .message(try item([
+                "id": "preview-\(direction)", "type": "userMessage", "presentationRole": "collaboration",
+                "text": body, "collaborationDirection": direction,
+                "collaborationInitiatorSessionId": "logical:source", "collaborationRecipientSessionId": "logical:target"
+            ])))
+            let collapsed = builder().nativeAppKitRow(entry, expandedTurnIds: [])
+            let id = try XCTUnwrap(collapsed.expandableTurnId)
+            XCTAssertTrue(id.hasPrefix("collaboration-body:"))
+            XCTAssertLessThanOrEqual(collapsed.nativeText.count, 161)
+            XCTAssertFalse(collapsed.nativeText.contains("END_SENTINEL"))
+            XCTAssertTrue(collapsed.nativeText.contains("**literal**"))
+            XCTAssertEqual(collapsed.copyText, body)
+            XCTAssertNotNil(collapsed.collaborationRoute)
+            let action = try XCTUnwrap(collapsed.actions.last)
+            guard case .toggleMessageExpansion(let target) = action.kind else { return XCTFail("Missing disclosure") }
+            XCTAssertEqual(target, id)
+            let expanded = builder().nativeAppKitRow(entry, expandedTurnIds: [id])
+            XCTAssertTrue(expanded.isExpanded)
+            XCTAssertTrue(expanded.nativeText.contains("END_SENTINEL"))
+            XCTAssertEqual(expanded.copyText, body)
+            XCTAssertEqual(expanded.collaborationRoute, collapsed.collaborationRoute)
+            XCTAssertNotEqual(expanded.contentRevision, collapsed.contentRevision)
+
+            let cell = AppKitChatNativeTextCell(identifier: .init("collaboration-preview"))
+            func bodyView(_ view: NSView) -> NativeTimelineTextView? {
+                if let text = view as? NativeTimelineTextView,
+                   text.identifier?.rawValue == "chat.timeline.body" { return text }
+                return view.subviews.lazy.compactMap(bodyView).first
+            }
+            cell.setContent(collapsed, availableWidth: 320, onToggleExpansion: { _ in })
+            let text = try XCTUnwrap(bodyView(cell))
+            XCTAssertEqual(text.textContainer?.maximumNumberOfLines, 2)
+            XCTAssertEqual(text.string, collapsed.nativeText, "Preview must stay plain text")
+            cell.setContent(expanded, availableWidth: 320, onToggleExpansion: { _ in })
+            XCTAssertEqual(text.textContainer?.maximumNumberOfLines, 0)
+            cell.setContent(collapsed, availableWidth: 320, onToggleExpansion: { _ in })
+            XCTAssertEqual(text.textContainer?.maximumNumberOfLines, 2)
+        }
+        let short = builder().nativeAppKitRow(.init(kind: .message(try item([
+            "type": "userMessage", "presentationRole": "collaboration", "text": "简短消息"
+        ]))), expandedTurnIds: [])
+        XCTAssertNil(short.expandableTurnId)
+        XCTAssertFalse(short.actions.contains { if case .toggleMessageExpansion = $0.kind { return true }; return false })
+    }
+
     private func item(_ overrides: [String: Any] = [:]) throws -> CodexThreadItem {
         var fields: [String: Any] = [
             "id": "message:one", "turnId": "turn:one", "turnStatus": "completed",

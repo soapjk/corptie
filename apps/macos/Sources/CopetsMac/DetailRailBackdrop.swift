@@ -1,7 +1,27 @@
 import AppKit
 import SwiftUI
+import CorptieConversation
 
-/// One backdrop for the entire rail, including the gaps between cards.
+/// Keep measurement updates local to the backdrop; the scroll viewport and
+/// card tree retain their full height and identity. No scroll-offset tracking.
+struct DetailRailContentBackdrop: ViewModifier {
+    @State private var contentHeight: CGFloat?
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(ConversationDetailContentHeightKey.self) { height in
+                if contentHeight != height { contentHeight = height }
+            }
+            .background(alignment: .top) {
+                DetailRailBackdrop()
+                    // The dashboard already has 12pt bottom padding. Another
+                    // 12pt lets the existing 24pt feather finish below the card.
+                    .frame(maxHeight: contentHeight.map { $0 + 12 }, alignment: .top)
+            }
+    }
+}
+
+/// One backdrop behind the content, including the gaps between cards.
 /// The mask fades material opacity, not blur radius. AppKit owns sampling
 /// and appearance adaptation; card contents never enter a blur filter.
 struct DetailRailBackdrop: NSViewRepresentable {

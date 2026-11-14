@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// The dashboard's laid-out content height, independent of scroll offset.
+public struct ConversationDetailContentHeightKey: PreferenceKey {
+    public static let defaultValue: CGFloat? = nil
+    public static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        if let next = nextValue() { value = max(value ?? 0, next) }
+    }
+}
+
 /// One scroll owner for both platform Detail rails.
 public struct ConversationDetailDashboard<Content: View>: View {
     private let content: Content
@@ -29,6 +37,12 @@ public struct ConversationDetailDashboard<Content: View>: View {
                 #else
                 .padding(.top, 12)
                 #endif
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: ConversationDetailContentHeightKey.self,
+                            value: ceil(geometry.size.height))
+                    }
+                }
                 #if os(macOS)
                 .background(DetailRailProbe(router: scrollRouter))
                 .environment(\.detailScrollRouter, scrollRouter)

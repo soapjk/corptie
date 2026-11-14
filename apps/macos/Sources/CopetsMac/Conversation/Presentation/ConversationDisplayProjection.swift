@@ -305,6 +305,19 @@ struct NativeCollaborationCardPresentation: Equatable {
     let route: NativeCollaborationRoutePresentation?
 }
 
+struct CollaborationBodyPreview {
+    let text: String
+    let canExpand: Bool
+    static func expansionID(for itemID: String) -> String { "collaboration-body:" + itemID }
+
+    init(_ body: String) {
+        let prefix = Array(body.prefix(161))
+        canExpand = prefix.count > 160 || prefix.contains(where: \.isNewline)
+        text = String(prefix.prefix(160)).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            + (prefix.count > 160 ? "…" : "")
+    }
+}
+
 struct NativeSpecialEventCardPresentation: Equatable {
     let title: String
     let metadata: String
