@@ -58,9 +58,6 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     public let parentTaskId: String?
     public let hierarchy: TaskHierarchySummary?
     public let resourceVersion: Int?
-    public let description: String?
-    public let acceptanceCriteria: String?
-    public let verificationCriteria: String?
     public let id: String
     public let title: String
     public let autoTitleEnabled: Bool
@@ -80,7 +77,7 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case parentTaskId, hierarchy, resourceVersion, coordinationEnabled, coordinationDispatches
-        case id, title, autoTitleEnabled, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt, description, acceptanceCriteria, verificationCriteria
+        case id, title, autoTitleEnabled, workId, lifecycleState, executionStatus, currentSessionId, hasPendingScheduledWake, deletionStatus, archived, updatedAt
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -92,9 +89,6 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
         autoTitleEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoTitleEnabled) ?? true
         coordinationEnabled = try container.decodeIfPresent(Bool.self, forKey: .coordinationEnabled) ?? false
         coordinationDispatches = try container.decodeIfPresent([ClientTaskCoordinationDispatch].self, forKey: .coordinationDispatches) ?? []
-        description = try container.decodeIfPresent(String.self, forKey: .description)
-        acceptanceCriteria = try container.decodeIfPresent(String.self, forKey: .acceptanceCriteria)
-        verificationCriteria = try container.decodeIfPresent(String.self, forKey: .verificationCriteria)
         workId = try container.decode(String.self, forKey: .workId)
         lifecycleState = try container.decode(String.self, forKey: .lifecycleState)
         executionStatus = try container.decode(String.self, forKey: .executionStatus)

@@ -82,8 +82,7 @@ struct ConsoleTaskSelectionPolicyTests {
             id: id,
             workId: workID,
             title: "Task",
-            description: "",
-            acceptanceCriteria: "",
+
             priority: "medium",
             lifecycleState: "todo",
             mainRoleId: nil,

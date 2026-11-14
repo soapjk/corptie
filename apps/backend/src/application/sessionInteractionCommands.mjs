@@ -6,7 +6,7 @@ import { validateInteractionAnswers, withSubmittedUserInputAnswers } from "./int
 export function createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
-  interruptTimeoutMs = 15_000, onInterruptRequested = () => {}
+  interruptTimeoutMs = 15_000, onInterruptRequested = () => {}, mcpInteractions = null
 }) {
   async function interruptUnifiedSession(sessionId, source = { type: "desktop" }, options = {}) {
     const reference = requireSessionReference(sessionId);
@@ -16,7 +16,8 @@ export function createSessionInteractionCommands({
       ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
       ?? null;
     let session;
-    onInterruptRequested({ ...reference, turnId: activeTurnId, reason: options.reason ?? "user_interrupt" });
+    try { onInterruptRequested({ ...reference, turnId: activeTurnId, reason: options.reason ?? "user_interrupt" }); }
+    catch (error) { console.warn("[session-interrupt] runtime cleanup failed", error?.code ?? "CLEANUP_FAILED"); }
     let timeout;
     console.info(`[session-interrupt] requested session=${reference.sessionId} binding=${reference.bindingId} turn=${activeTurnId}`);
     try {
@@ -143,7 +144,11 @@ export function createSessionInteractionCommands({
     store.upsertTimelineItemProjection(reference.sessionId, { ...item, status: "dispatching" });
     try {
       let result;
-      if (item.userInput?.responseMode === "message") {
+      if (mcpInteractions?.owns(input.itemId)) {
+        result = mcpInteractions.respond(reference, input);
+      } else if (String(input.itemId).startsWith("mcp-input:")) {
+        throw Object.assign(new Error("MCP approval expired or the runtime was restarted."), { code: "USER_INPUT_NOT_PENDING" });
+      } else if (item.userInput?.responseMode === "message") {
         if (!cancelling) {
           const text = [`回答消息 ${item.id} 中的问题：`, ...item.userInput.questions.map(q => `${q.question}\n${input.answers[q.id].join("；")}`)].join("\n\n");
           // Async questions do not suspend the Provider. Stop the obsolete

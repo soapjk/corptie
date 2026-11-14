@@ -1,3 +1,11 @@
+import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
+import { BackgroundAgentService } from "../src/application/backgroundAgentService.mjs";
+import { createCodexSessionCreator } from "../src/adapters/codexSessionCreator.mjs";
+import { ClaudeAgentManager } from "../src/adapters/claudeAgentManager.mjs";
+import { createSessionApplicationComposition } from "../src/application/sessionApplicationComposition.mjs";
+import { AGENT_PROVIDER_CAPABILITIES as C } from "../src/agent-provider/contracts.mjs";
+import { createSessionToolBindingProjection } from "../src/application/sessionToolBindingProjection.mjs";
+import { coordinationCreationPolicy, coordinationExecutionPolicy } from "../src/domain/coordinationDelegation.mjs";
 import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import test from "node:test";
 import { ExecutionChecklistService } from "../src/application/executionChecklistService.mjs";
@@ -167,7 +175,7 @@ async function restrictedFixture(t, providerId = "codex-app-server", supported =
   const registry = { supports: () => supported, get: () => ({ descriptor: { metadata: { backgroundExecutionPolicies: supported ? ["no-tools"] : [] } } }),
     invoke: () => { throw new Error("Unrestricted Provider execution must never be invoked"); } };
   const turns = new CoordinationTurnService({ ...turnOptions, store: f.store, registry, resolveReference: reference, dispatch: f.coordinator,
-    planner: { run: async input => { requests.push(input); if (run) return run(input); return { text: JSON.stringify(output) }; } },
+    planner: { run: async input => { input.onStart?.(); requests.push(input); if (run) return run(input); return { text: JSON.stringify(output) }; } },
     emitEvent: (type, payload) => events.push({ type, payload }), onTerminal: entry => terminals.push(entry) });
   const application = new SessionApplicationService({ registry, resolveSessionReference: reference, coordinationTurns: turns,
     toolHostService: { prepareSession: () => { throw new Error("Must not prepare ordinary tools"); } } });
@@ -229,6 +237,8 @@ test("ordinary coordination context exposes useful children without an extra pla
   const task = { id: "task:parent", coordination_enabled: 0 };
   const empty = buildTaskCoordinationContext(task, { children: [], dispatches: [] });
   assert.match(empty, /autonomously delegate/);
+  assert.match(empty, /prefer Corptie child Tasks/);
+  assert.match(empty, /Native subagents remain available for local reading/);
   assert.match(empty, /No explicit user request to create children is needed/);
   assert.match(empty, /do not add a separate planning model call/);
   assert.doesNotMatch(empty, /Current bounded child\/dispatch index/);
@@ -285,7 +295,7 @@ test("creation does not fence parent description changes", async t => {
     const result = original(input);
     if (!injected) {
       injected = true;
-      queueMicrotask(() => f.workService.updateTask(f.parent.id, { description: "Changed plan" }));
+      queueMicrotask(() => f.workService.updateTask(f.parent.id, { }));
     }
     return result;
   };
@@ -1283,7 +1293,7 @@ for(const provider of ['codex-app-server','claude-sdk','openclacky']) test(`cros
  const repeated=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[same]});
  assert.equal(repeated.dispatches[0].dispatchId,id);assert.equal(repeated.dispatches[0].reused,true);
  const changed=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{...same,idempotencyKey:'third-turn',
-  creation:{...same.creation,description:'补充新的实现范围'}}]});
+  creation:{...same.creation,priority:'urgent'}}]});
  assert.equal(changed.dispatches[0].dispatchId,id);assert.equal(changed.dispatches[0].definitionChanged,true);
  assert.match(changed.dispatches[0].reuseMessage,/未覆盖/);
  assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM task_coordination_dispatches WHERE parent_task_id=?',[f.parent.id]).n,1);
@@ -1438,7 +1448,6 @@ test('late completion reports cannot overwrite the latest instruction summary fo
  assert.equal(snapshot.items[0].summary,'正在处理后续工作');
 });
 
-
 test("large dispatches use one existing progress batch and admit each item without waiting for startup",async t=>{
   const f=await fixture(t);
   const receipt=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:Array.from({length:23},(_,i)=>f.item(`chunk-${i}`))});
@@ -1447,7 +1456,6 @@ test("large dispatches use one existing progress batch and admit each item witho
   for(const row of receipt.dispatches) await f.coordinator.runDispatch(row.dispatchId);
   assert.equal(f.starts.length,23);
 });
-
 
 for (const provider of ['codex-app-server','claude-sdk']) test(`saved continuation resumes reads and dispatches only once (${provider})`,async t=>{
  let clock=0;
@@ -1630,7 +1638,6 @@ for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) {
   });
 }
 
-
 test('ten minutes of busy/batch/cancel telemetry creates no parent conversation or mailbox work',async t=>{
  const f=await fixture(t);
  const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('quiet-status')]});
@@ -1752,31 +1759,61 @@ test('current execution view reports live operation instead of stale Task comple
  assert.equal(f.store.selectOne('SELECT COUNT(*) AS n FROM coordination_progress_assignments WHERE batch_id=?',[batch.batch_id]).n,2);
  });
 
-async function requestFixture(t, providerId = "codex-app-server") {
+async function requestFixture(t, providerId = "codex-app-server", nativeRuntime = null) {
   const f = await fixture(t, providerId);
   f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
   const reference = id => {
     const route = f.store.getLogicalSession(id) ?? f.store.getLogicalSessionByLegacySessionId(id);
     return { logicalSessionId: route.logicalSessionId, sessionId: route.legacySessionId,
       bindingId: route.activeBinding.bindingId, routingVersion: route.routingVersion, providerId,
+      providerSessionId: route.activeBinding.providerSessionId,
       metadata: { session: f.store.getSession(route.legacySessionId) } };
   };
   let planner = async input => ({ text: JSON.stringify({kind:"discussion",reply:"回答",items:[]}) });
-  const events = [], deleted = [];
+  const events = [], deleted = [], created = [];
+  const codexCreator = createCodexSessionCreator({ collaborationCore: f.core,
+    codexRuntime: nativeRuntime ?? { startThread: async input => {
+      assert.equal(input.executionPolicy, "no-tools"); assert.deepEqual(input.dynamicTools, []);
+      assert.equal(input.sandbox, "read-only");
+      return { thread: { id: `request_${created.length}`, cwd: input.cwd } };
+    } }, resolvedNewCodexRuntimeConfig: async input => ({ model: input.model, reasoningLevel: input.reasoningLevel }),
+    collaborationThreadOptionsWithAgentContext: () => assert.fail("must not load ordinary Agent tools"),
+    codexAppServerSessionCapabilities: () => ({}) });
+  const claude = new ClaudeAgentManager({ query: () => assert.fail("creation must not execute a native turn") });
+  const registry = { supports: () => true, decorateSession: (_provider, session) => session, get: () => ({ descriptor: { metadata: {
+    backgroundExecutionPolicies: ["no-tools"], backgroundImages: true } } }),
+    invoke: async (provider, capability, input, context) => {
+      if (capability === C.SESSION_DELETE) { deleted.push(input.logicalSessionId);
+        if (nativeRuntime) await nativeRuntime.deleteThread(input.providerSessionId);
+        return {}; }
+      if (capability === C.BACKGROUND_PROMPT && nativeRuntime) return nativeRuntime.runEphemeralPrompt(input);
+      assert.equal(capability, C.SESSION_CREATE, "ordinary Provider execution is forbidden for shadows");
+      assert.equal(input.toolHost, undefined);
+      const session = provider === "codex-app-server" ? await codexCreator.create(input)
+        : provider === "claude-sdk" ? claude.start(input) : { id: `provider:request_${created.length}`, title: input.title, status: "idle",
+        sessionKind: input.sessionKind, external: { provider, cwd: "/tmp", threadId: `request_${created.length}` } };
+      created.push({ session, input, context });
+      return session;
+    }
+  };
+  const application = createSessionApplicationComposition({ store: f.store, agentProviderRegistry: registry,
+    sessionBindingRepository: { resolve: reference }, collaborationCore: f.core, emitEvent: () => {},
+    toolHostService: { prepareSession: () => assert.fail("shadow must not prepare ordinary tools") },
+    ensureCollaborationAgentForSession: (session, agentId) => f.core.bindSession({ sessionId: session.id, agentId }),
+    ensureLogicalRouteForProviderSession: (session, provider) => f.store.createLogicalSessionRoute({
+      logicalSessionId: `logical:${session.id}`, legacySessionId: session.id, providerId: provider,
+      providerThreadId: session.external.threadId ?? session.id, providerSessionId: session.external.threadId ?? session.id, boundCwd: "/tmp", sessionName: session.title })
+  });
   const turns = new CoordinationTurnService({ store:f.store, dispatch:f.coordinator, resolveReference:reference,
-    registry:{ supports:()=>true, get:()=>({descriptor:{metadata:{backgroundExecutionPolicies:["no-tools"],backgroundImages:true}}}) },
-    planner:{run: input => planner(input)}, emitEvent:(type,payload,scope)=>events.push({type,payload,scope}) });
+    registry,
+    planner:{run: input => { input.onStart?.(); return planner(input); }}, emitEvent:(type,payload,scope)=>events.push({type,payload,scope}) });
   const requests = new CoordinationRequestService({ store:f.store, turns, resolveReference:reference,
     buildContext:async()=>({prompt:"existing canonical context"}),
-    createSession:async (_provider,input,context)=>{
-      const meta=f.open(context.requestId.replace(/[^a-zA-Z0-9]/g,"_"),f.parent.id,{deferTaskProjection:true});
-      f.store.db.run("UPDATE coordination_requests SET shadow_session_id=? WHERE request_id=?",[f.store.getLogicalSessionByLegacySessionId(meta.sessionId).logicalSessionId,context.requestId]);
-      return f.store.getSession(meta.sessionId);
-    },
-    deleteSession:async id=>{deleted.push(id); const ref=reference(id); f.store.upsertSession({...f.store.getSession(ref.sessionId),archived:true});},
+    createSession: application.createSession.bind(application),
+    deleteSession: application.deleteSession.bind(application),
     emitEvent:(type,payload,scope)=>events.push({type,payload,scope}) });
   turns.requests=requests; f.coordinator.requests=requests;
-  return {...f, requests,turns,events,deleted,reference, setPlanner:fn=>{planner=fn;},
+  return {...f, requests,turns,events,deleted,created,application,registry,reference, setPlanner:fn=>{planner=fn;},
     admit:text=>requests.admit(reference("logical:parent"),{text,images:[]},{type:"desktop",messageId:text})};
 }
 
@@ -1894,4 +1931,176 @@ test("request dispatch remains owned by the interactive Session after the tempor
   assert.ok(dispatch);assert.equal(dispatch.source_session_id,"logical:parent");
   assert.equal(JSON.parse(row.dispatch_json)[0].dispatchId,dispatch.dispatch_id);
   assert.equal(f.store.getTask(f.parent.id).current_session_id,f.source.sessionId);
+});
+
+test("real Session composition binds request and summary delegates while denying ordinary tools", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
+    const f = await requestFixture(t, provider);
+    const shadows = new ShadowSessionService({ store: f.store, createSession: f.application.createSession.bind(f.application) });
+    const summary = await shadows.ensure("logical:parent");
+    const reference = f.reference(summary.shadow_session_id);
+    assert.equal(f.store.assertLogicalWorkSessionBinding(summary.shadow_session_id).taskId, f.parent.id);
+    const ready = await f.application.ensureActiveBindingToolsReady(summary.shadow_session_id);
+    assert.equal(ready.executionPolicy, "host-coordination");
+    assert.equal(ready.providerSession.id, reference.sessionId);
+    const projection = createSessionToolBindingProjection({ store: f.store });
+    assert.equal(projection.resolveToolHostBinding(reference.logicalSessionId, reference.bindingId).taskSessionAuthorization, "summary-shadow");
+    assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+    assert.throws(() => coordinationCreationPolicy(f.store, { source: "coordination-request", requestId: "forged",
+      shadowOwnerSessionId: "logical:parent", actorId: f.role.agentId, taskId: f.parent.id, workId: f.work.id }),
+      { code: "COORDINATION_RESERVATION_INVALID" });
+    f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id=?", [f.parent.id]);
+    assert.throws(() => shadows.assertDelegate(summary.shadow_session_id), { code: "SHADOW_OWNER_UNAVAILABLE" });
+    assert.throws(() => coordinationExecutionPolicy(f.store, summary.shadow_session_id), { code: "COORDINATION_DELEGATION_UNAVAILABLE" });
+  });
+});
+
+test("old queued user inputs migrate once while mailbox and running work remain with their owners", async t => {
+  const f = await requestFixture(t), forgotten = [];
+  f.requests.forgetQueued = (...args) => forgotten.push(args);
+  const add = (id, type, status = "queued") => {
+    f.store.enqueueAgentTask({ taskId: id, sessionId: f.source.sessionId, agentId: f.role.agentId,
+      kind: "user", priority: 50, text: id, source: { type, messageId: id } });
+    if (status !== "queued") f.store.updateAgentTask(id, { status });
+  };
+  add("queued-desktop", "desktop"); add("queued-mobile", "remote-client");
+  add("mailbox", "mailbox_event"); add("running", "desktop", "running");
+  f.requests.migrateQueued("logical:parent"); f.requests.migrateQueued("logical:parent");
+  await Promise.all([...f.requests.running.values()]);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  assert.equal(forgotten.length, 2);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM coordination_requests").n, 2);
+  assert.equal(f.store.getAgentTask("queued-desktop").status, "completed");
+  assert.equal(f.store.getAgentTask("mailbox").status, "queued");
+  assert.equal(f.store.getAgentTask("running").status, "running");
+});
+
+test("cancelling creation reclaims a late Provider Session without planning or dispatch", async t => {
+  const f = await requestFixture(t);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  const invoke = f.registry.invoke;
+  f.registry.invoke = async (...args) => { if (args[1] === C.SESSION_CREATE) { entered(); await gate; } return invoke(...args); };
+  f.setPlanner(() => assert.fail("cancelled preparation must not plan"));
+  const request = f.admit("cancel during create");
+  await started;
+  await f.requests.cancel("logical:parent", request.request_id);
+  release(); await f.requests.running.get(request.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  const row = f.requests.get(request.request_id);
+  assert.equal(row.status, "cancelled"); assert.equal(row.context_json, null);
+  assert.equal(row.message_json, null); assert.equal(f.deleted.length, 1);
+  assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+});
+
+test("request history crosses page boundaries, preserves instructions and excludes later user inputs", async t => {
+  const f = await requestFixture(t);
+  for (let n = 0; n < 45; n++) f.store.upsertTimelineItemProjection(f.source.sessionId, {
+    id: `history:${n}`, turnId: `turn:${n}`, type: "userMessage", text: `past ${n}`, status: "completed",
+    createdAt: new Date(Date.now() - 100000 + n * 1000).toISOString() });
+  let payload;
+  f.setPlanner(async input => { payload = JSON.parse(input.prompt); return { text: JSON.stringify({ kind: "discussion", reply: "answer", items: [] }) }; });
+  const row = f.admit("current");
+  f.store.upsertTimelineItemProjection(f.source.sessionId, { id: "future", turnId: "future", type: "userMessage",
+    text: "later unrelated input", createdAt: "2099-01-01T00:00:00.000Z" });
+  await f.requests.running.get(row.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+  assert.equal(f.requests.get(row.request_id).status, "completed");
+  assert.equal(payload.requestContext.conversation.messages.length, 45);
+  assert.equal(payload.requestContext.conversation.messages[0].text, "past 0");
+  assert.equal(payload.requestContext.conversation.instructions, "existing canonical context");
+  assert.ok(!JSON.stringify(payload.requestContext.conversation).includes("later unrelated input"));
+});
+
+test("older unfinished requests remain visible after many completed inputs and mode changes", async t => {
+  const f = await requestFixture(t);
+  f.requests.schedule = () => {};
+  const active = f.admit("old active");
+  for (let n = 0; n < 30; n++) { const row = f.admit(`done ${n}`); f.requests.finish(row.request_id, "completed"); }
+  const indexed = f.requests.index("logical:parent", null, { activeOnly: true });
+  assert.deepEqual(indexed.map(row => row.requestId), [active.request_id]);
+  f.store.upsertSessionTurn({ sessionId: f.source.sessionId, bindingId: f.reference("logical:parent").bindingId,
+    turnId: "native:running", routingVersion: f.reference("logical:parent").routingVersion, executionStatus: "running", startedAt: new Date().toISOString() });
+  assert.equal(f.turns.state(f.reference("logical:parent")).requests[0].requestId, active.request_id);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  assert.equal(f.turns.state(f.reference("logical:parent")).requests[0].requestId, active.request_id);
+});
+
+test("a supplement waits for the original target without occupying an execution slot", async t => {
+  const f = await requestFixture(t);
+  f.requests.schedule = () => {};
+  const target = f.admit("target"), extra = f.admit("supplement");
+  let dispatches = [{ dispatchId: "dispatch:target", taskId: null, status: "preparing" }];
+  f.requests.dispatches = () => dispatches;
+  assert.equal(f.requests.relate(extra.request_id, "supplement", target.request_id).waiting, true);
+  f.requests.finish(target.request_id, "completed");
+  assert.equal(f.requests.get(extra.request_id).status, "waiting");
+  dispatches = [{ dispatchId: "dispatch:target", taskId: "task:target", status: "accepted" }];
+  f.requests.wakeDependents(target.request_id);
+  assert.equal(f.requests.get(extra.request_id).status, "accepted");
+  assert.equal(f.requests.dependency(target.request_id).dispatches[0].taskId, "task:target");
+});
+
+test("retry immediately restores the original delivery state and preserves input identity", async t => {
+  const f = await requestFixture(t);
+  f.setPlanner(() => { throw Object.assign(new Error("temporary transport failure"), { code: "TEST_TRANSPORT" }); });
+  const row = f.admit("retry input");
+  await f.requests.running.get(row.request_id); await Promise.all([...f.requests.reclaiming.values()]);
+  assert.equal(f.requests.get(row.request_id).status, "failed");
+  f.requests.update(row.request_id, { delivery_id: "test-delivery" });
+  const deliveries = [];
+  f.store.getMessageDelivery = () => ({ deliveryId: "test-delivery", messageId: row.message_id, text: "retry input" });
+  f.store.updateMessageDelivery = (id, patch) => deliveries.push({ id, ...patch });
+  f.requests.schedule = () => {};
+  await f.requests.retry("logical:parent", row.request_id);
+  assert.equal(f.requests.get(row.request_id).status, "accepted");
+  assert.equal(f.requests.get(row.request_id).message_id, row.message_id);
+  assert.equal(deliveries.at(-1).status, "processing");
+  assert.ok(f.events.some(event => event.type === "MessageDeliveryChanged"));
+});
+
+test("unsupported Providers cannot create a restricted Session or silently use ordinary tools", async t => {
+  const f = await requestFixture(t);
+  f.registry.get = () => ({ descriptor: { metadata: {} } });
+  const row = f.admit("unsupported");
+  await f.requests.running.get(row.request_id); await Promise.all([...f.requests.reclaiming.values()]);
+  assert.equal(f.requests.get(row.request_id).error_code, "COORDINATION_ISOLATION_UNSUPPORTED");
+  assert.equal(f.created.length, 0);
+  assert.equal(f.requests.get(row.request_id).context_json, null);
+});
+
+test("live Codex independent requests use restricted startup and return to the main timeline", {
+  skip: process.env.CORPTIE_LIVE_COORDINATION_SMOKE !== "1", timeout: 180000
+}, async t => {
+  // Explicit opt-in: only synthetic fixture context, an empty temporary cwd,
+  // no project files or native tools. Use the environment-owned Provider home.
+  const runtime = new CodexAppServerClient({ command: process.env.CORPTIE_LIVE_CODEX_BINARY ?? "codex" });
+  t.after(() => runtime.close());
+  const f = await requestFixture(t, "codex-app-server", runtime);
+  const directory = await mkdtemp(join(tmpdir(), "corptie-live-shadow-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  f.store.upsertSession({ ...f.store.getSession(f.source.sessionId), external: { cwd: directory } });
+  const background = new BackgroundAgentService({ registry: f.registry });
+  t.after(() => background.close());
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  f.setPlanner(async input => {
+    if (JSON.parse(input.prompt).message.includes("FIRST")) await gate;
+    return background.run(input);
+  });
+  const started = Date.now();
+  const first = f.admit("Discussion only. Reply FIRST. Do not create or change any task."),
+    second = f.admit("Discussion only. Reply SECOND. Do not create or change any task.");
+  try {
+    await f.requests.running.get(second.request_id);
+    assert.equal(f.requests.get(second.request_id).status, "completed", f.requests.get(second.request_id).error_message);
+    assert.equal(f.store.listUnsettledSessionTurns(f.source.sessionId).length, 0);
+    release(); await f.requests.running.get(first.request_id);
+    assert.equal(f.requests.get(first.request_id).status, "completed", f.requests.get(first.request_id).error_message);
+    await Promise.all([...f.requests.reclaiming.values()]);
+    assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+    assert.equal(f.deleted.length, 2);
+    console.info("[live-coordination-evidence]", JSON.stringify({ elapsedMs: Date.now() - started,
+      requests: [first.request_id, second.request_id].map(id => ({ id, status: f.requests.get(id).status,
+        replyId: f.requests.get(id).response_item_id, cleanupError: f.requests.get(id).cleanup_error })) }));
+  } finally { release(); await Promise.all([...f.requests.running.values()]); await Promise.all([...f.requests.reclaiming.values()]); }
 });

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  acceptanceCriteriaList,
   buildAcceptanceAssessment,
   completionSuggestionForTask,
   parseAcceptanceAssessment,
@@ -18,7 +17,7 @@ import {
 const task = {
   id: "wi-1",
   status: "in_progress",
-  acceptance_criteria: "- Unit tests pass\n- Development app and backend start"
+  revision: 1
 };
 
 const passingInput = {
@@ -36,13 +35,6 @@ const passingInput = {
     }
   ]
 };
-
-test("acceptance criteria are canonicalized into an ordered checklist", () => {
-  assert.deepEqual(
-    acceptanceCriteriaList(" 1. First\n- Second\n\n* Third "),
-    ["First", "Second", "Third"]
-  );
-});
 
 test("invalid acceptance objects are rejected without changing the canonical Task DTO", () => {
   assert.equal(parseAcceptanceAssessment("{}"), null);
@@ -71,9 +63,7 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     workId: "work:1",
     parentTaskId: null,
     title: "Canonical Task",
-    description: "Description",
-    acceptanceCriteria: "Acceptance",
-    verificationCriteria: "Verification",
+
     priority: 3,
     lifecycleState: "in_progress",
     autoTitleEnabled: true,
@@ -113,7 +103,7 @@ test("worker prompt leaves Task description and acceptance criteria in trusted c
   assert.doesNotMatch(prompt, /任务描述：|验收标准：/);
 });
 
-test("passing acceptance requires every criterion and verifiable evidence", () => {
+test("passing acceptance binds non-empty checked outcomes and evidence to the Task revision", () => {
   const assessment = buildAcceptanceAssessment(task, passingInput, {
     now: "2026-08-18T00:00:00.000Z"
   });
@@ -139,7 +129,7 @@ test("failed, evidence-insufficient, stale, or incomplete assessments never sugg
   const assessment = buildAcceptanceAssessment(task, passingInput);
   assert.equal(completionSuggestionForTask({
     ...task,
-    acceptance_criteria: "Changed criterion",
+    revision: 2,
     acceptance_assessment_json: JSON.stringify(assessment)
   }), null);
 
@@ -172,10 +162,10 @@ test("failed, evidence-insufficient, stale, or incomplete assessments never sugg
   assert.throws(
     () => buildAcceptanceAssessment(task, {
       ...passingInput,
-      results: [passingInput.results[0]]
+      results: []
     }),
     (error) => error instanceof TaskAcceptanceError
-      && error.code === "ACCEPTANCE_CRITERIA_MISMATCH"
+      && error.code === "INVALID_ACCEPTANCE_RESULTS"
   );
 });
 
@@ -314,3 +304,13 @@ test("provider-neutral revision tool carries only the new problem definition", a
     metadata: { sessionId: "provider-session:one", taskId: "task:one" }
   }]);
 });
+
+ test("retired definition fields are not reintroduced by reporting and empty or duplicate outcomes fail", () => {
+  const assessment = buildAcceptanceAssessment(task, passingInput);
+  assert.equal(assessment.taskRevision, task.revision);
+  assert.equal(Object.hasOwn(assessment, "criteriaSnapshot"), false);
+  for (const results of [[], [{...passingInput.results[0],criterion:" "}], [passingInput.results[0],passingInput.results[0]]]) {
+    assert.throws(() => buildAcceptanceAssessment(task, {...passingInput,results}), {code:"INVALID_ACCEPTANCE_RESULTS"});
+  }
+  assert.equal(completionSuggestionForTask({...task,acceptanceAssessment:{...assessment,taskRevision:undefined}}),null);
+ });

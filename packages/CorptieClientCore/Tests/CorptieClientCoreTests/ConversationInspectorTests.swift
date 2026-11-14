@@ -68,15 +68,12 @@ struct ConversationInspectorTests {
         #expect(ConversationInspectorKind.resolve(sessionKind: "worker", taskID: "t", workID: "w") == .task)
         #expect(ConversationInspectorKind.resolve(sessionKind: nil, taskID: "t", workID: "w") == .legacy)
     }
-    @Test func olderHostsRemainDecodableAndPushedDefinitionChangesAreObservable() throws {
+    @Test func olderHostsRemainDecodableButRetiredDefinitionFieldsAreIgnored() throws {
         let old = #"{"id":"t","title":"Task","workId":"w","lifecycleState":"todo","executionStatus":"idle","updatedAt":"now"}"#
         let decoder = JSONDecoder()
         let original = try decoder.decode(ClientTask.self, from: Data(old.utf8))
-        #expect(original.description == nil)
         let updated = old.replacingOccurrences(of: "\"title\":\"Task\"", with: "\"title\":\"Task\",\"description\":\"Full definition\",\"acceptanceCriteria\":\"Acceptance\",\"verificationCriteria\":\"Verification\"")
         let next = try decoder.decode(ClientTask.self, from: Data(updated.utf8))
-        #expect(next != original)
-        #expect(next.acceptanceCriteria == "Acceptance")
-        #expect(next.verificationCriteria == "Verification")
+        #expect(next == original)
     }
 }

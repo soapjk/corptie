@@ -30,7 +30,7 @@ struct AssistFormDraft: Decodable, Equatable {
         case AssistFormType.work.rawValue:
             expected = ["name", "description", "profile", "tags"]
         case AssistFormType.task.rawValue:
-            expected = ["title", "description", "acceptanceCriteria", "priority"]
+            expected = ["title", "priority"]
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .formType,

@@ -1177,3 +1177,15 @@ test('direct MCP contract expansion still requires a new observation', async () 
       desiredVersion: first.record.desiredVersion, observationId: 'stale' }), { code: 'PROVIDER_TOOL_OBSERVATION_STALE' });
   } finally { value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
 });
+
+test("delegated coordination Sessions cannot materialize ordinary Provider tools", async () => {
+  const value = await fixture();
+  try {
+    value.binding.currentTaskSessionId = "session:main";
+    value.binding.taskSessionAuthorization = "request-shadow";
+    value.binding.delegation = { executionPolicy: "host-coordination" };
+    await assert.rejects(value.coordinator.ensureApplied({ logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId, phase: "bootstrap" }), { code: "SESSION_HOST_EXECUTION_ONLY" });
+    assert.equal(value.applyCount, 0);
+  } finally { await value.store.close(); await rm(value.directory, { recursive: true, force: true }); }
+});

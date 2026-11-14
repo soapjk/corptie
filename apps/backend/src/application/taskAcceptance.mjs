@@ -21,22 +21,10 @@ export class TaskAcceptanceError extends Error {
   }
 }
 
-export function acceptanceCriteriaList(value) {
-  const text = String(value ?? "").trim();
-  if (!text) return [];
-  const lines = text.split(/\r?\n/)
-    .map((line) => line.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "").trim())
-    .filter(Boolean);
-  return lines.length > 0 ? lines : [text];
-}
-
 export function taskExecutionPrompt(task) {
   return [
     `请完成工作项「${task?.title ?? "未命名"}」。`,
-    EXECUTION_CHECKLIST_INSTRUCTIONS,
-    task?.acceptance_criteria
-      ? "\n请依据已注入的 Task 上下文执行与验证；只有在每条验收标准均有可复现证据时，才调用 corptie_task_report_acceptance。"
-      : ""
+    EXECUTION_CHECKLIST_INSTRUCTIONS
   ].filter(Boolean).join("\n");
 }
 
@@ -57,7 +45,6 @@ export function parseAcceptanceAssessment(value) {
   // such objects as an assessment: one malformed entity must not make the
   // complete application snapshot undecodable for every client.
   if (typeof parsed.status !== "string"
-    || typeof parsed.criteriaSnapshot !== "string"
     || typeof parsed.sourceSessionId !== "string"
     || typeof parsed.assessedAt !== "string"
     || !Array.isArray(parsed.results)) {
@@ -83,13 +70,9 @@ export function parseAcceptanceAssessment(value) {
 
 export function buildAcceptanceAssessment(task, input, { now = new Date().toISOString() } = {}) {
   assertKnownKeys(input, new Set(["sourceSessionId", "results", "integrationSnapshotId"]), "assessment");
-  const criteriaSnapshot = String(task?.acceptance_criteria ?? "").trim();
-  const criteria = acceptanceCriteriaList(criteriaSnapshot);
-  if (criteria.length === 0) {
-    throw new TaskAcceptanceError(
-      "ACCEPTANCE_CRITERIA_REQUIRED",
-      "Task must define acceptance criteria before acceptance can be assessed."
-    );
+  const taskRevision = Number(task?.revision ?? 1);
+  if (!Number.isSafeInteger(taskRevision) || taskRevision < 1) {
+    throw new TaskAcceptanceError("TASK_REVISION_INVALID", "A current Task revision is required.");
   }
 
   const sourceSessionId = String(input?.sourceSessionId ?? "").trim();
@@ -99,8 +82,8 @@ export function buildAcceptanceAssessment(task, input, { now = new Date().toISOS
       "sourceSessionId is required for an acceptance assessment."
     );
   }
-  if (!Array.isArray(input?.results)) {
-    throw new TaskAcceptanceError("INVALID_ACCEPTANCE_RESULTS", "results must be an array.");
+  if (!Array.isArray(input?.results) || input.results.length === 0) {
+    throw new TaskAcceptanceError("INVALID_ACCEPTANCE_RESULTS", "results must be a non-empty array of checked outcomes.");
   }
 
   const results = input.results.map((result, index) => {
@@ -110,10 +93,10 @@ export function buildAcceptanceAssessment(task, input, { now = new Date().toISOS
     assertKnownKeys(result, new Set(["criterion", "verdict", "evidence"]), `results[${index}]`);
     const criterion = String(result.criterion ?? "").trim();
     const verdict = String(result.verdict ?? "").trim();
-    if (criterion !== criteria[index]) {
+    if (!criterion || input.results.slice(0, index).some(previous => String(previous?.criterion ?? "").trim() === criterion)) {
       throw new TaskAcceptanceError(
-        "ACCEPTANCE_CRITERIA_MISMATCH",
-        `results[${index}].criterion must exactly match the current Task acceptance criterion.`
+        "INVALID_ACCEPTANCE_RESULTS",
+        `results[${index}].criterion must be non-empty and unique.`
       );
     }
     if (!VERDICTS.has(verdict)) {
@@ -153,16 +136,9 @@ export function buildAcceptanceAssessment(task, input, { now = new Date().toISOS
     return { criterion, verdict, evidence };
   });
 
-  if (results.length !== criteria.length) {
-    throw new TaskAcceptanceError(
-      "ACCEPTANCE_CRITERIA_MISMATCH",
-      "Assessment results must cover every current Task acceptance criterion exactly once and in order."
-    );
-  }
-
   return {
     status: results.every((result) => result.verdict === "passed") ? "passed" : "not_proven",
-    criteriaSnapshot,
+    taskRevision,
     sourceSessionId,
     assessedAt: now,
     results
@@ -172,12 +148,12 @@ export function buildAcceptanceAssessment(task, input, { now = new Date().toISOS
 export function completionSuggestionForTask(task) {
   const assessment = parseAcceptanceAssessment(task?.acceptance_assessment_json ?? task?.acceptanceAssessment);
   if (!assessment || assessment.status !== "passed") return null;
-  const criteriaSnapshot = String(task?.acceptance_criteria ?? task?.acceptanceCriteria ?? "").trim();
-  if (!criteriaSnapshot || assessment.criteriaSnapshot !== criteriaSnapshot) return null;
-  const criteria = acceptanceCriteriaList(criteriaSnapshot);
-  if (!Array.isArray(assessment.results) || assessment.results.length !== criteria.length) return null;
+  const taskRevision = Number(task?.revision ?? 1);
+  if (assessment.taskRevision !== taskRevision || !assessment.results.length) return null;
+  const criteria = new Set();
   const valid = assessment.results.every((result, index) => (
-    result?.criterion === criteria[index]
+    typeof result?.criterion === "string" && result.criterion.trim()
+    && !criteria.has(result.criterion) && criteria.add(result.criterion)
     && result?.verdict === "passed"
     && Array.isArray(result.evidence)
     && result.evidence.length > 0
@@ -191,7 +167,7 @@ export function completionSuggestionForTask(task) {
     recommended: true,
     sourceSessionId: assessment.sourceSessionId,
     assessedAt: assessment.assessedAt,
-    criteriaSnapshot,
+    taskRevision,
     results: assessment.results
   };
 }
@@ -205,9 +181,7 @@ export function presentTaskAcceptance(task, options = {}) {
     parentTaskId: task.parent_task_id ?? null,
     ...(options.hierarchy ? { hierarchy: options.hierarchy } : {}),
     title: task.title,
-    description: task.description,
-    acceptanceCriteria: task.acceptance_criteria,
-    verificationCriteria: task.verification_criteria,
+
     priority: task.priority,
     lifecycleState: task.lifecycle_state,
     autoTitleEnabled: task.auto_title_enabled !== 0,

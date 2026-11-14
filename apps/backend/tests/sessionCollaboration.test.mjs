@@ -812,11 +812,11 @@ test("Worker creates an independent Task with Session provenance and retries ide
     const metadata = { sessionId: "provider:worker" };
 
     const created = f.service.createTask(metadata, agent.agentId, {
-      title: "Independent", acceptanceCriteria: "Has evidence",
+      title: "Independent",
       idempotencyKey: "create:independent"
     });
     const replay = f.service.createTask(metadata, agent.agentId, {
-      title: "Independent", acceptanceCriteria: "Has evidence",
+      title: "Independent",
       idempotencyKey: "create:independent"
     });
     assert.equal(replay.task.id, created.task.id);
@@ -869,8 +869,6 @@ test("tool Task creation uses one service operation to persist the Task and bind
     });
     const input = {
       title: "Createdandstarted",
-      description: "Description belongs to Task context only",
-      acceptanceCriteria: "Criterion belongs to Task context only",
       agentId: agent.agentId,
       ...authorization,
       idempotencyKey: "tool-create:atomic"
@@ -887,8 +885,8 @@ test("tool Task creation uses one service operation to persist the Task and bind
     assert.equal(created.phase, "started");
     assert.equal(created.session.sessionId, "session:atomic-worker");
     assert.equal(stored.current_session_id, "provider:atomic-worker");
-    assert.equal(stored.description, "Description belongs to Task context only");
-    assert.equal(stored.acceptance_criteria, "Criterion belongs to Task context only");
+    assert.equal(Object.hasOwn(stored, "description"), false);
+    assert.equal(Object.hasOwn(stored, "acceptance_criteria"), false);
     assert.equal(
       f.store.getTaskCreationOrigin(stored.id).creationContextMessageId,
       authorization.userMessageEventId

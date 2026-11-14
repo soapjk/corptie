@@ -1,3 +1,4 @@
+import { COMPUTER_USE_BRIDGE_PROFILE } from "./computerUseBridge.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { createMcpCredentialMigration } from "./mcpCredentialMigration.mjs";
 import { createHash, randomUUID } from "node:crypto";
@@ -15,7 +16,8 @@ import { withMcpGitCheckout } from "./mcpGitSource.mjs";
 import { createMcpSecretStore } from "./mcpSecretStore.mjs";
 
 // Independent MCP installations are resources. A Session receives tools only
-// through its bound Agent's current assignment and the fixed Tool Host.
+// after explicit Session activation through the fixed Tool Host. Legacy Role
+// assignment APIs remain available solely for stored-data compatibility.
 export class McpRegistryService {
   constructor({ store, timeoutMs = 10_000, packageRoot, secretStore, ephemeral = false } = {}) {
     if (!store) throw new TypeError("McpRegistryService requires a store.");
@@ -55,7 +57,7 @@ export class McpRegistryService {
       SELECT server_id, name, url, transport, command, args_json, cwd, enabled, tool_count, verified_at,
              last_checked_at, last_check_status, last_error_code, observed_tool_names_json,
              source_kind, source_locator, source_revision, package_root, package_hash, descriptor_path,
-             config_revision,
+             config_revision, runtime_profile,
              credential_ref, credential_names_json,
              created_at, updated_at,
              (SELECT COUNT(*) FROM agent_mcp_assignments a WHERE a.server_id = s.server_id) AS assignment_count
@@ -68,7 +70,7 @@ export class McpRegistryService {
       SELECT server_id, name, url, transport, command, args_json, cwd, enabled, tool_count, verified_at,
              last_checked_at, last_check_status, last_error_code, observed_tool_names_json,
              source_kind, source_locator, source_revision, package_root, package_hash, descriptor_path,
-             config_revision,
+             config_revision, runtime_profile,
              credential_ref, credential_names_json,
              created_at, updated_at,
              (SELECT COUNT(*) FROM agent_mcp_assignments a WHERE a.server_id = s.server_id) AS assignment_count
@@ -552,14 +554,14 @@ export class McpRegistryService {
        enabled, tool_count, verified_at, last_checked_at, last_check_status,
        observed_tool_names_json, source_kind, source_locator, source_revision, package_root,
        package_hash, descriptor_path, credential_ref, credential_names_json, install_request_id,
-       created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       created_at, updated_at, runtime_profile)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [serverId, verified.name, verified.url ?? "", verified.transport, verified.command ?? null,
       JSON.stringify(verified.args ?? []), verified.cwd ?? null, verified.toolCount, now, now,
       JSON.stringify(verified.toolNames), metadata.sourceKind ?? "direct", metadata.sourceLocator ?? null,
       metadata.sourceRevision ?? null, metadata.packageRoot ?? null, metadata.packageHash ?? null,
       metadata.descriptorPath ?? null, metadata.credentialRef ?? null,
-      JSON.stringify(metadata.credentialNames ?? []), metadata.installRequestId ?? null, now, now]);
+      JSON.stringify(metadata.credentialNames ?? []), metadata.installRequestId ?? null, now, now, verified.runtimeProfile ?? null]);
     this.store.scheduleSave();
     this.#recordRuntimeEventBestEffort({ serverId, stage: "tools-list", status: "success",
       toolCount: verified.toolCount });
@@ -602,6 +604,7 @@ export class McpRegistryService {
     const credentials = input.clearCredentials ? null : replacementCredentials ?? retainedCredentials;
     const candidate = transport === "stdio"
       ? { name: input.name ?? current.name, transport,
+        runtimeProfile: sameTransport ? current.runtimeProfile : null,
         command: input.command ?? (sameTransport ? current.command : undefined),
         args: input.args ?? (sameTransport ? current.args : undefined),
         cwd: input.cwd ?? (sameTransport ? current.cwd : undefined),
@@ -624,13 +627,13 @@ export class McpRegistryService {
           command = ?, args_json = ?, cwd = ?, tool_count = ?, verified_at = ?,
           last_checked_at = ?, last_check_status = 'available', last_error_code = NULL,
           observed_tool_names_json = ?, credential_ref = ?, credential_names_json = ?,
-          config_revision = config_revision + 1,
+          config_revision = config_revision + 1, runtime_profile = ?,
           updated_at = ? WHERE server_id = ? AND config_revision = ?`,
         [verified.name, verified.url ?? "", verified.transport, verified.command ?? null,
           JSON.stringify(verified.args ?? []), verified.cwd ?? null, verified.toolCount,
           now, now, JSON.stringify(verified.toolNames), credentialRef,
           JSON.stringify(Object.keys(credentials?.[transport === "stdio" ? "env" : "headers"] ?? {})),
-          now, serverId, current.configRevision]);
+          verified.runtimeProfile ?? null, now, serverId, current.configRevision]);
         if (this.store.db.getRowsModified() !== 1) {
           throw registryError("MCP_CONFIG_STALE", "MCP Server configuration changed during verification.", 409);
         }
@@ -823,15 +826,18 @@ export class McpRegistryService {
       .map((row) => ({ agentId: row.agent_id, name: row.name }));
     const history = this.store.selectAll(`SELECT package_root, credential_ref
       FROM mcp_server_package_versions WHERE server_id = ?`, [serverId]);
+    const legacyCredentials = this.store.selectAll(`SELECT credential_ref
+      FROM agent_mcp_assignments WHERE server_id = ? AND credential_ref IS NOT NULL`, [serverId]);
     return {
       serverId, configRevision: server.configRevision,
-      canRemove: assignedAgents.length === 0,
-      blockingCode: assignedAgents.length ? "MCP_SERVER_ASSIGNED" : null,
+      canRemove: true,
+      blockingCode: null,
       assignedAgents,
       managedPackageCopies: new Set([server.packageRoot,
         ...history.map((row) => row.package_root)].filter(Boolean)).size,
       credentialReferences: new Set([server.credentialRef,
-        ...history.map((row) => row.credential_ref)].filter(Boolean)).size,
+        ...history.map((row) => row.credential_ref),
+        ...legacyCredentials.map((row) => row.credential_ref)].filter(Boolean)).size,
       originalSourceWillBeDeleted: false
     };
   }
@@ -904,9 +910,6 @@ export class McpRegistryService {
   async remove(serverId) {
     const server = this.get(serverId);
     if (!server) return { serverId, removed: false, cleanupPending: (await this.drainCleanup({ serverId })) > 0 };
-    if (server.assignmentCount > 0) {
-      throw registryError("MCP_SERVER_ASSIGNED", "Remove all Agent assignments before deleting this MCP Server.", 409);
-    }
     const history = this.store.selectAll(`SELECT package_root, credential_ref
       FROM mcp_server_package_versions WHERE server_id = ?`, [serverId]);
     const packagePaths = [...new Set([server.packageRoot, ...history.map((row) => row.package_root)]
@@ -916,7 +919,13 @@ export class McpRegistryService {
       ...history.map((row) => row.credential_ref)].filter(Boolean))];
     this.store.db.run("BEGIN IMMEDIATE");
     try {
+      const legacyCredentials = this.store.selectAll(`SELECT credential_ref
+        FROM agent_mcp_assignments WHERE server_id = ? AND credential_ref IS NOT NULL`, [serverId]);
+      this.store.db.run("DELETE FROM agent_mcp_assignments WHERE server_id = ?", [serverId]);
       this.store.db.run("DELETE FROM mcp_server_registry WHERE server_id = ?", [serverId]);
+      // The cleanup worker checks all remaining installation/history/legacy
+      // references before removing a secret shared with another installation.
+      for (const row of legacyCredentials) this.#enqueueCleanup("credential_ref", row.credential_ref, serverId);
       for (const path of packagePaths) this.#enqueueCleanup("package_path", path, serverId);
       for (const ref of credentialRefs) this.#enqueueCleanup("credential_ref", ref, serverId);
       this.store.db.run("COMMIT");
@@ -929,16 +938,46 @@ export class McpRegistryService {
     return { serverId, removed: true, cleanupPending };
   }
 
+  // Production routing: installation is global; only explicit Session choices
+  // grant visibility. Filter before reading credentials or constructing a client.
+  serversForSession(reference, preferences) {
+    if (!reference || !preferences) return {};
+    const rows = this.store.selectAll(`
+      SELECT server_id, name, url, transport, command, args_json, cwd,
+             verified_at, credential_ref, NULL AS assignment_credential_ref,
+             NULL AS tool_allowlist_json
+      FROM mcp_server_registry WHERE enabled = 1 ORDER BY server_id
+    `).filter(row => !preferences.isDisabled(reference, "mcp", row.server_id));
+    return this.#runtimeServers(rows);
+  }
+
+  installationRevision() {
+    const rows = this.store.selectAll(`
+      SELECT server_id, url, transport, command, args_json, cwd, enabled,
+             updated_at, verified_at, credential_ref
+      FROM mcp_server_registry ORDER BY server_id
+    `);
+    return rows.length === 0 ? "none"
+      : createHash("sha256").update(JSON.stringify({ rows,
+        credentialStorageRevision: this.secretStore.revision?.() ?? 0 })).digest("hex");
+  }
+
+  // Compatibility inspection for historical assignment migrations. The Session
+  // gateway must use serversForSession, never this legacy Role projection.
   serversForAgent(agentId) {
     if (!this.store.getAgent(agentId)) return {};
     const rows = this.store.selectAll(`
-      SELECT s.server_id, s.name, s.url, s.transport, s.command, s.args_json, s.cwd,
+      SELECT s.server_id, s.name, s.url, s.transport, s.command, s.args_json, s.cwd, s.runtime_profile,
              s.verified_at, s.credential_ref, a.credential_ref AS assignment_credential_ref,
              a.credential_revision, a.tool_allowlist_json
       FROM mcp_server_registry s
       JOIN agent_mcp_assignments a ON a.server_id = s.server_id
       WHERE a.agent_id = ? AND s.enabled = 1 ORDER BY s.server_id
     `, [agentId]);
+    return this.#runtimeServers(rows);
+  }
+
+  #runtimeServers(rows) {
     return Object.fromEntries(rows.map((row) => {
       const selectedRef = row.assignment_credential_ref ?? row.credential_ref;
       const toolAllowlist = row.tool_allowlist_json === null ? null : JSON.parse(row.tool_allowlist_json);
@@ -949,10 +988,10 @@ export class McpRegistryService {
       return [serverKey(row.server_id), row.transport === "stdio"
         ? { serverId: row.server_id, type: "stdio", command: row.command, args: JSON.parse(row.args_json), cwd: row.cwd,
           env: { ...isolatedStdioEnv(), ...(credentials?.env ?? {}) }, isolatedEnv: true,
-          displayName: row.name, observationRevision: row.verified_at,
+          displayName: row.name, observationRevision: row.verified_at, runtimeProfile: row.runtime_profile,
           credentialVersion: `${selectedRef ?? "none"}:${this.secretStore.revision?.() ?? 0}`, toolAllowlist, unavailableCode }
         : { serverId: row.server_id, type: row.transport, url: row.url, headers: credentials?.headers,
-          displayName: row.name, observationRevision: row.verified_at,
+          displayName: row.name, observationRevision: row.verified_at, runtimeProfile: row.runtime_profile,
           credentialVersion: `${selectedRef ?? "none"}:${this.secretStore.revision?.() ?? 0}`, toolAllowlist, unavailableCode }];
     }));
   }
@@ -976,6 +1015,9 @@ async function normalizedConfig(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw registryError("INVALID_INPUT", "MCP Server configuration must be an object.", 400);
   }
+  if (input.runtimeProfile != null && (input.runtimeProfile !== COMPUTER_USE_BRIDGE_PROFILE || input.transport !== "stdio")) {
+    throw registryError("MCP_RUNTIME_PROFILE_INVALID", "Unsupported desktop MCP runtime profile.", 400);
+  }
   const name = typeof input.name === "string" ? input.name.trim() : "";
   const transport = ["sse", "http", "stdio"].includes(input.transport) ? input.transport : null;
   if (!name || name.length > 120 || !transport) {
@@ -998,7 +1040,8 @@ async function normalizedConfig(input = {}) {
       logError("mcp-registry.local-command", error);
       throw registryError("MCP_COMMAND_INVALID", "Local MCP executable or working directory is unavailable.", 400);
     }
-    return { name, transport, command, args, cwd, ...(env ? { env } : {}) };
+    return { name, transport, command, args, cwd, ...(env ? { env } : {}),
+      ...(input.runtimeProfile ? { runtimeProfile: input.runtimeProfile } : {}) };
   }
   if (input.command != null || input.args != null || input.cwd != null || input.env != null) {
     throw registryError("INVALID_INPUT", "Remote MCP configuration cannot include a local command.", 400);
@@ -1152,7 +1195,7 @@ function presentServer(row) {
     transport: row.transport, enabled: Boolean(row.enabled), toolCount: row.tool_count,
     command: row.command, args: JSON.parse(row.args_json ?? "[]"), cwd: row.cwd,
     verifiedAt: row.verified_at, assignmentCount: row.assignment_count,
-    configRevision: row.config_revision,
+    configRevision: row.config_revision, runtimeProfile: row.runtime_profile ?? null,
     lastCheckedAt: row.last_checked_at, lastCheckStatus: row.last_check_status,
     lastErrorCode: row.last_error_code, observedToolNames: JSON.parse(row.observed_tool_names_json ?? "[]"),
     sourceKind: row.source_kind, sourceLocator: row.source_locator, sourceRevision: row.source_revision,

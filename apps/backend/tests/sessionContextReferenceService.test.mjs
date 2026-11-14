@@ -17,7 +17,7 @@ async function fixture(onChanged) {
     id: "work-a", name: "Ship-context", description: "Build references",
     contributorAgentIds: [agent.agentId]
   });
-  store.createTask({ id: "task-a", workId: work.id, title: "Implement-resolver", description: "Resolve structured context" });
+  store.createTask({ id: "task-a", workId: work.id, title: "Implement-resolver"});
   const localPath = join(directory, "reference.md");
   await writeFile(localPath, "# Local reference\nUse the shared Provider contract.");
   const service = new SessionContextReferenceService({

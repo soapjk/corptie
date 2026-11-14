@@ -208,12 +208,12 @@ import AppKit
         let summary: [String: Any] = ["state": "ready", "focus": "", "progress": "", "intervention": "none", "reason": "", "nextAction": ""]
         var task: [String: Any] = ["taskId": "task:1", "title": "Task", "status": "active", "description": "短描述",
             "acceptanceCriteria": "", "verificationCriteria": "", "resourceRevision": "1", "summary": summary]
-        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 120))
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 116))
         task["description"] = String(repeating: "默认收起的长正文", count: 5000)
-        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 156))
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 116))
         task["acceptanceCriteria"] = String(repeating: "验收", count: 5000)
         task["verificationCriteria"] = String(repeating: "验证", count: 5000)
-        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 264))
+        #expect(DetailWidgetSizing.preferredSize(for: try decode(kind: "taskInfo", data: task)) == .fitted(height: 116))
     }
 
     @Test func narrowProviderUsesNaturalHeightAndOnlyTheRailScrollOwner() async throws {

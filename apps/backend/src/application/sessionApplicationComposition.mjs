@@ -1,3 +1,4 @@
+import { coordinationCreationPolicy, coordinationExecutionPolicy } from "../domain/coordinationDelegation.mjs";
 import { DEVELOPMENT_WORKFLOW_INSTRUCTIONS } from "./executionChecklistInstructions.mjs";
 import { SessionApplicationService } from "../agent-provider/sessionApplicationService.mjs";
 import { persistProviderSessionProjection, persistSessionModelSelection } from "./providerSessionProjection.mjs";
@@ -9,7 +10,7 @@ import { resolveMessageMentionContext } from "./messageMentionContext.mjs";
 import { buildDirectUserMessageEvidence } from "./directUserMessageEvidence.mjs";
 import { skillMcpTurnContext } from "./skillMcpTurnContext.mjs";
 import { desiredToolDomainIds, appliedToolDomainIds } from "./sessionToolBindingProjection.mjs";
-import { assertNoAutomaticWorktreeMutation } from "./worktreeAutoFollowService.mjs";
+import { conversationWorktreeBlocker } from "./workChatReadOnlyTurnService.mjs";
 import { resolveTaskCreationDefaults } from "../utils/newSessionDefaults.mjs";
 
 // Product policy wired into the common Session service. Later-created services
@@ -25,6 +26,9 @@ export function createSessionApplicationComposition({
 }) {
   const sessionApplicationService = new SessionApplicationService({
     registry: agentProviderRegistry,
+    resolveExecutionPolicy: ({ reference, context }) => reference
+      ? coordinationExecutionPolicy(store, reference.logicalSessionId)
+      : coordinationCreationPolicy(store, context),
     resolveCreationDefaults: (providerId, input) => {
       const runtime = resolveTaskCreationDefaults({ ...input, providerId },
         store.settings?.().newSessionDefaults ?? {}, agentProviderRegistry.defaultProviderId);
@@ -50,7 +54,8 @@ export function createSessionApplicationComposition({
     resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
     assertMessageDispatchAllowed: (reference, context) => {
       assertForkDispatchAllowed(reference.sessionId);
-      assertNoAutomaticWorktreeMutation(store, reference);
+      const blocker = conversationWorktreeBlocker(store, agentProviderRegistry, reference);
+      if (blocker) throw Object.assign(new Error(blocker.message), { code: "SESSION_BUSY", reason: blocker.reason, statusCode: 409 });
       return assertSessionRecoveryMessageBoundary(reference);
     },
     recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {

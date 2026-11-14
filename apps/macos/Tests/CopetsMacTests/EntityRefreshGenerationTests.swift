@@ -91,8 +91,7 @@ struct EntityRefreshGenerationTests {
             id: "task:performance",
             workId: "work:performance",
             title: "Performance",
-            description: "",
-            acceptanceCriteria: "",
+
             priority: "medium",
             lifecycleState: "in_progress",
             mainRoleId: nil,

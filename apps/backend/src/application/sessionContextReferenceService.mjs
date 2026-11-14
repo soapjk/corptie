@@ -351,8 +351,7 @@ export class SessionContextReferenceService {
     return {
       title: `Task: ${value.title}`,
       text: lines([
-        ["Status", value.status], ["Priority", value.priority], ["Description", value.description],
-        ["Acceptance criteria", value.acceptance_criteria], ["Work id", value.work_id]
+        ["Status", value.lifecycle_state], ["Priority", value.priority], ["Work id", value.work_id]
       ])
     };
   }
@@ -360,12 +359,11 @@ export class SessionContextReferenceService {
   resolveAgent(reference) {
     const value = this.store.getAgent(reference.targetId);
     if (!value) throw serviceError("AGENT_NOT_FOUND", "Referenced Agent no longer exists.", 404);
-    const skills = this.store.listRegistrySkillsForAgent?.(value.agentId) ?? [];
     return {
       title: `Agent: ${value.name}`,
       text: lines([
         ["Role", value.role], ["Description", value.description], ["Provider", value.provider],
-        ["Capabilities", value.capabilities?.join(", ")], ["Skills", skills.map((skill) => skill.name).join(", ")]
+        ["Capabilities", value.capabilities?.join(", ")]
       ])
     };
   }

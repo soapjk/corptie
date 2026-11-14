@@ -55,16 +55,12 @@ export class TaskRepository {
     this.runInTransaction(() => {
       this.hierarchy.assertParentForCreate({ ...normalized, ...constraints });
       this.db.run(
-        `INSERT INTO tasks (id, work_id, title, description, acceptance_criteria,
-          verification_criteria, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at, parent_task_id, creation_state)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, work_id, title, priority, lifecycle_state, main_agent_id, auto_title_enabled, created_at, updated_at, parent_task_id, creation_state)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           normalized.workId,
           normalized.title,
-          normalized.description ?? "",
-          normalized.acceptanceCriteria ?? "",
-          normalized.verificationCriteria ?? "",
           normalized.priority ?? "medium",
           normalized.lifecycleState ?? "todo",
           normalized.mainAgentId ?? null,
@@ -164,7 +160,7 @@ export class TaskRepository {
        FROM tasks
        WHERE COALESCE(tasks.deletion_status, '') <> 'deleted' AND tasks.creation_state='ready'
          ${workId ? "AND tasks.work_id = ?" : ""}
-         ${queryTerms.length ? `AND (${queryTerms.map(() => "tasks.title LIKE ? ESCAPE '\\' OR tasks.description LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
+         ${queryTerms.length ? `AND (${queryTerms.map(() => "tasks.title LIKE ? ESCAPE '\\'").join(" OR ")})` : ""}
          ${includeCompleted ? "" : "AND tasks.lifecycle_state <> 'done'"}
          ${hasCursor ? `AND (
            ${completionRankSQL} > ?
@@ -175,7 +171,7 @@ export class TaskRepository {
        LIMIT ?`,
       [
         ...(workId ? [workId] : []),
-        ...queryTerms.flatMap((term) => [term, term]),
+        ...queryTerms,
         ...(hasCursor ? [
           cursor.completionRank,
           cursor.completionRank, cursor.updatedAt,
@@ -274,9 +270,6 @@ export class TaskRepository {
     const normalized = validateTaskInput(publicPatch, "update");
     const prospective = {
       title: current.title,
-      description: current.description,
-      acceptanceCriteria: current.acceptance_criteria,
-      verificationCriteria: current.verification_criteria,
       priority: current.priority,
       lifecycleState: current.lifecycle_state,
       mainAgentId: current.main_agent_id,
@@ -298,15 +291,12 @@ export class TaskRepository {
     this.assertTaskAssociations(prospective, work);
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
-      `UPDATE tasks SET title=?, description=?, acceptance_criteria=?, verification_criteria=?,
+      `UPDATE tasks SET title=?,
         priority=?, lifecycle_state=?, main_agent_id=?, auto_title_enabled=?, coordination_enabled=?,
         execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1,
         updated_at=? WHERE id=?`,
       [
         has("title") ? normalized.title : current.title,
-        has("description") ? normalized.description : current.description,
-        has("acceptanceCriteria") ? normalized.acceptanceCriteria : current.acceptance_criteria,
-        has("verificationCriteria") ? normalized.verificationCriteria : current.verification_criteria,
         has("priority") ? normalized.priority : current.priority,
         has("lifecycleState") ? normalized.lifecycleState : current.lifecycle_state,
         has("mainAgentId") ? normalized.mainAgentId : current.main_agent_id,
@@ -373,13 +363,12 @@ export class TaskRepository {
       sourceMessageId = event.eventId;
     }
     const definitionFields = {
-      title: "title", description: "description",
-      acceptanceCriteria: "acceptance_criteria", verificationCriteria: "verification_criteria"
+      title: "title"
     };
     const next = input.next;
     if (!next || typeof next !== "object" || Array.isArray(next)
       || Object.keys(next).some((key) => !Object.hasOwn(definitionFields, key))) {
-      const error = new Error("Task revisions may only change title, description, acceptanceCriteria and verificationCriteria.");
+      const error = new Error("Task revisions may only change title.");
       error.code = "TASK_REVISION_INVALID_FIELDS";
       error.statusCode = 400;
       throw error;
@@ -397,9 +386,6 @@ export class TaskRepository {
       taskId: id,
       version: Number(current.revision ?? 1),
       title: current.title,
-      description: current.description ?? "",
-      acceptanceCriteria: current.acceptance_criteria ?? "",
-      verificationCriteria: current.verification_criteria ?? "",
       acceptanceAssessment: parseJson(current.acceptance_assessment_json, {}),
       completionEvidence: Array.isArray(input.completionEvidence) ? input.completionEvidence : [],
       executionSummary: String(input.executionSummary ?? ""),
@@ -409,9 +395,6 @@ export class TaskRepository {
     };
     snapshot.contentHash = createHash("sha256").update(JSON.stringify({
       title: snapshot.title,
-      description: snapshot.description,
-      acceptanceCriteria: snapshot.acceptanceCriteria,
-      verificationCriteria: snapshot.verificationCriteria,
       acceptanceAssessment: snapshot.acceptanceAssessment,
       completionEvidence: snapshot.completionEvidence,
       executionSummary: snapshot.executionSummary,
@@ -421,12 +404,10 @@ export class TaskRepository {
     return this.runInTransaction(() => {
       this.db.run(
         `INSERT INTO task_snapshots (
-          id, task_id, version, title, description, acceptance_criteria,
-          verification_criteria, acceptance_assessment_json, completion_evidence_json,
+          id, task_id, version, title, acceptance_assessment_json, completion_evidence_json,
           execution_summary, source_message_id, created_by_session_id, content_hash, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [snapshot.id, id, snapshot.version, snapshot.title, snapshot.description,
-          snapshot.acceptanceCriteria, snapshot.verificationCriteria,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [snapshot.id, id, snapshot.version, snapshot.title,
           JSON.stringify(snapshot.acceptanceAssessment), JSON.stringify(snapshot.completionEvidence),
           snapshot.executionSummary, snapshot.sourceMessageId, snapshot.createdBySessionId,
           snapshot.contentHash, snapshot.createdAt]
@@ -525,9 +506,6 @@ function taskSnapshotFromRow(row) {
     taskId: row.task_id,
     version: Number(row.version),
     title: row.title,
-    description: row.description,
-    acceptanceCriteria: row.acceptance_criteria,
-    verificationCriteria: row.verification_criteria,
     acceptanceAssessment,
     completionEvidence: parseJson(row.completion_evidence_json, []),
     executionSummary: row.execution_summary,

@@ -51,7 +51,7 @@ export function projectNativeBusinessDocument(scope, results, generation, { edit
   if (scope.session.sessionKind === "assistantChat" && scope.session.summary?.trim()) cards.push(card("session-summary", "chatSummary", { text: scope.session.summary }));
   if (scope.session.sessionKind === "workChat" && scope.work) cards.push(card("work-overview", "workOverview", { workId: scope.work.id, name: scope.work.name ?? "", description: scope.work.description ?? "" }));
   if (scope.session.sessionKind === "worker" && scope.task) {
-    const task = scope.task, data = { taskId: task.id, title: task.title ?? "", status: task.lifecycle_state ?? "", description: task.description ?? "", acceptanceCriteria: task.acceptance_criteria ?? "", verificationCriteria: task.verification_criteria ?? "", resourceRevision: String(task.revision), summary: summary(task) };
+    const task = scope.task, data = { taskId: task.id, title: task.title ?? "", status: task.lifecycle_state ?? "",    resourceRevision: String(task.revision), summary: summary(task) };
     data.parentTaskId = task.parent_task_id ?? null;
     data.coordinationEnabled = task.coordination_enabled === 1;
     data.coordinationExecution = task.coordinationExecution ?? null;

@@ -29,6 +29,7 @@ extension UnifiedConsoleView {
 
 /// Uses the SDK's reusable list rows; status updates stay on SessionRowModel.
 struct ConsoleFlatSessionList<MenuContent: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: SessionIndexStore
     let works: [Work]
     let tasks: [CorptieTask]
@@ -66,7 +67,9 @@ struct ConsoleFlatSessionList<MenuContent: View>: View {
                 }
             }
             if sections.chats.count > 5 {
-                Button(L10n(showsAllChats ? "收起" : "展示更多"), action: toggleChats)
+                Button(L10n(showsAllChats ? "收起" : "展示更多")) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18), toggleChats)
+                }
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)

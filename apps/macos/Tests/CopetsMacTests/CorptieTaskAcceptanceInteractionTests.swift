@@ -58,7 +58,7 @@ struct CorptieTaskAcceptanceInteractionTests {
                 recommended: true,
                 sourceSessionId: "session:acceptance",
                 assessedAt: "2026-08-20T00:00:00Z",
-                criteriaSnapshot: "Criterion",
+                taskRevision: 1,
                 results: [result]
             )
         )
@@ -104,8 +104,7 @@ private func makeAcceptanceCorptieTask(
         id: "task:acceptance",
         workId: "work:one",
         title: "Acceptance",
-        description: "",
-        acceptanceCriteria: "Criterion",
+
         priority: "medium",
         lifecycleState: "in_progress",
         mainRoleId: nil,
@@ -124,7 +123,7 @@ private func acceptanceAssessment(
 ) -> CorptieTaskAcceptanceAssessment {
     CorptieTaskAcceptanceAssessment(
         status: status,
-        criteriaSnapshot: "Criterion",
+        taskRevision: 1,
         sourceSessionId: "session:acceptance",
         assessedAt: "2026-08-20T00:00:00Z",
         results: results

@@ -49,7 +49,7 @@ export class ChildTaskReclamationService {
         this.store.db.run("UPDATE sessions SET title='',summary='',raw_json='{}',active_choice_json=NULL WHERE id=?", [id]);
       }
       this.store.db.run("DELETE FROM execution_checklists WHERE task_id=?", [taskId]);
-      this.store.db.run("UPDATE tasks SET title='',description='',acceptance_criteria='',verification_criteria='' WHERE id=?", [taskId]);
+      this.store.db.run("UPDATE tasks SET title='' WHERE id=?", [taskId]);
       this.store.db.run("UPDATE task_coordination_dispatches SET request_json='{}',runtime_json='{}',error_message=NULL WHERE target_task_id=? OR parent_task_id=?", [taskId, taskId]);
       // Delivery operations contain pinned inputs and temporary recovery state;
       // the user-facing result has already been copied to the main timeline.

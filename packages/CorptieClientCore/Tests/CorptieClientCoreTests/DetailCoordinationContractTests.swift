@@ -15,6 +15,31 @@ struct DetailCoordinationContractTests {
             "cards": [["id": "task-information", "kind": "taskInfo", "version": 1, "revision": "1", "loadState": "ready", "data": task, "actions": [action]]],
             "order": ["task-information"]])
     }
+    @Test @MainActor func removedSessionInformationNeverReturnsFromSnapshotsOrOrdering() throws {
+        var fields = try #require(JSONSerialization.jsonObject(with: Self.document()) as? [String: Any])
+        var cards = try #require(fields["cards"] as? [[String: Any]])
+        cards.insert(["id": "session-information", "kind": "sessionInfo", "version": 1,
+            "revision": "1", "loadState": "ready", "actions": [],
+            "data": ["sessionId": "logical:current", "workName": "Work"]], at: 0)
+        fields["order"] = cards.map { $0["id"]! }
+        let store = ClientDetailBusinessStore()
+        for loadState in ["ready", "error"] {
+            cards[0]["loadState"] = loadState
+            fields["cards"] = cards
+            let document = try ClientDetailBusinessDocument.decode(JSONSerialization.data(withJSONObject: fields))
+            try store.receive(document)
+            for kind in ["assistantChat", "workChat", "worker"] {
+                let context = ClientDetailContext(sessionKind: kind, taskID: "task:current", workID: "work:current")
+                #expect(!ClientDetailCardPolicy.isVisible(document.cards[0], context: context))
+                #expect(!ClientDetailCardPolicy.orderedCards(in: store, context: context).contains { $0.card.kind == "sessionInfo" })
+            }
+            let taskContext = ClientDetailContext(sessionKind: "worker", taskID: "task:current", workID: "work:current")
+            #expect(ClientDetailCardPolicy.orderedCards(in: store, context: taskContext).map(\.id) == ["task-information"])
+            // Keep the transport contract intact; only the presentation directory changes.
+            #expect(store.orderedCards.count == 2)
+        }
+    }
+
     @Test func hierarchyDoesNotInvalidateBoundCoordinationAction() throws {
         for parent in [nil, "task:root", "task:child"] as [String?] {
             let data = try Self.document(parent: parent)

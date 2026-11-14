@@ -1670,8 +1670,6 @@ const FORM_DRAFT_SCHEMAS = Object.freeze({
   }),
   task: Object.freeze({
     title: "Short Task title: Chinese, English letters, digits, hyphens and underscores only; no leading digit or spaces",
-    description: "Concrete implementation requirements and scope",
-    acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
     priority: 'Exactly one of "low", "medium", "high"'
   })
 });
@@ -1716,7 +1714,7 @@ function formDraftPrompt(formType, intent, currentValues, schema) {
     "Names and titles may contain Chinese characters, English letters, ASCII digits, hyphens (-) and underscores (_) only, and cannot start with a digit. Replace a current name only if it violates this rule or the user's intent.",
     formType === "work"
       ? "Use the language of the user's request. Keep names concise and describe the ideal state as an evolving direction, not a completion checklist."
-      : "Use the language of the user's request. Keep names concise and acceptance criteria workly verifiable.",
+      : "Use the language of the user's request. Keep names concise and specific.",
     "",
     "Field contract:",
     fieldGuide,
@@ -1762,9 +1760,6 @@ function parseGeneratedFormDraft(text, schema) {
   }
   if (Object.hasOwn(schema, "title") && !parsed.title.trim()) {
     throw apiError("INVALID_GENERATED_DRAFT", "Generated title must not be empty.", 502);
-  }
-  if (Object.hasOwn(schema, "title") && !parsed.description.trim()) {
-    throw apiError("INVALID_GENERATED_DRAFT", "Generated task description must not be empty.", 502);
   }
   const entityNameField = Object.hasOwn(schema, "name") ? "name"
     : Object.hasOwn(schema, "title") ? "title" : null;

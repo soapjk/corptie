@@ -21,7 +21,7 @@ export const TASK_SUMMARY_OUTPUT_SCHEMA = Object.freeze({
 
 export function taskSummaryDefinitionHash(task) {
   return createHash("sha256").update(JSON.stringify([
-    task.title, task.description, task.acceptance_criteria, task.verification_criteria
+    task.title
   ])).digest("hex");
 }
 

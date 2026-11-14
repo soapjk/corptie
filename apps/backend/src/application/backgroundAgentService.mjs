@@ -26,7 +26,7 @@ export class BackgroundAgentService {
     // Provider belongs to the invoking Session/background operation, never to the Agent resource bundle.
     this.resolveProviderId = options.resolveProviderId ?? null;
     this.isEnabled = options.isEnabled ?? (() => true);
-    this.queue = options.queue ?? new BackgroundOperationQueue({ interactiveReserve: 1 });
+    this.queue = options.queue ?? new BackgroundOperationQueue({ concurrency: 6, interactiveReserve: 4, backgroundReserve: 2, perOwnerLimit: 3 });
     this.activeControllers = new Map();
     this.activePurposes = new Map();
     if (!this.registry) throw new TypeError("BackgroundAgentService requires an Agent Provider Registry.");
@@ -46,11 +46,15 @@ export class BackgroundAgentService {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
       throw new TypeError("Background timeout must be between 1 and 600000 ms.");
     }
+    const queueTimeoutMs = input.queueTimeoutMs ?? 120_000;
+    if (!Number.isInteger(queueTimeoutMs) || queueTimeoutMs < 1 || queueTimeoutMs > 600_000) {
+      throw new TypeError("Background queue timeout must be between 1 and 600000 ms.");
+    }
     const controller = new AbortController();
     const forwardAbort = () => controller.abort(input.signal.reason);
     if (input.signal?.aborted) forwardAbort();
     else input.signal?.addEventListener("abort", forwardAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(backgroundError("BACKGROUND_TIMEOUT", "Background deadline exceeded.")), timeoutMs);
+    let timeout = setTimeout(() => controller.abort(backgroundError("BACKGROUND_QUEUE_TIMEOUT", "Background queue wait exceeded its deadline.")), queueTimeoutMs);
     timeout.unref?.();
     this.activeControllers.set(operationId, controller);
     this.activePurposes.set(operationId, input.purpose);
@@ -59,9 +63,14 @@ export class BackgroundAgentService {
       return await this.queue.run(() => {
         if (!this.isEnabled()) throw backgroundError("BACKGROUND_EXECUTION_DISABLED", "Background execution is disabled.");
         return this.execute({ ...input, operationId, signal: controller.signal,
-          timeoutMs: Math.max(1, Math.ceil(timeoutMs - (performance.now() - queuedAt))),
+          timeoutMs,
           queueWaitMs: roundedMilliseconds(performance.now() - queuedAt) });
-      }, { signal: controller.signal, priority: input.priority === "interactive" ? 1 : 0 });
+      }, { signal: controller.signal, priority: input.priority === "interactive" ? 1 : 0,
+        owner: input.ownerSessionId ? `${input.ownerSessionId}:${input.priority === "interactive" ? "interactive" : "background"}` : null, onStart: () => {
+          clearTimeout(timeout);
+          timeout = setTimeout(() => controller.abort(backgroundError("BACKGROUND_TIMEOUT", "Background execution deadline exceeded.")), timeoutMs);
+          timeout.unref?.(); input.onStart?.();
+        } });
     } finally {
       clearTimeout(timeout);
       input.signal?.removeEventListener("abort", forwardAbort);

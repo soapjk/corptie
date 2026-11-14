@@ -1,6 +1,6 @@
 import { withResolvedSessionActions } from "../agent-provider/sessionActions.mjs";
 import { withSessionReadiness } from "./sessionReadiness.mjs";
-import { worktreeDispatchBlocker } from "./worktreeExecutionBarrier.mjs";
+import { conversationWorktreeBlocker } from "./workChatReadOnlyTurnService.mjs";
 
 // Owns transient Provider readiness and projects it through the durable Session
 // revision stream. Probe ownership remains with the runtime lifecycle.
@@ -56,7 +56,7 @@ export function createSessionReadinessProjection({
       ? store.getLogicalSession(decorated.logicalSessionId)
       : store.getLogicalSessionByLegacySessionId(decorated.id);
     decorated.executionWait = decorated.deliveryStatus === "queued"
-      ? worktreeDispatchBlocker(store, { sessionId: decorated.id, logicalSession: logical }) : null;
+      ? conversationWorktreeBlocker(store, agentProviderRegistry, { sessionId: decorated.id, logicalSession: logical }) : null;
     if (decorated.executionWait && !["running", "blocked"].includes(decorated.executionStatus ?? decorated.status)) {
       decorated.activityStatus = decorated.executionWait.message;
     }

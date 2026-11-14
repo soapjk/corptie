@@ -2,13 +2,15 @@ export function createProviderTerminalLifecycle({
   store, emitEvent, recordWorkSettled, sessionMailbox, settleEntityTaskFromSession,
   collaborationCore,
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
-  resumeWorkAfterTransition, scheduleAgentWorkDrain
+  resumeWorkAfterTransition, scheduleAgentWorkDrain, onTurnSettled = () => {}
 }) {
   return function handleCommittedProviderTerminalLifecycle({ event, projection, logicalRoute }) {
     const nextSession = projection?.session;
     if (!nextSession) return;
     const terminal = ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type);
     if (!terminal) return;
+    try { onTurnSettled({ event, logicalRoute, session: nextSession }); }
+    catch (error) { console.warn("[provider-terminal] runtime cleanup failed", error?.code ?? "CLEANUP_FAILED"); }
     const terminalStatus = projection?.terminalStatus
       ?? (event.type === "turn.failed" ? "failed" : (event.type === "turn.cancelled" ? "cancelled" : "completed"));
     const failed = terminalStatus === "failed";

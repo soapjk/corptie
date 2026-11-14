@@ -1,6 +1,6 @@
 import { authorizeCredentialMigration } from "./mcpCredentialMigration.mjs";
 // Local management surface for independently installed MCP Servers.
-export async function handleMcpRegistryHttpRequest({ request, response, url, service, availabilityService, onChanged }) {
+export async function handleMcpRegistryHttpRequest({ request, response, url, service, availabilityService, onChanged, computerUsePreset }) {
   const path = url.pathname;
   const sessionAvailabilityMatch = /^\/sessions\/([^/]+)\/mcp-availability$/.exec(path);
   if (path !== "/mcp-servers" && !path.startsWith("/mcp-servers/")
@@ -42,6 +42,10 @@ export async function handleMcpRegistryHttpRequest({ request, response, url, ser
     if (sessionAvailabilityMatch && request.method === "GET") {
       return send(response, 200, { availability: await availabilityService.inspect(
         decodeURIComponent(sessionAvailabilityMatch[1])) });
+    }
+    if (path === "/mcp-servers/computer-use" && request.method === "GET") {
+      if (!computerUsePreset) return send(response, 503, { code: "COMPUTER_USE_UNAVAILABLE" });
+      return send(response, 200, await computerUsePreset());
     }
     if (path === "/mcp-servers" && request.method === "GET") {
       return send(response, 200, { servers: service.list() });

@@ -155,3 +155,22 @@ test("a fork with the wrong workspace is archived before reporting failure", asy
   ), { code: "FORK_CWD_MISMATCH" });
   assert.deepEqual(calls, [["fork", "source", "cutoff"], ["archive", "fork"]]);
 });
+
+test("restricted native thread creation removes inherited MCP and built-in tools", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  const calls = [];
+  client.request = async (method, input) => {
+    calls.push([method, input]);
+    if (method === "config/read") return { config: { mcp_servers: { inherited: { command: "external", enabled: true } } } };
+    return { thread: { id: "restricted" } };
+  };
+  await client.startThread({ executionPolicy: "no-tools", cwd: "/tmp", sandbox: "danger-full-access",
+    dynamicTools: [{ name: "write" }] });
+  const start = calls.find(([method]) => method === "thread/start")[1];
+  assert.equal(start.sandbox, "read-only"); assert.equal(start.approvalPolicy, "never");
+  assert.deepEqual(start.dynamicTools, []); assert.deepEqual(start.environments, []);
+  assert.equal(start.config["features.multi_agent"], false);
+  assert.equal(start.config["features.shell_tool"], false);
+  assert.equal(start.config.mcp_servers.inherited.enabled, false);
+});

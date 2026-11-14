@@ -19,6 +19,26 @@ test("MCP verification rejects a null or array configuration as client input", a
   await assert.rejects(() => service.verify([]), { code: "INVALID_INPUT", statusCode: 400 });
 });
 
+test("desktop protocol profile persists across assignment and direct configuration edits", async () => {
+  const { directory, store, service } = await fixture();
+  service.verify = async input => ({ ...input, toolCount: 1, toolNames: ["js"] });
+  try {
+    const role = store.createAgent({ name: "Desktop role", provider: "codex-app-server" });
+    const profile = "official-computer-use-mcp/v1";
+    const installed = await service.register({ name: "Desktop", transport: "stdio", command: process.execPath,
+      args: ["fixture.mjs"], cwd: directory, runtimeProfile: profile });
+    assert.equal(installed.runtimeProfile, profile);
+    assert.equal(service.list()[0].runtimeProfile, profile);
+    await service.setAssignment(role.agentId, installed.serverId, true);
+    assert.equal(Object.values(service.serversForAgent(role.agentId))[0].runtimeProfile, profile);
+    const updated = await service.updateConfig(installed.serverId, { expectedConfigRevision: installed.configRevision, name: "Renamed" });
+    assert.equal(updated.runtimeProfile, profile);
+    const remote = await service.updateConfig(installed.serverId, { expectedConfigRevision: updated.configRevision,
+      transport: "http", url: "https://example.test/mcp" });
+    assert.equal(remote.runtimeProfile, null);
+  } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("browser origins cannot call local MCP management or Session diagnostics", async () => {
   const calls = [];
   for (const [method, path] of [
@@ -521,7 +541,7 @@ test("standalone MCP registration, assignment and revocation change existing Age
     assert.equal((await service.setAssignment(agent.agentId, server.serverId, true)).changed, true);
     assert.deepEqual(service.deletionImpact(server.serverId).assignedAgents,
       [{ agentId: agent.agentId, name: "MCP Test Agent" }]);
-    assert.equal(service.deletionImpact(server.serverId).canRemove, false);
+    assert.equal(service.deletionImpact(server.serverId).canRemove, true);
     const unchangedAssignmentRevision = service.assignmentRevisionForAgent(agent.agentId);
     assert.equal((await service.setAssignment(agent.agentId, server.serverId, true)).changed, false);
     assert.equal(service.assignmentRevisionForAgent(agent.agentId), unchangedAssignmentRevision);
@@ -529,7 +549,6 @@ test("standalone MCP registration, assignment and revocation change existing Age
     const [key] = Object.keys(service.serversForAgent(agent.agentId));
     assert.match(key, /^standalone_[a-f0-9]{32}$/);
     assert.equal(service.serversForAgent(agent.agentId)[key].displayName, "Calendar");
-    await assert.rejects(() => service.remove(server.serverId), { code: "MCP_SERVER_ASSIGNED" });
     assert.equal(service.setEnabled(server.serverId, false).idempotentReplay, undefined);
     const disabledAt = service.get(server.serverId).updatedAt;
     assert.equal(service.setEnabled(server.serverId, false).idempotentReplay, true);
@@ -1265,4 +1284,107 @@ test("restoring a referenced credential invalidates the Agent materialization re
     revision++;
     assert.notEqual(service.assignmentRevisionForAgent(agent.agentId),before);
   } finally {await store.close();await rm(directory,{recursive:true,force:true});}
+});
+
+test("installed MCPs require explicit Session activation before credentials are read", async () => {
+  const { directory, store, service } = await fixture();
+  const secrets = new Map();
+  const reads = [];
+  service.secretStore = {
+    put(reference, value) { secrets.set(reference, value); },
+    get(reference) { reads.push(reference); return secrets.get(reference) ?? null; },
+    delete(reference) { secrets.delete(reference); }
+  };
+  try {
+    const installed = await service.register({ name: "Global MCP", transport: "http",
+      url: "https://example.test/mcp", headers: { Authorization: "Bearer installation" } });
+    const enabled = new Map();
+    const preferences = { isDisabled: (reference, kind, id) =>
+      !enabled.get(reference)?.has(`${kind}:${id}`) };
+    assert.deepEqual(service.serversForSession(null, preferences), {});
+    assert.deepEqual(service.serversForSession("logical:first", null), {});
+    assert.deepEqual(service.serversForSession("logical:first", preferences), {});
+    assert.deepEqual(reads, []);
+    assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM agent_mcp_assignments").count, 0);
+
+    enabled.set("logical:first", new Set([`mcp:${installed.serverId}`]));
+    const servers = service.serversForSession("logical:first", preferences);
+    assert.equal(Object.values(servers)[0].headers.Authorization, "Bearer installation");
+    assert.equal(Object.values(servers)[0].toolAllowlist, null);
+    assert.equal(reads.length, 1);
+    assert.deepEqual(service.serversForSession("logical:second", preferences), {});
+    assert.equal(reads.length, 1);
+    enabled.delete("logical:first");
+    assert.deepEqual(service.serversForSession("logical:first", preferences), {});
+    assert.equal(reads.length, 1);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Session MCP routing uses global credentials and ignores historical Role overrides", async () => {
+  const { directory, store, service } = await fixture();
+  const secrets = new Map();
+  service.secretStore = {
+    put(reference, value) { secrets.set(reference, value); },
+    get(reference) { return secrets.get(reference) ?? null; },
+    delete(reference) { secrets.delete(reference); }
+  };
+  try {
+    const role = store.createAgent({ name: "Historical Role", provider: "claude-sdk" });
+    const installed = await service.register({ name: "Global MCP", transport: "http",
+      url: "https://example.test/mcp", headers: { Authorization: "Bearer installation" } });
+    const before = service.installationRevision();
+    await service.setAssignment(role.agentId, installed.serverId, true,
+      { headers: { Authorization: "Bearer historical-role" }, toolAllowlist: [] });
+    assert.equal(service.installationRevision(), before);
+    const preferences = { isDisabled: () => false };
+    const config = Object.values(service.serversForSession("logical:explicit", preferences))[0];
+    assert.equal(config.headers.Authorization, "Bearer installation");
+    assert.equal(config.toolAllowlist, null);
+    service.setEnabled(installed.serverId, false);
+    assert.notEqual(service.installationRevision(), before);
+    assert.deepEqual(service.serversForSession("logical:explicit", preferences), {});
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("deleting installed MCP removes historical Role links and only unreferenced credentials", async () => {
+  const { directory, store, service } = await fixture();
+  const secrets = new Map();
+  service.secretStore = {
+    put(reference, value) { secrets.set(reference, value); },
+    get(reference) { return secrets.get(reference) ?? null; },
+    delete(reference) { secrets.delete(reference); }
+  };
+  try {
+    const role = store.createAgent({ name: "Historical removal", provider: "claude-sdk" });
+    const first = await service.register({ name: "Removed", transport: "http",
+      url: "https://example.test/first", headers: { Authorization: "Bearer first" } });
+    const retained = await service.register({ name: "Retained", transport: "http",
+      url: "https://example.test/second", headers: { Authorization: "Bearer retained" } });
+    await service.setAssignment(role.agentId, first.serverId, true,
+      { headers: { Authorization: "Bearer private" } });
+    const privateReference = store.selectOne(`SELECT credential_ref FROM agent_mcp_assignments
+      WHERE agent_id = ? AND server_id = ?`, [role.agentId, first.serverId]).credential_ref;
+    // A retained installation can share a credential: cleanup must honor that
+    // reference even when it originated as an old Role override.
+    store.db.run("UPDATE mcp_server_registry SET credential_ref = ? WHERE server_id = ?",
+      [privateReference, retained.serverId]);
+    assert.equal(service.deletionImpact(first.serverId).canRemove, true);
+    assert.equal((await service.remove(first.serverId)).removed, true);
+    assert.deepEqual(service.listForAgent(role.agentId), []);
+    assert.deepEqual(store.selectAll("PRAGMA foreign_key_check"), []);
+    assert.ok(secrets.has(privateReference));
+    assert.ok(service.get(retained.serverId));
+    await service.remove(retained.serverId);
+    assert.equal(secrets.has(privateReference), false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

@@ -188,17 +188,12 @@ export class SkillRegistryRepository {
     ).map((row) => ({ agentId: row.agent_id, name: row.name }));
     const activeSessions = this.selectAll(
       `SELECT DISTINCT s.id, s.title, s.status, a.agent_id, a.name AS agent_name
-       FROM agent_skill_links links
-       JOIN agents a ON a.agent_id = links.agent_id
-       JOIN sessions s ON (
-         s.agent_id = a.agent_id OR EXISTS (
-           SELECT 1 FROM agent_sessions bindings
-           WHERE bindings.session_id = s.id
-             AND bindings.agent_id = a.agent_id
-             AND bindings.unbound_at IS NULL
-         )
-       )
-       WHERE links.skill_id = ? AND s.status IN ('running', 'blocked')
+       FROM session_ability_activations activation
+       JOIN logical_sessions logical ON logical.logical_session_id = activation.logical_session_id
+       JOIN sessions s ON s.id = logical.legacy_session_id
+       LEFT JOIN agents a ON a.agent_id = s.agent_id
+       WHERE EXISTS (SELECT 1 FROM json_each(activation.enabled_skills_json) WHERE value = ?)
+         AND s.status IN ('running', 'blocked')
        ORDER BY s.created_at, s.id`,
       [skillId]
     ).map((row) => ({
@@ -216,7 +211,7 @@ export class SkillRegistryRepository {
       activeSessions,
       activeSessionCount: activeSessions.length,
       canDelete: activeSessions.length === 0,
-      policy: "blockWhileAssignedAgentSessionActive"
+      policy: "blockWhileEnabledSessionActive"
     };
   }
 

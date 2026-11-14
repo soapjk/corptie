@@ -31,7 +31,7 @@ public struct ConversationSessionAbilities: View {
     public var body: some View {
         DisclosureGroup("技能与工具", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("仅影响当前会话，不修改角色或其他会话。")
+                Text("安装后默认关闭；通过 @ 或此卡片开启，仅影响当前会话。")
                     .font(.caption).foregroundStyle(.secondary)
                 if !loaded { ProgressView("正在读取配置…") }
                 LazyVStack(alignment: .leading, spacing: 10) {
@@ -41,7 +41,7 @@ public struct ConversationSessionAbilities: View {
                         })) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(row.name)
-                                Text("\(row.kind == "skill" ? "Skill" : "MCP") · \(!row.available ? "默认配置不可用" : row.disabled ? "此会话已禁用" : "继承角色默认")")
+                                Text("\(row.kind == "skill" ? "Skill" : "MCP") · \(!row.available ? "默认配置不可用" : row.disabled ? "此会话已禁用" : "此会话已开启")")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -52,14 +52,14 @@ public struct ConversationSessionAbilities: View {
                 if rows.count > preview.count && !showAll {
                     Button("显示全部 \(rows.count) 项") { showAll = true }
                 }
-                if loaded && rows.isEmpty { Text("角色未分配可选能力").font(.caption) }
+                if loaded && rows.isEmpty { Text("尚未安装 Skill 或 MCP").font(.caption) }
                 if pending { ProgressView("正在保存并核对…") }
                 if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                 HStack {
                     Button("刷新") { Task { await reload() } }
-                    Button("恢复角色默认") { Task { await submit(["reset": .bool(true)]) } }
+                    Button("全部关闭") { Task { await submit(["reset": .bool(true)]) } }
                 }.disabled(pending)
-                Text("MCP 阻止后续调用；Skill 停止 Corptie 后续提供与加载。当前尚不支持 Provider 原生共享 Skill 目录的会话级隔离；已进入历史的内容无法撤回，正在执行的调用不会强制取消。")
+                Text("关闭后停止后续提供、加载和调用；已进入历史的内容无法撤回，正在执行的调用不会强制取消。")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(.top, 8)
         }

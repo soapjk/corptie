@@ -25,7 +25,7 @@ test("Work and Task persistence enforce all title writes without migrating histo
     store.db.run("UPDATE works SET name=? WHERE id=?", ["Legacy Work，名称", work.id]);
     store.db.run("UPDATE tasks SET title=? WHERE id=?", ["123 Old Task。", task.id]);
     store.updateWork(work.id, { description: "Edited description" });
-    store.updateTask(task.id, { description: "Edited description", autoTitleEnabled: false });
+    store.updateTask(task.id, {  autoTitleEnabled: false });
     assert.equal(store.getWork(work.id).name, "Legacy Work，名称");
     assert.equal(store.getTask(task.id).title, "123 Old Task。");
     assert.equal(store.updateTask(task.id, { title: "策略_v2" }).title, "策略_v2");

@@ -13,35 +13,35 @@ async function fixture(run) {
   store.getLogicalSession = id => id.startsWith("logical:") ? { logicalSessionId: id, legacySessionId: id.slice(8) } : null;
   store.getLogicalSessionByLegacySessionId = id => ({ logicalSessionId: `logical:${id}`, legacySessionId: id });
   store.getSession = id => ({ id, agentId: "agent:one" });
-  store.listRegistrySkillsForAgent = () => [{ skillId: "skill:one", name: "One" }];
-  const registry = { listForAgent: () => ["mcp:one"], get: id => ({ serverId: id, name: "One", enabled: true }) };
+  store.listRegistrySkills = () => [{ skillId: "skill:one", name: "One" }];
+  const registry = { list: () => [{ serverId: "mcp:one", name: "One", enabled: true }] };
   try { await run(new SessionAbilityPreferences({ store, registry }), store); } finally { await store.close(); }
 }
-const toggle = { expectedResourceVersion: 0, requestId: "first", kind: "mcp", id: "mcp:one", disabled: true };
+const toggle = { expectedResourceVersion: 0, requestId: "first", kind: "mcp", id: "mcp:one", disabled: false };
 
 test("Session ability preferences isolate Sessions and preserve Role grants", () => fixture(async (service, store) => {
   assert.equal(service.inspect("a").resourceVersion, 0);
   const receipt = service.update("a", toggle);
   assert.equal(receipt.preferences.resourceVersion, 1);
-  assert.equal(service.isDisabled("logical:a", "mcp", "mcp:one"), true);
-  assert.equal(service.isDisabled("b", "mcp", "mcp:one"), false);
+  assert.equal(service.isDisabled("logical:a", "mcp", "mcp:one"), false);
+  assert.equal(service.isDisabled("b", "mcp", "mcp:one"), true);
   assert.equal(store.selectOne("SELECT count(*) n FROM session_capability_grants").n, 0);
   const recreated = new SessionAbilityPreferences({ store, registry: service.registry });
-  assert.equal(recreated.isDisabled("a", "mcp", "mcp:one"), true);
+  assert.equal(recreated.isDisabled("a", "mcp", "mcp:one"), false);
 }));
 
 test("version, idempotency, reset and immutable audit receipts", () => fixture(async service => {
   const first = service.update("a", toggle);
   assert.equal(service.update("a", toggle).idempotentReplay, true);
-  assert.throws(() => service.update("a", { ...toggle, disabled: false }), { code: "IDEMPOTENCY_CONFLICT" });
+  assert.throws(() => service.update("a", { ...toggle, disabled: true }), { code: "IDEMPOTENCY_CONFLICT" });
   assert.throws(() => service.update("a", { ...toggle, requestId: "stale" }), { code: "RESOURCE_VERSION_CONFLICT" });
   service.update("a", { expectedResourceVersion: 1, requestId: "reset", reset: true });
-  assert.equal(service.isDisabled("a", "mcp", "mcp:one"), false);
+  assert.equal(service.isDisabled("a", "mcp", "mcp:one"), true);
   assert.deepEqual(service.update("a", toggle).preferences, first.preferences);
 }));
 
 test("unknown assignments and invalid input fail closed", () => fixture(async service => {
-  assert.throws(() => service.update("a", { ...toggle, id: "mcp:other" }), { code: "CAPABILITY_NOT_ASSIGNED" });
+  assert.throws(() => service.update("a", { ...toggle, id: "mcp:other" }), { code: "CAPABILITY_NOT_INSTALLED" });
   assert.throws(() => service.update("a", { ...toggle, extra: true }), { code: "INVALID_INPUT" });
   assert.throws(() => service.update("a", { ...toggle, reset: true }), { code: "INVALID_INPUT" });
   assert.equal(service.inspect("a").resourceVersion, 0);
@@ -109,3 +109,17 @@ test("disable retires a cached MCP connection only after its running call comple
     assert.equal(closed, 1);
   } finally { await gateway.close(); }
 });
+
+test("installed abilities start off without role links and explicit mentions activate only this Session", () => fixture(async (service, store) => {
+  store.listRegistrySkillsForAgent = () => { throw Error("Role links must not be read"); };
+  assert.equal(service.inspect("a").abilities.length, 2);
+  assert.ok(service.inspect("a").abilities.every(a => a.disabled));
+  assert.equal(service.isDisabled(null, "skill", "skill:one"), true);
+  service.activateMentions("a", [{ targetType: "skill", targetId: "skill:one" }]);
+  assert.equal(service.isDisabled("a", "skill", "skill:one"), false);
+  assert.equal(service.isDisabled("b", "skill", "skill:one"), true);
+  assert.throws(() => service.activateMentions("a", [{ targetType: "mcp", targetId: "unknown" }]),
+    { code: "CAPABILITY_NOT_AVAILABLE" });
+  service.update("a", { expectedResourceVersion: 1, requestId: "reset-all", reset: true });
+  assert.ok(service.inspect("a").abilities.every(a => a.disabled));
+}));

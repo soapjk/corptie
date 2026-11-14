@@ -210,3 +210,35 @@ test('a disabled explicit background default cannot silently select another prov
   await assert.rejects(service.run({ purpose: 'summary', cwd: '/tmp', prompt: 'test' }), { code: 'PROVIDER_DISABLED' });
   assert.equal(calls.length, 0);
 });
+
+test("queue time does not consume the Provider execution budget", async () => {
+  const calls = [], capability = [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT];
+  const registry = new AgentProviderRegistry([provider("background", capability, calls)]);
+  let began = 0;
+  const service = new BackgroundAgentService({ registry, queue: { run: async (operation, options) => {
+    assert.equal(options.owner, "logical:owner:interactive");
+    options.onStart(); return operation();
+  } } });
+  await service.run({ purpose: "summary", prompt: "sample", cwd: "/tmp", timeoutMs: 4321,
+    ownerSessionId: "logical:owner", priority: "interactive", onStart: () => began++ });
+  assert.equal(began, 1); assert.equal(calls[0][1].timeoutMs, 4321);
+  await assert.rejects(service.run({ queueTimeoutMs: -1 }), TypeError);
+});
+
+test("a request can wait longer than its model budget without being labelled a model timeout", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { BackgroundOperationQueue } = await import("../src/application/backgroundOperationQueue.mjs");
+  const queue = new BackgroundOperationQueue({ concurrency: 1 });
+  let release;
+  const occupying = queue.run(() => new Promise(resolve => { release = resolve; }));
+  await Promise.resolve();
+  const calls = [];
+  const registry = new AgentProviderRegistry([provider("background", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], calls)]);
+  const service = new BackgroundAgentService({ registry, queue });
+  const request = service.run({ purpose: "summary", prompt: "sample", cwd: "/tmp", timeoutMs: 10, queueTimeoutMs: 1000 });
+  t.mock.timers.tick(100);
+  assert.equal(calls.length, 0);
+  release(); await occupying;
+  await request;
+  assert.equal(calls[0][1].timeoutMs, 10);
+});

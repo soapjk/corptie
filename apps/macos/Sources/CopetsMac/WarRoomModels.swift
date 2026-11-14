@@ -104,9 +104,6 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var parentTaskId: String? = nil
     var hierarchy: TaskHierarchySummary? = nil
     var title: String
-    var description: String
-    var acceptanceCriteria: String
-    var verificationCriteria: String = ""
     var priority: String
     var lifecycleState: String
     var autoTitleEnabled: Bool? = nil
@@ -136,9 +133,6 @@ struct CorptieTask: Identifiable, Codable, Hashable {
         case parentTaskId
         case hierarchy
         case title
-        case description
-        case acceptanceCriteria
-        case verificationCriteria
         case priority
         case lifecycleState
         case autoTitleEnabled
@@ -169,9 +163,6 @@ struct CorptieTaskSnapshot: Identifiable, Codable, Hashable {
     let taskId: String
     let version: Int
     let title: String
-    let description: String
-    let acceptanceCriteria: String
-    let verificationCriteria: String
     let acceptanceAssessment: CorptieTaskAcceptanceAssessment?
     let completionEvidence: [CorptieTaskAcceptanceEvidence]
     let executionSummary: String
@@ -280,7 +271,7 @@ struct CorptieTaskAcceptanceResult: Codable, Hashable {
 
 struct CorptieTaskAcceptanceAssessment: Codable, Hashable {
     let status: String
-    let criteriaSnapshot: String
+    var taskRevision: Int? = nil
     let sourceSessionId: String
     let assessedAt: String
     let results: [CorptieTaskAcceptanceResult]
@@ -290,7 +281,7 @@ struct CorptieTaskCompletionSuggestion: Codable, Hashable {
     let recommended: Bool
     let sourceSessionId: String
     let assessedAt: String
-    let criteriaSnapshot: String
+    var taskRevision: Int? = nil
     let results: [CorptieTaskAcceptanceResult]
 }
 

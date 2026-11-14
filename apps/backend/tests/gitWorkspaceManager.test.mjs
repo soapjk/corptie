@@ -2527,9 +2527,13 @@ test("one Job retains its conflict Worktree across parent and main targets witho
     const main = snapshot.worktrees.find(tree => tree.isMain);
     const originalGet = f.store.getWorktreeIntegrationJob.bind(f.store);
     f.store.getWorktreeIntegrationJob = id => id === "job:cross-target" ? { details: {
-      audit: [{ event: "conflict_workspace_created", worktreeId: first.worktreeId }],
+      audit: [{ event: "conflict_workspace_created", worktreeId: first.worktreeId,
+        branchName: first.branchName, worktreePath: first.path }],
       plan: { reservedWorktreeIds: [parent.worktreeId, main.worktreeId] }
     } } : originalGet(id);
+    const scopedBeforeReuse = await manager.operationSnapshot(f.repository);
+    assert.equal(scopedBeforeReuse.worktrees.some(tree => tree.worktreeId === first.worktreeId), false);
+    assert.equal(scopedBeforeReuse.worktrees.some(tree => tree.worktreeId === parent.worktreeId), false);
     const reused = await manager.createIntegrationWorktreeForProject({ repositoryId: f.repositoryId,
       workingDirectory: f.repository, runId: "job:cross-target" });
     assert.equal(reused.worktreeId, first.worktreeId);
