@@ -24,6 +24,22 @@ struct RoleWireCompatibilityTests {
 
 // The MCP management UI must accept legacy payloads without inventing runtime readiness.
 struct ComputerUseWireCompatibilityTests {
+    @Test func unobservedCatalogIsNotReportedAsZeroTools() throws {
+        func server(_ status: String, _ count: Int, _ names: [String]) throws -> ManagedMcpServer {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "serverId": "mcp:test", "name": "Computer Use", "url": "", "transport": "stdio",
+                "args": [], "enabled": true, "toolCount": count, "assignmentCount": 0,
+                "verifiedAt": "", "lastCheckStatus": status, "observedToolNames": names,
+                "configRevision": 1, "hasCredentials": false, "credentialNames": []
+            ])
+            return try JSONDecoder().decode(ManagedMcpServer.self, from: data)
+        }
+        #expect(try server("not_checked", 0, []).toolCountLabel == "工具数量待检测")
+        #expect(try server("not_checked", 0, []).toolCheckLabel == "尚未检测工具列表")
+        #expect(try server("unavailable", 0, []).toolCountLabel == "工具数量尚未确认")
+        #expect(try server("available", 3, ["js", "js_reset", "computer_use_status"]).toolCountLabel == "3 个工具")
+        #expect(try server("unavailable", 3, ["js"]).toolCountLabel == "上次检测：3 个工具")
+    }
     @Test func legacyPresetDoesNotImplySystemPermissionOrAnEngine() throws {
         let preset = try decode(#"{"runtime":{"status":"dependencies_available","message":"Dependencies found"},"config":{"name":"Computer Use","transport":"stdio","command":"/runtime/helper","args":[],"env":{}}}"#)
         #expect(preset.runtime.engine == nil)
