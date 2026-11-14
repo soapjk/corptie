@@ -4,7 +4,7 @@ import CryptoKit
 import SwiftUI
 import CorptieConversation
 
-private struct ManagedMcpServer: Decodable, Identifiable {
+struct ManagedMcpServer: Decodable, Identifiable {
     let serverId: String
     let name: String
     let url: String
@@ -13,6 +13,8 @@ private struct ManagedMcpServer: Decodable, Identifiable {
     let args: [String]
     let cwd: String?
     let enabled: Bool
+    let builtin: Bool?
+    let defaultEnabled: Bool?
     let toolCount: Int
     let assignmentCount: Int
     let verifiedAt: String
@@ -154,11 +156,72 @@ private struct McpVerificationEnvelope: Decodable {
     let verification: Verification
 }
 
-private struct ComputerUsePresetEnvelope: Decodable {
+// Runtime readiness comes from this endpoint, never from registry verification or tools/list.
+struct ComputerUsePresetEnvelope: Decodable {
     struct Runtime: Decodable {
         let status: String
+        let engine: String?
         let message: String?
+        let permissions: Permissions?
+
+        enum Permissions: Decodable {
+            case state(String)
+            case granted(Bool)
+            case details([String: Permissions])
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.singleValueContainer()
+                if let state = try? container.decode(String.self) { self = .state(state) }
+                else if let granted = try? container.decode(Bool.self) { self = .granted(granted) }
+                else if let details = try? container.decode([String: Permissions].self) { self = .details(details) }
+                else { self = .state("unknown") }
+            }
+
+            var label: String {
+                switch self {
+                case .state("unknown"): return "尚未确认"
+                case .state("granted"), .granted(true): return "已授权"
+                case .state("denied"), .granted(false): return "未授权"
+                case .state(let value): return value
+                case .details(let values):
+                    return values.isEmpty ? "尚未确认" : values.sorted { $0.key < $1.key }.map {
+                        "\($0.key)：\($0.value.label)"
+                    }.joined(separator: "；")
+                }
+            }
+        }
+
+        var engineLabel: String {
+            switch engine {
+            case "official": return "官方引擎"
+            case "independent": return "独立引擎"
+            default: return "尚未确定"
+            }
+        }
+
+        var statusLabel: String {
+            switch status {
+            case "dependencies_available": return "已找到依赖，操作能力待确认"
+            case "ready", "available": return "运行环境就绪，实际操作以权限及调用结果为准"
+            case "permission_required", "permissions_required", "unauthorized": return "需要授权"
+            case "missing_components": return "缺少组件"
+            case "startup_failed": return "启动失败"
+            default: return status
+            }
+        }
+
+        var permissionGuidance: String {
+            switch engine {
+            case "official":
+                return "请按官方 App 的提示，为其实际申请权限的 App 或进程授予屏幕录制、辅助功能权限。"
+            case "independent":
+                return "请按独立引擎的提示，为 macOS 实际列出的权限申请进程授权；不要将授权主体默认为官方 App。"
+            default:
+                return "确认所用引擎后，再按 macOS 显示的实际申请主体授权。"
+            }
+        }
     }
+    // Preserve the legacy config shape for older backends; it is not an installation action.
     struct Configuration: Decodable {
         let name: String
         let transport: String
@@ -167,14 +230,6 @@ private struct ComputerUsePresetEnvelope: Decodable {
         let cwd: String?
         let env: [String: String]
         let runtimeProfile: String?
-
-        var installationConfig: [String: Any] {
-            var result: [String: Any] = ["name": name, "transport": transport,
-                                        "command": command, "args": args, "env": env]
-            if let cwd { result["cwd"] = cwd }
-            if let runtimeProfile { result["runtimeProfile"] = runtimeProfile }
-            return result
-        }
     }
     let runtime: Runtime
     let config: Configuration?
@@ -355,15 +410,20 @@ private final class McpManagementModel: ObservableObject {
         }
     }
 
+    @Published private(set) var isDetectingComputerUse = false
+    @Published private(set) var computerUseError: String?
+
     func detectComputerUse() async -> ComputerUsePresetEnvelope? {
-        isWorking = true
-        defer { isWorking = false }
+        guard !isDetectingComputerUse else { return nil }
+        isDetectingComputerUse = true
+        defer { isDetectingComputerUse = false }
         do {
             let result = try await request("mcp-servers/computer-use", as: ComputerUsePresetEnvelope.self)
-            errorMessage = nil
+            guard !Task.isCancelled else { return nil }
+            computerUseError = nil
             return result
         } catch {
-            if !Task.isCancelled { errorMessage = error.localizedDescription }
+            if !Task.isCancelled { computerUseError = error.localizedDescription }
             return nil
         }
     }
@@ -663,7 +723,7 @@ struct McpManagementView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Text(L10n("Independent MCP Servers")).font(
+                Text("MCP Servers").font(
                     WorkbenchTypography.font(for: .pageTitle))
                 Spacer(minLength: 0)
                 Button(L10n("Add MCP"), systemImage: "plus") { isAdding = true }
@@ -674,7 +734,8 @@ struct McpManagementView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(L10n("Install globally; enable in a Session with @ or its abilities card."))
+                    ComputerUseStatusView(model: model)
+                    Text("自带 MCP 随 App 提供并默认启用；其他 MCP 可安装后在 Session 能力面板中开启。")
                         .font(.caption).foregroundStyle(.secondary)
                     loadingIndicator
                     DisclosureGroup(L10n("Check Session tools"), isExpanded: $showsDiagnostics) {
@@ -698,7 +759,7 @@ struct McpManagementView: View {
                                 L10n("No MCP Servers"),
                                 systemImage: "point.3.connected.trianglepath.dotted",
                                 description: Text(
-                                    L10n("Install a Server, then enable it in a Session.")))
+                                    "可添加其他 MCP；自带 Computer Use 状态见上方。"))
                         }
                     } else {
                         LazyVStack(alignment: .leading, spacing: 12) {
@@ -836,24 +897,28 @@ struct McpManagementView: View {
                 Text("\(server.toolCount) 个工具")
                     .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                Button("重新检测") { Task { await model.check(server, roleId: selectedAgent?.roleId) } }
-                    .disabled(model.isWorking || model.isLoading)
+                if server.builtin != true {
+                    Button("重新检测") { Task { await model.check(server, roleId: selectedAgent?.roleId) } }
+                        .disabled(model.isWorking || model.isLoading)
+                }
                 Menu {
                     Button("运行记录") { eventServer = server }
-                    if server.sourceKind == nil || server.sourceKind == "direct" {
-                        Button("编辑配置") { editingServer = server }
-                    } else {
-                        Button("版本管理") { versionedServer = server }
-                    }
-                    Button(server.enabled ? "禁用" : "启用") {
-                        Task {
-                            await model.setEnabled(
-                                server, enabled: !server.enabled, roleId: selectedAgent?.roleId)
+                    if server.builtin != true {
+                        if server.sourceKind == nil || server.sourceKind == "direct" {
+                            Button("编辑配置") { editingServer = server }
+                        } else {
+                            Button("版本管理") { versionedServer = server }
                         }
-                    }
-                    Divider()
-                    Button("删除", role: .destructive) {
-                        removingServer = server
+                        Button(server.enabled ? "禁用" : "启用") {
+                            Task {
+                                await model.setEnabled(
+                                    server, enabled: !server.enabled, roleId: selectedAgent?.roleId)
+                            }
+                        }
+                        Divider()
+                        Button("删除", role: .destructive) {
+                            removingServer = server
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -874,10 +939,15 @@ struct McpManagementView: View {
 
     private func serverStatus(_ server: ManagedMcpServer) -> some View {
         VStack(alignment: .leading, spacing: 4) {
+            if server.builtin == true {
+                Text(server.defaultEnabled == true ? "App 自带 · 默认启用" : "App 自带")
+                Text("可在 Session 能力面板中关闭；工具列表不代表已获系统操作权限。")
+            }
             Text(server.enabled ? "已启用" : "已禁用")
             Text(
-                server.lastCheckedAt == nil
-                    ? "安装时已验证" : server.lastCheckStatus == "available" ? "最近检测成功" : "最近检测失败"
+                server.builtin == true ? "工具列表检测：\(server.lastCheckStatus)"
+                    : server.lastCheckedAt == nil
+                        ? "安装时已验证" : server.lastCheckStatus == "available" ? "最近检测成功" : "最近检测失败"
             )
             .help(server.lastCheckedAt ?? server.verifiedAt)
             if let code = server.lastErrorCode { Text(code).foregroundStyle(.red) }
@@ -888,6 +958,63 @@ struct McpManagementView: View {
     }
 
 
+}
+
+private struct ComputerUseStatusView: View {
+    @ObservedObject var model: McpManagementModel
+    @State private var expanded = false
+    @State private var preset: ComputerUsePresetEnvelope?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Computer Use · App 自带 · 默认启用")
+                .font(WorkbenchTypography.font(for: .cardTitle))
+            Text("无需安装、@ 或角色分配。可在 Session 能力面板中关闭；普通聊天不受影响。")
+            Text("优先使用兼容的官方 App 引擎；只有未安装兼容官方 App 时才使用独立引擎。官方引擎缺少组件、未授权或启动失败时会显示原因，不自动切换。")
+            DisclosureGroup("运行状态与系统权限", isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button(preset == nil ? "检测运行状态" : "重新检测") {
+                        Task { await refresh() }
+                    }
+                    .disabled(model.isDetectingComputerUse)
+                    .accessibilityIdentifier("computer-use-refresh")
+                    if model.isDetectingComputerUse {
+                        ProgressView("正在检测运行状态").controlSize(.small)
+                    }
+                    if let error = model.computerUseError {
+                        Text(error).foregroundStyle(.red).textSelection(.enabled)
+                        if preset != nil { Text("以下为上次检测结果，当前状态尚未确认。") }
+                    }
+                    if let runtime = preset?.runtime {
+                        Text("引擎：\(runtime.engineLabel)")
+                        Text("状态：\(runtime.statusLabel)").textSelection(.enabled)
+                        if let message = runtime.message, !message.isEmpty {
+                            Text(message).textSelection(.enabled)
+                        }
+                        Text("系统权限：\(runtime.permissions?.label ?? "尚未确认")")
+                        Text(runtime.permissionGuidance)
+                    } else if !model.isDetectingComputerUse {
+                        Text("尚未检测运行环境和系统权限。")
+                    }
+                    Text("依赖存在或工具列表可见不代表已能操作电脑；检测不会授予系统权限。")
+                }.padding(.top, 8)
+            }
+            .task(id: expanded) {
+                if expanded && preset == nil { await refresh() }
+            }
+        }
+        .font(WorkbenchTypography.font(for: .metadata))
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityIdentifier("computer-use-builtin-status")
+    }
+
+    @MainActor private func refresh() async {
+        if let result = await model.detectComputerUse(), !Task.isCancelled { preset = result }
+    }
 }
 
 private struct McpRemovalView: View {
@@ -1158,7 +1285,7 @@ private func mcpAvailabilityLabel(_ status: String) -> String {
 
 private func mcpServerAvailabilityLabel(_ server: McpSessionAvailabilityEnvelope.Availability.Server) -> String {
     if !server.available { return server.errorCode ?? "不可用" }
-    return server.toolNames.isEmpty ? "无授权工具" : "可用"
+    return server.toolNames.isEmpty ? "无授权工具" : "工具可见（实际操作以权限与调用结果为准）"
 }
 
 private struct McpInstallView: View {
@@ -1174,7 +1301,6 @@ private struct McpInstallView: View {
     @State private var verification: McpVerificationEnvelope.Verification?
     @State private var verificationFingerprint: String?
     @State private var installMode = "direct"
-    @State private var computerUsePreset: ComputerUsePresetEnvelope?
     @State private var packageSourceType = "local"
     @State private var packageSource = ""
     @State private var packageDiscovery: McpPackageDiscoveryEnvelope.Discovery?
@@ -1208,9 +1334,6 @@ private struct McpInstallView: View {
     }
 
     private var config: [String: Any] {
-        if installMode == "computerUse" {
-            return computerUsePreset?.config?.installationConfig ?? [:]
-        }
         var result: [String: Any]
         if transport == "stdio" {
             result = ["name": name, "transport": transport, "command": command,
@@ -1230,10 +1353,6 @@ private struct McpInstallView: View {
     }
 
     private var isValid: Bool {
-        if installMode == "computerUse" {
-            guard let config = computerUsePreset?.config else { return false }
-            return config.transport == "stdio" && config.command.hasPrefix("/")
-        }
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty,
               validMcpCredentials(credentialRows, transport: transport) else { return false }
         return transport == "stdio"
@@ -1247,12 +1366,9 @@ private struct McpInstallView: View {
             Picker("安装方式", selection: $installMode) {
                 Text("直接连接").tag("direct")
                 Text("MCP 包").tag("package")
-                Text("Computer Use").tag("computerUse")
             }
             .disabled(model.isWorking)
-            if installMode == "computerUse" {
-                computerUseSetup
-            } else if installMode == "package" {
+            if installMode == "package" {
                 Picker("包来源", selection: Binding(
                     get: { packageSourceType },
                     set: { packageSourceType = $0; packageDiscovery = nil;
@@ -1410,37 +1526,6 @@ private struct McpInstallView: View {
         .accessibilityLabel("安装独立 MCP Server")
     }
 
-    private var computerUseSetup: some View {
-        Section("官方 Computer Use") {
-            Text("使用本机已安装的官方运行环境。检测只检查依赖，不读取应用内容，也不会修改系统权限。")
-                .font(.caption).foregroundStyle(.secondary)
-            Button(computerUsePreset == nil ? "检测运行环境" : "重新检测运行环境") {
-                computerUsePreset = nil
-                Task { computerUsePreset = await model.detectComputerUse() }
-            }
-            .disabled(model.isWorking)
-            .accessibilityLabel("检测官方 Computer Use 运行环境")
-            if model.isWorking {
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel("正在检测或安装 Computer Use")
-            }
-            if let preset = computerUsePreset {
-                if preset.config != nil {
-                    Text("依赖已找到，实际操作仍需应用授权。")
-                    Text("安装后可在角色的 MCP 列表中分配，并在 Session 能力面板中管理。")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(preset.runtime.message ?? "官方运行环境尚不可用（\(preset.runtime.status)）。")
-                        .foregroundStyle(.secondary)
-                }
-                if preset.config != nil, let message = preset.runtime.message {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("屏幕录制和辅助功能权限需通过官方 App 与 macOS 设置完成。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
 }
 
 private struct McpEditView: View {
