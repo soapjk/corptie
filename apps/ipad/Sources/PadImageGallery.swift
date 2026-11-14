@@ -3,20 +3,39 @@ import UIKit
 import Photos
 import ImageIO
 import Observation
+import OSLog
 import CorptieClientCore
+import CorptieClientSecurity
 import CorptieConversation
 
 extension PadConnection {
     func messageImageData(_ resource: ClientMessageImageResource,
-                          progress: @escaping @MainActor (ClientImageProgress) -> Void = { _ in }) async throws -> Data {
+                          progress: @escaping @MainActor (ClientImageProgress) -> Void = { _ in },
+                          recovering: @escaping @MainActor (Int) -> Void = { _ in }) async throws -> Data {
         let owner = messageImageOwnerID
-        let transport = try await transport()
-        guard owner == messageImageOwnerID else { throw CancellationError() }
-        let result = try await messageImageRepository.data(resource, fetch: { callback in
-            try await ClientSessionAPI(transport: transport).messageImage(resource, progress: callback)
-        }, progress: progress)
-        guard owner == messageImageOwnerID else { throw CancellationError() }
-        return result
+        let transfer = ClientImageTransfer(resource: resource)
+        for attempt in 0..<3 {
+            do {
+                let transport = try await transport()
+                guard owner == messageImageOwnerID else { throw CancellationError() }
+                let result = try await messageImageRepository.data(resource, fetch: { callback in
+                    try await ClientSessionAPI(transport: transport).messageImage(resource, transfer: transfer, progress: callback)
+                }, progress: progress)
+                guard owner == messageImageOwnerID else { throw CancellationError() }
+                return result
+            } catch {
+                ClientFailureDiagnostics.log(error, operation: "image.download.attempt.\(attempt + 1)")
+                let code = (error as NSError)
+                guard !Task.isCancelled, owner == messageImageOwnerID, attempt < 2,
+                      ((code.domain == NSURLErrorDomain &&
+                      [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet].contains(code.code))
+                       || (error as? CloudRelayTransportError) == .disconnected)
+                else { throw error }
+                recovering(attempt + 1)
+                try await Task.sleep(for: .seconds(attempt + 1))
+            }
+        }
+        throw URLError(.networkConnectionLost)
     }
 }
 
@@ -27,6 +46,9 @@ extension PadConnection {
     private(set) var progress: ClientImageProgress?
     private(set) var failure: String?
     private(set) var saving = false
+    private(set) var decoding = false
+    private(set) var retryAttempt = 0
+    private static let log = Logger(subsystem: "com.corptie.client", category: "ImageGallery")
     var saveMessage: String?
     private var bytes: Data?
     private var loadedSelection: Int?
@@ -39,19 +61,42 @@ extension PadConnection {
         let owner = connection.messageImageOwnerID
         if loadedSelection == selection, loadedOwner == owner, image != nil { return }
         let current = selection
-        image = nil; bytes = nil; progress = nil; failure = nil
+        image = nil; bytes = nil; progress = nil; failure = nil; decoding = false; retryAttempt = 0
+        let requestID = UUID().uuidString
+        Self.log.info("Image load started: request=\(requestID, privacy: .public)")
         do {
-            let data = try await connection.messageImageData(resources[current]) { [weak self] value in
+            let data = try await connection.messageImageData(resources[current], progress: { [weak self] value in
                 guard self?.selection == current, connection.messageImageOwnerID == owner else { return }
+                self?.retryAttempt = 0
                 self?.progress = value
-            }
+            }, recovering: { [weak self] attempt in
+                guard self?.selection == current, connection.messageImageOwnerID == owner else { return }
+                self?.retryAttempt = attempt
+                self?.progress = nil
+            })
+            decoding = true
+            Self.log.info("Image download completed: request=\(requestID, privacy: .public) bytes=\(data.count)")
             let decoded = try await Task.detached(priority: .userInitiated) { try Self.decode(data) }.value
             try Task.checkCancellation()
             guard current == selection, owner == connection.messageImageOwnerID else { return }
+            decoding = false
+            Self.log.info("Image decode completed: request=\(requestID, privacy: .public)")
             bytes = data; image = decoded; loadedSelection = current; loadedOwner = owner
         } catch {
+            decoding = false
+            ClientFailureDiagnostics.log(error, operation: "image.gallery.\(requestID)")
             if !Task.isCancelled, current == selection {
-                failure = "图片暂时无法打开。请检查连接；图片也可能已移除、超出内存限制或不在此会话权限内。"
+                if let error = error as? URLError {
+                    switch error.code {
+                    case .timedOut: failure = "图片传输长时间没有进展，请重试。"
+                    case .networkConnectionLost, .notConnectedToInternet: failure = "连接中断，自动重试未完成，请重试。"
+                    case .cannotDecodeContentData: failure = "图片校验或解码失败，请重试。"
+                    case .dataLengthExceedsMaximum: failure = "图片超出大小或解码内存限制。"
+                    default: failure = "图片暂时无法打开，请重试。"
+                    }
+                } else if let error = error as? ClientServiceFailure, [403, 404].contains(error.statusCode) {
+                    failure = "图片已移除或当前会话无权访问。"
+                } else { failure = "图片暂时无法打开，请重试。" }
             }
         }
     }
@@ -90,11 +135,16 @@ extension PadConnection {
             saveMessage = "未获相册添加权限。可在系统设置中允许 Corptie 添加照片。"; return
         }
         do {
-            try await PHPhotoLibrary.shared().performChanges {
+            // Photos invokes this block on its own queue. Do not inherit MainActor:
+            // Swift 6 otherwise inserts an executor assertion and terminates the app.
+            try await PHPhotoLibrary.shared().performChanges { @Sendable in
                 PHAssetCreationRequest.forAsset().addResource(with: .photo, data: bytes, options: nil)
             }
             saveMessage = "已保存原图到相册。"
-        } catch { saveMessage = "保存失败，请检查相册权限及设备可用空间后重试。" }
+        } catch {
+            ClientFailureDiagnostics.log(error, operation: "image.save")
+            saveMessage = "保存失败，请检查相册权限及设备可用空间后重试。"
+        }
     }
 }
 

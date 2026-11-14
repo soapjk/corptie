@@ -9,7 +9,7 @@ struct CloudRelaySendSchedulerTests {
         request = URLRequest(url: URL(string: "http://127.0.0.1/client/v1/sessions/session/messages")!)
         #expect(CloudRelaySendPriority.response(to: request) == .background)
         request = URLRequest(url: URL(string: "http://127.0.0.1/client/v1/sessions/session/resources")!)
-        #expect(CloudRelaySendPriority.response(to: request) == .background)
+        #expect(CloudRelaySendPriority.response(to: request) == .image)
         request.httpMethod = "POST"
         #expect(CloudRelaySendPriority.response(to: request) == .control)
         request = URLRequest(url: URL(string: "http://127.0.0.1/client/v1/sessions")!)
@@ -30,17 +30,31 @@ struct CloudRelaySendSchedulerTests {
         await scheduler.close()
     }
 
-    @Test func waitingForHistoryBudgetDoesNotBlockControl() async throws {
-        let scheduler = CloudRelaySendScheduler(backgroundBytesPerSecond: 10)
+    @Test func idleBulkTrafficUsesAvailableBandwidthDespiteLowContendedBudget() async throws {
+        let scheduler = CloudRelaySendScheduler(backgroundBytesPerSecond: 1)
         let probe = SchedulerProbe()
-        try await scheduler.send(bytes: 10, priority: .background) { await probe.write(0) }
-        let history = Task { try await scheduler.send(bytes: 10, priority: .background) { await probe.write(1) } }
+        let start = ContinuousClock.now
+        try await scheduler.send(bytes: 100, priority: .background) { await probe.write(0) }
+        try await scheduler.send(bytes: 100, priority: .image) { await probe.write(1) }
+        #expect(start.duration(to: .now) < .seconds(1))
+        #expect(await probe.values == [0, 1])
+        await scheduler.close()
+    }
+
+    @Test func messageOvertakesImageAndImageOvertakesHistory() async throws {
+        let scheduler = CloudRelaySendScheduler()
+        let probe = SchedulerProbe()
+        let first = Task { try await scheduler.send(bytes: 1, priority: .image) { await probe.write(0, block: true) } }
+        await probe.waitForCount(1)
+        let history = Task { try await scheduler.send(bytes: 1, priority: .background) { await probe.write(3) } }
         while await scheduler.pendingCount < 1 { await Task.yield() }
-        try await scheduler.send(bytes: 1, priority: .control) { await probe.write(2) }
-        #expect(await probe.values == [0, 2])
-        history.cancel()
-        do { try await history.value; Issue.record("Queued history must be cancelled") }
-        catch { #expect(error is CancellationError) }
+        let image = Task { try await scheduler.send(bytes: 1, priority: .image) { await probe.write(2) } }
+        while await scheduler.pendingCount < 2 { await Task.yield() }
+        let message = Task { try await scheduler.send(bytes: 1, priority: .interactive) { await probe.write(1) } }
+        while await scheduler.pendingCount < 3 { await Task.yield() }
+        await probe.release()
+        try await first.value; try await history.value; try await image.value; try await message.value
+        #expect(await probe.values == [0, 1, 2, 3])
         await scheduler.close()
     }
 
