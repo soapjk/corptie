@@ -1589,14 +1589,19 @@ final class AppKitChatTimelineCoordinator: NSObject, NSTableViewDataSource, NSTa
             : CGRect(x: 0, y: 0, width: viewportWidth, height: 0)
         let laneWidth = min(viewportWidth, max(120, lane.width))
         let laneMinX = centers ? (viewportWidth - laneWidth) / 2 : 0
-        let laneFrame = NSRect(x: laneMinX, y: tableView.frame.minY,
-                               width: laneWidth, height: tableView.frame.height)
+        // Row content reserves its own leading gutter. Rebase that gutter into
+        // the viewport margin so reply edges meet the composer's outer lane.
+        // Grow only to the left: right-aligned user messages keep their edge.
+        let leadingGutter = centers ? min(ReplyLeadingLayout.contentLeading, laneMinX) : 0
+        let tableWidth = laneWidth + leadingGutter
+        let laneFrame = NSRect(x: laneMinX - leadingGutter, y: tableView.frame.minY,
+                               width: tableWidth, height: tableView.frame.height)
         if abs(tableView.frame.minX - laneFrame.minX) >= 0.5
             || abs(tableView.frame.width - laneFrame.width) >= 0.5 {
             tableView.frame = laneFrame
         }
-        if let column = tableView.tableColumns.first, abs(column.width - laneWidth) >= 0.5 {
-            column.width = laneWidth
+        if let column = tableView.tableColumns.first, abs(column.width - tableWidth) >= 0.5 {
+            column.width = tableWidth
         }
         if let document = scrollView.documentView,
            abs(document.frame.width - viewportWidth) >= 0.5 {
