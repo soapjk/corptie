@@ -38,7 +38,9 @@ export function createTaskSessionProjection({ store, memoryExtractor, memorySche
   function scheduleTaskMemoryExtraction(session, task) {
     if (session.sessionKind && !["worker", "workChat", "assistantChat"].includes(session.sessionKind)) return;
     if (memoryScheduler) {
-      memoryScheduler.requestForTurn(session.id);
+      Promise.resolve(memoryScheduler.requestForTurn(session.id)).catch(error => {
+        console.error(`[task-memory] window scheduling failed code=${error?.code ?? "UNKNOWN"}`);
+      });
       return;
     }
     const previous = taskMemoryExtractions.get(session.id) ?? Promise.resolve();

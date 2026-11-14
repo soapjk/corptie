@@ -19,6 +19,14 @@ export class TimelineReadPool {
     for (let index = 0; index < this.size; index += 1) this.#spawn(index);
   }
 
+  readMailboxDispatchPage(input) {
+    return this.#singleFlight("mailboxDispatchPage", input);
+  }
+
+  readMemoryExtractionWindow(input) {
+    return this.#singleFlight("memoryExtractionWindow", input);
+  }
+
   readStoredTimelineSnapshot(input) {
     return this.#singleFlight("storedTimelineSnapshot", input);
   }
@@ -53,7 +61,7 @@ export class TimelineReadPool {
     const error = timelineReadError("Timeline read pool is closing.", "TIMELINE_READ_POOL_CLOSED", 503);
     for (const request of this.queue.splice(0)) request.reject(error);
     for (const slot of this.slots) {
-      if (slot.request) slot.request.reject(error);
+      if (slot.request) { clearTimeout(slot.request.timer); slot.request.reject(error); }
       slot.request = null;
     }
     this.inFlightByKey.clear();
@@ -142,6 +150,7 @@ export class TimelineReadPool {
     }
     if (message?.type !== "result" || message.requestId !== slot.request?.requestId) return;
     const request = slot.request;
+    clearTimeout(request.timer);
     slot.request = null;
     if (message.error) request.reject(errorFromMessage(message.error, "Timeline read failed."));
     else {
@@ -163,7 +172,7 @@ export class TimelineReadPool {
   #retire(slot, error, respawn = true) {
     if (this.slots[slot.index] !== slot) return;
     this.slots[slot.index] = null;
-    if (slot.request) slot.request.reject(error);
+    if (slot.request) { clearTimeout(slot.request.timer); slot.request.reject(error); }
     slot.request = null;
     void slot.worker.terminate().catch(() => {});
     if (!this.closing && respawn && slot.restartCount < 2) {
@@ -186,6 +195,14 @@ export class TimelineReadPool {
       if (!slot?.ready || slot.request || this.queue.length === 0) continue;
       const request = this.queue.shift();
       slot.request = request;
+      if (this.options.requestTimeoutMs > 0) {
+        request.timer = setTimeout(() => {
+          if (slot.request !== request) return;
+          // Terminate the read worker, not just its Promise. No writes run here.
+          this.#retire(slot, timelineReadError("Background read deadline exceeded.", "BACKGROUND_READ_TIMEOUT", 503));
+        }, this.options.requestTimeoutMs);
+        request.timer.unref?.();
+      }
       slot.worker.postMessage({
         requestId: request.requestId,
         operation: request.operation,

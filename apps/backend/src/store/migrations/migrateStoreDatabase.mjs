@@ -1,3 +1,4 @@
+import { migrateDispatchReadIndexes } from "./dispatchReadIndexes.mjs";
 import { migrateExecutionChecklist } from "./executionChecklistMigrations.mjs";
 import { migrateSessionMailbox } from "./sessionMailboxMigrations.mjs";
 import { migrateChannelMailbox } from "./channelMailboxMigrations.mjs";
@@ -312,4 +313,6 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     // Session columns to exist (including on a fresh database).
     migrateChildTaskDelivery({ db, selectOne, runDataMigrationOnce });
     migrateTaskCoordination({ db, ensureColumn });
+    migrateDispatchReadIndexes(db);
+
 }

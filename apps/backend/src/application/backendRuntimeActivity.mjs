@@ -8,6 +8,7 @@ export class BackendRuntimeActivity {
     this.tickAgentWorkQueue = tickAgentWorkQueue;
     this.updateMockProgress = updateMockProgress;
     this.queueTimer = null;
+    this.queueFlight = null;
     this.mockTimer = null;
     this.timelinePublisher = null;
     this.maintenance = new Set();
@@ -28,7 +29,11 @@ export class BackendRuntimeActivity {
   startQueueTimer() {
     if (this.queueTimer) return;
     this.queueTimer = setInterval(() => {
-      this.tickAgentWorkQueue().catch((error) => this.emitEvent("AgentWorkQueueError", { error: error.message }));
+      if (this.queueFlight) return;
+      const flight = Promise.resolve().then(() => this.tickAgentWorkQueue({ forceDiscovery: false }));
+      this.queueFlight = flight;
+      flight.catch((error) => this.emitEvent("AgentWorkQueueError", { error: error.message }))
+        .finally(() => { if (this.queueFlight === flight) this.queueFlight = null; });
     }, 2000);
     this.queueTimer.unref?.();
   }

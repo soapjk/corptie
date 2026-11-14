@@ -1,3 +1,4 @@
+import { readMailboxDispatchPage } from "../store/dispatchReadQueries.mjs";
 import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { randomUUID } from "node:crypto";
@@ -14,6 +15,11 @@ export class SessionMailboxService {
   constructor({ store, channelService, channelMailbox, wake = () => {}, changed = () => {},
     validateExternal = null, resolveActor = null, moveQueuedWork = () => {}, workEvent = () => {}, clock = () => new Date().toISOString() }) {
     Object.assign(this, { store, channelService, channelMailbox, wake, changed, validateExternal, resolveActor, moveQueuedWork, workEvent, clock });
+  }
+
+  wakeAfterCommit(...args) {
+    if (this.store.afterCommit) this.store.afterCommit(() => this.wake(...args));
+    else this.wake(...args);
   }
 
   logical(sessionId) {
@@ -42,7 +48,7 @@ export class SessionMailboxService {
       ON CONFLICT(recipient_session_id) DO UPDATE SET paused=excluded.paused,updated_at=excluded.updated_at`,
       [logical.logicalSessionId, paused ? 1 : 0, this.clock()]);
     this.notify(logical);
-    if (!paused) this.wake(logical.legacySessionId);
+    if (!paused) this.wakeAfterCommit(logical.legacySessionId);
     return this.settings(sessionId);
   }
 
@@ -176,7 +182,7 @@ export class SessionMailboxService {
     });
     this.notify(logical);
     if (ignoredWork?.source?.type === "scheduled_session_task") this.workEvent("AgentWorkCompleted", ignoredWork);
-    if (action === "process") this.wake(logical.legacySessionId);
+    if (action === "process") this.wakeAfterCommit(logical.legacySessionId);
     return this.get(sessionId, messageId);
   }
 
@@ -239,7 +245,7 @@ export class SessionMailboxService {
       this.notify(logical);
       const previous = this.store.getLogicalSession(previousId);
       if (previous && previousId !== logical.logicalSessionId) this.notify(previous);
-      this.wake(logical.legacySessionId, operation.taskId);
+      this.wakeAfterCommit(logical.legacySessionId, operation.taskId);
     }
     return Boolean(operation);
   }
@@ -362,7 +368,7 @@ export class SessionMailboxService {
           ...(authorization.coordinationDispatchId ? { coordinationDispatchId: authorization.coordinationDispatchId } : {}),
           ...(authorization.purpose ? { coordinationPurpose: authorization.purpose } : {}) }, createdAt: this.clock() },
         { sourceType, intent, authorization: { ...authorization, idempotencyKey } });
-      this.wake(logical.legacySessionId, result.task.taskId);
+      this.wakeAfterCommit(logical.legacySessionId, result.task.taskId);
       return this.get(logical.logicalSessionId, `mailbox:${id}`);
     }
     const messageId = `mailbox:${randomUUID()}`;
@@ -386,14 +392,18 @@ export class SessionMailboxService {
     }
   }
 
-  syncQueuedOperations(register) {
-    const rows=this.store.selectAll(`SELECT mm.sequence,mm.operation_id,mm.recipient_session_id FROM session_mailbox_messages mm
-      JOIN agent_operations op ON op.task_id=mm.operation_id WHERE mm.disposition='pending' AND op.status='queued'
-      AND (mm.manual_requested=1 OR mm.intent IN ('action_required','response_required','notification'))
-      AND mm.sequence > ? ORDER BY mm.sequence LIMIT 500`,[this.queueSyncCursor ?? 0]);
-    this.queueSyncCursor=rows.length===500 ? rows.at(-1).sequence : 0;
+  async syncQueuedOperations(register) {
+    const page = this.store.getBackgroundReadPool
+      ? await this.store.getBackgroundReadPool().readMailboxDispatchPage({ after: this.queueSyncCursor ?? 0, limit: 500 })
+      : readMailboxDispatchPage(this.store.db, { after: this.queueSyncCursor ?? 0, limit: 500 });
+    this.queueSyncCursor = page.nextCursor;
+    const rows = page.rows;
     for (const row of rows) {
       const operation = this.store.getAgentTask(row.operation_id);
+      // The read snapshot may be stale by the time its response arrives.
+      if (!operation || operation.status !== "queued") continue;
+      const current = this.store.selectOne("SELECT disposition,recipient_session_id FROM session_mailbox_messages WHERE operation_id=?", [row.operation_id]);
+      if (current?.disposition !== "pending" || current.recipient_session_id !== row.recipient_session_id) continue;
       let logical;
       try { logical=this.logical(row.recipient_session_id); }
       catch { register(operation.sessionId,operation.taskId); continue; }
