@@ -12,8 +12,8 @@ const decode = value => { try { return JSON.parse(value ?? "{}"); } catch { retu
 // Source adapters retain authorization and original message ownership.
 export class SessionMailboxService {
   constructor({ store, channelService, channelMailbox, wake = () => {}, changed = () => {},
-    validateExternal = null, resolveActor = null, workEvent = () => {}, clock = () => new Date().toISOString() }) {
-    Object.assign(this, { store, channelService, channelMailbox, wake, changed, validateExternal, resolveActor, workEvent, clock });
+    validateExternal = null, resolveActor = null, moveQueuedWork = () => {}, workEvent = () => {}, clock = () => new Date().toISOString() }) {
+    Object.assign(this, { store, channelService, channelMailbox, wake, changed, validateExternal, resolveActor, moveQueuedWork, workEvent, clock });
   }
 
   logical(sessionId) {
@@ -202,6 +202,48 @@ export class SessionMailboxService {
     }
   }
 
+  canRetarget(row) {
+    if (!row || row.channel_delivery_id || row.disposition !== "pending" || row.adopted_turn_id) return false;
+    const work = row.operation_id && this.store.getAgentTask(row.operation_id);
+    if (!work || work.targetTurnId || work.startedAt || work.source?.mailboxDispatchAttempted || work.source?.deleted) return false;
+    const receipt = work.deliveryId && this.store.getMessageDelivery(work.deliveryId);
+    if (receipt) return false;
+    const previous = this.store.selectOne("SELECT deleted_at FROM sessions WHERE id=?", [work.sessionId]);
+    // Store deletion cancels queued operations. Only a provably unstarted
+    // operation on a deleted Session may be resumed here; user cancellation isn't.
+    return work.status === "queued" || work.status === "cancelled" && Boolean(previous?.deleted_at)
+      && !work.executionEvidence?.cancellation;
+  }
+
+  retargetUnstarted(messageId, recipientSessionId, authorization) {
+    const logical = this.logical(recipientSessionId);
+    if (logical.deletedAt || logical.archived || logical.activeBinding?.state !== "active") fail("MAILBOX_ROUTE_UNAVAILABLE");
+    let previousId, previousSessionId, operation;
+    this.store.runInTransaction(() => {
+      const row = this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [messageId]);
+      if (!this.canRetarget(row)) return;
+      previousId = row.recipient_session_id;
+      const auth = { ...decode(row.authorization_json), ...authorization, ownerLogicalSessionId: logical.logicalSessionId };
+      operation = this.store.getAgentTask(row.operation_id);
+      previousSessionId = operation.sessionId;
+      if (previousId === logical.logicalSessionId && operation.sessionId === logical.legacySessionId
+        && JSON.stringify(auth) === row.authorization_json && operation.status === "queued") { operation = null; return; }
+      this.store.db.run("UPDATE session_mailbox_messages SET recipient_session_id=?,authorization_json=?,updated_at=? WHERE message_id=?",
+        [logical.logicalSessionId, JSON.stringify(auth), this.clock(), messageId]);
+      operation = this.store.updateAgentTask(operation.taskId, { sessionId: logical.legacySessionId,
+        status: "queued", lastError: null, completedAt: null,
+        source: { ...operation.source, coordinationPurpose: auth.purpose, dispatchBlock: null } });
+    });
+    if (operation) {
+      if (previousSessionId !== operation.sessionId) this.moveQueuedWork(previousSessionId, operation.sessionId, operation.taskId);
+      this.notify(logical);
+      const previous = this.store.getLogicalSession(previousId);
+      if (previous && previousId !== logical.logicalSessionId) this.notify(previous);
+      this.wake(logical.legacySessionId, operation.taskId);
+    }
+    return Boolean(operation);
+  }
+
   adopt(sessionId, messageIds) {
     if (!Array.isArray(messageIds) || !messageIds.length || messageIds.length > 8 || new Set(messageIds).size !== messageIds.length) fail("MAILBOX_INVALID_SELECTION", 400);
     const logical = this.logical(sessionId);
@@ -252,6 +294,9 @@ export class SessionMailboxService {
   }
 
   dispatchDecision(operation) {
+    this.reconcileCoordination?.(operation);
+    const current = this.store.getAgentTask(operation.taskId);
+    if (current && current.sessionId !== operation.sessionId) return dispatchBlocked("MAILBOX_ROUTE_CHANGED", "waiting");
     const row = operation.source?.mailboxMessageId ? this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [operation.source.mailboxMessageId])
       : operation.source?.type === "session_channel" ? this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE channel_delivery_id=?", [operation.deliveryId]) : null;
     if (!row) return operation.source?.mailboxMessageId ? dispatchBlocked("MAILBOX_MESSAGE_NOT_FOUND","rejected") : dispatchReady();

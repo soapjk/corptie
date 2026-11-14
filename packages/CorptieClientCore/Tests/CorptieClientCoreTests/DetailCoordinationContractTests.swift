@@ -122,3 +122,36 @@ private actor DetailRecoveryProbe {
     }
     func terminated() { terminations += 1 }
 }
+
+extension DetailCoordinationContractTests {
+    @Test func shadowRecoveryContractIsOptionalAndBoundToTheCurrentTask() throws {
+        let legacy = try JSONDecoder().decode(ClientShadowCoordination.self, from:
+            Data(#"{"sessionId":"shadow:old","status":"idle","lastReportAt":null,"pendingDecisions":0,"reports":[]}"#.utf8))
+        #expect(legacy.canRecover == nil)
+        #expect(legacy.recoveryReason == nil)
+        for state in ["off", "recovering", "failed", "idle"] {
+            var root = try #require(JSONSerialization.jsonObject(with: Self.document()) as? [String: Any])
+            var cards = try #require(root["cards"] as? [[String: Any]])
+            var task = try #require(cards[0]["data"] as? [String: Any])
+            task["coordinationExecution"] = ["status": state == "off" ? "off" : "enforced", "reason": "",
+                "shadow": ["sessionId": NSNull(), "status": state, "lastReportAt": NSNull(),
+                    "pendingDecisions": 0, "reports": [], "recoveryReason": "SHADOW_SESSION_DELETED", "canRecover": state == "failed"]]
+            cards[0]["data"] = task
+            cards[0]["actions"] = [["id": "recover", "kind": "command", "operation": "task.shadow.recover",
+                "label": ["fallback": "恢复汇总"], "available": true,
+                "target": ["resourceType": "task", "id": "task:current"], "expectedResourceRevision": "1"]]
+            root["cards"] = cards
+            let doc = try ClientDetailBusinessDocument.decode(JSONSerialization.data(withJSONObject: root))
+            guard case .task(let value) = doc.cards[0].payload else { Issue.record("Missing task"); return }
+            #expect(value.coordinationExecution?.shadow?.status == state)
+            #expect(value.coordinationExecution?.shadow?.canRecover == (state == "failed"))
+            #expect(value.coordinationExecution?.shadow?.statusLabel != "影子会话空闲" || state == "idle")
+            var actions = try #require(cards[0]["actions"] as? [[String: Any]])
+            actions[0]["target"] = ["resourceType": "task", "id": "task:other"]
+            cards[0]["actions"] = actions; root["cards"] = cards
+            #expect(throws: ClientDetailFailure.invalidGraph) {
+                try ClientDetailBusinessDocument.decode(JSONSerialization.data(withJSONObject: root))
+            }
+        }
+    }
+}

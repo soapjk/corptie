@@ -67,7 +67,7 @@ test("shadow creation is singleflight, preserves the interactive binding and pub
     const before = f.store.getSession(f.source.sessionId).status;
     const report = shadows.publish({ shadowId: first.shadow_session_id, turnId: "review-one", revision: 0, body: "已完成技术核对，准备交付。" });
     assert.equal(shadows.publish({ shadowId: first.shadow_session_id, turnId: "review-one", revision: 0, body: "已完成技术核对，准备交付。" }).report_id, report.report_id);
-    assert.equal(events.length, 1);
+    assert.equal(events.filter(([type]) => type === "SessionCoordinationMilestone").length, 1);
     assert.equal(f.store.getSession(f.source.sessionId).status, before);
     assert.equal(f.store.listAgentTasksForSession(f.source.sessionId).length, 0);
     assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM session_mailbox_messages").count, 0);
@@ -1946,12 +1946,22 @@ test("real Session composition binds request and summary delegates while denying
     const projection = createSessionToolBindingProjection({ store: f.store });
     assert.equal(projection.resolveToolHostBinding(reference.logicalSessionId, reference.bindingId).taskSessionAuthorization, "summary-shadow");
     assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+    await f.application.deleteSession(reference.logicalSessionId);
+    const replacement = await shadows.ensure("logical:parent");
+    assert.notEqual(replacement.shadow_session_id, summary.shadow_session_id);
+    const replacementReady = await f.application.ensureActiveBindingToolsReady(replacement.shadow_session_id);
+    assert.equal(replacementReady.executionPolicy, "host-coordination");
+    assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+    f.store.db.run("UPDATE sessions SET archived=1 WHERE id=?", [replacementReady.providerSession.id]);
+    const unarchived = await shadows.ensure("logical:parent");
+    assert.notEqual(unarchived.shadow_session_id, replacement.shadow_session_id);
+    assert.equal((await f.application.ensureActiveBindingToolsReady(unarchived.shadow_session_id)).executionPolicy, "host-coordination");
     assert.throws(() => coordinationCreationPolicy(f.store, { source: "coordination-request", requestId: "forged",
       shadowOwnerSessionId: "logical:parent", actorId: f.role.agentId, taskId: f.parent.id, workId: f.work.id }),
       { code: "COORDINATION_RESERVATION_INVALID" });
     f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id=?", [f.parent.id]);
-    assert.throws(() => shadows.assertDelegate(summary.shadow_session_id), { code: "SHADOW_OWNER_UNAVAILABLE" });
-    assert.throws(() => coordinationExecutionPolicy(f.store, summary.shadow_session_id), { code: "COORDINATION_DELEGATION_UNAVAILABLE" });
+    assert.throws(() => shadows.assertDelegate(unarchived.shadow_session_id), { code: "SHADOW_OWNER_UNAVAILABLE" });
+    assert.throws(() => coordinationExecutionPolicy(f.store, unarchived.shadow_session_id), { code: "COORDINATION_DELEGATION_UNAVAILABLE" });
   });
 });
 
@@ -2103,4 +2113,303 @@ test("live Codex independent requests use restricted startup and return to the m
       requests: [first.request_id, second.request_id].map(id => ({ id, status: f.requests.get(id).status,
         replyId: f.requests.get(id).response_item_id, cleanupError: f.requests.get(id).cleanup_error })) }));
   } finally { release(); await Promise.all([...f.requests.running.values()]); await Promise.all([...f.requests.reclaiming.values()]); }
+});
+
+async function recoveryFixture(t, provider = "codex-app-server") {
+  const f = await fixture(t, provider);
+  f.store.db.run("UPDATE tasks SET current_session_id=?,coordination_enabled=1 WHERE id=?", [f.source.sessionId, f.parent.id]);
+  f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?", [f.source.sessionId]);
+  let created = 0;
+  const shadow = new ShadowSessionService({ store: f.store,
+    createSession: async () => f.store.getSession(f.open(`recovery_${++created}`, f.parent.id, { deferTaskProjection: true, status: "idle" }).sessionId),
+    deleteSession: async id => f.store.deleteSession(id) });
+  f.coordinator.shadow = shadow;
+  const original = await shadow.ensure("logical:parent");
+  const remove = () => {
+    const id = f.store.getLogicalSession(shadow.forMain("logical:parent").shadow_session_id).legacySessionId;
+    f.store.deleteSession(id); f.store.deleteLogicalSessionByLegacySessionId(id);
+  };
+  const finish = async key => {
+    const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item(key)] });
+    const id = receipt.dispatches[0].dispatchId;
+    await f.coordinator.runDispatch(id);
+    const operation = f.store.updateAgentTask(f.coordinator.get(id).operation_id, { status: "completed", targetTurnId: `turn:${key}` });
+    f.store.upsertTimelineItemProjection(operation.sessionId, { id: `final:${key}`, turnId: operation.targetTurnId,
+      type: "agentMessage", text: `Result ${key}`, status: "completed", createdAt: new Date().toISOString() });
+    f.coordinator.onRuntimeEvent("AgentWorkCompleted", { task: operation });
+    return id;
+  };
+  return { ...f, shadow, original, remove, finish, creations: () => created };
+}
+
+for (const provider of ["codex-app-server", "claude-sdk"]) test(`deleted summary is rebuilt once and keeps the main binding (${provider})`, async t => {
+  const f = await recoveryFixture(t, provider), mainBinding = f.store.getLogicalSession("logical:parent").activeBinding.bindingId;
+  f.remove();
+  assert.equal(f.shadow.summary("logical:parent").status, "failed");
+  const rows = await Promise.all(Array.from({ length: 10 }, () => f.shadow.ensure("logical:parent")));
+  assert.equal(f.creations(), 2);
+  assert.equal(new Set(rows.map(row => row.shadow_session_id)).size, 1);
+  assert.notEqual(rows[0].shadow_session_id, f.original.shadow_session_id);
+  assert.equal(f.store.getLogicalSession("logical:parent").activeBinding.bindingId, mainBinding);
+  assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+  assert.equal(f.shadow.summary("logical:parent").status, "idle");
+});
+
+test("normal mode bypasses a deleted shadow and delivers the stored result without another child run", async t => {
+  const f = await recoveryFixture(t);
+  f.remove(); f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  const id = await f.finish("ordinary_after_shadow");
+  f.coordinator.flushReports();
+  const messageId = f.coordinator.get(id).report_message_id;
+  assert.ok(messageId);
+  const row = f.mailbox.raw("logical:parent", messageId);
+  assert.equal(JSON.parse(row.authorization_json).purpose, "parent_report");
+  assert.equal(f.shadow.summary("logical:parent").status, "off");
+  f.coordinator.recover(); await nextTick(); f.coordinator.flushReports();
+  assert.equal(f.coordinator.get(id).report_message_id, messageId);
+  assert.equal(f.creations(), 1); assert.equal(f.starts.length, 1);
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 1);
+});
+
+test("pending shared result mailbox moves once after shadow deletion and keeps every receipt", async t => {
+  const f = await recoveryFixture(t);
+  const schedule = f.coordinator.scheduleReports;
+  f.coordinator.scheduleReports = () => {};
+  const ids = [await f.finish("move_one"), await f.finish("move_two")];
+  f.coordinator.scheduleReports = schedule;
+  f.coordinator.flushReports();
+  const messages = ids.map(id => f.coordinator.get(id).report_message_id);
+  assert.equal(messages[0], messages[1]);
+  const originalOp = f.mailbox.raw(f.original.shadow_session_id, messages[0]).operation_id;
+  f.remove(); await f.shadow.ensure("logical:parent");
+  f.shadow.recover(f.mailbox, "logical:parent");
+  const recipient = f.shadow.forMain("logical:parent").shadow_session_id;
+  const moved = f.mailbox.raw(recipient, messages[0]);
+  assert.equal(moved.operation_id, originalOp);
+  assert.equal(f.store.getAgentTask(originalOp).status, "queued");
+  assert.equal(f.store.getAgentTask(originalOp).sessionId, f.store.getLogicalSession(recipient).legacySessionId);
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM coordination_result_receipts WHERE mailbox_message_id=?", [messages[0]]).n, 2);
+  f.coordinator.recover(); await nextTick(); f.coordinator.flushReports();
+  assert.deepEqual(ids.map(id => f.coordinator.get(id).report_message_id), messages);
+  assert.equal(f.starts.length, 2);
+});
+
+test("mode changes move only unstarted result messages and preserve their identity", async t => {
+  const f = await recoveryFixture(t), id = await f.finish("switch_route");
+  f.coordinator.flushReports();
+  const messageId = f.coordinator.get(id).report_message_id;
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  f.coordinator.handleModeChanged(f.parent.id);
+  assert.equal(JSON.parse(f.mailbox.raw("logical:parent", messageId).authorization_json).purpose, "parent_report");
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+  f.coordinator.handleModeChanged(f.parent.id);
+  const moved = f.mailbox.raw(f.original.shadow_session_id, messageId);
+  assert.equal(JSON.parse(moved.authorization_json).purpose, "shadow_report");
+  f.store.updateAgentTask(moved.operation_id, { status: "running", startedAt: new Date().toISOString(), targetTurnId: "review:already-started" });
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  f.coordinator.handleModeChanged(f.parent.id);
+  assert.equal(f.mailbox.raw(f.original.shadow_session_id, messageId).operation_id, moved.operation_id);
+  assert.equal(f.creations(), 1);
+});
+
+test("an acceptance-unknown or user-cancelled mailbox operation is never retargeted", async t => {
+  const f = await recoveryFixture(t);
+  const messages = [];
+  for (const state of ["unknown", "user_cancelled"]) {
+    const message = f.mailbox.receiveEvent({ recipientSessionId: f.original.shadow_session_id,
+      sourceType: "background", sourceId: state, body: state, intent: "response_required", idempotencyKey: state,
+      authorization: { ownerLogicalSessionId: f.original.shadow_session_id, sourceId: state, purpose: "shadow_request" } });
+    const row = f.mailbox.raw(f.original.shadow_session_id, message.messageId), op = f.store.getAgentTask(row.operation_id);
+    f.store.updateAgentTask(op.taskId, state === "unknown"
+      ? { source: { ...op.source, mailboxDispatchAttempted: true } }
+      : { status: "cancelled", cancellation: { actor: "user", reason: "USER_STOP" } });
+    assert.equal(f.mailbox.retargetUnstarted(message.messageId, "logical:parent", { purpose: "shadow_request" }), false);
+    messages.push(message.messageId);
+  }
+  f.remove();
+  for (const id of messages) assert.equal(f.mailbox.retargetUnstarted(id, "logical:parent", { purpose: "shadow_request" }), false);
+});
+
+test("turning mode off during shadow creation reclaims the unused executor", async t => {
+  const f = await recoveryFixture(t); f.remove();
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const create = f.shadow.createSession;
+  f.shadow.createSession = async (...args) => { await gate; return create(...args); };
+  const flight = f.shadow.ensure("logical:parent");
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false }); release();
+  await flight;
+  assert.equal(f.shadow.resolveRecipient("logical:parent").sessionId, "logical:parent");
+  assert.ok(f.store.selectOne("SELECT deleted_at FROM sessions WHERE id='provider:recovery_2'").deleted_at);
+  assert.equal(f.shadow.forMain("logical:parent").shadow_session_id, null);
+});
+
+test("old report decisions are answered through the new executor without changing report authorship", async t => {
+  const f = await recoveryFixture(t);
+  const report = f.shadow.publish({ shadowId: f.original.shadow_session_id, turnId: "question", revision: 0,
+    body: "需要选择", decision: { question: "选择A还是B" } });
+  f.remove();
+  const response = await f.shadow.answer("logical:parent", report.report_id, "A", "user-answer", f.mailbox);
+  const newId = f.shadow.forMain("logical:parent").shadow_session_id;
+  assert.notEqual(newId, f.original.shadow_session_id);
+  const row = f.mailbox.raw(newId, response.messageId);
+  f.shadow.validateDecision(row, JSON.parse(row.authorization_json));
+  const saved = f.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE report_id=?", [report.report_id]);
+  assert.equal(saved.shadow_session_id, f.original.shadow_session_id);
+  const repeated = await f.shadow.answer("logical:parent", report.report_id, "A", "user-answer", f.mailbox);
+  assert.equal(repeated.messageId, response.messageId);
+});
+
+test("a stored shadow request is moved after deletion instead of being mistaken for already handled", async t => {
+  const f = await recoveryFixture(t);
+  const admitted = f.shadow.admit("logical:parent", "cleanup-request", "处理已授权交付", {}, f.mailbox);
+  await nextTick();
+  const initial = f.store.selectOne("SELECT * FROM coordination_shadow_requests WHERE request_id=?", [admitted.requestId]);
+  assert.ok(initial.mailbox_message_id);
+  f.remove(); await f.shadow.ensure("logical:parent");
+  await f.shadow.deliverRequest(initial.request_id, f.mailbox);
+  const row = f.mailbox.raw(f.shadow.forMain("logical:parent").shadow_session_id, initial.mailbox_message_id);
+  f.shadow.validateRequest(row, JSON.parse(row.authorization_json));
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE source_id=?", [initial.request_id]).n, 1);
+});
+
+test("child Channels ignore historical shadows in ordinary mode and wait durably during rebuild", async t => {
+  const f = await recoveryFixture(t), child = f.child("Channel_recovery");
+  f.open("channel_recovery", child.id);
+  const envelope = { message: { recipientSessionId: "logical:parent", senderSessionId: "logical:channel_recovery" } };
+  f.remove(); f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  assert.equal(f.shadow.channelRecipient(envelope), null);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: true });
+  assert.throws(() => f.shadow.channelRecipient(envelope), { code: "SHADOW_SESSION_PREPARING" });
+  await f.shadow.recovering.get("logical:parent");
+  assert.equal(f.shadow.channelRecipient(envelope), f.shadow.forMain("logical:parent").shadow_session_id);
+  assert.equal(envelope.message.recipientSessionId, "logical:parent");
+});
+
+test("desktop and mobile share the explicit shadow recovery action without changing mode", async t => {
+  const f = await recoveryFixture(t); f.remove();
+  const task = { ...f.store.getTask(f.parent.id), coordinationExecution: { status: "enforced", reason: "",
+    shadow: f.shadow.summary("logical:parent") } };
+  const document = projectNativeBusinessDocument({ session: f.store.getSession(f.source.sessionId), logicalSessionId: "logical:parent", task }, {}, "recovery", { editors: true });
+  const card = document.cards.find(card => card.kind === "taskInfo");
+  const action = card.actions.find(action => action.operation === "task.shadow.recover");
+  assert.ok(action); assert.equal(card.data.coordinationExecution.shadow.status, "failed");
+  for (const kind of ["local_user", "paired_device"]) {
+    const calls = [];
+    const ports = createDetailBusinessActionPorts({ inspector: {
+      scope: () => ({ logicalSessionId: "logical:parent", task, context: {} }),
+      recoverCoordinationShadow: id => calls.push(id)
+    } });
+    const scope = { sessionId: "logical:parent", identity: { kind } };
+    assert.equal(ports["task.shadow.recover"].authorize(scope, action.target, task), true);
+    ports["task.shadow.recover"].execute(scope, action.target, {});
+    assert.deepEqual(calls, ["logical:parent"]);
+    assert.equal(f.store.getTask(f.parent.id).coordination_enabled, 1);
+    assert.throws(() => ports["task.shadow.recover"].execute(scope, { id: "task:foreign" }, {}), { code: "DETAIL_SCOPE_FORBIDDEN" });
+  }
+});
+
+test("arrival of a final result automatically restores a deleted summary and never resends child instructions", async t => {
+  const f = await recoveryFixture(t); f.remove();
+  const id = await f.finish("automatic_restore");
+  f.coordinator.flushReports();
+  await f.shadow.recovering.get("logical:parent");
+  await nextTick();
+  const report = f.coordinator.get(id).report_message_id;
+  assert.ok(report);
+  assert.equal(f.mailbox.raw(f.shadow.forMain("logical:parent").shadow_session_id, report).disposition, "pending");
+  assert.equal(f.creations(), 2); assert.equal(f.starts.length, 1);
+  f.coordinator.flushReports();
+  assert.equal(f.coordinator.get(id).report_message_id, report);
+});
+
+test("a failed summary creation retries on explicit recovery and keeps the stored child result", async t => {
+  const f = await recoveryFixture(t); f.remove();
+  const create = f.shadow.createSession;
+  let attempts = 0;
+  f.shadow.createSession = async (...args) => {
+    attempts++;
+    if (attempts === 1) throw Object.assign(new Error("Provider setup incomplete"), { code: "PROVIDER_SETUP_REQUIRED" });
+    return create(...args);
+  };
+  const id = await f.finish("retry_summary");
+  f.coordinator.flushReports(); await f.shadow.recovering.get("logical:parent");
+  assert.equal(f.shadow.summary("logical:parent").status, "failed");
+  assert.equal(f.shadow.summary("logical:parent").canRecover, true);
+  assert.equal(f.coordinator.get(id).report_message_id, null);
+  f.coordinator.flushReports(); await nextTick();
+  assert.equal(attempts, 1);
+  await f.shadow.requestRecovery("logical:parent", { force: true }); f.coordinator.flushReports();
+  assert.ok(f.coordinator.get(id).report_message_id);
+  assert.equal(attempts, 2); assert.equal(f.starts.length, 1);
+});
+
+test("transient shadow startup failure uses bounded delayed recovery rather than a parent message", async t => {
+  const f = await recoveryFixture(t); f.remove();
+  f.shadow.recoveryDelaysMs = [5]; t.after(() => f.shadow.dispose());
+  const create = f.shadow.createSession; let attempts = 0;
+  f.shadow.createSession = async (...args) => {
+    if (++attempts === 1) throw Object.assign(new Error("Temporary reset"), { code: "ECONNRESET" });
+    return create(...args);
+  };
+  let recovered; const done = new Promise(resolve => { recovered = resolve; });
+  f.shadow.onRecovered = () => recovered(f.shadow.forMain("logical:parent"));
+  await f.shadow.requestRecovery("logical:parent");
+  const timeout = setTimeout(() => recovered(null), 2000);
+  const row = await done; clearTimeout(timeout);
+  assert.ok(row?.shadow_session_id); assert.equal(attempts, 2);
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n, 0);
+});
+
+test("legacy summary dispatch keeps its main owner through replacement before the first report", async t => {
+  const f = await recoveryFixture(t);
+  const id = await f.finish("legacy_summary");
+  f.store.db.run("UPDATE task_coordination_dispatches SET source_session_id=?,report_message_id=NULL WHERE dispatch_id=?", [f.original.shadow_session_id, id]);
+  f.remove(); await f.shadow.ensure("logical:parent");
+  assert.equal(f.coordinator.reportOwner(f.coordinator.get(id)), "logical:parent");
+  f.coordinator.flushReports();
+  const messageId = f.coordinator.get(id).report_message_id;
+  assert.ok(messageId);
+  const row = f.mailbox.raw(f.shadow.forMain("logical:parent").shadow_session_id, messageId);
+  f.coordinator.validateMailbox(row, JSON.parse(row.authorization_json));
+  assert.equal(f.starts.length, 1);
+});
+
+test("startup request recovery pages beyond one hundred records and preserves message identity", async t => {
+  const f = await recoveryFixture(t);
+  const now = new Date().toISOString();
+  for (let index = 0; index < 105; index++) f.store.db.run(`INSERT INTO coordination_shadow_requests
+    (request_id,main_session_id,source_turn_id,body,source_json,created_at) VALUES(?,?,?,?,?,?)`,
+    [`paged:${index}`, "logical:parent", `turn:${index}`, "Continue authorized work", "{}", now]);
+  await f.shadow.recoverRequests(f.mailbox, "logical:parent");
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM coordination_shadow_requests WHERE mailbox_message_id IS NOT NULL").n, 105);
+  await f.shadow.recoverRequests(f.mailbox, "logical:parent");
+  assert.equal(f.store.selectOne("SELECT count(*) AS n FROM session_mailbox_messages WHERE recipient_session_id=?", [f.original.shadow_session_id]).n, 105);
+});
+
+test("live Codex summary replacement uses the restricted Session lifecycle", {
+  skip: process.env.CORPTIE_LIVE_COORDINATION_SMOKE !== "1", timeout: 120000
+}, async t => {
+  const runtime = new CodexAppServerClient({ command: process.env.CORPTIE_LIVE_CODEX_BINARY ?? "codex" });
+  t.after(() => runtime.close());
+  const f = await requestFixture(t, "codex-app-server", runtime);
+  const directory = await mkdtemp(join(tmpdir(), "corptie-live-summary-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  f.store.upsertSession({ ...f.store.getSession(f.source.sessionId), external: { cwd: directory } });
+  const shadow = new ShadowSessionService({ store: f.store,
+    createSession: f.application.createSession.bind(f.application), deleteSession: f.application.deleteSession.bind(f.application) });
+  let latest;
+  try {
+    const first = await shadow.ensure("logical:parent");
+    await f.application.deleteSession(first.shadow_session_id);
+    const restored = await Promise.all(Array.from({ length: 10 }, () => shadow.ensure("logical:parent")));
+    latest = restored[0].shadow_session_id;
+    assert.equal(new Set(restored.map(row => row.shadow_session_id)).size, 1);
+    assert.notEqual(latest, first.shadow_session_id);
+    assert.equal((await f.application.ensureActiveBindingToolsReady(latest)).executionPolicy, "host-coordination");
+    assert.equal(f.created.length, 2);
+    assert.equal(f.store.getTask(f.parent.id).current_session_id, f.source.sessionId);
+    assert.equal(f.store.listUnsettledSessionTurns(f.source.sessionId).length, 0);
+    console.info("[live-summary-recovery-evidence]", JSON.stringify({ created: f.created.length, concurrentRecoveryCalls: 10,
+      mainUnsettledTurns: 0, childExecutions: f.starts.length, restored: true }));
+  } finally { if (latest) await f.application.deleteSession(latest); }
 });

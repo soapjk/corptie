@@ -141,7 +141,8 @@ export class CoordinationTurnService {
     } catch { return false; }
   }
   state(reference) {
-    const requests = this.requests ? { requests: this.requests.index(reference.logicalSessionId, null, { activeOnly: true, limit: 100 }) } : {};
+    const shadowState = this.dispatch.shadow?.summary(reference.logicalSessionId);
+    const requests = { ...(shadowState ? { shadow: shadowState } : {}), ...(this.requests ? { requests: this.requests.index(reference.logicalSessionId, null, { activeOnly: true, limit: 100 }) } : {}) };
     if (!this.supported(reference.providerId)) return { status: "unsupported", ...requests, reason: "当前 Provider 不支持受限协调执行；不会退回普通开发模式。" };
     if (!this.enabled(reference)) return this.active.has(reference.sessionId)
       ? { status: "pending", ...requests, reason: "当前协调规划结束后恢复普通模式。" } : { status: "off", ...requests, reason: "" };
@@ -544,7 +545,7 @@ export class CoordinationTurnService {
       let answer = plan.reply;
       if (plan.kind === "shadow_reply") {
         if (shadow || !plan.decisionReportId || ["mailbox_event", "session_channel"].includes(context.source?.type)) throw failure("SHADOW_DECISION_SOURCE_INVALID", "待决策事项需要当前用户答复。");
-        const sent = this.dispatch.shadow.answer(ownerId, plan.decisionReportId,
+        const sent = await this.dispatch.shadow.answer(ownerId, plan.decisionReportId,
           typeof message === "string" ? message : message.text, turnId, this.dispatch.mailbox);
         admissionStarted = true; admissionReceipt = sent.messageId;
         answer = "已将你的答复交给影子会话继续处理。";
