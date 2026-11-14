@@ -408,7 +408,7 @@ private struct MacMessageAttachmentStrip: View {
                     initialGeometry: images[index].geometry, index: index,
                     size: frame.size, fits: true,
                     extraCount: index == 3 ? max(0, images.count - 4) : 0,
-                    open: { ChatImageGalleryViewer.shared.show(images, selected: index) },
+                    open: { ChatImageExternalOpener.shared.show(images, selected: index) },
                     geometryChanged: geometryChanged)
                     .offset(x: frame.minX, y: frame.minY)
             }

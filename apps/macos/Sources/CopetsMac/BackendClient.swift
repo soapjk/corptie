@@ -920,6 +920,7 @@ final class BackendClient: ObservableObject {
         timelineRevision: Int? = nil
     ) {
         if let timelineRevision, timelineRevision < SessionTimelineRepository.shared.timelineRevision(for: sessionId) { return }
+        sessionCommandController.reconcileSendFailure(sessionID: sessionId, items: detail.items)
         let detail = collaborationConfirmationController.reconcile(detail, for: sessionId)
         SessionTimelineRepository.shared.publish(
             detail,
