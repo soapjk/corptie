@@ -70,7 +70,7 @@ export class WorkSessionStartApplicationService {
       throw startContractError("START_REFERENCE_INVALID", "An exact failed startup operation is required.");
     }
     // A lost response or a concurrent click only reads the successor. It must
-    // never advance a second attempt without a new explicit user action.
+    // never advance a second attempt without a new authorized retry request.
     if (operation?.startup_operation_id !== startupOperationId) return this.taskStartup({ taskId, sourceSessionId });
     if (!this.taskStartup({ taskId, sourceSessionId }).canRetry) {
       throw startContractError("START_RETRY_UNAVAILABLE", "Startup is not safely recoverable; inspect its current state first.");
@@ -87,6 +87,19 @@ export class WorkSessionStartApplicationService {
       if (error.code !== "START_ALREADY_IN_PROGRESS" && error.startup?.status !== "failed") throw error;
     }
     return this.taskStartup({ taskId, sourceSessionId });
+  }
+
+  async resumeTaskStartup({ taskId, sourceSessionId, retryStartupOperationId }) {
+    // The dispatch persists the exact failed attempt it was asked to retry.
+    // Replaying that request after a restart may resume its successor, but
+    // cannot silently allocate another successor if that attempt also failed.
+    const current = this.taskStartup({ taskId, sourceSessionId });
+    if (current.startupOperationId === retryStartupOperationId && current.canRetry) {
+      await this.retryTaskStartup({ taskId, sourceSessionId, startupOperationId: retryStartupOperationId });
+    }
+    const { operation } = this.#recoveryScope(taskId, sourceSessionId);
+    if (!operation) throw startContractError("START_REFERENCE_INVALID", "Startup operation was not found.");
+    return this.coordinator.recover(operation.startup_operation_id);
   }
 
   #recoveryScope(taskId, sourceSessionId) {

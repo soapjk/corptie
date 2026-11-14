@@ -1,25 +1,33 @@
+import { imageVariant, deliverImageVariant } from "./messageImagePreview.mjs";
 import { randomUUID } from "node:crypto";
 import { logSessionMessageLatency, logSessionMessageFailure, sessionMessageLatencyTraceFromHeaders } from "../utils/sessionMessageLatency.mjs";
 
 export function handleSessionInteractionHttpRequest({
   request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
-  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage,
+  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, withdrawUserMessage,
   respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
   readJson, sendJson, unifiedErrorStatus
 }) {
   const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
   const resourceMatch = url.pathname.match(/^\/sessions\/([^/]+)\/resources$/);
   if (request.method === "GET" && resourceMatch) {
-    Promise.resolve().then(() => chatResourceService.readMessageResource(
+    Promise.resolve().then(() => deliverImageVariant(imageVariant(url.searchParams), () => chatResourceService.readMessageResource(
       requireSessionReference(decodeURIComponent(resourceMatch[1])),
-      url.searchParams.get("itemId"), url.searchParams.get("path")))
+      url.searchParams.get("itemId"), url.searchParams.get("path"))))
       .then(resource => {
-        response.writeHead(200, { "content-type": resource.mimeType, "content-length": resource.byteLength,
+        response.writeHead(200, { ...(url.searchParams.get("variant") === "preview" ? { "x-corptie-image-variant": "preview" } : {}), "content-type": resource.mimeType, "content-length": resource.byteLength,
           "cache-control": "no-store", "x-content-type-options": "nosniff",
           "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(resource.fileName)}` });
         response.end(resource.data);
       })
       .catch(error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "RESOURCE_UNAVAILABLE" }));
+    return true;
+  }
+  const withdrawal = url.pathname.match(/^\/sessions\/([^/]+)\/messages\/([^/]+)\/withdraw$/);
+  if (request.method === "POST" && withdrawal) {
+    Promise.resolve().then(() => withdrawUserMessage(decodeURIComponent(withdrawal[1]), decodeURIComponent(withdrawal[2])))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, error.status ?? unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return true;
   }
   const deletion = url.pathname.match(/^\/sessions\/([^/]+)\/messages\/([^/]+)$/);
@@ -86,12 +94,13 @@ export function handleSessionInteractionHttpRequest({
     }
     if (request.method === "GET") {
       Promise.resolve()
-        .then(() => chatResourceService.readImage(
+        .then(() => deliverImageVariant(imageVariant(url.searchParams), () => chatResourceService.readImage(
           requireSessionReference(sessionId),
           url.searchParams.get("path")
-        ))
+        )))
         .then((image) => {
           response.writeHead(200, {
+            ...(url.searchParams.get("variant") === "preview" ? { "x-corptie-image-variant": "preview" } : {}),
             "content-type": image.mimeType,
             "content-length": image.byteLength,
             "cache-control": "private, max-age=31536000, immutable"

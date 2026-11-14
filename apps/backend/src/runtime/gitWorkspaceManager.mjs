@@ -19,6 +19,7 @@ import { withWorktreeOperationLock } from "./worktreeOperationLock.mjs";
 import { mergeWorkspaceSnapshot, synchronizeWorkspaceSnapshot, prepareSnapshotConflictWorkspace, snapshotBaseForWorktree } from "./workspaceSnapshotIntegration.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 import { ProjectWorkspaceSnapshotService } from "../application/projectWorkspaceSnapshotService.mjs";
+import { TaskWorktreeHierarchyService } from "../application/taskWorktreeHierarchyService.mjs";
 import { staleRegistrationAction } from "./staleWorktreeRegistration.mjs";
 import { classifyIntegrationRollback } from "../domain/integrationRollbackPlan.mjs";
 
@@ -1801,10 +1802,17 @@ export class GitWorkspaceManager {
   }
 
   async ensureChildTaskWorktree(input, task) {
-    const binding = this.store.getTaskDeliveryBinding(task.parent_task_id);
+    // Restore legacy ownership through the same ready-startup proof resolver
+    // used by integration. This does not scan or freeze the parent's Git tree.
+    const hierarchy = new TaskWorktreeHierarchyService({ store: this.store });
+    const binding = this.store.getTaskDeliveryBinding(task.parent_task_id)
+      ?? hierarchy.resolveTaskDelivery(task.parent_task_id).binding;
     const parent = this.store.getGitWorktree(binding.worktree_id);
-    const parentPath = parent.canonicalPath || parent.path;
+    const parentPath = parent?.canonicalPath || parent?.path;
     const repository = this.store.getGitRepository(binding.repository_id);
+    if (!parentPath || parent.availability !== "available" || !repository?.commonGitDirCanonicalPath) {
+      throw hierarchy.deliveryFailure(this.store.getTask(task.parent_task_id), binding, "WORKTREE_UNAVAILABLE");
+    }
     const configured = typeof this.taskWorktreesRoot === "function"
       ? this.taskWorktreesRoot({ repositoryId: binding.repository_id, taskId: task.id, mainPath: parentPath })
       : this.taskWorktreesRoot;

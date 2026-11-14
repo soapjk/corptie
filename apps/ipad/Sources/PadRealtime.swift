@@ -473,13 +473,7 @@ extension PadWorkspace {
                 authoritativeItemIDs: authoritativeItemIDs,
                 supplementalItemIDs: supplementalItemIDs)
             markTimelineAuthoritative(connection, sessionIDs: [id, caps.sessionId, page.sessionId])
-            await loadUsage(api, sessionID: id, routedID: caps.sessionId, generation: generation)
-            guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
-            if caps.composer == true, composerConfiguration == nil
-                || (caps.currentModel != nil && caps.currentModel != composerConfiguration?.currentModel)
-                || (caps.currentReasoningLevel != nil && caps.currentReasoningLevel != composerConfiguration?.currentReasoningLevel) {
-                await configureComposer(connection)
-            }
+
         } catch ClientConnectionError.httpStatus(404) {
             guard selection == id, generation == timelineGeneration else { return }
             clearSelectionState()

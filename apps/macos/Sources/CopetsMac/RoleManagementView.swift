@@ -25,11 +25,6 @@ enum RolesSkillsLayoutMetrics {
         mode(for: width) == .split && sidebarVisible && preference && !sheetPresented
     }
 
-    static func gridColumnCount(for width: CGFloat) -> Int {
-        guard width.isFinite else { return 1 }
-        return max(1, Int(floor(max(0, width - 16) / 276)))
-    }
-
     static func sheetSize(in availableSize: CGSize, ideal: CGSize) -> CGSize {
         CGSize(
             width: max(1, min(ideal.width, availableSize.width - 32)),
@@ -78,7 +73,9 @@ struct RoleManagementView: View {
     @AppStorage("ui.roles.showSkills", store: CorptieAppEnvironment.userDefaults) private
         var showsSkillsColumn = true
     @State private var isShowingMcpSheet = false
-    @State private var selectedRoleForDetail: Role?
+    @State private var expandedRoleID: String?
+    @State private var editDrafts: [String: RoleEditDraft] = [:]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var roleForSessionCreation: Role?
     @State private var pendingSkillDeletion: SkillDeletionImpact?
     @State private var skillDeletionError: String?
@@ -94,7 +91,7 @@ struct RoleManagementView: View {
 
     private var hasModal: Bool {
         isCreatingRole || isShowingSkillsSheet || isShowingMcpSheet || isRegisteringSkill
-            || selectedRoleForDetail != nil || roleForSessionCreation != nil
+            || roleForSessionCreation != nil
             || pendingSkillDeletion != nil || skillDeletionError != nil
     }
 
@@ -135,13 +132,6 @@ struct RoleManagementView: View {
         .background(WorkbenchStyle.canvas.ignoresSafeArea(.container, edges: .vertical))
         .ignoresSafeArea(.container, edges: .top)
         .sheet(isPresented: $isCreatingRole) { RoleCreateView() }
-        .sheet(item: $selectedRoleForDetail, onDismiss: restoreRoleFocus) { role in
-            if let current = registry.roles.first(where: { $0.id == role.id }) {
-                RoleDetailView(agent: current)
-            } else {
-                missingRoleView
-            }
-        }
         .sheet(item: $roleForSessionCreation, onDismiss: restoreRoleFocus) { role in
             if let current = registry.roles.first(where: { $0.id == role.id }) {
                 NewSessionCreationSheet(fixedAgent: current) { session in
@@ -189,9 +179,6 @@ struct RoleManagementView: View {
     private func rolesColumn(width: CGFloat, inlineSkills: Bool, canInlineSkills: Bool) -> some View
     {
         let matches = registry.matchingRoles(roleQuery)
-        let columns = Array(
-            repeating: GridItem(.flexible(minimum: 0), spacing: 16),
-            count: RolesSkillsLayoutMetrics.gridColumnCount(for: width))
         return VStack(alignment: .leading, spacing: 0) {
             rolesHeader(width: width, inlineSkills: inlineSkills, canInlineSkills: canInlineSkills)
             Text(
@@ -240,11 +227,16 @@ struct RoleManagementView: View {
                 if matches.isEmpty {
                     noMatchesView(title: "No matching roles", clear: { roleQuery = "" })
                 } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
-                            ForEach(matches) { role in roleCard(role) }
-                        }.padding(16)
+                    ScrollView([.horizontal, .vertical]) {
+                        RoleCardCanvasLayout() {
+                            ForEach(matches) { role in roleCard(role, availableWidth: width - 32) }
+                        }
+                        .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: expandedRoleID)
+                        .padding(16)
+                        .frame(minWidth: max(0, width), minHeight: 320, alignment: .topLeading)
+                        .background { Color.clear.contentShape(Rectangle()).onTapGesture { expandedRoleID = nil } }
                     }
+                    .background { WorkbenchStyle.canvas.onTapGesture { expandedRoleID = nil } }
                     .accessibilityIdentifier("roles-grid")
                 }
             }
@@ -451,7 +443,7 @@ struct RoleManagementView: View {
             Text(L10n("The registry was updated. Return to choose another role."))
         } actions: {
             Button(L10n("Close")) {
-                selectedRoleForDetail = nil
+                expandedRoleID = nil
                 roleForSessionCreation = nil
             }.keyboardShortcut(.cancelAction)
         }
@@ -516,12 +508,15 @@ struct RoleManagementView: View {
             )
     }
 
-    private func roleCard(_ role: Role) -> some View {
+    private func roleCard(_ role: Role, availableWidth: CGFloat) -> some View {
         RoleCard(
-            agent: role, canStartSession: registry.isReachable, focusedRoleID: $focusedRoleID,
+            agent: role, expanded: expandedRoleID == role.id,
+            expandedWidth: min(600, max(136, availableWidth)),
+            draft: editDrafts[role.id], onCollapse: { expandedRoleID = nil },
+            canStartSession: registry.isReachable, focusedRoleID: $focusedRoleID,
             onOpenDetail: {
                 returnRoleID = role.id
-                selectedRoleForDetail = role
+                expand(role)
             },
             onStartSession: {
                 returnRoleID = role.id
@@ -536,7 +531,7 @@ struct RoleManagementView: View {
             .disabled(role.status == "unavailable" || !registry.isReachable)
             Button(L10n("打开详情")) {
                 returnRoleID = role.id
-                selectedRoleForDetail = role
+                expand(role)
             }
             Divider()
             Button {
@@ -547,6 +542,11 @@ struct RoleManagementView: View {
             }
         }
     }
+    private func expand(_ role: Role) {
+        if editDrafts[role.id] == nil { editDrafts[role.id] = RoleEditDraft(agent: role) }
+        expandedRoleID = role.id
+    }
+
 }
 
 struct SkillRegistryRow: View {
@@ -598,91 +598,177 @@ struct SkillRegistryRow: View {
     }
 }
 
+struct RoleCardExpandedKey: LayoutValueKey {
+    static let defaultValue = false
+}
+
+/// A fixed four-column starting canvas. Viewport resizing never rearranges
+/// its coordinates. Only the open card is measured; local vertical clearance
+/// resolves collisions without a packing pass or a geometry/state feedback loop.
+struct RoleCardCanvasLayout: Layout {
+    static let columns = 4
+    private let side: CGFloat = 136
+    private let spacing: CGFloat = 12
+
+    struct Cache {
+        var frames: [CGRect]?
+        var size: CGSize = .zero
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache = Cache() }
+
+    private func measure(subviews: Subviews, cache: inout Cache) {
+        guard cache.frames == nil else { return }
+        func origin(_ index: Int) -> CGPoint {
+            CGPoint(x: CGFloat(index % Self.columns) * (side + spacing),
+                    y: CGFloat(index / Self.columns) * (side + spacing))
+        }
+        let selected = subviews.indices.first(where: { subviews[$0][RoleCardExpandedKey.self] })
+        let expanded = selected.map { index in
+            CGRect(origin: origin(index), size: subviews[index].sizeThatFits(
+                ProposedViewSize(width: 600, height: nil)))
+        }
+        var nextY = Array(repeating: CGFloat.zero, count: Self.columns)
+        let frames = subviews.indices.map { index -> CGRect in
+            if index == selected, let expanded { return expanded }
+            let column = index % Self.columns
+            var point = origin(index)
+            point.y = max(point.y, nextY[column])
+            var frame = CGRect(origin: point, size: CGSize(width: side, height: side))
+            if let expanded, frame.intersects(expanded.insetBy(dx: -spacing, dy: -spacing)) {
+                frame.origin.y = expanded.maxY + spacing
+            }
+            nextY[column] = frame.maxY + spacing
+            return frame
+        }
+        cache.frames = frames
+        cache.size = CGSize(width: frames.map(\.maxX).max() ?? 0,
+                            height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        measure(subviews: subviews, cache: &cache)
+        return cache.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        measure(subviews: subviews, cache: &cache)
+        for (view, frame) in zip(subviews, cache.frames ?? []) {
+            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                       proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+/// Bounded only vertically: short roles keep their intrinsic height, while
+/// descriptions and the existing editor share one native scroll viewport.
+struct RoleExpandedCardViewport<Content: View>: View {
+    var allowsNaturalHeight = true
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            if allowsNaturalHeight {
+                content().fixedSize(horizontal: false, vertical: true)
+            }
+            ScrollView(.vertical) {
+                content()
+            }
+            .frame(height: 560)
+            .accessibilityIdentifier("role-expanded-scroll")
+        }
+        .frame(maxWidth: .infinity, maxHeight: 560, alignment: .topLeading)
+    }
+}
+
 struct RoleCard: View {
     let agent: Role
+    var expanded = false
+    var expandedWidth: CGFloat = 600
+    var draft: RoleEditDraft?
+    var onCollapse: () -> Void = {}
     var canStartSession = true
     @FocusState.Binding var focusedRoleID: String?
     let onOpenDetail: () -> Void
     let onStartSession: () -> Void
+    @State private var isEditing = false
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        ZStack {
-            // A separate native button covers the card. Footer and popover
-            // buttons are siblings, never nested buttons or bubbling gestures.
-            Button(action: onOpenDetail) {
-                Color.clear.contentShape(RoundedRectangle(cornerRadius: 12))
-            }
-            .buttonStyle(.plain).focused($focusedRoleID, equals: agent.id)
-            .onKeyPress(.return) {
-                onOpenDetail()
-                return .handled
-            }
-            .accessibilityLabel(L10nFormat("Open details for %@", agent.name))
-            .accessibilityIdentifier("role-detail-\(agent.id)")
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 10) {
-                    avatar
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(agent.name).font(WorkbenchTypography.font(for: .cardTitle)).lineLimit(
-                            1
-                        ).help(
-                            agent.name)
-                        Text(
-                            L10n(
-                                agent.isPlatformAssistant
-                                    ? "Platform managed" : "Available for chat and tasks")
-                        )
-                        .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 12) {
+            if expanded {
+                RoleExpandedCardViewport(allowsNaturalHeight: !isEditing) {
+                    expandedContent
                 }
-                .frame(minHeight: 40, alignment: .top).allowsHitTesting(false)
-                Text(agent.description.isEmpty ? L10n("No description") : agent.description)
-                    .font(WorkbenchTypography.font(for: .help)).foregroundStyle(.secondary)
-                    .lineLimit(3).frame(maxWidth: .infinity, minHeight: 54, alignment: .topLeading)
-                    .padding(.top, 8).allowsHitTesting(false)
-                FlowTags(tags: agent.capabilities).padding(.top, 8)
-                Spacer(minLength: 10)
-                HStack(spacing: 8) {
-                    if agent.status == "unavailable" {
-                        Label(L10n("Unavailable"), systemImage: "exclamationmark.circle")
-                            .font(WorkbenchTypography.font(for: .metadata)).foregroundStyle(.red)
-                            .lineLimit(1)
-                            .help(agent.statusReason ?? L10n("Unavailable"))
-                            .accessibilityLabel(agent.statusReason ?? L10n("Unavailable"))
+            } else {
+                Button(action: onOpenDetail) {
+                    VStack(spacing: 7) {
+                        RoleCardAvatar(role: agent)
+                        Text(agent.name).font(WorkbenchTypography.font(for: .cardTitle))
+                            .lineLimit(1).truncationMode(.tail).help(agent.name)
+                        Text(agent.description).font(WorkbenchTypography.font(for: .help))
+                            .foregroundStyle(.secondary).lineLimit(2).truncationMode(.tail)
                     }
-                    Spacer(minLength: 0)
-                    Button(action: onStartSession) {
-                        Label(L10n("开始新会话"), systemImage: "bubble.left.and.bubble.right")
-                    }
-                    .buttonStyle(.bordered).frame(minHeight: 28)
-                    .disabled(agent.status == "unavailable" || !canStartSession)
-                    .accessibilityIdentifier("role-start-\(agent.id)")
+                    .multilineTextAlignment(.center)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .contentShape(Rectangle())
                 }
-            }.padding(16)
+                .buttonStyle(.plain).focused($focusedRoleID, equals: agent.id)
+                .accessibilityLabel(L10nFormat("Open details for %@", agent.name))
+                .accessibilityIdentifier("role-detail-\(agent.id)")
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 268, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(width: expanded ? expandedWidth : 136, height: expanded ? nil : 136, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor))
+                .onTapGesture { }
+        }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    focusedRoleID == agent.id
-                        ? Color.accentColor
-                        : Color(
-                            nsColor: contrast == .increased
-                                ? .separatorColor : .quaternaryLabelColor),
-                    lineWidth: focusedRoleID == agent.id ? 2 : 1
-                )
+            RoundedRectangle(cornerRadius: 14).strokeBorder(
+                focusedRoleID == agent.id ? Color.accentColor : Color(nsColor:
+                    contrast == .increased ? .separatorColor : .quaternaryLabelColor), lineWidth: 1)
                 .allowsHitTesting(false)
         }
+        .clipped()
+        .geometryGroup()
+        .layoutValue(key: RoleCardExpandedKey.self, value: expanded)
+    }
+    private var expandedContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                RoleCardAvatar(role: agent)
+                Text(agent.name).font(WorkbenchTypography.font(for: .cardTitle))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button(L10n("完成"), action: onCollapse)
+                    .accessibilityIdentifier("role-collapse-\(agent.id)")
+            }
+            Text(agent.description).font(WorkbenchTypography.font(for: .help))
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if !agent.capabilities.isEmpty { FlowTags(tags: agent.capabilities) }
+            if agent.status == "unavailable" {
+                Text(agent.statusReason ?? L10n("Unavailable")).font(.caption).foregroundStyle(.red)
+            }
+            HStack {
+                Button(L10n("编辑")) { isEditing.toggle() }
+                    .accessibilityIdentifier("role-edit-\(agent.id)")
+                Spacer(minLength: 0)
+                Button(L10n("开始新会话"), action: onStartSession)
+                    .disabled(agent.status == "unavailable" || !canStartSession)
+                    .accessibilityIdentifier("role-start-\(agent.id)")
+            }
+            if isEditing, let draft {
+                Divider()
+                RoleDetailView(agent: agent, draft: draft, embedded: true, onClose: { isEditing = false })
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
     }
 
-    private var avatar: some View {
-        RoleCardAvatar(role: agent)
-    }
 }
 
 struct RoleCardAvatar: View {
@@ -692,17 +778,20 @@ struct RoleCardAvatar: View {
 
     var body: some View {
         Group {
-            if let image {
+            if let builtin = BuiltinRoleAvatarImage.image(for: role.resolvedAvatarPath) {
+                Image(nsImage: builtin).resizable().scaledToFill()
+            } else if let image {
                 Image(nsImage: image).resizable().scaledToFill()
             } else {
-                DefaultInitialAvatarView(
-                    familySeed: role.name, variationSeed: role.roleId,
-                    initials: DefaultAvatarInitials.make(from: role.name), size: size)
+                Image(nsImage: BuiltinRoleAvatarImage.image(for:
+                    BuiltinRoleAvatarCatalog.defaultReference(roleID: role.roleId))!)
+                    .resizable().scaledToFill()
             }
         }.frame(width: size, height: size).clipShape(Circle()).accessibilityHidden(true)
-            .task(id: role.avatarPath) {
+            .task(id: role.resolvedAvatarPath) {
                 // Static thumbnails; loading is tied to the path, never body evaluation.
-                image = role.avatarPath.flatMap { AvatarImageSupport.loadImage(at: $0) }
+                guard BuiltinRoleAvatarCatalog.id(from: role.resolvedAvatarPath) == nil else { return }
+                image = AvatarImageSupport.displayImage(at: role.resolvedAvatarPath)
             }
     }
 }

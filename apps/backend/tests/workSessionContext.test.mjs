@@ -53,7 +53,7 @@ test("Artifact directory changes do not affect context while Task updates remain
   assert.doesNotMatch(changedIndex.context.prompt, /Original scope|authoritative Task binding/);
   assert.match(changedIndex.context.prompt, /<direct>current<\/direct>/);
   changedIndex.commit();
-  task.description = "Revised scope"; task.revision = 2;
+  task.title = "Revised scope"; task.revision = 2;
   const revised = cache.prepare(reference, build("Artifact two"), policy);
   assert.match(revised.context.prompt, /Revised scope/);
   assert.match(revised.context.prompt, /"revision":2/);
@@ -96,12 +96,12 @@ test("Worker Session context preserves normal handling for in-scope requests", (
   assert.equal(context.prompt.split("Corptie programmatically binds the Task Worktree.").length - 1, 1);
   assert.match(context.prompt, /Handle requests within the bound Task scope normally/);
   assert.match(context.prompt, /Strict association validation/);
-  assert.match(context.prompt, /No partial writes/);
+  assert.doesNotMatch(context.prompt, /No partial writes/);
   assert.doesNotMatch(context.prompt, /"goal":/);
   assert.match(context.prompt, /corptie_task_revise/);
   assert.match(context.prompt, /never weaken acceptance criteria merely to claim success/);
   assert.match(context.prompt, /must not treat a generated summary as user authorization/);
-  assert.match(context.prompt, /"verificationCriteria":"Run the focused test\."/);
+  assert.doesNotMatch(context.prompt, /"verificationCriteria":/);
   assert.match(context.prompt, /"revision":3,"resourceVersion":7/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
   assert.match(context.prompt, /corptie_artifact_create/);
@@ -169,8 +169,8 @@ test("Worker Session context includes its bound Task and Work details", () => {
   });
 
   assert.match(context.prompt, /Strict association validation/);
-  assert.match(context.prompt, /No partial writes/);
-  assert.match(context.prompt, /"description":"Reject invalid bindings\."/);
+  assert.doesNotMatch(context.prompt, /No partial writes/);
+  assert.doesNotMatch(context.prompt, /"description":|"acceptanceCriteria":/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
   assert.match(context.prompt, /corptie_artifact_create/);
   assert.match(context.prompt, /scope=task/);
@@ -204,7 +204,7 @@ test("Worker Session context prefers applied project-code tools with bounded fal
   assert.match(context.prompt, /does not apply to builds, tests, Git operations/);
 });
 
-test("detailed multilingual Task context fits the Provider-safe Worker budget", () => {
+test("compact multilingual Task context omits retired definition fields", () => {
   const requirement = "远程 Workspace 与 Worktree 必须保持 Provider-neutral、隔离、可恢复，并验证断线与取消。\n";
   const acceptance = "远端命令、Git、构建测试和进程管理必须在绑定 Worktree 内执行，不能静默回退本机。\n";
   const context = buildWorkSessionContext({
@@ -231,7 +231,7 @@ test("detailed multilingual Task context fits the Provider-safe Worker budget", 
 
   assert.ok(Buffer.byteLength(context.prompt) > 7_168);
   assert.match(context.prompt, /SSH远程Workspace与远端Worktree统一管理/);
-  assert.match(context.prompt, /不能静默回退本机/);
+  assert.doesNotMatch(context.prompt, /不能静默回退本机|远程 Workspace 与 Worktree 必须/);
 });
 
 test("Worker Session context does not advertise an unapplied project-code domain", () => {
@@ -269,14 +269,15 @@ test("Turn-level merging preserves required Skill MCP routing context", () => {
 });
 test("required pinned Artifacts are non-truncatable and incomplete core context fails closed", () => {
   const task = {
-    id: "task:strict", work_id: "work:quality", title: "Strict", description: "x".repeat(32_768),
+    id: "task:strict", work_id: "work:quality", title: "x".repeat(32_768), description: "Retired description",
     acceptance_criteria: "Must remain complete", revision: 1, resource_version: 1
   };
   const large = buildWorkSessionContext({
     session: { id: "session:strict", sessionKind: "worker", taskId: task.id, workId: task.work_id }, task,
     artifactIndex: { items: [{ artifactId: "artifact:required", required: true, pinnedVersion: 2, contentHash: "b".repeat(64) }] }
   });
-  assert.ok(large.prompt.includes(task.description));
+  assert.ok(large.prompt.includes(task.title));
+  assert.ok(!large.prompt.includes(task.description));
   assert.ok(large.prompt.includes("artifact:required"));
   assert.ok(Buffer.byteLength(large.prompt) > 32768);
 
@@ -311,7 +312,8 @@ test("optional Artifact directories are never delivered alongside a complete Tas
   const task = { id: "task:large", work_id: "work:large", title: "Large", description: "定义".repeat(40000), revision: 1, resource_version: 1 };
   const items = Array.from({ length: 100 }, (_, i) => ({ artifactId: `artifact:${i}`, title: "Artifact".repeat(100), required: i === 0 }));
   const result = buildWorkSessionContext({ session: { id: "s", sessionKind: "worker", taskId: task.id, workId: task.work_id }, task, artifactIndex: { items } });
-  assert.ok(result.prompt.includes(task.description));
+  assert.ok(result.prompt.includes(JSON.stringify({ id: task.id, workId: task.work_id, title: task.title, revision: task.revision, resourceVersion: task.resource_version })));
+  assert.ok(!result.prompt.includes(task.description));
   assert.ok(result.prompt.includes(items[0].artifactId));
   for (const item of items.slice(1)) assert.ok(!result.prompt.includes(`\"artifactId\":\"${item.artifactId}\"`));
 });

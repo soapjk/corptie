@@ -292,6 +292,12 @@ private struct NativeBusinessCard: View {
                     perform(action, ["coordinationEnabled": .bool(enabled)])
                 }
                 .disabled(action.map { !canCommand($0) } ?? true)
+            if let shadow = value.coordinationExecution?.shadow {
+                let recovery = command("task.shadow.recover", target: value.taskId)
+                ShadowCoordinationStatus(shadow: shadow, canRecover: recovery.map { canCommand($0) } ?? false) {
+                    if let recovery { perform(recovery, [:]) }
+                }
+            }
         case .artifacts(let list):
             listContainer(count: list.items.count) {
                 ForEach(list.items) { row in

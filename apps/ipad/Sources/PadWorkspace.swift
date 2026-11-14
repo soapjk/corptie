@@ -1183,6 +1183,7 @@ final class PadWorkspace {
     }
     var composerConfiguration: ClientComposerConfiguration?
     var commandCatalog: ClientConversationCommandCatalog?
+    @ObservationIgnored private var composerWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     var configuringComposer = false
     var composerGeneration = 0
     var importingImagesForSession: String?
@@ -1358,6 +1359,10 @@ final class PadWorkspace {
 
     private func authorityScope(_ connection: PadConnection) -> String {
         "\(connection.serverID)|\(connection.deviceID ?? "")|\(connection.recoveryRevision)"
+    }
+
+    private func presentationScope(_ connection: PadConnection) -> String {
+        "\(authorityScope(connection))|\(connection.address)|\(connection.connected)|\(connection.deliveryTransportGeneration)"
     }
 
     func synchronizeTimelineAuthorityScope(_ connection: PadConnection) {
@@ -1573,6 +1578,7 @@ final class PadWorkspace {
     var realtimeStateRevision = 0
     var scrollRequest = 0
     var timelineGeneration = 0
+    @ObservationIgnored private var inventoryLoading = false
     var inventoryGeneration = 0
     var realtimeGeneration: UUID?
     var inventoryDirty = false
@@ -1724,7 +1730,11 @@ final class PadWorkspace {
     }
 
     func inventory(_ connection: PadConnection, more: Bool = false) async {
-        await connection.perform {
+        guard !inventoryLoading, connection.connected else { return }
+        inventoryLoading = true
+        defer { inventoryLoading = false }
+        let scope = presentationScope(connection)
+        await connection.perform(independent: true) {
             inventoryGeneration += 1
             let generation = inventoryGeneration
             let api = ClientInventory(transport: try await connection.transport())
@@ -1732,19 +1742,19 @@ final class PadWorkspace {
             repeat {
                 if !fetchMore || workCursor != nil {
                     let page = try await api.works(cursor: fetchMore ? workCursor : nil)
-                    guard generation == inventoryGeneration, !Task.isCancelled else { return }
+                    guard generation == inventoryGeneration, !Task.isCancelled, presentationScope(connection) == scope else { return }
                     works = Self.merge(fetchMore ? works : [], page.items)
                     workCursor = page.nextCursor
                 }
                 if !fetchMore || taskCursor != nil {
                     let page = try await api.tasks(cursor: fetchMore ? taskCursor : nil)
-                    guard generation == inventoryGeneration, !Task.isCancelled else { return }
+                    guard generation == inventoryGeneration, !Task.isCancelled, presentationScope(connection) == scope else { return }
                     tasks = Self.merge(fetchMore ? tasks : [], page.items)
                     taskCursor = page.nextCursor
                 }
                 if !fetchMore || sessionCursor != nil {
                     let page = try await api.sessions(cursor: fetchMore ? sessionCursor : nil)
-                    guard generation == inventoryGeneration, !Task.isCancelled else { return }
+                    guard generation == inventoryGeneration, !Task.isCancelled, presentationScope(connection) == scope else { return }
                     sessions = Self.merge(fetchMore ? sessions : [], page.items)
                     sessionCursor = page.nextCursor
                 }
@@ -1997,13 +2007,6 @@ final class PadWorkspace {
                 isLoadingDetail = false
             }
             saveResidentState(for: id)
-            if !older, caps.composer == true, composerConfiguration == nil {
-                await configureComposer(connection)
-            }
-            if !older, caps.readMessages, commandCatalog == nil {
-                await loadCommandCatalog(connection)
-            }
-            if !older { await loadUsage(api, sessionID: id, routedID: caps.sessionId, generation: generation) }
         } catch is CancellationError {
             return
         } catch {
@@ -2050,6 +2053,47 @@ final class PadWorkspace {
         isLoadingDetail = false
     }
 
+    func presentationReadKey(_ connection: PadConnection) -> String {
+        "\(selection ?? "")|\(presentationScope(connection))|\(timelineGeneration)|\(messageRevision)|\(capabilities?.composer == true)|\(capabilities?.currentModel ?? "")|\(capabilities?.currentReasoningLevel ?? "")"
+    }
+
+    /// View-owned, cancellable presentation reads. No inventory traversal or
+    /// send readiness work is scheduled here; each endpoint can finish independently.
+    func loadPresentation(_ connection: PadConnection) async {
+        guard let id = selection, connection.connected else { return }
+        let scope = presentationScope(connection)
+        let generation = timelineGeneration
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            guard !Task.isCancelled, selection == id, generation == timelineGeneration,
+                  presentationScope(connection) == scope else { return }
+            async let usage: Void = loadUsage(api, sessionID: id, routedID: capabilities?.sessionId ?? id, generation: generation, connection: connection)
+            async let catalog: Void = loadMissingCommandCatalog(connection)
+            async let composer: Void = loadComposerPresentation(connection)
+            _ = await (usage, catalog, composer)
+        } catch { }
+    }
+
+    private func loadMissingCommandCatalog(_ connection: PadConnection) async {
+        guard commandCatalog == nil, capabilities?.readMessages == true else { return }
+        await loadCommandCatalog(connection)
+    }
+
+    private func loadComposerPresentation(_ connection: PadConnection) async {
+        guard capabilities?.composer == true,
+              composerConfiguration == nil
+                || capabilities?.currentModel != composerConfiguration?.currentModel
+                || capabilities?.currentReasoningLevel != composerConfiguration?.currentReasoningLevel else { return }
+        await configureComposer(connection)
+    }
+
+    func sendControlEnabled(_ connection: PadConnection, sessionID: String) -> Bool {
+        selection == sessionID && connection.connected && connection.networkAvailable
+            && connection.recoveryBlockedMessage == nil && !connection.busy
+            && pending == nil && !outboxSaving && capabilities?.send.available == true
+            && importingImagesForSession != sessionID
+    }
+
     /// Compatibility repair for hosts whose resident snapshots omit usage.
     /// Never refresh an already populated value or start a polling loop.
     func repairMissingUsage(_ connection: PadConnection) async {
@@ -2065,18 +2109,21 @@ final class PadWorkspace {
 
     /// One usage read per applied timeline window (desktop refreshes after each
     /// live usage burst). Hosts without a usage reader answer 409; that clears it.
-    func loadUsage(_ api: ClientSessionAPI, sessionID: String, routedID: String, generation: Int) async {
+    func loadUsage(_ api: ClientSessionAPI, sessionID: String, routedID: String, generation: Int, connection: PadConnection? = nil) async {
+        let scope = connection.map { presentationScope($0) }
         guard usageRevision != messageRevision else { return }
         let revision = messageRevision
         do {
             let snapshot = try await api.usage(sessionId: routedID)
-            guard !Task.isCancelled, selection == sessionID, generation == timelineGeneration else { return }
+            guard !Task.isCancelled, selection == sessionID, generation == timelineGeneration,
+                  connection.map({ presentationScope($0) }) == scope else { return }
             usageRevision = revision
             applyUsage(snapshot, authoritative: true)
         } catch is CancellationError {
             return
         } catch let failure as ClientServiceFailure where failure.code == "CAPABILITY_UNSUPPORTED" {
-            guard selection == sessionID, generation == timelineGeneration else { return }
+            guard selection == sessionID, generation == timelineGeneration,
+                  connection.map({ presentationScope($0) }) == scope else { return }
             usageRevision = revision
             selectedSessionUsage = nil
         } catch {
@@ -2113,38 +2160,71 @@ final class PadWorkspace {
     func loadCommandCatalog(_ connection: PadConnection) async {
         guard let id = selection else { return }
         let routedID = capabilities?.sessionId ?? id
+        let scope = presentationScope(connection)
         let generation = timelineGeneration
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())
             let catalog = try await api.commandCatalog(sessionId: routedID)
-            guard selection == id, generation == timelineGeneration, !Task.isCancelled else { return }
+            guard presentationScope(connection) == scope, selection == id, generation == timelineGeneration, !Task.isCancelled else { return }
             commandCatalog = catalog
         } catch {
             // Non-blocking: catalog is an enhancement for discovery and suggestions
         }
     }
 
+    /// A replacement view task must wait for a cancelled reader to release its
+    /// lease instead of silently dropping the replacement read. Cancelled waiters
+    /// are removed promptly, so message bursts cannot accumulate suspended tasks.
+    private func waitForComposerReader() async {
+        let token = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume() }
+                else { composerWaiters[token] = continuation }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.composerWaiters.removeValue(forKey: token)?.resume()
+            }
+        }
+    }
+
     func configureComposer(_ connection: PadConnection, update: [String: String]? = nil) async {
-        guard let id = selection, !configuringComposer, capabilities?.composer == true else { return }
+        guard let id = selection, capabilities?.composer == true else { return }
+        let scope = presentationScope(connection)
+        // Keep explicit mutation submissions single-flight. Only presentation
+        // reads wait; they never retry a POST or acquire the global connection busy.
+        if update != nil, configuringComposer { return }
+        while configuringComposer {
+            await waitForComposerReader()
+            guard !Task.isCancelled, selection == id, presentationScope(connection) == scope else { return }
+        }
+        guard !Task.isCancelled, selection == id, presentationScope(connection) == scope else { return }
         let routedID = capabilities?.sessionId ?? id
         composerGeneration += 1
         let generation = composerGeneration
         configuringComposer = true
-        defer { if generation == composerGeneration { configuringComposer = false } }
+        defer {
+            if generation == composerGeneration { configuringComposer = false }
+            let waiters = composerWaiters.values
+            composerWaiters = [:]
+            for waiter in waiters { waiter.resume() }
+        }
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())
             let result = try await api.composer(sessionId: routedID, update: update)
-            guard selection == id, generation == composerGeneration, !Task.isCancelled else { return }
+            guard presentationScope(connection) == scope, selection == id, generation == composerGeneration, !Task.isCancelled else { return }
             composerConfiguration = result
             clearConversationReadNotice(update == nil ? .composer : .updateComposer)
         } catch {
-            guard selection == id, generation == composerGeneration, !Task.isCancelled else { return }
+            guard presentationScope(connection) == scope, selection == id, generation == composerGeneration, !Task.isCancelled else { return }
             reportConversationReadFailure(error, operation: update == nil ? .composer : .updateComposer)
         }
     }
 
     func command(_ connection: PadConnection, stop: Bool, schedule: ClientMessageSchedule? = nil,
-                 confirmation: CommandConfirmation? = nil, suggestedReply: String? = nil) async {
+                 confirmation: CommandConfirmation? = nil, suggestedReply: String? = nil, expectedSessionID: String? = nil) async {
+        guard expectedSessionID == nil || selection == expectedSessionID else { return }
         if stop {
             guard !stopSubmissionInFlight, selectedSessionIsRunning,
                   capabilities?.stop.available == true,
@@ -2170,6 +2250,7 @@ final class PadWorkspace {
         }
         guard stop || ((!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && text.utf16.count <= 16000) else { return }
         if !stop, slashCommand == nil, schedule == nil {
+            guard sendControlEnabled(connection, sessionID: id) else { return }
             guard capabilities?.reliableMessages?.version == 1,
                   capabilities?.reliableMessages?.messageIdentityVersion == 2 else {
                 status = "后端尚未提供身份一致的可靠发送，请更新 Mac 正式版并重新连接。消息仍保留在草稿中。"

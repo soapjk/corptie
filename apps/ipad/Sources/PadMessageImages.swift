@@ -87,7 +87,7 @@ struct PadResourceQuickLook: UIViewControllerRepresentable {
 @MainActor @Observable
 final class PadMessageImageStore {
     enum Entry: Equatable { case loading, loaded(UIImage), missing }
-    /// 88pt @3x is 264px; 320px keeps the thumbnail crisp without keeping the original raster.
+    /// Server previews are capped at 1024px and never contain original bytes.
     nonisolated static let thumbnailEdge: CGFloat = 1024
     nonisolated static let capacity = 160
 
@@ -152,10 +152,11 @@ final class PadMessageImageStore {
             pending.removeAll { $0.0 == evicted }
             totalBytes -= byteCosts.removeValue(forKey: evicted) ?? 0
         }
+        let resource = Self.resource(sessionID: sessionID, path: managedPath, itemID: itemID)
+        if case .publicRemote = resource.source { entries[key] = .missing; return }
         pending.append((key, {
                 do {
-                    let resource = Self.resource(sessionID: sessionID, path: managedPath, itemID: itemID)
-                    let data = try await connection.messageImageData(resource)
+                    let data = try await connection.messageImageData(resource.withVariant(.preview))
                     return await self.decodeAndRemember(data, key: key)
                 } catch { return nil }
         }))
@@ -228,9 +229,10 @@ final class PadMessageImageStore {
 
     nonisolated private static func decodePayload(_ data: Data) async -> (CGImage?, MessageImageGeometry?) {
         await Task.detached(priority: .utility) { () -> (CGImage?, MessageImageGeometry?) in
-            guard !data.isEmpty, data.count <= 20 * 1024 * 1024,
+            guard !data.isEmpty, data.count <= 300 * 1024,
                   let source = CGImageSourceCreateWithData(data as CFData, nil) else { return (nil, nil) }
             let geometry = MessageImageGeometry.read(source)
+            guard let geometry, max(geometry.pixelWidth, geometry.pixelHeight) <= 1024 else { return (nil, nil) }
             let bitmap = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,

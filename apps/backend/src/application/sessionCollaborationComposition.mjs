@@ -1,7 +1,7 @@
 import { SessionCollaborationService } from "./sessionCollaborationService.mjs";
 
 // Server creates collaboration before startup composition is available. Resolve
-// both operations at call time; never capture the initially-null service or
+// operations at call time; never capture the initially-null service or
 // replace its synchronous, authoritative binding proof with a synthetic one.
 export function createSessionCollaborationComposition({ getWorkSessionStartApplicationService, ...options }) {
   if (typeof getWorkSessionStartApplicationService !== "function") {
@@ -21,6 +21,7 @@ export function createSessionCollaborationComposition({ getWorkSessionStartAppli
     ...options,
     workSessionStartApplicationService: {
       start: (command) => resolve("start").start(command),
+      resumeTaskStartup: (command) => resolve("resumeTaskStartup").resumeTaskStartup(command),
       getSessionBinding: (logicalSessionId) => resolve("getSessionBinding").getSessionBinding(logicalSessionId)
     }
   });

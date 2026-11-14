@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400" role="img" aria-label="像素游戏 · 探索机器人"><title>像素游戏 · 探索机器人</title><rect width="400" height="400" fill="#20243e"/><g fill="#424867"><path d="M32 48h8v8h-8ZM344 80h8v8h-8ZM48 264h8v8h-8ZM336 304h8v8h-8ZM296 32h8v8h-8Z"/><path d="M64 96h8v24h-8ZM56 104h24v8H56Z"/></g>
+<g shape-rendering="crispEdges" transform="translate(40 24) scale(8)">
+<path d="M18 1h4v3h-4ZM19 4h2v5h-2Z" fill="#f4b361"/><path d="M18 1h2v2h-2Z" fill="#fff0bd"/>
+<path d="M10 9h20v2h3v3h2v14h-3v3H8v-3H5V14h2v-3h3Z" fill="#101b31"/>
+<path d="M10 10h20v2h2v3h2v12h-3v3H9v-3H6V15h2v-3h2Z" fill="#afcbd1"/>
+<path d="M11 10h17v2H10v3H8v11H6V15h2v-3h3Z" fill="#e7f4df"/>
+<path d="M30 12h2v3h2v12h-3v3H10v-2h18v-3h3V15h-1Z" fill="#7295ac"/>
+<path d="M10 15h20v12H10Z" fill="#1e3c55"/><path d="M11 16h18v10H11Z" fill="#173047"/><path d="M12 17h6v2h-6Z" fill="#29516a"/>
+<path d="M13 20h4v4h-4ZM23 20h4v4h-4Z" fill="#80efd3"/><path d="M13 20h2v1h-2ZM23 20h2v1h-2Z" fill="#e1ffed"/>
+<path d="M3 17h3v8H3ZM34 17h3v8h-3Z" fill="#de8960"/><path d="M3 17h1v6H3ZM34 17h1v6h-1Z" fill="#ffc489"/>
+<path d="M17 31h6v2h-6Z" fill="#7295ac"/><path d="M10 33h20v2h3v10H7V35h3Z" fill="#dc8860"/>
+<path d="M10 33h6v2h-6ZM8 35h3v10H8Z" fill="#ffbe7e"/><path d="M29 35h3v10h-3Z" fill="#a9584c"/>
+<path d="M16 35h8v8h-8Z" fill="#263d55"/><path d="M17 36h6v3h-6Z" fill="#8dd2bc"/><path d="M18 40h1v1h-1ZM21 40h1v1h-1Z" fill="#efb369"/>
+</g></svg>

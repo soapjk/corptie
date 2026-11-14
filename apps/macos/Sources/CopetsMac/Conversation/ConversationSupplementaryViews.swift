@@ -164,8 +164,8 @@ struct ChatUsageBar: View {
             .help("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(context.used)) / \(SessionUsagePolicy.exactTokens(context.window))")
             .accessibilityLabel("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(context.used)) / \(SessionUsagePolicy.exactTokens(context.window))")
             .accessibilityIdentifier("conversation-usage-context")
-        } else {
-            Text(L10n(isDraft ? "上下文：尚未开始" : UsagePlaceholderPolicy.key(
+        } else if !isDraft {
+            Text(L10n(UsagePlaceholderPolicy.key(
                 context: true, supported: contextSupported, loading: usage == nil && loadState == .loading,
                 failed: loadState == .failed || usage?.contextLoadFailed == true)))
                 .foregroundStyle(.secondary)

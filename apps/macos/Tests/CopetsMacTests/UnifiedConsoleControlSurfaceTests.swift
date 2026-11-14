@@ -319,12 +319,18 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(sortPosition.lowerBound < togglePosition.lowerBound)
         #expect(searchPosition.lowerBound < sortPosition.lowerBound)
         #expect(togglePosition.lowerBound < archivePosition.lowerBound)
-        // Search / More own this row alone. The Create control has its own
-        // layout in the Work column; putting it back here would make the two
-        // panes' top rows different heights again.
-        #expect(!controls.contains("outlineCreationMenu"))
-        #expect(source.contains("consoleSidebarCreationRow"))
-        #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)"))
+        let creationPosition = try #require(controls.range(of: "outlineCreationMenu"))
+        #expect(creationPosition.lowerBound > archivePosition.lowerBound)
+        #expect(controls.contains("VStack(spacing: MainWindowPageLayoutMetrics.sidebarHeaderRowSpacing)"))
+        #expect(controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)"))
+        #expect(controls.contains(".padding(.leading, 13)"))
+        #expect(!source.contains("consoleSidebarCreationRow"))
+        #expect(!controls.contains(".frame(height: MainWindowPageLayoutMetrics.headerRowHeight, alignment: .top)"))
+        #expect(controls.contains(".padding(.bottom, MainWindowPageLayoutMetrics.sidebarHeaderBottomInset)"))
+        #expect(MainWindowPageLayoutMetrics.sidebarCreationRowHeight == 34)
+        #expect(MainWindowPageLayoutMetrics.headerPrimaryRowHeight + MainWindowPageLayoutMetrics.sidebarHeaderRowSpacing
+            + MainWindowPageLayoutMetrics.sidebarCreationRowHeight + MainWindowPageLayoutMetrics.sidebarHeaderBottomInset == 72)
+        #expect(source.contains(".frame(minHeight: MainWindowPageLayoutMetrics.sidebarCreationRowHeight)"))
         #expect(MainWindowPageLayoutMetrics.headerRowHeight == 48)
         #expect(source.contains("Menu(\"视图\") {\n            navigationModeOption(.workOutline, title: \"分组\")"))
         #expect(source.contains("Picker(\"排序方式\", selection:"))
@@ -336,7 +342,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!menuContent.contains("platformWorkOutlineToolbarControl"))
         #expect(source.contains(".modifier(ConsoleTopEdgeEffectModifier())"))
         #expect(controls.contains(".platformWorkOutlineToolbarDensity(.titlebar)"))
-        #expect(controls.contains(".padding(.top, 2)"))
+        #expect(!controls.contains(".padding(.top, 2)"))
         #expect(!controls.contains("MainWindowLayoutMetrics.titlebarHeight + 10"))
         #expect(!controls.contains(".padding(.top, 3)"))
         #expect(PlatformWorkOutlineLayout.controlSize == 44)
@@ -903,8 +909,9 @@ struct UnifiedConsoleControlSurfaceTests {
     func flatSessionListSharesTheOutlineRowSurfaceInsteadOfPaintingItsOwnHighlight() throws {
         let flat = try source(named: "Console/ConsoleFlatSessionList.swift")
         #expect(flat.contains(".consoleOutlineRowSurface(isSelected:"))
-        #expect(flat.contains("fixesHeightToNativeRow: false"))
-        #expect(flat.contains(".listRowInsets(EdgeInsets())"))
+        #expect(flat.contains("fixesHeightToNativeRow: isChat"))
+        #expect(flat.contains("ConsoleNativeOutline(groups:"))
+        #expect(flat.contains("ConsoleChatSection.group("))
         #expect(!flat.contains(".consoleHoverFeedback(isSelected:"))
         #expect(!flat.contains("horizontalInset: 0"))
 

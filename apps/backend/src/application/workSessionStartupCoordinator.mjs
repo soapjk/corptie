@@ -105,6 +105,8 @@ export class WorkSessionStartupCoordinator {
   }
 
   recover(startupOperationId) {
+    const running = this.inFlight.get(startupOperationId);
+    if (running) return running;
     const operation = this.#operation(requiredText(startupOperationId, "startupOperationId"));
     if (!operation) throw coded("START_REFERENCE_INVALID", "Startup operation was not found.", 404, false);
     if (operation.state === "ready") {
@@ -114,7 +116,10 @@ export class WorkSessionStartupCoordinator {
     }
     if (TERMINAL_FAILURE_STATES.has(operation.state)) return Promise.resolve(this.#failureView(operation));
     if (!this.#takeLease(operation)) return Promise.resolve(this.#pendingView(this.#operation(startupOperationId)));
-    return this.#drive(startupOperationId);
+    const promise = this.#drive(startupOperationId)
+      .finally(() => this.inFlight.delete(startupOperationId));
+    this.inFlight.set(startupOperationId, promise);
+    return promise;
   }
 
   recoverInterruptedStarts() {

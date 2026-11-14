@@ -186,14 +186,23 @@ struct AutomationsView: View {
     }
 
     private var categoryList: some View {
-        List(AutomationCategory.allCases, selection: $category) { item in
-            ManagementCategoryRow(title: "\(item.title) · \(tasks(in: item).count)", systemImage: item.symbol,
-                                  isSelected: category == item)
-                .padding(.vertical, 2)
-                .tag(Optional(item))
+        List {
+            ForEach(AutomationCategory.allCases) { item in
+                Button {
+                    category = item
+                } label: {
+                    ManagementCategoryRow(title: "\(item.title) · \(tasks(in: item).count)", systemImage: item.symbol,
+                                          isSelected: category == item)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("automations.category.\(item.rawValue)")
+                .accessibilityAddTraits(category == item ? .isSelected : [])
                 .listRowInsets(EdgeInsets())
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)

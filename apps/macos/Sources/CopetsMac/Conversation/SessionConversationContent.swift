@@ -140,6 +140,7 @@ struct SessionConversationSurface: View {
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
     @State private var pendingFork: SessionForkSelection?
+    @State private var withdrawingMessageIDs: Set<String> = []
     @State private var hasSubmittedMessage = false
     let sessionId: String
     let renderInputs: SessionPageRenderInputs?
@@ -513,7 +514,31 @@ struct SessionConversationSurface: View {
         }
     }
 
+    private var centersAssistantComposer: Bool {
+        showsWelcome && selectedSession?.resolvedSessionKind == .assistantChat
+    }
+
+    @ViewBuilder
     private var conversationLayout: some View {
+        if centersAssistantComposer {
+            VStack(spacing: 0) {
+                conversationTopChrome
+                Spacer(minLength: 16)
+                ConversationWelcomeView(isAssistant: true)
+                    .padding(.horizontal, WorkbenchStyle.readingInset)
+                    .padding(.bottom, 28)
+                inputDock
+                Spacer(minLength: 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(WorkbenchStyle.canvas)
+            .accessibilityIdentifier("conversation.assistantWelcome")
+        } else {
+            standardConversationLayout
+        }
+    }
+
+    private var standardConversationLayout: some View {
         ConversationRegionStack(floating: AnyView(floatingDock),
             floatingClearanceInset: showsFloatingJumpControl ? ComposerQuickMessagesBar.jumpControlSize + floatingJumpGap : 0) {
             messageViewport
@@ -1028,7 +1053,7 @@ struct SessionConversationSurface: View {
         let agent = roles.first { $0.roleId == session.roleId }
         let providers = backendClient.modelCatalog.agentProviders
         return ConversationReplyIdentity(roleID: agent?.roleId ?? session.roleId ?? session.id,
-            name: agent?.name ?? L10n("Role"), avatarPath: agent?.avatarPath,
+            name: agent?.name ?? L10n("Role"), avatarPath: agent?.resolvedAvatarPath,
             providerLabel: sessionProviderIdentityLabel(
                 providerIdentity: session.external?.provider,
                 legacyAgentLabel: session.agent, providers: providers),
@@ -1066,6 +1091,23 @@ struct SessionConversationSurface: View {
     private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
         guard allowsPageActions else { return }
         switch action.kind {
+        case .withdrawMessage(let messageID):
+            guard let session = selectedSession, withdrawingMessageIDs.insert(messageID).inserted else { return }
+            Task {
+                defer { withdrawingMessageIDs.remove(messageID) }
+                do {
+                    try await backendClient.withdrawMessage(sessionID: sessionId, messageID: messageID)
+                    _ = await backendClient.fetchDetail(for: session)
+                } catch { backendClient.presentChatImageError(error) }
+            }
+        case .editWithdrawnMessage(let messageID):
+            guard let message = displayedDetail?.items.first(where: { $0.id == messageID })?.withdrawnMessage else { return }
+            let draft = composerDraftRepository.draft(for: sessionId)
+            guard draft.restoreWithdrawnMessage(id: messageID, message: message) else {
+                backendClient.presentChatImageError(BackendError.message("图片总数超过 8 张，请先处理当前草稿的图片，再编辑已撤回消息。"))
+                return
+            }
+            composerDraftRepository.requestFocus(for: sessionId)
         case .deleteUnreceivedMessage(let messageID):
             let alert = NSAlert()
             alert.messageText = "删除这条消息？"

@@ -1511,7 +1511,7 @@ final class EntityAPIClient: ObservableObject {
     @discardableResult
     func createRole(name: String, description: String? = nil,
                      systemPrompt: String? = nil, capabilities: [String] = [],
-                     skillIds: [String] = [], workDir: String? = nil,
+                     skillIds: [String] = [], workDir: String? = nil, avatarPath: String? = nil,
                      idempotencyKey: String = UUID().uuidString) async -> Role? {
         var request = URLRequest(url: baseURL.appending(path: "agents"))
         request.httpMethod = "POST"
@@ -1525,6 +1525,7 @@ final class EntityAPIClient: ObservableObject {
         if !capabilities.isEmpty { body["capabilities"] = capabilities }
         if !skillIds.isEmpty { body["skillIds"] = skillIds }
         if let workDir, !workDir.isEmpty { body["workDir"] = workDir }
+        if let avatarPath { body["avatarPath"] = avatarPath }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -1608,7 +1609,12 @@ final class EntityAPIClient: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.error ?? "保存角色头像失败（HTTP \(http.statusCode)）"
+                return nil
+            }
             let agent = try decoder.decode(RoleCreateEnvelope.self, from: data).agent
             await refreshRoles()
             return agent

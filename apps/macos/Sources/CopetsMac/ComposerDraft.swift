@@ -59,6 +59,7 @@ final class ComposerDraftBuffer {
         let revision: UInt64
     }
 
+    private var restoredWithdrawalIDs: Set<String> = []
     private(set) var text: String
     private(set) var revision: UInt64
 
@@ -77,7 +78,20 @@ final class ComposerDraftBuffer {
             return false
         }
         text = nextText
+        if nextText.isEmpty { restoredWithdrawalIDs.removeAll() }
         revision &+= 1
+        return true
+    }
+
+    @discardableResult
+    func restoreWithdrawnMessage(id: String, message: WithdrawnUserMessage) -> Bool {
+        if restoredWithdrawalIDs.contains(id) { return true }
+        let newImages = message.images.filter { image in !images.contains(where: { $0.managedPath == image.managedPath }) }
+        guard images.count + newImages.count <= 8 else { return false }
+        restoredWithdrawalIDs.insert(id)
+        let existing = text
+        updateFromEditor(existing.isEmpty ? message.text : existing + (message.text.isEmpty ? "" : "\n\n" + message.text))
+        images.append(contentsOf: newImages)
         return true
     }
 
@@ -94,6 +108,7 @@ final class ComposerDraftBuffer {
             return false
         }
         text = ""
+        restoredWithdrawalIDs.removeAll()
         revision &+= 1
         return true
     }
@@ -171,6 +186,14 @@ final class ComposerEditorController {
         }
         recordEditorText(textView.string)
         return true
+    }
+
+    func synchronizeExternalDraft() {
+        guard isPresentationEnabled, let textView, !textView.hasMarkedText(), presentedDraftRevision != draft.revision else { return }
+        textView.string = draft.text
+        textView.setSelectedRange(NSRange(location: draft.text.utf16.count, length: 0))
+        presentedDraftRevision = draft.revision
+        presentation.resetRevision &+= 1
     }
 
     func focusIfRequested() {

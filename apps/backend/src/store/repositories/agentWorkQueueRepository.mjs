@@ -167,7 +167,7 @@ export class AgentWorkQueueRepository {
 
   claimAgentTask(taskId) {
     const item = this.getAgentTask(taskId);
-    if (!item) return null;
+    if (!item || item.source?.withdrawnMessage) return null;
     // Older Corptie processes sharing a development database can recreate the
     // retired Agent-wide uniqueness index after this process has migrated it.
     // Remove that compatibility artifact at the claim boundary as well, so it
@@ -216,7 +216,7 @@ export class AgentWorkQueueRepository {
   updateAgentTask(taskId, patch = {}) {
     const item = this.getAgentTask(taskId);
     if (!item) return null;
-    if (item.source?.deleted === true) return item;
+    if (item.source?.deleted === true || item.source?.withdrawnMessage) return item;
     const status = patch.status ?? item.status;
     const timestamp = new Date().toISOString();
     const completedAt = Object.hasOwn(patch, "completedAt")

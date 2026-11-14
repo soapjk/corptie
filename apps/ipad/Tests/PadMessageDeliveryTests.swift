@@ -158,7 +158,11 @@ struct PadMessageDeliveryTests {
         let transport = BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1")!),
             data: { _ in Issue.record("No request should be dispatched"); throw URLError(.cancelled) },
             bytes: { _ in throw URLError(.cancelled) })
-        await workspace.command(PadConnection(transportOverride: transport), stop: false)
+        let connection = PadConnection(transportOverride: transport)
+        connection.connected = true
+        workspace.capabilities = try JSONDecoder().decode(ClientSessionCapabilities.self, from: Data(
+            #"{"schemaVersion":1,"sessionId":"session","readMessages":true,"send":{"available":true},"stop":{"available":false}}"#.utf8))
+        await workspace.command(connection, stop: false)
         #expect(workspace.drafts["session"] == "keep draft")
         #expect(workspace.status.contains("身份一致"))
         #expect(workspace.pending == nil)

@@ -196,9 +196,13 @@ export class ChildTaskDeliveryService {
           AND json_extract(dispatched.value,'$.taskId')=? LIMIT 1`, [operation.parentTaskId, operation.taskId]);
       if (amendment) throw failure("CHILD_REQUEST_PENDING", `该子任务仍有用户请求 ${amendment.request_id} 待处理，处理后再交付回收。`);
       const review = this.store.selectOne(`SELECT r.* FROM coordination_shadow_reclamation r
-        JOIN coordination_shadow_sessions sh ON sh.shadow_session_id=r.shadow_session_id
         JOIN coordination_shadow_reports report ON report.report_id=r.report_id
-        WHERE r.task_id=? AND r.shadow_session_id=? AND sh.parent_task_id=?`, [operation.taskId, operation.actor.id, operation.parentTaskId]);
+          AND report.shadow_session_id=r.shadow_session_id AND report.main_session_id=r.main_session_id
+        JOIN logical_sessions owner ON owner.logical_session_id=report.main_session_id
+        JOIN sessions main ON main.id=owner.legacy_session_id
+        JOIN tasks parent ON parent.id=main.task_id AND parent.current_session_id=main.id
+        WHERE r.task_id=? AND r.shadow_session_id=? AND parent.id=?
+          AND main.deleted_at IS NULL AND main.archived=0 AND parent.archived=0 AND parent.deletion_status IS NULL`, [operation.taskId, operation.actor.id, operation.parentTaskId]);
       const latestDispatchId = this.store.selectOne("SELECT dispatch_id FROM task_coordination_dispatches WHERE target_task_id=? ORDER BY created_at DESC,dispatch_id DESC LIMIT 1", [operation.taskId])?.dispatch_id ?? null;
       if (review && `${review.report_id}:${operation.taskId}` === operation.approvalOperationId
         && (JSON.parse(review.recovery_json).latestDispatchId ?? null) === latestDispatchId) return operation;
@@ -314,6 +318,12 @@ export class ChildTaskDeliveryService {
   }
   async recover() {
     for(const operation of this.repository.listRecoverableOperations()) void this.wake(operation.operationId);
+    // Restore the actionable mailbox item, not the Git/Artifact operation. The
+    // original operation/error key makes repeated startup delivery idempotent.
+    for (const row of this.store.selectAll(`SELECT operation_id FROM child_task_delivery_operations
+      WHERE state='blocked' AND json_extract(actor_json,'$.type')='shadow_session'`)) {
+      this.onShadowBlocked?.(this.repository.getOperation(row.operation_id));
+    }
     for (const row of this.store.selectAll(`SELECT r.task_id FROM coordination_shadow_reclamation r
       JOIN tasks t ON t.id=r.task_id WHERE t.deletion_status='deleted'`)) {
       await this.reclaimChild?.(row.task_id);

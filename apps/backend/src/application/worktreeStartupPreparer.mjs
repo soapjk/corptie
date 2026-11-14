@@ -29,6 +29,12 @@ export class WorktreeStartupPreparer {
     const timing = input.startupTiming;
     if (task.parent_task_id) {
       const workspace = await this.ensureWorkspace({ task, session: null, startupTiming: timing });
+      if (!workspace?.worktreeId || !workspace.path || !workspace.branchName) {
+        throw coded("START_WORKTREE_INVENTORY_MISMATCH", "子任务工作区未准备完成，尚未开始执行；可重试原派发。", true);
+      }
+      if (!this.store.getGitWorktree(workspace.worktreeId)) {
+        throw coded("START_WORKTREE_INVENTORY_MISMATCH", "子任务工作区未登记，尚未开始执行；可重试原派发。", true);
+      }
       this.store.db.run(`UPDATE git_worktrees SET dedicated=1,created_by_startup_operation_id=? WHERE worktree_id=?`,
         [input.startupOperationId, workspace.worktreeId]);
       this.store.scheduleSave();

@@ -1,9 +1,45 @@
+import AppKit
 import SwiftUI
 import XCTest
 @testable import CorptieMac
 
 @MainActor
 final class ConsoleFlatSessionListTests: XCTestCase {
+    func testSharedChatSectionKeepsGeometryAndProjectSubtitleHeight() throws {
+        _ = NSApplication.shared
+        let chats = try (0..<8).map { SessionRowModel(session: try session("chat-\($0)")) }
+        let project = SessionRowModel(session: try session("worker", workID: "work", taskID: "task"))
+        let collapsed = ConsoleChatSection.group(header: AnyView(Text("聊天")), rows: chats, showsAll: false)
+        let expanded = ConsoleChatSection.group(header: AnyView(Text("聊天")), rows: chats, showsAll: true)
+        XCTAssertEqual(collapsed.rows.count, 6)
+        XCTAssertEqual(expanded.rows.count, 9)
+        XCTAssertEqual(collapsed.rows.last?.id, expanded.rows.last?.id)
+        XCTAssertEqual(collapsed.chatPreviewExpanded, false)
+        XCTAssertEqual(expanded.chatPreviewExpanded, true)
+        let projects = ConsoleNativeOutlineGroup(id: "projects-heading", header: AnyView(Text("项目")),
+            rows: [ConsoleNativeOutlineEntry.session(project)], isExpanded: true,
+            usesSectionStyle: true, allowsCollapse: false, showsDisclosureIndicator: false,
+            rowHeight: { _ in 44 })
+        let host = NSHostingView(rootView: ConsoleNativeOutline(groups: { [collapsed, projects] }) { Text($0.id) })
+        let window = NSWindow(contentRect: .init(x: -10000, y: -10000, width: 300, height: 500),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        defer { window.contentView = nil; window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        func find(_ view: NSView) -> NSOutlineView? {
+            if let outline = view as? NSOutlineView { return outline }
+            return view.subviews.lazy.compactMap { find($0) }.first
+        }
+        let outline = try XCTUnwrap(find(host))
+        XCTAssertEqual(outline.numberOfRows, 9)
+        XCTAssertEqual(outline.rect(ofRow: 1).height, 30 + outline.intercellSpacing.height)
+        XCTAssertEqual(outline.rect(ofRow: 8).height, 44 + outline.intercellSpacing.height)
+        let chatHeader = try XCTUnwrap(outline.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        let projectHeader = try XCTUnwrap(outline.view(atColumn: 0, row: 7, makeIfNecessary: true))
+        XCTAssertEqual(chatHeader.frame.minX, projectHeader.frame.minX, accuracy: 0.5)
+    }
+
     private func session(_ id: String, workID: String? = nil, taskID: String? = nil) throws -> TaskSession {
         var value = try JSONDecoder().decode(TaskSession.self, from: Data("""
         {"id":"\(id)","title":"\(id)","agent":"provider-neutral","status":"complete",

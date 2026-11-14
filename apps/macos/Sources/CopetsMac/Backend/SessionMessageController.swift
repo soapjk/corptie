@@ -206,7 +206,8 @@ final class SessionMessageController {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
                 latencyTrace.log(stage: "send_failed")
-                commands.setSendFailure(sendStatusMessage, sessionID: session.id)
+                commands.setSendFailure(sendStatusMessage, sessionID: session.id, messageID: messageID)
+                commands.reconcileSendFailure(sessionID: session.id, items: cachedDetail(session.id)?.items ?? [])
                 onFailure()
                 if selectedSession?.id == session.id {
                     await loadWorkspaceRecoveryStatus(session)

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import CorptieClientCore
 import CorptieConversation
 @preconcurrency import MarkdownUI
 
@@ -141,7 +142,7 @@ struct MessageLinkTarget: Equatable {
         case file
         case directory
         case revealOnly
-        case artifact(id: String)
+        case artifact(ClientResourceFocus)
     }
 
     let kind: Kind
@@ -187,18 +188,36 @@ enum MessageLinkResolver {
     /// including the historical worker-work namespace. Authorization belongs
     /// to the existing resource API, never to this syntax check.
     static func resolveArtifactID(_ url: URL) -> Result<String, MessageLinkResolutionError> {
-        guard url.scheme?.lowercased() == "artifact",
-              url.host == nil, url.query == nil, url.fragment == nil,
-              let separator = url.absoluteString.firstIndex(of: ":"),
-              let identifier = String(url.absoluteString[url.absoluteString.index(after: separator)...])
-                .removingPercentEncoding,
+        resolveArtifactFocus(url).map(\.id)
+    }
+
+    static func resolveArtifactFocus(_ url: URL) -> Result<ClientResourceFocus, MessageLinkResolutionError> {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "artifact",
+              components.host == nil, components.fragment == nil,
+              let identifier = components.percentEncodedPath.removingPercentEncoding,
               !identifier.isEmpty,
               identifier.split(separator: ":", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty }),
               identifier.utf8.allSatisfy({ byte in
                   (65...90).contains(byte) || (97...122).contains(byte)
                       || (48...57).contains(byte) || byte == 45 || byte == 95 || byte == 58
               }) else { return .failure(.invalidArtifactLink) }
-        return .success("artifact:" + identifier)
+        let id = "artifact:" + identifier
+        guard components.query != nil else { return .success(.init(id: id)) }
+        // A pinned link must reach Resources with both immutable selectors.
+        // Never turn a malformed pin into an unversioned/current-version open.
+        let parameters = components.queryItems ?? []
+        guard parameters.count == 2,
+              parameters.filter({ $0.name == "version" }).count == 1,
+              parameters.filter({ $0.name == "hash" }).count == 1,
+              let rawVersion = parameters.first(where: { $0.name == "version" })?.value,
+              !rawVersion.isEmpty, rawVersion.utf8.allSatisfy({ (48...57).contains($0) }),
+              let version = Int(rawVersion), version > 0,
+              let hash = parameters.first(where: { $0.name == "hash" })?.value,
+              hash.utf8.count == 64,
+              hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { return .failure(.invalidArtifactLink) }
+        return .success(.init(id: id, version: version, hash: hash))
     }
 
     static func resolve(
@@ -208,7 +227,7 @@ enum MessageLinkResolver {
     ) -> Result<MessageLinkTarget, MessageLinkResolutionError> {
         let scheme = url.scheme?.lowercased()
         if scheme == "artifact" {
-            return resolveArtifactID(url).map { MessageLinkTarget(kind: .artifact(id: $0), url: url) }
+            return resolveArtifactFocus(url).map { MessageLinkTarget(kind: .artifact($0), url: url) }
         }
         if let scheme, !scheme.isEmpty, scheme != "file" {
             guard allowedWebSchemes.contains(scheme) else {
@@ -398,8 +417,8 @@ enum MessageLinkOpener {
         case .success(let target):
             let didOpen: Bool
             switch target.kind {
-            case .artifact(let id):
-                AppTabRouter.shared.openResource(.init(id: id))
+            case .artifact(let focus):
+                AppTabRouter.shared.openResource(focus)
                 didOpen = true
             case .web, .file, .directory:
                 didOpen = NSWorkspace.shared.open(target.url)

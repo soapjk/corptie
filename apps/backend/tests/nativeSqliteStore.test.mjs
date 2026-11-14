@@ -169,12 +169,12 @@ test("deleting a Logical Session tombstones its route when startup audit retains
     });
     const agent = store.createAgent({ id: "agent:delete-audit", name: "Delete audit" });
     store.createWork({
-      id: "work:delete-audit", name: "Delete audit",
+      id: "work:delete-audit", name: "Delete-audit",
       contributorAgentIds: [agent.agentId]
     });
     store.createTask({
       id: "task:delete-audit", workId: "work:delete-audit",
-      title: "Delete audit", mainAgentId: agent.agentId
+      title: "Delete-audit", mainAgentId: agent.agentId
     });
     const missingWorkspace = store.createWorkspace({
       workspaceId: "workspace:missing", kind: "linkedLocal", ownership: "externalManaged",
@@ -226,7 +226,7 @@ test("Work description persists across store restart under the current Work sche
     await initialStore.initialize();
     const agent = initialStore.createAgent({ id: "agent:legacy-work", name: "Legacy Work" });
     initialStore.createWork({
-      id: "work:legacy", name: "Long-lived work",
+      id: "work:legacy", name: "Long-lived-work",
       description: "The system continuously becomes easier to evolve.",
       contributorAgentIds: [agent.agentId]
     });
@@ -1261,12 +1261,12 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
     await store.initialize();
     const agent = store.createAgent({ id: "agent:conflict", name: "Conflict Agent", role: "independentContributor" });
     store.createWork({
-      id: "work:conflict", name: "Resolve conflict", contributorAgentIds: [agent.agentId]
+      id: "work:conflict", name: "Resolve-conflict", contributorAgentIds: [agent.agentId]
     });
     store.createTask({
       id: "task:conflict",
       workId: "work:conflict",
-      title: "Resolve merge conflict"
+      title: "Resolve-merge-conflict"
     });
     store.upsertSession({
       id: "session:conflict",
@@ -1370,7 +1370,7 @@ test("Session kind persists explicitly and Task binding classifies worker sessio
     });
     const agent = store.createAgent({ id: "agent:session-kind", name: "Session Kind" });
     store.createWork({ id: "work:1", name: "Work", contributorAgentIds: [agent.agentId] });
-    store.createTask({ id: "task:1", workId: "work:1", title: "Work item" });
+    store.createTask({ id: "task:1", workId: "work:1", title: "Work-item" });
     store.bindSessionToTask("worker-session", "task:1", "work:1");
     const worker = store.getSession("worker-session");
     assert.equal(worker.sessionKind, "worker");
@@ -1405,7 +1405,7 @@ test("workspace route replacement preserves the stable Work Session and Task own
     });
     const agent = store.createAgent({ id: "agent:route-replacement", name: "Route Replacement" });
     store.createWork({ id: "work:one", name: "Work", contributorAgentIds: [agent.agentId] });
-    store.createTask({ id: "task:one", workId: "work:one", title: "Work item" });
+    store.createTask({ id: "task:one", workId: "work:one", title: "Work-item" });
     store.bindSessionToTask("worker-session", "task:one", "work:one");
     store.createLogicalSessionRoute({
       logicalSessionId: "logical:worker",
@@ -1486,7 +1486,7 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
     store.createTask({
       id: "task:retired",
       workId: "work:retired",
-      title: "Completed item"
+      title: "Completed-item"
     });
     store.bindSessionToTask("worker-session:retired", "task:retired", "work:retired");
     store.createLogicalSessionRoute({

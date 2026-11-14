@@ -34,6 +34,8 @@ struct ConsoleNativeOutlineGroup<Row: Identifiable> where Row.ID == String {
     var expansionChanged: (Bool) -> Void = { _ in }
     var structureRevision: Int = 0
     var dataRevision: Int = 0
+    var chatPreviewExpanded: Bool? = nil
+    var rowHeight: (Row) -> CGFloat = { _ in 30 }
     var childRows: (Row) -> [Row] = { _ in [] }
     var rowIsExpanded: (Row) -> Bool = { _ in false }
     var rowExpansionChanged: (Row, Bool) -> Void = { _, _ in }
@@ -118,7 +120,8 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
             if !initial, let stamp = parent.presentation, stamp == lastPresentation,
                shape == lastShape, lastDarkAppearance == parent.darkAppearance { return }
             let animatesChatRows = !initial && !parent.reduceMotion
-                && lastPresentation?.showsAllChats != parent.presentation?.showsAllChats
+                && roots.first(where: { $0.id == "assistant" })?.group?.chatPreviewExpanded
+                    != parent.groups.first(where: { $0.id == "assistant" })?.chatPreviewExpanded
             lastPresentation = parent.presentation; lastShape = shape; lastDarkAppearance = parent.darkAppearance
             let oldRoots = Dictionary(uniqueKeysWithValues: roots.map { ($0.id, $0) })
             let rootIDsChanged = roots.map(\.id) != parent.groups.map(\.id)
@@ -232,6 +235,11 @@ private struct ConsoleNativeOutlineBridge<Row: Identifiable, Content: View>: NSV
         func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
             guard let group = (item as? Node)?.group else { return false }
             return group.isSection || group.usesSectionStyle
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+            guard let node = item as? Node, let row = node.row, let group = node.owner?.group else { return 30 }
+            return group.rowHeight(row)
         }
 
         func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool { false }

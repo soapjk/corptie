@@ -29,7 +29,6 @@ extension UnifiedConsoleView {
 
 /// Uses the SDK's reusable list rows; status updates stay on SessionRowModel.
 struct ConsoleFlatSessionList<MenuContent: View>: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: SessionIndexStore
     let works: [Work]
     let tasks: [CorptieTask]
@@ -46,61 +45,31 @@ struct ConsoleFlatSessionList<MenuContent: View>: View {
         let workNames = Dictionary(works.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
         let taskWorks = Dictionary(tasks.map { ($0.id, $0.workId) }, uniquingKeysWith: { _, last in last })
         let sections = ConsoleFlatSessionList<EmptyView>.partitionedRows(store.rows, sort: sort)
-        let chatCount = ConsoleChatPreviewPolicy.visibleCount(total: sections.chats.count, showsAll: showsAllChats)
-        List {
-            chatHeader
-                .background(ConsoleOverlayScroller(usesWorkStyle: true))
-                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
-                .listRowSeparator(.hidden)
-            Group {
-                ForEach(Array(sections.chats.prefix(chatCount))) { row in
-                    ConsoleSessionRow(showsHoverFeedback: false, isActive: isActive,
-                        row: row, selectionRequested: select, menuContent: menuContent)
-                        .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id)
-                        .listRowInsets(EdgeInsets())
-                        .listRowSeparator(.hidden)
-                }
-                if sections.chats.isEmpty {
-                    Text(L10n("No Assistant Sessions"))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .listRowSeparator(.hidden)
-                }
-            }
-            if sections.chats.count > 5 {
-                Button(L10n(showsAllChats ? "收起" : "展示更多")) {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18), toggleChats)
-                }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.plain)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
-                    .listRowSeparator(.hidden)
-                    .accessibilityIdentifier("console.chat.show-more")
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                Divider()
-                ConsolePrimarySectionHeading(title: L10n("Projects"))
-            }
-            .padding(.top, 6)
-            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 16))
-            .listRowSeparator(.hidden)
-            ForEach(sections.projects) { row in
-                // The "项目" rows use the exact same surface as the native work
-                // outline. List insets stay at zero so the surface owns both the
-                // 16pt content padding and the 8pt highlight breathing room.
-                ConsoleSessionRow(projectName: ConsoleFlatSessionList<EmptyView>.projectName(for: row.session,
-                    workNames: workNames, taskWorks: taskWorks),
+        let groups = [
+            ConsoleChatSection.group(header: chatHeader, rows: sections.chats, showsAll: showsAllChats),
+            ConsoleNativeOutlineGroup(id: "projects-heading",
+                header: AnyView(ConsolePrimarySectionHeading(title: L10n("Projects"))),
+                rows: sections.projects.map { ConsoleNativeOutlineEntry.session($0) },
+                isExpanded: true, usesSectionStyle: true, allowsCollapse: false,
+                showsDisclosureIndicator: false, rowHeight: { _ in 44 })
+        ]
+        ConsoleNativeOutline(groups: { groups }) { entry in
+            switch entry {
+            case .session(let row):
+                let isChat = row.session.resolvedSessionKind == .assistantChat
+                ConsoleSessionRow(projectName: isChat ? nil : ConsoleFlatSessionList<EmptyView>.projectName(
+                    for: row.session, workNames: workNames, taskWorks: taskWorks),
                     showsHoverFeedback: false, isActive: isActive, row: row,
                     selectionRequested: select, menuContent: menuContent)
                     .consoleOutlineRowSurface(isSelected: selectedSessionID == row.id,
-                        fixesHeightToNativeRow: false)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
+                        fixesHeightToNativeRow: isChat)
+            case .moreChats:
+                ConsoleChatPreviewButton(showsAll: showsAllChats, toggle: toggleChats)
+            case .empty(_, let title):
+                Text(title).font(.system(size: 11)).foregroundStyle(.secondary).padding(.vertical, 4)
+            default: EmptyView()
             }
         }
-        .listStyle(.plain)
-        .contentMargins(.horizontal, 0, for: .scrollContent)
-        .scrollContentBackground(.hidden)
         .accessibilityIdentifier("console.session-list")
     }
 

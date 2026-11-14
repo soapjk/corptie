@@ -27,6 +27,8 @@ export class TimelineMutationRepository {
     // Indexed reads only for user-message writes, never model streaming tokens.
     const previousUserItem = item.type === "userMessage"
       ? this.selectOne("SELECT type, text, status, presentation_role, raw_metadata_json FROM session_items WHERE session_id=? AND id=?", [sessionId, item.id]) : null;
+    // A withdrawn placeholder cannot be resurrected by stale status/echo writes.
+    if (parseJson(previousUserItem?.raw_metadata_json, null)?.withdrawnMessage) return false;
     // Provider status/echo projections are not authority to remove durable
     // attachments admitted with the message. Preserve only images, not stale
     // interaction/status metadata. An explicit images array still wins.

@@ -11,6 +11,7 @@ export function createLocalDetailBusinessActionService({ commandAPI, documentSer
   if (typeof workService?.updateTask !== "function") throw new TypeError("Local Detail actions require WorkApplicationService.updateTask.");
   return createDetailBusinessActionService({ commandAPI, documentService,
     inspector: new ClientInspectorAPI({ ...inspectorOptions,
+      recoverCoordinationShadow: (...args) => workService.recoverCoordinationShadow?.(...args),
       controlCoordinationRequest: (...args) => workService.controlCoordinationRequest?.(...args),
       assertCoordinationCanEnable: task => workService.assertCoordinationCanEnable?.(task),
       updateTask: (id, fields) => workService.updateTask(id, fields) }) });

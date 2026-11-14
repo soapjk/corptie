@@ -104,6 +104,7 @@ struct DetailToggleClickTarget: NSViewRepresentable {
 struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>: View {
     @Binding var isVisible: Bool
     @State private var canDock = false
+    @State private var measuredWidthBand: WidthBand?
     @State private var temporaryVisible = false
     @State private var toggleExclusion = DetailToggleExclusion()
     @State private var railPhase: RailPhase = .hidden
@@ -145,7 +146,8 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
 
     /// Hiding is decisive, but coming back needs a little more room so the
     /// rail does not flicker on and off while the pointer sits on the edge.
-    /// The band only delays re-docking; it never delays hiding.
+    /// The band only delays re-docking during resize, not initial layout or
+    /// an explicit request to open the rail.
     static var dockHysteresis: CGFloat { 24 }
     static var redockWidth: CGFloat { minimumDockedWidth + dockHysteresis }
 
@@ -161,8 +163,20 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
     private var presented: Bool { canDock ? isVisible : temporaryVisible }
     private var visibility: Binding<Bool> {
         Binding(get: { presented }, set: { value in
-            if canDock { isVisible = value }
-            else { temporaryVisible = value }
+            if value {
+                // Both the sidebar toggle and mailbox entry use this binding.
+                // An explicit open needs room to fit, not resize hysteresis.
+                if let band = measuredWidthBand, band != .narrow {
+                    canDock = true
+                    temporaryVisible = false
+                } else {
+                    temporaryVisible = true
+                }
+                isVisible = true
+            } else {
+                temporaryVisible = false
+                isVisible = false
+            }
         })
     }
 
@@ -226,6 +240,13 @@ struct AdaptiveConversationColumns<Transcript: View, Detail: View, Header: View>
         // `onGeometryChange` only calls the action when the band changes, so
         // dragging inside one band performs no state writes at all.
         .onGeometryChange(for: WidthBand.self) { Self.widthBand(for: $0.size.width) } action: { band in
+            let isInitialLayout = measuredWidthBand == nil
+            measuredWidthBand = band
+            if isInitialLayout {
+                canDock = band != .narrow
+                temporaryVisible = false
+                return
+            }
             switch band {
             case .narrow:
                 guard canDock else { return }

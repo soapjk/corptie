@@ -87,17 +87,8 @@ import AppKit
             return all(host)
         }
         func clickSwitch() async throws {
-            let card = try #require(views(DetailCardProbe.View.self).first)
-            // Send native pointer events to the actual compact card. SwiftUI
-            // omits AX children for a fully offscreen test window.
-            let point = card.convert(NSPoint(x: 30,
-                y: card.isFlipped ? card.bounds.maxY - 23 : card.bounds.minY + 23), to: nil)
-            for (number, type) in [NSEvent.EventType.leftMouseDown, .leftMouseUp].enumerated() {
-                let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                    context: nil, eventNumber: number, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
-                window.sendEvent(event)
-            }
+            let control = try #require(views(NSSwitch.self).first)
+            if control.isEnabled { control.performClick(nil) }
             try await settle()
         }
         func cardHeight() throws -> CGFloat {

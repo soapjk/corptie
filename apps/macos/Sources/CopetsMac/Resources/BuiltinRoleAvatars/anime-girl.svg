@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400" role="img" aria-label="二次元 · 赤瞳少女"><title>二次元 · 赤瞳少女</title><defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#ffddd8"/><stop offset="1" stop-color="#f6aaa8"/></linearGradient><linearGradient id="hair" x2=".8" y2="1"><stop stop-color="#252339"/><stop offset="1" stop-color="#4e344e"/></linearGradient><linearGradient id="eye" x2="0" y2="1"><stop stop-color="#652c4e"/><stop offset="1" stop-color="#e5686d"/></linearGradient></defs>
+<rect width="400" height="400" fill="url(#bg)"/><circle cx="205" cy="185" r="156" fill="#ffe9de"/><path d="M35 342L93 285M340 58l26-26M344 294l22 22" stroke="#fff" stroke-width="3" opacity=".6"/>
+<path d="M84 296C74 240 61 180 85 105C107 37 185 25 245 49C311 60 326 137 314 217L330 313L268 340L101 333Z" fill="url(#hair)" stroke="#242335" stroke-width="3"/>
+<path d="M78 400L94 341Q123 314 166 303H238Q283 314 310 342L329 400" fill="#b4384e" stroke="#472a3b" stroke-width="3"/>
+<path d="M165 286V321Q199 350 237 320V280" fill="#f3b9a7" stroke="#694353" stroke-width="2"/><path d="M163 312L199 336L238 310L258 400H145Z" fill="#fff1de"/>
+<path d="M112 158Q108 246 145 279Q174 307 201 310Q236 306 266 275Q294 244 288 155Q270 81 197 82Q133 87 112 158Z" fill="#ffe1cb" stroke="#694353" stroke-width="2.5"/>
+<path d="M114 199Q139 179 165 193M232 192Q258 179 281 199" fill="none" stroke="#3b283e" stroke-width="6" stroke-linecap="round"/>
+<path d="M119 201Q139 186 164 201Q149 225 130 218Z" fill="#fffaf5"/><path d="M235 201Q256 185 278 201Q266 222 245 218Z" fill="#fffaf5"/>
+<ellipse cx="146" cy="205" rx="11" ry="17" fill="url(#eye)"/><ellipse cx="254" cy="205" rx="11" ry="17" fill="url(#eye)"/><ellipse cx="146" cy="205" rx="4" ry="12" fill="#49263d"/><ellipse cx="254" cy="205" rx="4" ry="12" fill="#49263d"/><circle cx="142" cy="198" r="4" fill="white"/><circle cx="250" cy="198" r="4" fill="white"/>
+<path d="M120 201Q142 187 165 199M234 199Q257 186 281 201" fill="none" stroke="#332337" stroke-width="4" stroke-linecap="round"/>
+<path d="M197 225l-4 16h7M181 266Q201 275 220 264" fill="none" stroke="#b47877" stroke-width="2" stroke-linecap="round"/><path d="M124 239l26 3M250 242l26-3" stroke="#ef9e9b" stroke-width="7" opacity=".5" stroke-linecap="round"/>
+<path d="M95 175Q95 84 176 70Q252 61 284 118L302 187Q277 163 265 120L254 172L234 143L228 174L207 140L201 177L178 130L170 175L145 144L121 188L111 269L92 285Z" fill="url(#hair)" stroke="#292338" stroke-width="2.5"/>
+<path d="M112 137Q127 83 173 81M195 80Q243 78 265 116M89 202L102 276M287 208L296 285" fill="none" stroke="#97718b" stroke-width="3" opacity=".6"/>
+<path d="M268 136l28 13-5 10-28-13Z" fill="#ed796e"/><path d="M270 153l26 13-4 9-27-13Z" fill="#ffe1a9"/>
+<path d="M129 328l31 72M272 330l-29 70" fill="none" stroke="#ef9c92" stroke-width="3"/><path d="M176 349l24 17 23-18-10 37h-26Z" fill="#373247"/><circle cx="200" cy="369" r="6" fill="#e5a15d"/></svg>

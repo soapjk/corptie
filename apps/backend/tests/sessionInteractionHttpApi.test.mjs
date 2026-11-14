@@ -18,6 +18,7 @@ function fixture() {
     },
     interruptUnifiedSession: record("interrupt", { id: "stored" }),
     cancelQueuedUserMessage: record("cancel", { taskId: "work:one", status: "cancelled" }),
+    withdrawUserMessage: record("withdraw", { schemaVersion: 1, messageId: "message:one", status: "withdrawn" }),
     deleteUserMessage: record("delete", { schemaVersion: 1, messageId: "message:one", status: "deleted" }),
     respondUnifiedSessionApproval: record("approval", { id: "stored" }),
     respondUnifiedSessionUserInput: record("input", { id: "stored" }),
@@ -125,4 +126,14 @@ test("unmatched interaction paths and methods fall through", () => {
     assert.equal(f.dispatch(path, method).handled, false);
   }
   assert.deepEqual(f.calls, []);
+});
+
+test("withdrawal routes exact identities and preserves the claim-race refusal", async () => {
+  const f = fixture();
+  assert.equal((await f.dispatch("/sessions/public%2Fid/messages/message%3Aone/withdraw").result).status, 200);
+  assert.deepEqual(f.calls, [["withdraw", "public/id", "message:one"]]);
+  f.dependencies.withdrawUserMessage = () => { throw Object.assign(new Error("already dispatched"), { code: "MESSAGE_MAY_HAVE_BEEN_RECEIVED", status: 409 }); };
+  const denied = await f.dispatch("/sessions/public%2Fid/messages/message%3Aone/withdraw").result;
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.code, "MESSAGE_MAY_HAVE_BEEN_RECEIVED");
 });

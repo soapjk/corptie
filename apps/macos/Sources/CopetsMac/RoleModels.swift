@@ -1,4 +1,5 @@
 import Foundation
+import CorptieConversation
 
 // Role 是可复用的工作配置；Provider 是执行引擎；Session 才是执行与授权上下文。
 // 对齐后端 agents 表 + GET /agents 返回的 camelCase（见 corptieStore.agentFromRow）。
@@ -23,6 +24,10 @@ struct Role: Identifiable, Codable, Hashable {
     var updatedAt: String
 
     var id: String { roleId }
+    var resolvedAvatarPath: String {
+        guard let avatarPath, !avatarPath.isEmpty else { return BuiltinRoleAvatarCatalog.defaultReference(roleID: roleId) }
+        return avatarPath
+    }
 
     var isPlatformAssistant: Bool { roleKind == "platformAssistant" || roleId == "assistant" }
     // Legacy transport names remain stable; business code uses Role.

@@ -322,7 +322,9 @@ final class NativeTimelineLayoutCache {
             reusing: reusable?.naturalWidthMetrics)
         let width = columnWidth - ReplyLeadingLayout.additionalCardInset(for: row, skin: skin)
         let cardWidth: CGFloat
-        if let plan = row.executionPlan, plan.taskId != nil {
+        if row.withdrawnMessageID != nil {
+            cardWidth = min(164, max(120, width - 8))
+        } else if let plan = row.executionPlan, plan.taskId != nil {
             cardWidth = min(780, max(120, width - 14))
         } else if row.userInput != nil || row.executionPlan != nil {
             cardWidth = min(ChatBubbleWidthPolicy.functionalCardMaximumWidth, max(120, width - 8))
@@ -368,7 +370,9 @@ final class NativeTimelineLayoutCache {
                 .measured(table, width: textWidth, style: row.nativeStyle == .user ? .user : .agent, typography: typography))
             }
         } : [])
-        let text = reusable?.attributedText ?? (row.userInput != nil || row.executionPlan != nil || row.coordinationProgress != nil
+        let text = reusable?.attributedText ?? (row.withdrawnMessageID != nil
+            ? NSAttributedString(string: row.nativeText, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])
+            : row.userInput != nil || row.executionPlan != nil || row.coordinationProgress != nil
             || !processBlocks.isEmpty || hasRich || (row.nativeStyle == .process && !row.isExpanded)
             ? NSAttributedString(string: "")
             : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle, typography: typography))

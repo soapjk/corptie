@@ -33,9 +33,10 @@ final class WorkbenchReadingLayoutTests: XCTestCase {
             scroll.layoutSubtreeIfNeeded()
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
             let lane = WorkbenchStyle.lane(viewportWidth: scroll.contentView.bounds.width)
-            XCTAssertEqual(table.frame.minX, lane.minX, accuracy: 0.5)
-            XCTAssertEqual(table.tableColumns[0].width, lane.width, accuracy: 0.5)
-            XCTAssertEqual(table.frame.width, lane.width, accuracy: 0.5)
+            XCTAssertEqual(table.frame.minX + ReplyLeadingLayout.contentLeading, lane.minX, accuracy: 0.5)
+            XCTAssertEqual(table.frame.maxX, lane.maxX, accuracy: 0.5)
+            XCTAssertEqual(table.tableColumns[0].width, lane.width + ReplyLeadingLayout.contentLeading, accuracy: 0.5)
+            XCTAssertEqual(table.frame.width, lane.width + ReplyLeadingLayout.contentLeading, accuracy: 0.5)
             XCTAssertEqual(scroll.documentView?.frame.width ?? 0, scroll.contentView.bounds.width, accuracy: 0.5)
             XCTAssertEqual(table.numberOfRows, 1)
         }

@@ -101,10 +101,8 @@ struct SessionRestartInteractionTests {
         #expect(row.contains("if showsHistoricalThread {"))
         #expect(row.contains("} else if showsContinuationFailure {"))
         #expect(!row.contains("HStack(alignment: .firstTextBaseline, spacing: 6)"))
-        // The title box hugs its 14pt text; do not restore the old 28pt
-        // control-height box that made the whole header look thick.
-        #expect(row.contains(".frame(height: 20)"))
-        #expect(!row.contains(".frame(height: 28)"))
+        #expect(row.contains(".frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)"))
+        #expect(MainWindowPageLayoutMetrics.headerPrimaryRowHeight == 28)
         #expect(row.contains(".multilineTextAlignment(.leading)"))
         #expect(row.contains("SessionHeaderProviderIdentity(session: selectedSession, providers: providers)"))
         #expect(row.contains(".foregroundStyle(.primary)"))
@@ -120,9 +118,7 @@ struct SessionRestartInteractionTests {
         #expect(!source.contains("shouldSuggestWorktreeManagement"))
         #expect(source.contains("session?.external?.workspace?.repositoryId != nil || displayedProjectStatus != nil"))
         #expect(!source.contains("session.detail.worktree"))
-        // Title clearance comes from a top inset, not from growing the pinned
-        // 48pt accessory.
-        #expect(row.contains(".padding(.top, 8)"))
+        #expect(!row.contains(".padding(.top, 8)"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.detach\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.actions\")"))
         #expect(row.contains(".accessibilityIdentifier(\"session.detail.toggle-column\")"))

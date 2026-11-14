@@ -1,3 +1,4 @@
+import { messageImageResponse } from "./messageImageResponse.mjs";
 import { logError } from "../utils/errorDiagnostics.mjs";
 import { coordinationProgressFor } from './coordinationProgressService.mjs';
 import https from "node:https";
@@ -621,15 +622,17 @@ export class ClientDeviceGateway {
           if (request.method !== "GET") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
           const resource = await this.sessionAPI.resource(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);
-          response.writeHead(200, { "content-type": resource.mimeType, "content-length": resource.byteLength,
-            "cache-control": "no-store", "x-content-type-options": "nosniff",
-            "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(resource.fileName)}` });
-          return response.end(resource.data);
+          const preview = url.searchParams.get("variant") === "preview";
+          const transfer = messageImageResponse(request, resource, preview ? "" : url.searchParams.get("path"));
+          if (preview) transfer.headers["x-corptie-image-variant"] = "preview";
+          response.writeHead(transfer.status, transfer.headers);
+          return response.end(transfer.data);
         }
         if (request.method === "GET" && conversation[2] === "images") {
           const image = await this.sessionAPI.image(identity, sessionId, url.searchParams);
           this.authenticateRequest(request);
           response.writeHead(200, { "content-type": image.contentType, "content-length": image.byteLength,
+            ...(url.searchParams.get("variant") === "preview" ? { "x-corptie-image-variant": "preview" } : {}),
             "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
           return response.end(image.data);
         }

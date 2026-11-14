@@ -555,6 +555,7 @@ export class SessionChannelService {
     const row = this.store.selectOne(
       `SELECT d.*, m.channel_id, m.sender_session_id, m.recipient_session_id AS message_recipient_session_id,
               m.delivery_intent, m.message_kind, m.body, m.in_reply_to_message_id, m.resource_context_json,
+              m.sender_operation_id,m.sender_turn_id,m.sender_provider_session_id,m.sender_binding_id,
               m.idempotency_key, m.created_at AS message_created_at,
               c.session_a_id, c.session_b_id, c.status AS channel_status,
               c.requested_by_session_id, c.authorized_at, c.resource_version
@@ -569,6 +570,11 @@ export class SessionChannelService {
     const recipientAgent = this.collaborationCore.getAgentForSession(row.message_recipient_session_id);
     return {
       delivery: presentDelivery(row),
+      executionResults: this.store.selectAll(`SELECT r.execution_session_id AS sessionId,r.turn_id AS turnId,
+        r.final_message_id AS messageId,i.text FROM coordination_result_receipts r
+        JOIN session_items i ON i.session_id=r.execution_session_id AND i.id=r.final_message_id AND i.turn_id=r.turn_id
+        WHERE r.recipient_session_id=? AND r.execution_session_id=? AND r.turn_id=? AND r.channel_message_id=? LIMIT 8`,
+        [row.message_recipient_session_id,row.sender_provider_session_id,row.sender_turn_id,row.message_id]),
       channel: this.#presentChannel(row),
       message: {
         messageId: row.message_id,

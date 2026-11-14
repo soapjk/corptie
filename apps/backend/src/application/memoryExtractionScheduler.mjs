@@ -9,6 +9,7 @@ export class MemoryExtractionScheduler {
     this.timer = null;
     this.wakeAt = null;
     this.activeDrain = null;
+    this.pendingWindows = new Map();
   }
 
   request(sessionId, reason = "session_end", { delayMs = 0 } = {}) {
@@ -20,7 +21,21 @@ export class MemoryExtractionScheduler {
   }
 
   requestForTurn(sessionId) {
-    const stats = this.store.memoryExtractionWindowStats(sessionId);
+    if (this.closed) return Promise.resolve();
+    if (this.pendingWindows.has(sessionId)) return this.pendingWindows.get(sessionId);
+    const operation = this.#requestForTurn(sessionId);
+    this.pendingWindows.set(sessionId, operation);
+    operation.finally(() => {
+      if (this.pendingWindows.get(sessionId) === operation) this.pendingWindows.delete(sessionId);
+    }).catch(() => {});
+    return operation;
+  }
+
+  async #requestForTurn(sessionId) {
+    const stats = this.store.getBackgroundReadPool
+      ? await this.store.getBackgroundReadPool().readMemoryExtractionWindow({ sessionId })
+      : this.store.memoryExtractionWindowStats(sessionId);
+    if (this.closed) return;
     const intervalMs = stats.lastExtractedAt
       ? Math.max(0, this.clock() - Date.parse(stats.lastExtractedAt)) : Infinity;
     if (stats.userMessages >= 50 && intervalMs >= 2 * 60 * 60 * 1000) {
@@ -39,7 +54,7 @@ export class MemoryExtractionScheduler {
     this.closed = true;
     clearTimeout(this.timer);
     this.wakeAt = null;
-    await this.activeDrain;
+    await Promise.allSettled([this.activeDrain, ...this.pendingWindows.values()]);
   }
 
   get pendingCount() {

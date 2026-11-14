@@ -71,19 +71,7 @@ struct AgentOrbView: View {
     }
 
     private var agentAvatar: some View {
-        Group {
-            if let avatarPath = agent.avatarPath, !avatarPath.isEmpty {
-                AnimatedAvatarImage(path: avatarPath)
-            } else {
-                DefaultInitialAvatarView(
-                    familySeed: agent.name,
-                    variationSeed: agent.roleId,
-                    initials: DefaultAvatarInitials.make(from: agent.name),
-                    size: 52
-                )
-            }
-        }
-        .clipShape(Circle())
+        AnimatedAvatarImage(path: agent.resolvedAvatarPath).clipShape(Circle())
     }
 }
 

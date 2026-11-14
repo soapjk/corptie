@@ -1,3 +1,7 @@
+import { AgentClaimPool } from "./agentClaimPool.mjs";
+import { SessionWritePool } from "./sessionWritePool.mjs";
+import { CoordinationCleanupPool } from "./coordinationCleanupPool.mjs";
+import { BackgroundReadPool } from "./backgroundReadPool.mjs";
 import { initializeUnifiedSearch } from "./unifiedSearch.mjs";
 import { initializeQuickMessageIndex } from "./quickMessageIndex.mjs";
 import { randomUUID } from "node:crypto";
@@ -159,9 +163,11 @@ export class CorptieStore {
   }
 
   async initialize(options = {}) {
+    this.closing = false;
     if (options.resolveDataPath !== false) await this.resolveDataPath();
     if (!this.dbPath) throw new Error("Store data path must be resolved before initialization.");
     const readOnly = options.readOnly === true;
+    this.readOnly = readOnly;
     if (!readOnly) await prepareStoreDatabaseDirectory(this.dbPath, options);
     this.db = new NativeDatabase(this.dbPath, { readOnly });
     try {
@@ -172,7 +178,7 @@ export class CorptieStore {
       }
       // Schema migration can run in a short-lived Worker. The long-lived Store
       // must own/resume history construction even when migrations already ran.
-      if (!readOnly) this.quickMessageBuild = initializeQuickMessageIndex(this);
+      if (!readOnly && options.initializeRuntimeIndexes !== false) this.quickMessageBuild = initializeQuickMessageIndex(this);
     } catch (error) {
       this.db.close();
       this.db = null;
@@ -547,10 +553,61 @@ export class CorptieStore {
   setStateDirtyListener(listener) { return this.transactions.setStateDirtyListener(listener); }
   setTimelineDirtyListener(listener) { return this.transactions.setTimelineDirtyListener(listener); }
   notifyTimelineDirty(sessionId, options) { return this.transactions.notifyTimelineDirty(sessionId, options); }
+  afterCommit(callback) { return this.transactions.afterCommit(callback); }
   runInTransaction(operation) { return this.transactions.runInTransaction(operation); }
   flushCommittedDirtyNotifications() { return this.transactions.flushCommittedDirtyNotifications(); }
 
+  async claimAgentTaskAsync(item) {
+    if (!this.db || this.readOnly || this.migrationInProgress || this.db.writeBlocked || this.closing || this.transactions.transactionDepth > 0) {
+      throw Object.assign(new Error("Store claims are unavailable."), { code: "STORE_CLAIM_UNAVAILABLE" });
+    }
+    const pool = this.agentClaimPool ??= new AgentClaimPool({ dbPath: this.dbPath });
+    const result = await pool.claim(item);
+    if (result) this.scheduleSave(); // publish only after the claim transaction commits
+    return result;
+  }
+
+  async closeClaimWriter() {
+    const writer = this.agentClaimPool;
+    this.agentClaimPool = null;
+    await writer?.close();
+  }
+
+  getSessionWritePool() {
+    if (!this.db || this.closing) throw new Error("Store is closed.");
+    return this.sessionWritePool ??= new SessionWritePool({ dbPath:this.dbPath, configPath:this.configPath, dataRoot:this.dataRoot });
+  }
+
+  async createUserMessageDeliveryAsync(input) {
+    if (this.transactions.transactionDepth) throw new Error("Async admission cannot be nested in a synchronous transaction.");
+    const result = await this.getSessionWritePool().admitUserMessage(input);
+    this.scheduleSave();
+    this.notifyTimelineDirty(input.sessionId, { quickMessagesChanged:true });
+    return result;
+  }
+
+  getCoordinationCleanupPool() {
+    if (!this.db || this.closing) throw new Error("Store is closed.");
+    return this.coordinationCleanupPool ??= new CoordinationCleanupPool({ dbPath: this.dbPath });
+  }
+
+  getBackgroundReadPool() {
+    if (!this.db || this.closing) throw new Error("Store is closed.");
+    return this.backgroundReadPool ??= new BackgroundReadPool({ dbPath: this.dbPath });
+  }
+
   async close(options = {}) {
+    this.closing = true;
+    await this.closeClaimWriter();
+    const writer = this.sessionWritePool;
+    this.sessionWritePool = null;
+    await writer?.close();
+    const cleanup = this.coordinationCleanupPool;
+    this.coordinationCleanupPool = null;
+    await cleanup?.close();
+    const reads = this.backgroundReadPool;
+    this.backgroundReadPool = null;
+    await reads?.close();
     if (!this.db) return;
     if (options.checkpoint !== false) await this.save();
     this.db.close();

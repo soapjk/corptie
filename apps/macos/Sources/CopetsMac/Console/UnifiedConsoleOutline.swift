@@ -68,22 +68,10 @@ extension UnifiedConsoleView {
         let processingWorkIDs = sessionIndexStore.processingWorkIDs
         let assistantRows = assistantSessionRows
         let queryIsActive = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let chatCount = ConsoleChatPreviewPolicy.visibleCount(total: assistantRows.count,
-            showsAll: showsAllChatSessions || queryIsActive)
-        var chatEntries = assistantRows.prefix(chatCount).map { ConsoleNativeOutlineEntry.session($0) }
-        if chatEntries.isEmpty { chatEntries = [.empty("assistant-empty", L10n("No Assistant Sessions"))] }
-        if !queryIsActive, assistantRows.count > 5 { chatEntries.append(.moreChats) }
-        var groups = [ConsoleNativeOutlineGroup(
-            id: "assistant",
+        var groups = [ConsoleChatSection.group(
             header: AnyView(outlineChatHeader(hasUnread: unreadSummary.hasUnreadAssistantSessions,
                 isProcessing: sessionIndexStore.hasProcessingAssistantSessions)),
-            rows: chatEntries,
-            isExpanded: true,
-            usesSectionStyle: true,
-            allowsCollapse: false,
-            showsDisclosureIndicator: false,
-            structureRevision: chatEntries.count
-        )]
+            rows: assistantRows, showsAll: showsAllChatSessions, searching: queryIsActive)]
         groups.append(.init(id: "projects-heading",
             header: AnyView(ConsolePrimarySectionHeading(title: L10n("Projects"))),
             isSection: true, showsDisclosureIndicator: false))
@@ -143,11 +131,7 @@ extension UnifiedConsoleView {
     }
 
     var chatPreviewToggleButton: some View {
-        Button(L10n(showsAllChatSessions ? "收起" : "展示更多")) { showsAllChatSessions.toggle() }
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("console.chat.show-more")
+        ConsoleChatPreviewButton(showsAll: showsAllChatSessions) { showsAllChatSessions.toggle() }
     }
 
     func outlineGroupEmptyRow(_ title: String) -> some View {

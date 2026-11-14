@@ -13,6 +13,16 @@ extension BackendClient {
             throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not cancel queued message."))
         }
     }
+    func withdrawMessage(sessionID: String, messageID: String) async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("sessions")
+            .appendingPathComponent(sessionID).appendingPathComponent("messages")
+            .appendingPathComponent(messageID).appendingPathComponent("withdraw"))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw BackendError.message(Self.errorMessage(from: data) ?? "撤回失败，消息可能已经开始处理。")
+        }
+    }
     func deleteUnreceivedMessage(sessionID: String, messageID: String) async throws {
         var request = URLRequest(url: baseURL.appendingPathComponent("sessions")
             .appendingPathComponent(sessionID).appendingPathComponent("messages").appendingPathComponent(messageID))

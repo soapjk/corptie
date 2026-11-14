@@ -63,3 +63,25 @@ test("quick-message invalidation is sticky within a commit and absent after roll
   coordinator.runInTransaction(() => coordinator.notifyTimelineDirty("session"));
   assert.deepEqual(events.at(-1), { sessionId: "session", revision: 7 });
 });
+
+test("dispatch wakes run only after commit and are discarded on rollback", () => {
+  const { coordinator, events } = fixture();
+  coordinator.runInTransaction(() => {
+    coordinator.afterCommit(() => events.push('wake'));
+    assert.deepEqual(events, ['BEGIN IMMEDIATE']);
+  });
+  assert.deepEqual(events, ['BEGIN IMMEDIATE', 'COMMIT', 'wake']);
+  assert.throws(() => coordinator.runInTransaction(() => {
+    coordinator.afterCommit(() => events.push('wrong wake'));
+    throw new Error('abort');
+  }));
+  assert.equal(events.includes('wrong wake'), false);
+});
+
+test("async transaction callbacks are rejected before their body executes", () => {
+  const { coordinator, events } = fixture();
+  let executed = false;
+  assert.throws(() => coordinator.runInTransaction(async () => { executed = true; }), /synchronous/);
+  assert.equal(executed, false);
+  assert.deepEqual(events, []);
+});

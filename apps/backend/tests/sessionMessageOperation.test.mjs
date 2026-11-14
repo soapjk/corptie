@@ -76,7 +76,7 @@ test("ordinary text verifies readiness before admission to the existing queue", 
   assert.equal(calls[1][1].text, "hello");
 });
 
-test("reliable admission is Provider-neutral and never waits for startup or interprets confirmation text", () => {
+test("reliable admission is Provider-neutral and never waits for startup or interprets confirmation text", async () => {
   for (const providerId of [CODEX_APP_SERVER_PROVIDER_ID, CLAUDE_AGENT_SDK_PROVIDER_ID, OPENCLACKY_PROVIDER_ID]) {
     const session = { id: "session", status: "complete" };
     const { operation, calls } = fixture({
@@ -84,7 +84,7 @@ test("reliable admission is Provider-neutral and never waits for startup or inte
       agentProviderRegistry: { supports: () => true },
       sessionBindingReadinessProbe: { verify: () => { throw new Error("Must not start Provider during admission"); } }
     });
-    assert.equal(operation.admitReliableMessage("session", { text: "确认" }, { type: "remote-client" }).accepted, true);
+    assert.equal((await operation.admitReliableMessage("session", { text: "确认" }, { type: "remote-client" })).accepted, true);
     assert.deepEqual(calls.map(([name]) => name), ["persist", "register", "outbox", "event", "drain"]);
     assert.throws(() => operation.admitReliableMessage("session", { text: "/clear" }, { type: "remote-client" }), { code: "INVALID_MESSAGE" });
   }

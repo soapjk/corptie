@@ -222,10 +222,7 @@ struct SessionConversationHeaderSurface: View {
             .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(.secondary)
         }
-        // The pinned 48pt header accessory is top-aligned. Move the title off
-        // the window's top edge without growing the accessory: both header call
-        // sites give back the same 8pt of bottom padding.
-        .padding(.top, 8)
+
     }
 
     private var showsContinuationFailure: Bool {
@@ -272,10 +269,8 @@ struct SessionConversationHeaderSurface: View {
                 .help(L10n("Click to copy Session title"))
                 .accessibilityLabel(L10n("Copy Session title"))
                 .accessibilityValue(selectedTitle)
-                // 14pt text only needs ~17pt of line height. A 28pt box was
-                // padding the header vertically now that the metadata line
-                // sits 2pt below the title.
-                .frame(height: 20)
+                // Match the sidebar's primary row; metadata stays on its own second row.
+                .frame(height: MainWindowPageLayoutMetrics.headerPrimaryRowHeight)
             }
             HStack(alignment: .center, spacing: 6) {
                 if let selectedSession = session {
@@ -420,6 +415,11 @@ struct SessionConversationHeaderSurface: View {
         }
         .disabled(workspacePath == nil)
 
+        Button(action: openWorkspaceInTerminal) {
+            Label(L10n("Open Terminal"), systemImage: "terminal")
+        }
+        .disabled(workspacePath == nil)
+
         Button(action: openWorkspaceInFinder) {
             Label(L10n("Open in Finder"), systemImage: "folder")
         }
@@ -516,6 +516,23 @@ struct SessionConversationHeaderSurface: View {
             catch { return }
             didCopySessionTitle = false
             sessionTitleCopyFeedbackTask = nil
+        }
+    }
+
+    private func openWorkspaceInTerminal() {
+        guard let workspacePath else { return }
+        let directory = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        Task { @MainActor in
+            do {
+                let values = try directory.resourceValues(forKeys: [.isDirectoryKey])
+                guard values.isDirectory == true else { throw CocoaError(.fileReadNoSuchFile) }
+                guard let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
+                else { throw CocoaError(.fileNoSuchFile) }
+                _ = try await NSWorkspace.shared.open([directory], withApplicationAt: application,
+                    configuration: NSWorkspace.OpenConfiguration())
+            } catch {
+                NSAlert(error: error).runModal()
+            }
         }
     }
 

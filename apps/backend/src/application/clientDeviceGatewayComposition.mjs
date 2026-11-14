@@ -52,7 +52,7 @@ export function startClientDeviceGateway({
       deleteUserMessage,
       userMessageNavigation: input => getTimelineReadPool().readUserMessageNavigation(input),
       quickMessages: sessionId => getTimelineReadPool().readQuickMessages({ sessionId }),
-      inspector: new ClientInspectorAPI({ store, controlCoordinationRequest: (...args) => workService.controlCoordinationRequest?.(...args), resolveSession: requireSessionReference,
+      inspector: new ClientInspectorAPI({ store, recoverCoordinationShadow: (...args) => workService.recoverCoordinationShadow?.(...args), controlCoordinationRequest: (...args) => workService.controlCoordinationRequest?.(...args), resolveSession: requireSessionReference,
         abilities: sessionAbilityPreferences,
         onAbilitiesChanged: (scope, receipt) => emitEvent("SessionAbilitiesChanged", { sessionId: scope.sessionId, receipt }, { sessionId: scope.sessionId }),
         references: sessionContextReferenceService, artifacts: artifactService,

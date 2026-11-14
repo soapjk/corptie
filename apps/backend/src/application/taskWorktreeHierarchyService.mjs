@@ -55,7 +55,17 @@ export class TaskWorktreeHierarchyService {
   }
 
   deliveryFailure(task, binding, reason) {
-    return Object.assign(error("PARENT_WORKTREE_REQUIRED", `Task ${task.title || task.id} (${task.id}) has no proven available delivery Worktree: ${reason}.`), {
+    const detail = {
+      WORKTREE_UNAVAILABLE: "父任务的工作区不可用",
+      STARTUP_PROOF_MISSING_OR_AMBIGUOUS: "无法从启动记录确定父任务的工作区",
+      STARTUP_PROOF_MISSING: "父任务的工作区启动记录缺失",
+      DELIVERY_PROOF_MISMATCH: "父任务的工作区关联与启动记录不一致",
+      DELIVERY_BINDING_MISSING: "父任务的工作区关联缺失",
+      TASK_STARTUP_INCOMPLETE: "父任务的工作区尚未准备完成",
+      FAILED_TASK_WITH_DELIVERY_EVIDENCE: "父任务的工作区启动失败"
+    }[reason] ?? reason;
+    return Object.assign(error("PARENT_WORKTREE_REQUIRED", `${detail}；恢复该工作区后可重试原派发。`), {
+      retryable: true,
       diagnosis:{taskId:task.id,parentTaskId:task.parent_task_id ?? null,worktreeId:binding?.worktree_id ?? null,
         taskTitle:task.title,sessionId:task.current_session_id ?? null,reason,
         recovery:"Return to task selection. Recover this task's startup or delivery binding before retrying; no resources were modified."}
@@ -230,9 +240,19 @@ export class TaskWorktreeHierarchyService {
         WHERE o.task_id=? AND o.state='ready'`, [taskId]);
       if (proofs.length !== 1) throw this.deliveryFailure(task,binding,"STARTUP_PROOF_MISSING_OR_AMBIGUOUS");
       const proof = proofs[0];
-      binding = this.store.runInTransaction(() => this.store.bindTaskDeliveryWorktree({taskId,
-        repositoryId:proof.repository_id,worktreeId:proof.worktree_id,startupOperationId:proof.startup_operation_id}));
+      const candidate = { repository_id: proof.repository_id, worktree_id: proof.worktree_id,
+        startup_operation_id: proof.startup_operation_id };
+      this.validateDeliveryProof(task, candidate);
+      binding = this.store.runInTransaction(() => this.store.getTaskDeliveryBinding(taskId)
+        ?? this.store.bindTaskDeliveryWorktree({taskId,
+          repositoryId:proof.repository_id,worktreeId:proof.worktree_id,startupOperationId:proof.startup_operation_id}));
     }
+    const inventory = this.validateDeliveryProof(task, binding);
+    return { task, binding, inventory };
+  }
+
+  validateDeliveryProof(task, binding) {
+    const taskId = task.id;
     const inventory = this.store.getGitWorktree(binding.worktree_id);
     const proof = this.store.selectOne(`SELECT o.task_id,o.repository_id,o.worktree_id FROM work_session_startup_operations o
       JOIN work_session_startup_receipts r ON r.startup_operation_id=o.startup_operation_id
@@ -244,7 +264,7 @@ export class TaskWorktreeHierarchyService {
       throw this.deliveryFailure(task,binding,!inventory || inventory.availability!=="available"
         ? "WORKTREE_UNAVAILABLE" : !proof ? "STARTUP_PROOF_MISSING" : "DELIVERY_PROOF_MISMATCH");
     }
-    return { task, binding, inventory };
+    return inventory;
   }
 
   async validateCreate(taskInput) {

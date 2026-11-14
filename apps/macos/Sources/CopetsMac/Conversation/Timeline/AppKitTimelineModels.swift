@@ -35,6 +35,8 @@ struct AppKitChatTimelineRow: Identifiable {
     var forkItemID: String? = nil
     var queuedMessageTaskID: String? = nil
     var deletableMessageID: String? = nil
+    var withdrawableMessageID: String? = nil
+    var withdrawnMessageID: String? = nil
     var scheduledMessageSource: String? = nil
     var forkUnavailableReason: String? = nil
     var timeSeparatorText: String? = nil
@@ -53,6 +55,8 @@ struct AppKitChatTimelineRow: Identifiable {
         enum Kind {
             case cancelQueuedMessage(taskID: String)
             case deleteUnreceivedMessage(messageID: String)
+            case withdrawMessage(messageID: String)
+            case editWithdrawnMessage(messageID: String)
             case locateMessage(messageID: String)
             case forkMessage(itemID: String)
             case codexApproval(CodexApprovalOption)

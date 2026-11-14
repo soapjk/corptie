@@ -23,7 +23,7 @@ public struct ConversationTaskCoordinationControl: View {
     @State private var requestWindow = ConversationRequestWindow()
     private var explanation: String {
         if let reason = execution?.reason, !reason.isEmpty { return reason }
-        return "开发由子任务执行，当前会话负责讨论与派发；关闭后已派发任务仍会继续。"
+        return "开启后由请求影子承接用户指令；子任务始终由汇总影子管理，关闭后仍会交付和回收。"
     }
     public init(enabled: Bool, updating: Bool = false, canChangeMode: Bool = true, dispatches: [ClientTaskCoordinationDispatch] = [], execution: ClientCoordinationExecution? = nil, onRequestControl: ((String, String) -> Void)? = nil, onChange: @escaping (Bool) -> Void) {
         self.enabled = enabled; self.updating = updating; self.onChange = onChange
@@ -41,7 +41,7 @@ public struct ConversationTaskCoordinationControl: View {
                 Text(execution?.statusLabel ?? "执行限制尚未验证")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text(explanation)
+            Text(LocalizedStringKey(explanation), bundle: .module)
                 .font(.caption).foregroundStyle(.secondary)
             if let requests = execution?.requests, !requests.isEmpty {
                 ForEach(requests.prefix(requestWindow.limit)) { request in
@@ -122,8 +122,34 @@ struct TaskCoordinationToggle: View {
     let onChange: (Bool) -> Void
 
     var body: some View {
-        Toggle("协调模式", isOn: Binding(get: { enabled }, set: onChange))
+        Toggle(isOn: Binding(get: { enabled }, set: onChange)) {
+            Text("Super Agent 模式", bundle: .module)
+        }
+            .toggleStyle(.switch)
             .disabled(updating || (!enabled && !supported))
             .accessibilityIdentifier("task.coordination.toggle")
+            .help(Text("开启后由请求影子承接用户指令；子任务始终由汇总影子管理，关闭后仍会交付和回收。", bundle: .module))
+    }
+}
+
+/// Small shared status surface; no independent observation, polling or animation.
+struct ShadowCoordinationStatus: View {
+    let shadow: ClientShadowCoordination
+    let canRecover: Bool
+    let recover: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(shadow.statusLabel).foregroundStyle(.secondary)
+                if shadow.canRecover == true {
+                    Button("恢复汇总", action: recover)
+                        .buttonStyle(.borderless).disabled(!canRecover)
+                        .accessibilityIdentifier("task.shadow.recover")
+                }
+            }
+            if let reason = shadow.recoveryReason, !reason.isEmpty {
+                Text(reason).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            }
+        }.font(.caption)
     }
 }

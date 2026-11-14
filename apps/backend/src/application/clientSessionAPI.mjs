@@ -1,3 +1,4 @@
+import { imageVariant, deliverImageVariant } from "./messageImagePreview.mjs";
 import { unifiedSearch } from "../store/unifiedSearch.mjs";
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
@@ -116,6 +117,8 @@ function publicClientMessage(item) {
     createdAt: item.createdAt ?? null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
     deletionAvailable: item.deletionAvailable === true,
+    withdrawalAvailable: item.withdrawalAvailable === true,
+    withdrawn: Boolean(item.withdrawnMessage),
     queuedMessageTaskId: item.type === "userMessage" && item.userMessageStatus === "queued"
       && typeof item.taskId === "string" ? item.taskId : null,
     ...Object.fromEntries(PUBLIC_PRESENTATION_STRING_FIELDS.map(key => [key,
@@ -523,21 +526,21 @@ export class ClientSessionAPI {
   /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */
   async resource(identity, id, query) {
     const { sessionId } = this.session(id);
-    if ([...query.keys()].some(key => !["itemId", "path"].includes(key))
+    if ([...query.keys()].some(key => !["itemId", "path", "variant"].includes(key))
       || query.getAll("itemId").length !== 1 || query.getAll("path").length !== 1
       || !this.images?.readResource) throw deviceError("RESOURCE_NOT_AVAILABLE", 404);
     try {
-      return await this.images.readResource(sessionId, query.get("itemId"), query.get("path"));
+      return await deliverImageVariant(imageVariant(query), () => this.images.readResource(sessionId, query.get("itemId"), query.get("path")));
     } catch { throw deviceError("RESOURCE_NOT_AVAILABLE", 404); }
   }
 
   async image(identity, id, query) {
     const { sessionId } = this.session(id);
-    if ([...query.keys()].some(k => k !== "path") || query.getAll("path").length !== 1) throw deviceError("INVALID_QUERY", 400);
+    if ([...query.keys()].some(k => !["path", "variant"].includes(k)) || query.getAll("path").length !== 1) throw deviceError("INVALID_QUERY", 400);
     const managedPath = query.get("path");
     if (!managedPath || managedPath.length > 1024 || !this.images?.read) throw deviceError("IMAGE_NOT_AVAILABLE", 404);
     let image;
-    try { image = await this.images.read(sessionId, managedPath); }
+    try { image = await deliverImageVariant(imageVariant(query), () => this.images.read(sessionId, managedPath)); }
     catch (error) {
       // Foreign paths read as absent: the device must not learn which paths exist on the host.
       if ([403, 404].includes(error?.statusCode) || error?.code === "CHAT_IMAGE_FORBIDDEN" || error?.code === "CHAT_IMAGE_MISSING") throw deviceError("IMAGE_NOT_AVAILABLE", 404);

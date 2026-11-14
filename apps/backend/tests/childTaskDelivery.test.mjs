@@ -80,14 +80,21 @@ test("shadow technical review delivers Artifacts without fabricating user comple
   const f = await fixture(t);
   const owned = await f.artifacts.create(f.context, { scope: "task", boundTaskId: f.child.id, title: "Result", content: "delivered result" });
   const now = new Date().toISOString();
+  f.store.createSession({ id: "session:main", title: "Main", provider: "codex-app-server", agentId: f.agent.agentId,
+    sessionKind: "worker", workId: f.work.id, taskId: f.parent.id });
+  f.store.createLogicalSessionRoute({ logicalSessionId: "logical:main", legacySessionId: "session:main", providerId: "codex-app-server",
+    providerThreadId: "main", providerSessionId: "session:main", boundCwd: "/tmp" });
   f.store.db.run(`INSERT INTO coordination_shadow_sessions(main_session_id,parent_task_id,shadow_session_id,state,scope_json,created_at,updated_at)
     VALUES(?,?,?,'ready','[]',?,?)`, ["logical:main", f.parent.id, "logical:shadow", now, now]);
   f.store.db.run(`INSERT INTO coordination_shadow_reports(report_id,main_session_id,shadow_session_id,source_turn_id,requirement_revision,body,created_at)
     VALUES(?,?,?,?,0,?,?)`, ["review:one", "logical:main", "logical:shadow", "review-turn", "技术验收通过", now]);
   f.store.db.run(`INSERT INTO coordination_shadow_reclamation(task_id,main_session_id,shadow_session_id,report_id,phase,recovery_json,created_at,updated_at)
     VALUES(?,?,?,?,'delivery','{}',?,?)`, [f.child.id, "logical:main", "logical:shadow", "review:one", now, now]);
+  f.store.db.run("UPDATE coordination_shadow_sessions SET shadow_session_id='logical:replacement' WHERE main_session_id='logical:main'");
   const operation = await f.service.requestShadowDelivery(f.child.id);
   const result = await settled(f, operation.operationId);
+  assert.equal(result.actor.id, "logical:shadow");
+  assert.equal(result.approvalOperationId, `review:one:${f.child.id}`);
   assert.equal(result.state, "completed", result.errorMessage);
   assert.equal(f.store.getArtifact(owned.artifactId).boundTaskId, f.parent.id);
   assert.equal(f.store.listTaskCompletionOperations(f.child.id).length, 0);

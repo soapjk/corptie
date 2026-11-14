@@ -220,7 +220,7 @@ test("ordinary Turn completion waits for the low-frequency idle window", async (
     let runs = 0;
     const scheduler = new MemoryExtractionScheduler({ store: f.store,
       extractor: { async extractPageFromSession() { runs += 1; return { memories: [], hasMore: false }; } } });
-    scheduler.requestForTurn("session:a");
+    await scheduler.requestForTurn("session:a");
     assert.equal(f.store.listMemoryExtractionJobs()[0].reason, "idle_window");
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(runs, 0);

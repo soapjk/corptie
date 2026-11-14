@@ -5,6 +5,18 @@ import CorptieConversation
 
 @MainActor
 final class NativeMarkdownAttributedTextTests: XCTestCase {
+    func testVersionedArtifactLinkSurvivesMarkdownRenderingAndClickResolution() throws {
+        let hash = String(repeating: "a", count: 64)
+        let destination = "artifact:report?version=3&hash=\(hash)"
+        let rendered = NativeMarkdownAttributedText.make(text: "[报告](\(destination))", style: .agent)
+        let label = (rendered.string as NSString).range(of: "报告")
+        XCTAssertNotEqual(label.location, NSNotFound)
+        let url = try XCTUnwrap(rendered.attribute(.link, at: label.location, effectiveRange: nil) as? URL)
+        XCTAssertEqual(url.absoluteString, destination)
+        let target = try MessageLinkResolver.resolve(url, baseDirectory: nil).get()
+        XCTAssertEqual(target.kind, .artifact(.init(id: "artifact:report", version: 3, hash: hash)))
+    }
+
     func testBareWebURLsAreClickableButCodeRemainsLiteral() throws {
         let url = "https://example.test/document?q=hello"
         let result = NativeMarkdownAttributedText.make(text: "参考：\(url)。\n`https://example.test/code`", style: .agent)

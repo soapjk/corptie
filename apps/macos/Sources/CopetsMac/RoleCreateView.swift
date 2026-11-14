@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 enum RoleCreateSubmissionPolicy {
     static func submitsInBackground(requiresCreatedRole: Bool) -> Bool {
@@ -15,6 +16,8 @@ struct RoleCreateView: View {
     /// 创建成功后的回调（如 AgentPickerView 用来把新 Agent 加入已选集合）。
     var onCreated: ((Role) -> Void)? = nil
 
+    @StateObject private var avatarSelection = RoleAvatarSelection()
+    @State private var showsAvatarPicker = false
     @State private var selectedBaseAgentId: String? = nil
     @State private var name = ""
     @State private var detail = ""
@@ -45,16 +48,33 @@ struct RoleCreateView: View {
                         onApply: applyGeneratedFields
                     )
 
+                    HStack(spacing: 12) {
+                        AnimatedAvatarImage(path: avatarSelection.path, animates: false)
+                            .frame(width: 56, height: 56).clipShape(Circle())
+                            .accessibilityIdentifier("role-create-avatar-preview")
+                        Button(L10n("选择头像")) { showsAvatarPicker = true }
+                            .accessibilityIdentifier("role-create-avatar-picker")
+                            .popover(isPresented: $showsAvatarPicker) {
+                                RoleAvatarPicker(selectedPath: avatarSelection.path) { path in
+                                    avatarSelection.path = path
+                                    showsAvatarPicker = false
+                                } upload: {
+                                    showsAvatarPicker = false
+                                    chooseAvatar()
+                                }
+                            }
+                    }
+
                     presetSection
 
                     field(L10n("名称 *")) {
                         VStack(alignment: .leading, spacing: 4) {
-                            TextField(L10n("角色 名称"), text: $name)
+                            TextField(L10n("角色 名称"), text: $name).accessibilityIdentifier("role-create-name")
                             EntityNameValidationMessage(value: name)
                         }
                     }
                     field(L10n("职责描述")) {
-                        TextField(L10n("如：后端接口与数据库专家"), text: $detail)
+                        TextField(L10n("如：后端接口与数据库专家"), text: $detail).accessibilityIdentifier("role-create-description")
                     }
 
                     field("System Prompt") {
@@ -209,6 +229,7 @@ struct RoleCreateView: View {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let requestAvatarPath = avatarSelection.path
         let requestDescription = detail
         let requestSystemPrompt = systemPrompt
         let trimmedWorkDir = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -226,6 +247,7 @@ struct RoleCreateView: View {
                     systemPrompt: requestSystemPrompt,
                     capabilities: capabilities,
                     workDir: requestWorkDir,
+                    avatarPath: requestAvatarPath,
                     idempotencyKey: idempotencyKey
                 ) != nil else {
                     return .failure(client.errorMessage ?? L10n("角色 创建失败，可重试。"))
@@ -243,6 +265,7 @@ struct RoleCreateView: View {
                 systemPrompt: requestSystemPrompt,
                 capabilities: capabilities,
                 workDir: requestWorkDir,
+                avatarPath: requestAvatarPath,
                 idempotencyKey: idempotencyKey
             ) {
                 onCreated?(agent)
@@ -251,6 +274,15 @@ struct RoleCreateView: View {
                 submission.finishAfterFailure()
             }
         }
+    }
+
+    private func chooseAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = AvatarImageSupport.allowedContentTypes
+        if panel.runModal() == .OK, let url = panel.url { avatarSelection.path = url.path }
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {
