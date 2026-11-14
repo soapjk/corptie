@@ -116,6 +116,8 @@ function publicClientMessage(item) {
     createdAt: item.createdAt ?? null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
     deletionAvailable: item.deletionAvailable === true,
+    withdrawalAvailable: item.withdrawalAvailable === true,
+    withdrawn: Boolean(item.withdrawnMessage),
     queuedMessageTaskId: item.type === "userMessage" && item.userMessageStatus === "queued"
       && typeof item.taskId === "string" ? item.taskId : null,
     ...Object.fromEntries(PUBLIC_PRESENTATION_STRING_FIELDS.map(key => [key,

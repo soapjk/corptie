@@ -2,6 +2,7 @@ import { collaborationMessagePresentationRoute } from "./collaborationPresentati
 import { collaborationWorkPresentation } from "./collaborationWorkPresentation.mjs";
 import { collaborationEnvelopeFailure } from "../utils/sessionEventPresentation.mjs";
 import { userMessageStatusForAgentWork } from "../utils/agentWorkQueue.mjs";
+import { userMessageWithdrawalEligibility } from "../application/userMessageWithdrawal.mjs";
 import { userMessageDeletionEligibility } from "../application/userMessageDeletion.mjs";
 import { isMailboxOperation } from "../application/mailboxTimelinePolicy.mjs";
 
@@ -25,11 +26,14 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
         : presentation.presentationRole === "system_event"
           ? "System Event"
           : (task.source?.type === "feishu" ? "IMgateway" : "User"),
-      text: task.text,
-      images: task.source?.messageContent?.images ?? [],
+      text: task.source?.withdrawnMessage ? "已撤回" : task.text,
+      withdrawnMessage: task.source?.withdrawnMessage ?? null,
+      withdrawalAvailable: task.kind === "user" && !task.source?.withdrawnMessage
+        && ["queued", "failed", "cancelled"].includes(task.status) && userMessageWithdrawalEligibility(store, sessionId, canonicalId).available,
+      images: task.source?.withdrawnMessage ? [] : task.source?.messageContent?.images ?? [],
       status: task.status,
       userMessageStatus,
-      deletionAvailable: task.kind === "user" && ["failed", "cancelled"].includes(task.status)
+      deletionAvailable: task.kind === "user" && !task.source?.withdrawnMessage && ["failed", "cancelled"].includes(task.status)
         && userMessageDeletionEligibility(store, sessionId, canonicalId).available,
       queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
       processingError: task.lastError ?? null,

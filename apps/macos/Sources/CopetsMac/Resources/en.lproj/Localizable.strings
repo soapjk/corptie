@@ -2319,3 +2319,9 @@
 "像素机器人头像" = "Pixel robot avatar";
 
 "Open Terminal" = "Open Terminal";
+
+"撤回" = "Withdraw";
+
+"已撤回" = "Withdrawn";
+
+"编辑已撤回的消息" = "Edit withdrawn message";

@@ -210,14 +210,14 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.processStep != nil || row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
+        row.withdrawnMessageID == nil && (row.processStep != nil || row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.allSatisfy { if case .locateMessage = $0.kind { return true }; return false } || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
             && !row.showsCollaborationSentStatus
             && (row.images.isEmpty || (row.nativeStyle == .user) || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
-            && row.rawStatusText.isEmpty)
+            && row.rawStatusText.isEmpty))
     }
 
     static func supportsProcess(_ row: AppKitChatTimelineRow) -> Bool {
@@ -928,6 +928,10 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         onAction(.init(id: "cancel-queued:\(taskID)", label: L10n("Cancel"),
                        isDestructive: true, kind: .cancelQueuedMessage(taskID: taskID)))
     }
+    @objc private func withdrawRepresentedMessage() {
+        guard let id = row?.withdrawableMessageID else { return }
+        onAction(.init(id: "withdraw:" + id, label: L10n("撤回"), isDestructive: false, kind: .withdrawMessage(messageID: id)))
+    }
     @objc private func deleteRepresentedMessage() {
         guard let id = row?.deletableMessageID else { return }
         onAction(.init(id: "delete:\(id)", label: "删除", isDestructive: true,
@@ -946,6 +950,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
 
     private struct MenuIdentity: Equatable {
         let isProcess: Bool
+        let withdrawal: String?
         let deletion: String?
         let queuedTask: String?
         let fork: String?
@@ -960,7 +965,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private func configureContextMenu(for row: AppKitChatTimelineRow) {
         let hasCopy = row.copyText.unicodeScalars.contains { !CharacterSet.whitespacesAndNewlines.contains($0) }
         let identity = MenuIdentity(isProcess: row.nativeStyle == .process,
-            deletion: row.deletableMessageID, queuedTask: row.queuedMessageTaskID,
+            withdrawal: row.withdrawableMessageID, deletion: row.deletableMessageID, queuedTask: row.queuedMessageTaskID,
             fork: row.forkItemID, forkReason: row.forkUnavailableReason,
             timestamp: row.contextTimestamp, hasCopy: hasCopy, hasInput: row.userInput != nil,
             language: AppLanguageController.shared.languageCode)
@@ -972,11 +977,11 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             return
         }
         let menu = NSMenu()
-        if row.deletableMessageID != nil {
-            let deletion = NSMenuItem(title: "删除", action: #selector(deleteRepresentedMessage), keyEquivalent: "")
-            deletion.target = self
-            deletion.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
-            menu.addItem(deletion)
+        if row.withdrawableMessageID != nil {
+            let withdraw = NSMenuItem(title: L10n("撤回"), action: #selector(withdrawRepresentedMessage), keyEquivalent: "")
+            withdraw.target = self
+            withdraw.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.withdraw")
+            menu.addItem(withdraw)
         }
         if !row.contextTimestamp.isEmpty {
             let timestamp = NSMenuItem(title: L10nFormat("Time: %@", row.contextTimestamp), action: nil, keyEquivalent: "")
@@ -992,13 +997,6 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
             copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
             copy.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.copy")
             menu.addItem(copy)
-        }
-        if row.queuedMessageTaskID != nil {
-            let cancel = NSMenuItem(title: L10n("Cancel"), action: #selector(cancelRepresentedQueuedMessage), keyEquivalent: "")
-            cancel.target = self
-            cancel.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
-            cancel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.context.cancel-queued")
-            menu.addItem(cancel)
         }
         if row.forkItemID != nil {
             let fork = NSMenuItem(title: L10n("Create Branch"), action: #selector(forkRepresentedMessage), keyEquivalent: "")
@@ -1033,10 +1031,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
                 name: L10n("Create Branch"), target: self, selector: #selector(forkRepresentedMessage)
             ))
         }
-        if row.queuedMessageTaskID != nil {
-            actions.append(NSAccessibilityCustomAction(
-                name: L10n("Cancel"), target: self, selector: #selector(cancelRepresentedQueuedMessage)
-            ))
+        if row.withdrawableMessageID != nil {
+            actions.append(NSAccessibilityCustomAction(name: L10n("撤回"), target: self, selector: #selector(withdrawRepresentedMessage)))
         }
         setAccessibilityCustomActions(actions)
     }

@@ -3,7 +3,7 @@ import { logSessionMessageLatency, logSessionMessageFailure, sessionMessageLaten
 
 export function handleSessionInteractionHttpRequest({
   request, response, url, sendUnifiedSessionMessage, userMessageCommandSource,
-  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage,
+  chatResourceService, requireSessionReference, interruptUnifiedSession, cancelQueuedUserMessage, deleteUserMessage, withdrawUserMessage,
   respondUnifiedSessionApproval, respondUnifiedSessionUserInput,
   readJson, sendJson, unifiedErrorStatus
 }) {
@@ -20,6 +20,13 @@ export function handleSessionInteractionHttpRequest({
         response.end(resource.data);
       })
       .catch(error => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "RESOURCE_UNAVAILABLE" }));
+    return true;
+  }
+  const withdrawal = url.pathname.match(/^\/sessions\/([^/]+)\/messages\/([^/]+)\/withdraw$/);
+  if (request.method === "POST" && withdrawal) {
+    Promise.resolve().then(() => withdrawUserMessage(decodeURIComponent(withdrawal[1]), decodeURIComponent(withdrawal[2])))
+      .then(result => sendJson(response, 200, result))
+      .catch(error => sendJson(response, error.status ?? unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return true;
   }
   const deletion = url.pathname.match(/^\/sessions\/([^/]+)\/messages\/([^/]+)$/);

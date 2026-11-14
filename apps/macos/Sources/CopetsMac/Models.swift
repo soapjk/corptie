@@ -1703,6 +1703,11 @@ struct SessionConfigurationCommandResponse: Decodable {
     let session: TaskSession
 }
 
+struct WithdrawnUserMessage: Decodable, Equatable, Sendable {
+    let text: String
+    let images: [ChatImageReference]
+}
+
 struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let id: String
     let turnId: String
@@ -1728,6 +1733,8 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var processEndedAt: String? = nil
     var userMessageStatus: String? = nil
     var deletionAvailable: Bool? = nil
+    var withdrawalAvailable: Bool? = nil
+    var withdrawnMessage: WithdrawnUserMessage? = nil
     var queuePosition: Int? = nil
     var processingError: String? = nil
     var sourceType: String? = nil
