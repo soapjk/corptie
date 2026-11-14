@@ -64,7 +64,8 @@ function streamFile(response, { path, contentType, size, etag }) {
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
 export class ClientDeviceGateway {
   constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null,
-    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true, automationNotifications = null } = {}) {
+    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true, automationNotifications = null, verificationBudgetService = null } = {}) {
+    this.verificationBudgetService = verificationBudgetService;
     if (typeof detailWritesAllowed !== "boolean") throw deviceError("DETAIL_GATE_INVALID", 500);
     this.authority = authority;
     this.readAPI = readAPI;
@@ -177,6 +178,26 @@ export class ClientDeviceGateway {
         return reply(response, 200, await this.authority.refresh(await body(request)));
       }
       const identity = this.authenticateRequest(request);
+      const verification = /^\/client\/v1\/tasks\/([^/]+)\/verification-budgets(?:\/([^/]+)\/(extend|stop))?$/.exec(path);
+      const verificationDefaults = path === "/client/v1/settings/verification-budget";
+      if ((verification || verificationDefaults) && this.verificationBudgetService) {
+        const service = this.verificationBudgetService;
+        const taskId = verification && decode(verification[1], "INVALID_TASK_ID");
+        if (taskId && !service.store.getTask(taskId)) throw deviceError("TASK_NOT_FOUND", 404);
+        if (request.method === "GET") return reply(response, 200, verificationDefaults
+          ? { limit: service.defaultLimit(), enforcement: "entry_only" } : { budgets: service.list(taskId) });
+        if (request.method !== "POST") throw deviceError("REQUEST_NOT_ALLOWED", 405);
+        if (!this.resourceWritesAllowed) throw deviceError("CAPABILITY_UNAVAILABLE", 403);
+        const input = await body(request);
+        if (this.authenticateRequest(request).deviceId !== identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED", 403);
+        if (verificationDefaults) return reply(response, 200, service.setDefault(input.limit));
+        if (!verification[2] || !verification[3]) throw deviceError("VERIFICATION_ACTION_INVALID", 400);
+        if (verification[3] === "extend" && (typeof input.requestId !== "string" || !input.requestId.trim() || input.requestId.length > 200)) throw deviceError("VERIFICATION_ID_INVALID", 400);
+        const id = decode(verification[2], "INVALID_INSTRUCTION_ID");
+        try { return reply(response, 200, { budget: verification[3] === "extend"
+          ? service.extend(taskId, id, { ...input, requestId: `${identity.deviceId}:${input.requestId}` }) : service.stop(taskId, id) }); }
+        catch (error) { throw deviceError(error.code ?? "VERIFICATION_FAILED", error.statusCode ?? 500); }
+      }
       const deliveryAPI=this.sessionAPI?.entityCommands?.childDelivery;
       if(await handleChildTaskDeliveryHttp({request,response,url,prefix:"/client/v1",
         service:deliveryAPI?.service(),completion:deliveryAPI?.completion(),actor:{type:"user",id:`user:paired-device:${identity.deviceId}`},
@@ -781,7 +802,7 @@ export class ClientDeviceGateway {
   }
 }
 
-export async function startConfiguredDeviceGateway({ directory, preview, readAPI = null, controlAPI = null,
+export async function startConfiguredDeviceGateway({ directory, preview, readAPI = null, controlAPI = null, verificationBudgetService = null,
   worktreeAPI = null, sessionAPIFactory = null, environment = process.env, detailActionService = null, detailWritesAllowed = false, automationNotifications = null }) {
   if (preview || environment.CORPTIE_REMOTE_ACCESS !== "1") return null;
   const host = environment.CORPTIE_REMOTE_HOST;
@@ -796,6 +817,7 @@ export async function startConfiguredDeviceGateway({ directory, preview, readAPI
   const authority = new ClientDeviceAuthority(directory);
   await authority.initialize();
   const gateway = new ClientDeviceGateway(authority, {
+    verificationBudgetService,
     detailActionService, detailWritesAllowed, automationNotifications,
     readAPI, controlAPI, worktreeAPI, sessionAPI: sessionAPIFactory?.() ?? null
   });

@@ -47,3 +47,11 @@ test("mailbox input is fenced across queue writes, Provider echoes and history r
     assert.ok(store.getAgentTask("operation:scheduled_session_task"));
   } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("child outbound correspondence stays out of chat while unrelated correspondence remains", async () => {
+  const { isMailboxTimelineInput } = await import("../src/application/mailboxTimelinePolicy.mjs");
+  const item = { type: "userMessage", collaborationDirection: "outbound", collaborationSourceTaskId: "parent", collaborationTargetTaskId: "child" };
+  assert.equal(isMailboxTimelineInput(item, (sql, ids) => ids[0] === "parent" && ids[1] === "child" ? { found: 1 } : null), true);
+  assert.equal(isMailboxTimelineInput({ ...item, collaborationTargetTaskId: "unrelated" }, () => null), false);
+  assert.equal(isMailboxTimelineInput({ type: "userMessage", text: "real user" }, () => null), false);
+});

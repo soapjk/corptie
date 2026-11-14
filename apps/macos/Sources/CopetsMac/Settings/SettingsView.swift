@@ -611,6 +611,11 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 SettingsSectionHeading(title: L10n("共用配置"), mode: L10n("Session defaults use Save Settings below. Background models are saved separately."))
                 GroupBox {
+                    VerificationBudgetSettingsView {
+                        ClientVerificationBudgetAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)))
+                    }.padding(8).disabled(draft.isReadOnly)
+                }
+                GroupBox {
                     TaskCreationDefaultsSettingsView(
                         load: { try await ProviderSettingsAPI.readTaskDefaults(providerId: $0) },
                         save: { try await ProviderSettingsAPI.saveTaskDefaults($0) },

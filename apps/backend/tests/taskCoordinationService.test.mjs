@@ -2499,3 +2499,104 @@ test("live Codex summary replacement uses the restricted Session lifecycle", {
       mainUnsettledTurns: 0, childExecutions: f.starts.length, restored: true }));
   } finally { if (latest) await f.application.deleteSession(latest); }
 });
+
+test("parent amendments wait for summary and reuse the original dispatch exactly once", async t => {
+  const f = await recoveryFixture(t);
+  f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
+  const child = f.child("Managed_amendment"), childMeta = f.open("managed_amendment", child.id);
+  const item = { action: "send", taskId: child.id, text: "Complete the independent module", idempotencyKey: "amendment:original" };
+  const accepted = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [item] });
+  const id = accepted.dispatches[0].dispatchId;
+  await f.coordinator.runDispatch(id);
+  assert.equal(f.coordinator.get(id).error_code, "SHADOW_REVIEW_PENDING");
+  assert.equal(f.store.listQueuedAgentTasksForSession(childMeta.sessionId, 20).length, 0);
+  f.coordinator.recover();
+  assert.equal(f.coordinator.get(id).status, "waiting_dispatch");
+  const logical = f.store.getLogicalSession(f.shadow.forMain("logical:parent").shadow_session_id);
+  const metadata = { sessionId: logical.logicalSessionId, providerBindingId: logical.activeBinding.bindingId };
+  const forwarded = f.coordinator.acceptDispatch(metadata, f.role.agentId,
+    { items: [{ ...item, idempotencyKey: "summary:forward" }] }, { managementDispatchId: id });
+  assert.equal(forwarded.dispatches[0].dispatchId, id);
+  await f.coordinator.runDispatch(id);
+  const row = f.coordinator.get(id);
+  assert.equal(row.status, "queued");
+  assert.equal(f.store.getAgentTask(row.operation_id).text, item.text);
+  const replay = f.coordinator.acceptDispatch(metadata, f.role.agentId,
+    { items: [{ ...item, idempotencyKey: "summary:forward" }] }, { managementDispatchId: id });
+  assert.equal(replay.dispatches[0].dispatchId, id);
+  assert.equal(f.store.listQueuedAgentTasksForSession(childMeta.sessionId, 20).length, 1);
+});
+
+test("historical parent bindings cannot bypass the child management route", async t => {
+  const f = await recoveryFixture(t), child = f.child("Historical_child");
+  f.open("historical_child", child.id);
+  const old = f.open("old_parent", f.parent.id, { deferTaskProjection: true });
+  const shadowId = f.shadow.forMain("logical:parent").shadow_session_id;
+  const envelope = { message: { senderSessionId: "logical:historical_child", recipientSessionId: "logical:old_parent" } };
+  assert.equal(f.shadow.channelRecipient(envelope), shadowId);
+  f.store.db.run("UPDATE tasks SET current_session_id=NULL WHERE id=?", [f.parent.id]);
+  assert.throws(() => f.shadow.channelRecipient(envelope), { code: "SHADOW_OWNER_UNAVAILABLE" });
+  assert.equal(envelope.message.recipientSessionId, "logical:old_parent");
+});
+
+test("batch summaries update one visible report without starting main work", async t => {
+  const f = await recoveryFixture(t);
+  const accepted = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("summary-batch")] });
+  await f.coordinator.runDispatch(accepted.dispatches[0].dispatchId);
+  const shadowId = f.shadow.forMain("logical:parent").shadow_session_id;
+  const a = f.shadow.publish({ shadowId, turnId: "first", revision: 0, batchId: accepted.batchId, body: "9 tests passed" });
+  const b = f.shadow.publish({ shadowId, turnId: "second", revision: 0, batchId: accepted.batchId, body: "9 tests passed; browser verified" });
+  assert.equal(a.report_id, b.report_id);
+  assert.equal(f.store.selectOne("SELECT count(*) n FROM coordination_shadow_reports WHERE main_session_id='logical:parent'").n, 1);
+  assert.match(f.store.getSessionItem(f.source.sessionId, a.report_id).text, /browser verified/);
+  assert.equal(f.store.listQueuedAgentTasksForSession(f.source.sessionId, 20).length, 0);
+});
+
+test("automation ownership follows summary recovery and never claims unrelated parent jobs", async t => {
+  const f = await recoveryFixture(t), shadowId = f.shadow.forMain("logical:parent").shadow_session_id;
+  assert.equal(f.shadow.captureAutomationOwner("logical:parent", { type: "agent" }), null);
+  assert.deepEqual(f.shadow.captureAutomationOwner(shadowId, { type: "agent" }), { childManagementMainSessionId: "logical:parent" });
+  assert.equal(f.shadow.captureAutomationOwner(shadowId, { type: "user" }), null);
+  const automation = { logicalSessionId: shadowId, policySpec: { childManagementMainSessionId: "logical:parent" } };
+  f.remove(); await f.shadow.ensure("logical:parent");
+  assert.equal(f.shadow.automationOwner(automation), "logical:parent");
+  assert.notEqual(f.shadow.resolveRecipient("logical:parent").sessionId, shadowId);
+});
+
+test("manual adoption cannot execute a child Channel on its original main recipient", async t => {
+  const f = await recoveryFixture(t), child = f.child("Adoption_boundary");
+  f.open("adoption_child", child.id);
+  const channels = new SessionChannelService({ store: f.store, collaborationCore: f.core });
+  channels.resolveDelegatedRecipient = envelope => f.shadow.channelRecipient(envelope);
+  const sent = channels.requestChannel({ requestingSessionId: "logical:adoption_child", recipientSessionId: "logical:parent",
+    body: "Independent result", deliveryIntent: "action_required", idempotencyKey: "adoption-boundary" });
+  const mailbox = new SessionMailboxService({ store: f.store, channelService: channels });
+  assert.throws(() => mailbox.validate({ recipient_session_id: "logical:parent", channel_delivery_id: sent.delivery.deliveryId }), { code: "SHADOW_HANDOFF_PENDING" });
+  const target = f.shadow.forMain("logical:parent").shadow_session_id;
+  assert.equal(mailbox.validate({ recipient_session_id: target, channel_delivery_id: sent.delivery.deliveryId }).sessionId, target);
+});
+
+test("summary admits multiple amendments without replacing their original request executor", async t => {
+  const f = await recoveryFixture(t);
+  const children = [f.child("Amendment_A"), f.child("Amendment_B")];
+  children.forEach((child, index) => f.open(`batch_amendment_${index}`, child.id));
+  const items = children.map((child, index) => ({ action: "send", taskId: child.id, text: `original ${index}`, idempotencyKey: `batch:original:${index}` }));
+  const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items });
+  for (const row of receipt.dispatches) {
+    f.store.db.run("UPDATE task_coordination_dispatches SET executor_session_id='logical:original-request' WHERE dispatch_id=?", [row.dispatchId]);
+    await f.coordinator.runDispatch(row.dispatchId);
+  }
+  const shadow = f.store.getLogicalSession(f.shadow.forMain("logical:parent").shadow_session_id);
+  const metadata = { sessionId: shadow.logicalSessionId, providerBindingId: shadow.activeBinding.bindingId };
+  const forward = { items: items.map((item, i) => ({ ...item, idempotencyKey: `summary:batch:${i}` })) };
+  const accepted = f.coordinator.acceptDispatch(metadata, f.role.agentId, forward);
+  assert.deepEqual(accepted.dispatches.map(r => r.dispatchId), receipt.dispatches.map(r => r.dispatchId));
+  for (const row of accepted.dispatches) {
+    await f.coordinator.runDispatch(row.dispatchId);
+    assert.equal(f.coordinator.get(row.dispatchId).executor_session_id, "logical:original-request");
+    assert.equal(f.coordinator.get(row.dispatchId).status, "queued");
+  }
+  const replay = f.coordinator.acceptDispatch(metadata, f.role.agentId, forward);
+  assert.deepEqual(replay.dispatches.map(r => r.dispatchId), accepted.dispatches.map(r => r.dispatchId));
+  assert.equal(f.store.selectOne("SELECT count(*) n FROM task_coordination_dispatches WHERE parent_task_id=?", [f.parent.id]).n, 2);
+});

@@ -1342,3 +1342,16 @@ test("background scheduler retries a transient Store lock without an unhandled r
     service.stop();
   }
 });
+
+test("host-owned management scope persists across schedule edits without changing the original recipient", async () => {
+  const f = await fixture();
+  try {
+    f.service.executionOwner = () => ({ childManagementMainSessionId: "logical:main" });
+    const task = f.service.create({ logicalSessionId: "logical:stable", name: "Verification", scheduleType: "once",
+      runAt: "2026-08-22T12:01:00.000Z", message: { text: "collect result" } }, f.actor);
+    assert.equal(task.logicalSessionId, "logical:stable");
+    assert.equal(task.policySpec.childManagementMainSessionId, "logical:main");
+    const updated = f.service.update(task.taskId, { name: "Verification updated" }, f.actor);
+    assert.equal(updated.policySpec.childManagementMainSessionId, "logical:main");
+  } finally { await cleanup(f); }
+});

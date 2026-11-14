@@ -10,6 +10,7 @@ import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.m
 import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
 import { conversationWorktreeBlocker, WorkChatReadOnlyTurnService } from "./application/workChatReadOnlyTurnService.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
+import { VerificationBudgetService } from "./application/verificationBudgetService.mjs";
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
 import { ShadowSessionService } from "./application/shadowSessionService.mjs";
@@ -561,12 +562,15 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
       const task = store.getScheduledSessionTask(row.source_id);
       const work = row.operation_id ? store.getAgentTask(row.operation_id) : null;
       const run = work?.source?.scheduledRunId ? store.getScheduledSessionRun(work.source.scheduledRunId) : null;
-      if (!task || task.logicalSessionId !== row.recipient_session_id || task.status === "cancelled" || !run
+      const ownerId = taskCoordinationService?.shadow?.automationOwner(task);
+      const target = ownerId ? taskCoordinationService.shadow.resolveRecipient(ownerId) : null;
+      const expectedRecipient = ownerId ? (target?.status === "ready" ? target.sessionId : null) : task?.logicalSessionId;
+      if (!task || expectedRecipient !== row.recipient_session_id || task.status === "cancelled" || !run
           || ["cancelled", "failed", "skipped", "missed"].includes(run.status)) {
         throw Object.assign(new Error("MAILBOX_AUTOMATION_AUTHORIZATION_REVOKED"), { code: "MAILBOX_AUTOMATION_AUTHORIZATION_REVOKED" });
       }
       return authorizeScheduledSessionTask({ actor: { type: task.creatorType, id: task.creatorId },
-        logicalSessionId: row.recipient_session_id, environment: environmentName });
+        logicalSessionId: task.logicalSessionId, environment: environmentName });
     }
     if (authorization.ownerLogicalSessionId !== row.recipient_session_id || authorization.sourceId !== row.source_id) {
       throw Object.assign(new Error("MAILBOX_EVENT_SCOPE_REQUIRED"), { code: "MAILBOX_EVENT_SCOPE_REQUIRED" });
@@ -582,6 +586,15 @@ const executionChecklistService = new ExecutionChecklistService({ store,
   changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision, checklist: executionChecklistService.display(value, false) },
     { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId })
 });
+const verificationBudgetService = new VerificationBudgetService({ store,
+  readOnly: developmentPreview,
+  scope: metadata => executionChecklistService.scope(metadata),
+  workingDirectory: sessionId => projectWorkingDirectoryForSession(sessionId),
+  interrupt: sessionId => interruptUnifiedSession(sessionId, { type: "verification_budget" }, { reason: "verification_budget_exhausted" }),
+  changed: budget => emitEvent("VerificationBudgetChanged", budget, {
+    sessionId: store.getLogicalSession(budget.sessionId)?.legacySessionId ?? budget.sessionId })
+});
+sessionMailbox.verificationBudget = verificationBudgetService;
 const {
   dispatchSessionChannelDelivery, inspectCollaborationSession,
   resumeCollaborationSession, startCollaborationTurn
@@ -866,7 +879,7 @@ let platformOperationService = null;
 let toolMaterializationPort = null;
 const platformConfirmationService = new PlatformConfirmationService({ store });
 const hostToolCatalog = createHostToolCatalog({
-  executionChecklistService,
+  executionChecklistService, verificationBudgetService,
   mcpRegistryService, onIntegrationChanged: (type, payload) => emitEvent(type, payload),
   memoryOperationService, artifactService, callWorkspaceDynamicTool,
   validateProjectCodeHostRoute,
@@ -1522,6 +1535,7 @@ const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSe
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
   mcpInteractions,
   onInterruptRequested: (entry) => {
+    verificationBudgetService.cancelSession(entry.sessionId);
     mcpInteractions.cancelSession(entry.logicalSessionId, entry.turnId, { revokeGrants: true });
     skillMcpGateway.cancelSession(entry.logicalSessionId, entry.turnId);
     if (entry.turnId) void skillMcpGateway.endTurn(entry.logicalSessionId, entry.turnId, "Interrupt")
@@ -1797,13 +1811,34 @@ const shadowSessionService = new ShadowSessionService({ store, emitEvent,
       idempotencyKey: `shadow-binding-recovery:${id}:${logical?.routingVersion}`, reason: "SHADOW_BINDING_UNAVAILABLE" });
   } });
 sessionChannelService.resolveDelegatedRecipient = envelope => shadowSessionService.channelRecipient(envelope);
+scheduledSessionTaskService.executionOwner = (id, actor) => ({ ...shadowSessionService.captureAutomationOwner(id, actor),
+  ...verificationBudgetService.captureAutomationOwner(id, actor) });
+scheduledSessionTaskService.resolveRoute = async (id, task) => {
+  const ownerId = shadowSessionService.automationOwner(task);
+  if (!ownerId) return resolveScheduledSessionRoute(id);
+  const target = await shadowSessionService.readyRecipient(ownerId);
+  return resolveScheduledSessionRoute(target.sessionId);
+};
+sessionMailbox.resolveAutomationRecipient = operation => {
+  const task = store.getScheduledSessionTask(operation.source?.scheduledTaskId);
+  const ownerId = shadowSessionService.automationOwner(task);
+  if (!ownerId) return null;
+  const target = shadowSessionService.resolveRecipient(ownerId);
+  if (target.status !== "ready") {
+    void shadowSessionService.requestRecovery(ownerId);
+    throw Object.assign(new Error("汇总影子正在恢复，后台结果保留在邮箱。"), { code: "SHADOW_SESSION_PREPARING" });
+  }
+  return target.sessionId;
+};
 taskCoordinationService = new TaskCoordinationService({ store, collaboration: sessionCollaborationService, emitEvent,
   shadow: shadowSessionService,
   mailbox: sessionMailbox, deletion: taskDeletionService,
   changed: taskId => { if (taskId) emitEvent("TaskChanged", { taskId, action: "coordination-state",
     entity: { ...store.getTask(taskId), coordinationDispatches: store.listTaskCoordinationDispatches(taskId) } }); } });
 sessionCollaborationService.taskCoordinationService = taskCoordinationService;
+taskCoordinationService.verificationBudget = verificationBudgetService;
 shadowSessionService.onRecovered = mainId => {
+  taskCoordinationService.resumeManagement(mainId);
   shadowSessionService.recover(sessionMailbox, mainId);
   taskCoordinationService.scheduleReports();
   if (childTaskDeliveryService) for (const row of store.selectAll(`SELECT d.operation_id FROM child_task_delivery_operations d
@@ -2555,6 +2590,7 @@ const backendHttpPorts = Object.freeze({
   get collaborationCore() { return collaborationCore; },
   get toolHostService() { return toolHostService; },
   get executionChecklistService() { return executionChecklistService; },
+  get verificationBudgetService() { return verificationBudgetService; },
   get sessionMailbox() { return sessionMailbox; },
   get sessionToolMetadata() { return sessionToolMetadata; },
   get handleCollaborationRoutes() { return handleCollaborationRoutes; },
@@ -2820,6 +2856,7 @@ function startBackendRuntime() {
   channelMailbox.recoverInterruptedBatches();
   sessionMailbox.importQueuedAutomations();
   executionChecklistService.retireLegacyContinuations();
+  if (!developmentPreview) verificationBudgetService.recover();
   sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
   coordinationRequestService.recover();
   for (const task of store.selectAll("SELECT current_session_id FROM tasks WHERE coordination_enabled=1 AND archived=0 AND current_session_id IS NOT NULL")) {
@@ -2831,6 +2868,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   worktreeAutoFollowService.start();
   startClientDeviceGateway({
+    verificationBudgetService,
     sessionAbilityPreferences,
     workInitializationService,
     detailActionService, detailWritesAllowed: detailMigration.detailWritesAllowed,

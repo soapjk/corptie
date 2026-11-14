@@ -700,6 +700,11 @@ private struct PadSettingsView: View {
         case .provider:
             Form {
                 Section {
+                    VerificationBudgetSettingsView {
+                        ClientVerificationBudgetAPI(transport: try await connection.transport(), paired: true)
+                    }
+                }
+                Section {
                     TaskCreationDefaultsSettingsView(load: { providerId in
                         let api = ClientSessionAPI(transport: try await connection.transport())
                         return try await api.taskCreationSettings(providerId: providerId)

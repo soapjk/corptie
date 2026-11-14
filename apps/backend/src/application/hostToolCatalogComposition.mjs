@@ -1,4 +1,5 @@
 import { executionChecklistDynamicTools, callExecutionChecklistTool } from "./executionChecklistDynamicTools.mjs";
+import { verificationBudgetDynamicTools, callVerificationBudgetTool } from "./verificationBudgetDynamicTools.mjs";
 import { sessionMailboxDynamicTools, callSessionMailboxTool } from "./sessionMailboxDynamicTools.mjs";
 import { HostToolCatalog } from "./hostToolCatalog.mjs";
 import { memoryDynamicTools, callMemoryDynamicTool } from "./memoryDynamicTools.mjs";
@@ -18,7 +19,7 @@ import { contextReadDynamicTools, callContextReadDynamicTool } from "./contextRe
 import { integrationRegistryDynamicTools, callIntegrationRegistryDynamicTool } from "./integrationRegistryDynamicTools.mjs";
 
 export function createHostToolCatalog({
-  executionChecklistService, memoryOperationService, artifactService, callWorkspaceDynamicTool,
+  executionChecklistService, verificationBudgetService, memoryOperationService, artifactService, callWorkspaceDynamicTool,
   validateProjectCodeHostRoute, getProjectCodeApplicationService,
   sessionCollaborationV2Enabled, port, skillRegistryService,
   scheduledSessionTaskService, getBoundTaskForAgent,
@@ -28,6 +29,9 @@ export function createHostToolCatalog({
   getWorkChatOperationService, getSessionMailboxService, contextReadService, mcpRegistryService, onIntegrationChanged
 }) {
   return new HostToolCatalog([
+    ...(verificationBudgetService ? [{ id: "verification", tools: verificationBudgetDynamicTools,
+      authorize: ({ metadata }) => Boolean(metadata?.sessionId && metadata?.taskId),
+      execute: input => callVerificationBudgetTool(verificationBudgetService, input) }] : []),
     { id: "execution-checklist", tools: executionChecklistDynamicTools,
       authorize: ({ metadata }) => Boolean(metadata?.sessionId && metadata?.taskId),
       execute: input => callExecutionChecklistTool(executionChecklistService, input) },

@@ -29,7 +29,7 @@ export class TaskCoordinationService {
       this.store.db.run("UPDATE task_coordination_dispatches SET report_generation=report_generation+1 WHERE dispatch_id=?", [id]);
       fields = { ...fields, report_message_id: null };
     }
-    const allowed = ["target_task_id", "mailbox_message_id", "operation_id", "status", "error_code", "error_message", "report_message_id", "request_json"];
+    const allowed = ["target_task_id", "mailbox_message_id", "operation_id", "status", "error_code", "error_message", "report_message_id", "request_json", "executor_session_id", "runtime_json"];
     const keys = Object.keys(fields).filter(key => allowed.includes(key));
     this.store.db.run(`UPDATE task_coordination_dispatches SET ${keys.map(key => `${key}=?`).join(",")},updated_at=? WHERE dispatch_id=?`,
       [...keys.map(key => fields[key]), new Date().toISOString(), id]);
@@ -119,6 +119,24 @@ export class TaskCoordinationService {
     let batch;
     this.store.runInTransaction(() => {
       for (const { request, runtime } of prepared) {
+        // Reuse each original amendment even when the summary handles a batch.
+        // executor_session_id remains the original request identity for UI replies.
+        if (delegation && request.action === "send") {
+          const explicit = progressContext.managementDispatchId && this.get(progressContext.managementDispatchId);
+          const management = explicit?.target_task_id === request.taskId ? explicit
+            : this.store.selectOne(`SELECT * FROM task_coordination_dispatches WHERE parent_task_id=? AND target_task_id=?
+              AND (error_code='SHADOW_REVIEW_PENDING' OR json_extract(runtime_json,'$.managementAdmissionKey')=?)
+              ORDER BY created_at,dispatch_id LIMIT 1`, [scope.parent.id, request.taskId, request.idempotencyKey]);
+          if (management?.parent_task_id === scope.parent.id && (management.error_code === "SHADOW_REVIEW_PENDING"
+            || JSON.parse(management.runtime_json).managementExecutorSessionId)) {
+            if (management.error_code === "SHADOW_REVIEW_PENDING") this.update(management.dispatch_id, {
+              status: "accepted", error_code: null, error_message: null,
+              runtime_json: JSON.stringify({ ...JSON.parse(management.runtime_json),
+                managementExecutorSessionId: executorSessionId, managementAdmissionKey: request.idempotencyKey }) });
+            rows.push(this.get(management.dispatch_id));
+            continue;
+          }
+        }
         const old = this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE source_session_id=? AND idempotency_key=?", [scope.logicalSessionId, request.idempotencyKey]);
         if (old) {
           const saved = JSON.parse(old.request_json);
@@ -133,7 +151,10 @@ export class TaskCoordinationService {
         this.store.db.run(`INSERT INTO task_coordination_dispatches
           (dispatch_id,source_session_id,parent_task_id,source_role_id,idempotency_key,request_json,runtime_json,mode_at_admission,target_task_id,created_at,updated_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?)`, [id, scope.logicalSessionId, scope.session.taskId, actorId, request.idempotencyKey,
-          JSON.stringify(request), JSON.stringify(runtime), scope.parent.coordination_enabled === 1 ? 1 : 0, request.taskId ?? null, now, now]);
+          JSON.stringify(request), JSON.stringify({ ...runtime,
+            ...(this.verificationBudget?.operationForSession(executorSessionId)
+              ? { verificationOperationId: this.verificationBudget.operationForSession(executorSessionId) } : {}) }),
+          scope.parent.coordination_enabled === 1 ? 1 : 0, request.taskId ?? null, now, now]);
         if (requestOwner || delegation) this.store.db.run("UPDATE task_coordination_dispatches SET executor_session_id=? WHERE dispatch_id=?", [executorSessionId, id]);
         rows.push(this.get(id));
         if (request.action === "send") amendments.push({ id, taskId: request.taskId, text: request.text.slice(0, 2400) });
@@ -143,13 +164,7 @@ export class TaskCoordinationService {
       const reuseBatch = candidate?.source_session_id===scope.logicalSessionId ? candidate.batch_id : null;
       batch=this.progress.ensure(progressScope,sourceTurnId,progressContext.batchId??reuseBatch);
       for(const row of rows)this.progress.attach(batch,row);
-      if (shadowOwner && amendments.length) {
-        this.store.db.run("UPDATE coordination_shadow_sessions SET requirement_revision=requirement_revision+1,updated_at=? WHERE main_session_id=?",
-          [new Date().toISOString(), scope.logicalSessionId]);
-        this.shadow.admit(scope.logicalSessionId, `shadow-amendment:${amendments[0].id}`,
-          `主会话已给下列子任务追加要求。只更新受影响任务的协调计划，不重发这些指令。\n${JSON.stringify(amendments)}`,
-          { coordinationDispatchId: amendments[0].id }, this.mailbox);
-      }
+      if (shadowOwner && amendments.length) this.shadow.revise(scope.logicalSessionId);
     });
     this.store.scheduleSave();
     if (shadowOwner) setImmediate(() => this.shadow.requestRecovery(scope.logicalSessionId));
@@ -179,7 +194,9 @@ export class TaskCoordinationService {
     const promise = this.execute(id).catch(error => {
       const row=this.get(id);
       const waiting=error.code === "TASK_HIERARCHY_BUSY" && !row?.target_task_id && !error.creationRecovery?.taskId;
-      this.update(id, { status: error.creationPending ? "preparing" : waiting ? "waiting_workspace" : "failed",
+      const awaitingShadow = row && JSON.parse(row.request_json).action === "send" && !row.operation_id
+        && /^(SHADOW_|PROVIDER_|ETIMEDOUT|ECONN)/.test(String(error.code));
+      this.update(id, { status: awaitingShadow ? "waiting_dispatch" : error.creationPending ? "preparing" : waiting ? "waiting_workspace" : "failed",
         error_code: error.code ?? "DISPATCH_FAILED", error_message: String(error.message).slice(0, 2000) });
       this.scheduleReports();
     }).finally(() => this.running.delete(id));
@@ -202,6 +219,15 @@ export class TaskCoordinationService {
     const runtime = JSON.parse(row.runtime_json);
     const canonical = !row.target_task_id && this.pendingCreation(row.parent_task_id, row.source_role_id, request, runtime);
     if (canonical && canonical.dispatch_id !== id) { this.retireDuplicateCreation(row, canonical, request); return; }
+    if (request.action === "send" && this.shadow && !runtime.managementExecutorSessionId && !this.shadow.forShadow(row.executor_session_id)) {
+      const target = await this.shadow.readyRecipient(this.reportOwner(row));
+      const message = this.mailbox.receiveEvent({ recipientSessionId: target.sessionId, sourceType: "background", sourceId: id,
+        body: `主会话提交了对子任务的后续要求，尚未发送给子任务。由你判断并组织后续执行；需要交付原要求时使用 kind=dispatch、一个 action=send 指向此 taskId，宿主复用原派发及原文，不重复发送。不要要求主会话集成或验收。\n${JSON.stringify({ dispatchId: id, taskId: row.target_task_id, text: request.text })}`,
+        intent: "action_required", idempotencyKey: `management:${id}`,
+        authorization: { ownerLogicalSessionId: target.sessionId, sourceId: id, coordinationDispatchId: id, purpose: "shadow_requirement" } });
+      this.update(id, { status: "waiting_dispatch", error_code: "SHADOW_REVIEW_PENDING", error_message: "后续要求已交汇总影子处理", mailbox_message_id: message.messageId });
+      return;
+    }
     this.update(id, { status: "preparing", error_code: null, error_message: null });
     if (!row.target_task_id) {
       const prior = this.creationChains.get(row.parent_task_id) ?? Promise.resolve();
@@ -257,6 +283,11 @@ export class TaskCoordinationService {
       return;
     }
     if (authorization.purpose === "parent_report") {
+      if (this.shadow) {
+        this.shadow.assertRecipient(row, this.reportOwner(dispatch));
+        if (!terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
+        return;
+      }
       if (authorization.statusNotice && (!Number.isSafeInteger(authorization.reportGeneration)
         || authorization.reportGeneration < 0 || authorization.reportGeneration > dispatch.report_generation)) fail("COORDINATION_REPORT_SCOPE_INVALID");
       if (row.recipient_session_id !== this.reportOwner(dispatch)
@@ -282,6 +313,10 @@ export class TaskCoordinationService {
   retryDispatch(metadata, actorId, id) {
     const scope = this.collaboration.coordinationScope(metadata, actorId), row = this.get(id);
     if (!row || row.source_session_id !== scope.logicalSessionId || row.parent_task_id !== scope.parent.id) fail("TASK_PARENT_OUTSIDE_SCOPE");
+    if (row.error_code === "SHADOW_REVIEW_PENDING") {
+      void this.shadow.requestRecovery(this.reportOwner(row));
+      return { ...this.receipt(row), reused: true, retryAction: "await_summary_management" };
+    }
     if(row.mailbox_message_id) {
       const message=this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[row.mailbox_message_id]);
       const operation=row.operation_id && this.adoptedExecution(this.store.getAgentTask(row.operation_id));
@@ -515,6 +550,14 @@ export class TaskCoordinationService {
     });
     return true;
   }
+  resumeManagement(mainId) {
+    for (const row of this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
+      WHERE d.source_session_id=? AND d.status='waiting_dispatch' AND d.operation_id IS NULL AND d.mailbox_message_id IS NULL`, [mainId])) {
+      if (JSON.parse(row.request_json).action !== "send") continue;
+      this.update(row.dispatch_id, { status: "accepted", error_code: null, error_message: null });
+      setImmediate(() => this.runDispatch(row.dispatch_id));
+    }
+  }
   recover() {
     if (this.shadow) for (const task of this.store.selectAll(`SELECT DISTINCT t.id FROM tasks t
       LEFT JOIN coordination_shadow_sessions sh ON sh.parent_task_id=t.id
@@ -527,6 +570,7 @@ export class TaskCoordinationService {
       WHERE s.archived=0 AND s.deleted_at IS NULL ORDER BY b.created_at DESC LIMIT 1000`)) this.progress.schedule(row.batch_id);
     for (const row of this.store.selectAll("SELECT * FROM task_coordination_dispatches WHERE status NOT IN ('completed','failed','cancelled','unknown')")) {
       if (["accepted", "preparing", "waiting_workspace"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
+      if (row.error_code === "SHADOW_REVIEW_PENDING") continue;
       const work = this.store.getAgentTask(row.operation_id);
       if(["waiting_dispatch","blocked"].includes(row.status) && work?.status === "queued") continue;
       const adopted = row.mailbox_message_id && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=? AND disposition='adopted'", [row.mailbox_message_id]);
