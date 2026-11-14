@@ -19,15 +19,10 @@ struct AgentsSkillsLayoutTests {
         #expect(RolesSkillsLayoutMetrics.mode(for: 600) == .compact)
     }
 
-    @Test("A split layout reserves room for two complete role cards")
+    @Test("Skills column retains its existing split boundary")
     func splitBoundary() {
         #expect(RolesSkillsLayoutMetrics.mode(for: 868) == .compact)
         #expect(RolesSkillsLayoutMetrics.mode(for: 869) == .split)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 568) == 2)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 567) == 1)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 899) == 3)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 420) == 1)
-        #expect(RolesSkillsLayoutMetrics.gridColumnCount(for: 180) == 1)
     }
 
     @Test("An open Skills sheet never duplicates the inline registry")
@@ -161,6 +156,43 @@ struct RolePageColumnsTests {
         #expect(probe("skills", in: host) == nil)
     }
 
+    @Test("Native flow keeps compact cards square and moves neighbors around an expanded card")
+    func cardsReflow() throws {
+        _ = NSApplication.shared
+        for width in [280.0, 568.0, 1080.0] {
+            for expanded in [false, true] {
+                let host = NSHostingView(rootView: RoleCardFlowLayout() {
+                    RoleColumnLayoutProbe(name: "first").frame(width: 136, height: 136)
+                    RoleColumnLayoutProbe(name: "selected")
+                        .frame(width: expanded ? min(600, width) : 136, height: expanded ? 340 : 136)
+                    RoleColumnLayoutProbe(name: "last").frame(width: 136, height: 136)
+                })
+                host.sizingOptions = []
+                host.frame = CGRect(x: 0, y: 0, width: width, height: 1000)
+                host.layoutSubtreeIfNeeded()
+                let frames = try ["first", "selected", "last"].map { name in
+                    let view = try #require(probe(name, in: host))
+                    return view.convert(view.bounds, to: host)
+                }
+                for rect in frames { #expect(rect.minX >= 0 && rect.maxX <= width + 1) }
+                #expect(frames[0].size == CGSize(width: 136, height: 136))
+                #expect(frames[2].size == CGSize(width: 136, height: 136))
+                for i in frames.indices {
+                    for j in frames.indices where j > i { #expect(!frames[i].intersects(frames[j])) }
+                }
+            }
+        }
+    }
+
+    @Test("Long role names and descriptions do not enlarge the compact card")
+    func compactCardBounds() throws {
+        let role = Role(roleId: "role:long", name: String(repeating: "长名称", count: 20),
+            description: String(repeating: "完整描述用于检查截断。", count: 60), status: "available",
+            systemPrompt: "", capabilities: ["long capability"], createdAt: "", updatedAt: "")
+        let host = NSHostingView(rootView: CompactRoleCardProbe(role: role))
+        #expect(host.fittingSize == CGSize(width: 136, height: 136))
+    }
+
     private func topDistance(_ rect: CGRect, in host: NSView) -> CGFloat {
         host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
     }
@@ -179,4 +211,12 @@ private struct RoleColumnLayoutProbe: NSViewRepresentable {
         return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private struct CompactRoleCardProbe: View {
+    let role: Role
+    @FocusState private var focused: String?
+    var body: some View {
+        RoleCard(agent: role, focusedRoleID: $focused, onOpenDetail: {}, onStartSession: {})
+    }
 }

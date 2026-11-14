@@ -1,7 +1,23 @@
 import SwiftUI
 
 // Agent 详情页：承载 Profile、已安装 Skill、操作和 Memory。
-// 从侧栏 Agent 右键「打开详情」进入（sheet 弹窗）。
+// 角色管理页原位嵌入；其他入口保留独立展示。
+
+/// Owned by the gallery while a role is edited, so collapsing, switching cards
+/// or filtering the list never discards unsaved fields.
+final class RoleEditDraft: ObservableObject {
+    @Published var name: String
+    @Published var detail: String
+    @Published var systemPrompt: String
+    @Published var selectedSkillIds: Set<String>
+
+    init(agent: Role) {
+        name = agent.name
+        detail = agent.description
+        systemPrompt = agent.systemPrompt
+        selectedSkillIds = Set(agent.skillIds ?? [])
+    }
+}
 
 struct RoleDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -9,10 +25,9 @@ struct RoleDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let agent: Role
 
-    @State private var name: String
-    @State private var detail: String
-    @State private var systemPrompt: String
-    @State private var selectedSkillIds: Set<String>
+    @StateObject private var draft: RoleEditDraft
+    private let embedded: Bool
+    private let onClose: (() -> Void)?
     @State private var showSkillPicker = false
     @State private var showMcpManager = false
     @State private var isSaving = false
@@ -21,57 +36,38 @@ struct RoleDetailView: View {
     @State private var showSessionCreation = false
     @State private var assistRoleId: String?
 
-    init(agent: Role) {
+    init(agent: Role, draft: RoleEditDraft? = nil, embedded: Bool = false, onClose: (() -> Void)? = nil) {
         self.agent = agent
-        _name = State(initialValue: agent.name)
-        _detail = State(initialValue: agent.description)
-        _systemPrompt = State(initialValue: agent.systemPrompt)
-        _selectedSkillIds = State(initialValue: Set(agent.skillIds ?? []))
+        _draft = StateObject(wrappedValue: draft ?? RoleEditDraft(agent: agent))
+        self.embedded = embedded
+        self.onClose = onClose
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 22, height: 22)
-                        .background(Color.secondary.opacity(0.16), in: Circle())
+        Group {
+            if embedded {
+                detailContent
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Button(L10n("Close")) { close() }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                    }.padding(16)
+                    Divider()
+                    ScrollView { detailContent.padding(24) }
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help(L10n("Close"))
-                .accessibilityLabel(L10n("Close"))
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    Divider()
-                    form
-                    Divider()
-                    actions
-                    deleteButton
-                    Divider()
-                    MemoryManagementView(
-                        scope: .owner(type: "agent", id: agent.roleId),
-                        embedsListInParentScrollView: true
-                    )
-                }
-                .padding(24)
+                .frame(width: 760)
+                .frame(minHeight: 580, idealHeight: 680)
             }
         }
-        .frame(width: 760)
-        .frame(minHeight: 580, idealHeight: 680)
         .alert(L10n("删除 角色"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteRole(roleId: agent.roleId) }
-                dismiss()
+                close()
             }
             Button(L10n("取消"), role: .cancel) {}
         } message: {
@@ -79,27 +75,42 @@ struct RoleDetailView: View {
         }
         .sheet(isPresented: $showSessionCreation) {
             NewSessionCreationSheet(fixedAgent: agent) { session in
-                dismiss()
+                close()
                 router.openSession(session.id, source: .createdSession)
             }
         }
         .sheet(isPresented: $showSkillPicker) {
-            RoleSkillPickerView(skills: client.skills, selectedSkillIds: selectedSkillIds) { selection in
-                selectedSkillIds = selection
+            RoleSkillPickerView(skills: client.skills, selectedSkillIds: draft.selectedSkillIds) { selection in
+                draft.selectedSkillIds = selection
             }
         }
         .sheet(isPresented: $showMcpManager) {
             McpManagementView(roles: [agent], initialRoleId: agent.roleId)
         }
         .task {
+            guard !embedded else { return }
             await client.refreshSkills()
             await client.refreshRoles()
             if let latest = client.roles.first(where: { $0.roleId == agent.roleId }) {
-                selectedSkillIds = Set(latest.skillIds ?? [])
+                draft.selectedSkillIds = Set(latest.skillIds ?? [])
             }
         }
         .onChange(of: client.skills.map(\.skillId)) { _, availableSkillIds in
-            selectedSkillIds.formIntersection(availableSkillIds)
+            if !embedded { draft.selectedSkillIds.formIntersection(availableSkillIds) }
+        }
+    }
+
+    private var detailContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            Divider()
+            form
+            Divider()
+            actions
+            deleteButton
+            Divider()
+            MemoryManagementView(scope: .owner(type: "agent", id: agent.roleId),
+                                 embedsListInParentScrollView: true)
         }
     }
 
@@ -172,8 +183,8 @@ struct RoleDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             field(L10n("名称")) {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField(L10n("名称"), text: $name)
-                    EntityNameValidationMessage(value: name)
+                    TextField(L10n("名称"), text: $draft.name).accessibilityIdentifier("role-editor-name")
+                    EntityNameValidationMessage(value: draft.name)
                 }
             }
             if agent.isPlatformAssistant {
@@ -183,22 +194,22 @@ struct RoleDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 field(L10n("描述")) {
-                    TextField(L10n("描述"), text: $detail)
+                    TextField(L10n("描述"), text: $draft.detail).accessibilityIdentifier("role-editor-description")
                 } trailing: {
-                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)")
+                    AgentAssistButton(fieldLabel: "描述", text: $draft.detail, selectedRoleId: $assistRoleId, context: "角色 名称：\(draft.name)")
                 }
                 field("System Prompt") {
-                    TextEditor(text: $systemPrompt)
+                    TextEditor(text: $draft.systemPrompt)
                         .font(.body)
                         .frame(height: 80)
                         .padding(6)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                 } trailing: {
-                    AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)；描述：\(detail)")
+                    AgentAssistButton(fieldLabel: "System Prompt", text: $draft.systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(draft.name)；描述：\(draft.detail)")
                 }
                 RoleInstalledSkillsView(
                     skills: client.skills,
-                    selectedSkillIds: $selectedSkillIds,
+                    selectedSkillIds: $draft.selectedSkillIds,
                     isEnabled: true,
                     onAdd: { showSkillPicker = true }
                 )
@@ -249,20 +260,20 @@ struct RoleDetailView: View {
                     if agent.isPlatformAssistant {
                         updated = await client.updateRole(
                             roleId: agent.roleId,
-                            name: name == agent.name ? nil : name
+                            name: draft.name == agent.name ? nil : draft.name
                         )
                     } else {
                         updated = await client.updateRole(
                             roleId: agent.roleId,
-                            name: name == agent.name ? nil : name,
-                            description: detail,
-                            systemPrompt: systemPrompt,
-                            skillIds: Array(selectedSkillIds)
+                            name: draft.name == agent.name ? nil : draft.name,
+                            description: draft.detail,
+                            systemPrompt: draft.systemPrompt,
+                            skillIds: Array(draft.selectedSkillIds)
                         )
                     }
                     isSaving = false
                     if updated != nil {
-                        dismiss()
+                        close()
                     } else {
                         saveError = client.errorMessage ?? L10n("保存失败。")
                     }
@@ -278,7 +289,7 @@ struct RoleDetailView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSaving || !(name == agent.name || EntityNamePolicy.isValid(name)))
+            .disabled(isSaving || !(draft.name == agent.name || EntityNamePolicy.isValid(draft.name)))
         }
     }
 
