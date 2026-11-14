@@ -19,6 +19,25 @@ async function fixture(run) {
 }
 const toggle = { expectedResourceVersion: 0, requestId: "first", kind: "mcp", id: "mcp:one", disabled: false };
 
+test("only the shipped default is enabled initially and an explicit close survives recreation", () => fixture(async (service, store) => {
+  const builtin = { serverId: "mcp:builtin", name: "Computer Use", enabled: true, builtin: true, defaultEnabled: true };
+  const ordinary = service.registry.list();
+  service.registry.list = () => [...ordinary, builtin];
+  service.registry.defaultEnabledServerIds = () => builtin.enabled ? [builtin.serverId] : [];
+  assert.equal(service.isDisabled("a", "mcp", builtin.serverId), false);
+  assert.equal(service.isDisabled("a", "mcp", "mcp:one"), true);
+  assert.deepEqual(service.inspect("a").enabledMcpServerIds, [builtin.serverId]);
+  assert.equal(store.selectOne("SELECT COUNT(*) n FROM session_ability_activations").n, 0);
+  service.update("a", { ...toggle, id: builtin.serverId, disabled: true });
+  const recreated = new SessionAbilityPreferences({ store, registry: service.registry });
+  assert.equal(recreated.isDisabled("a", "mcp", builtin.serverId), true);
+  assert.equal(recreated.isDisabled("b", "mcp", builtin.serverId), false);
+  assert.deepEqual(recreated.inspect("a").enabledMcpServerIds, []);
+  recreated.update("b", { expectedResourceVersion: 0, requestId: "reset-default", reset: true });
+  assert.equal(recreated.isDisabled("b", "mcp", builtin.serverId), true);
+  assert.equal(recreated.isDisabled("c", "mcp", builtin.serverId), false);
+}));
+
 test("Session ability preferences isolate Sessions and preserve Role grants", () => fixture(async (service, store) => {
   assert.equal(service.inspect("a").resourceVersion, 0);
   const receipt = service.update("a", toggle);

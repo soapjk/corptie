@@ -5,7 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { toolDiscoveryContract, rankDiscoveryCandidates } from "./toolDiscoveryContracts.mjs";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig } from "./computerUseGatewayPolicy.mjs";
+import { isComputerUseMcpConfig, isNativeComputerUseMcpConfig, isComputerUseBridgeConfig, isBuiltinComputerUseConfig } from "./computerUseGatewayPolicy.mjs";
 import { connectDesktopMcp } from "../mcp/desktopMcpClient.mjs";
 import { restrictedMcpFetch } from "./restrictedMcpFetch.mjs";
 
@@ -33,7 +33,7 @@ export class SkillMcpGateway {
     this.retryMs = Number(options.retryMs ?? 10_000);
     this.connectServer = options.connectServer ?? ((serverName, config, context) => {
       const elicit = (client, request, extra) => this.elicit(client, request, extra);
-      if (isComputerUseBridgeConfig(config)) return connectDesktopMcp(config, elicit);
+      if (isComputerUseBridgeConfig(config) || isBuiltinComputerUseConfig(config)) return connectDesktopMcp(config, elicit);
       if (isNativeComputerUseMcpConfig(config)) {
         if (!options.connectComputerUseServer) throw gatewayError("COMPUTER_USE_PROVIDER_UNSUPPORTED", "An official Provider tool-host connection is required.", 409);
         return options.connectComputerUseServer(config, context, elicit);

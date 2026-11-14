@@ -9,7 +9,8 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "CorptieMac", targets: ["CorptieMac"])
+        .executable(name: "CorptieMac", targets: ["CorptieMac"]),
+        .executable(name: "CorptieComputerUse", targets: ["CorptieComputerUse"])
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
@@ -19,6 +20,12 @@ let package = Package(
         .package(url: "https://github.com/tevelee/SwiftUI-Flow", exact: "3.1.1")
     ],
     targets: [
+        .executableTarget(
+            name: "CorptieComputerUse",
+            path: "Sources/CorptieComputerUse",
+            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("ApplicationServices"), .linkedFramework("ScreenCaptureKit")]
+        ),
+        .testTarget(name: "CorptieComputerUseTests", dependencies: ["CorptieComputerUse"], path: "Tests/CorptieComputerUseTests"),
         .target(
             name: "RectanglePacking",
             path: "Sources/RectanglePacking",

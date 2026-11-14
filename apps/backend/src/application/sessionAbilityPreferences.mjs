@@ -1,4 +1,5 @@
-// User-owned Session activation. Installation and legacy Role links never activate abilities.
+// User-owned Session activation. Only the explicitly shipped default capability
+// is enabled initially; third-party installations and Role links never activate tools.
 export class SessionAbilityPreferences {
   constructor({ store, registry }) {
     this.store = store;
@@ -21,7 +22,11 @@ export class SessionAbilityPreferences {
     const active = this.store.selectOne(
       "SELECT * FROM session_ability_activations WHERE logical_session_id = ?", [logical.logicalSessionId]);
     const enabledSkillIds = active ? JSON.parse(active.enabled_skills_json) : [];
-    const enabledMcpServerIds = active ? JSON.parse(active.enabled_mcps_json) : [];
+    const enabledMcpServerIds = [...new Set([
+      ...(active ? JSON.parse(active.enabled_mcps_json) : []),
+      ...(this.registry.defaultEnabledServerIds?.() ?? [])
+        .filter(id => !JSON.parse(row?.disabled_mcps_json ?? "[]").includes(id))
+    ])];
     return { logicalSessionId: logical.logicalSessionId, enabledSkillIds, enabledMcpServerIds,
       disabledSkillIds: this.store.listRegistrySkills().map(s => s.skillId).filter(id => !enabledSkillIds.includes(id)),
       disabledMcpServerIds: this.registry.list().map(s => s.serverId).filter(id => !enabledMcpServerIds.includes(id)),
@@ -33,10 +38,12 @@ export class SessionAbilityPreferences {
     const { logical } = this.resolve(reference);
     const active = this.store.selectOne(
       "SELECT * FROM session_ability_activations WHERE logical_session_id = ?", [logical.logicalSessionId]);
-    if (!active) return true;
-    const value = { enabledSkillIds: JSON.parse(active.enabled_skills_json),
-      enabledMcpServerIds: JSON.parse(active.enabled_mcps_json) };
-    return !(kind === "skill" ? value.enabledSkillIds : value.enabledMcpServerIds).includes(id);
+    const explicitlyEnabled = active ? JSON.parse(kind === "skill" ? active.enabled_skills_json : active.enabled_mcps_json) : [];
+    if (explicitlyEnabled.includes(id)) return false;
+    if (kind !== "mcp" || !(this.registry.defaultEnabledServerIds?.() ?? []).includes(id)) return true;
+    const overrides = this.store.selectOne(
+      "SELECT disabled_mcps_json FROM session_ability_preferences WHERE logical_session_id = ?", [logical.logicalSessionId]);
+    return JSON.parse(overrides?.disabled_mcps_json ?? "[]").includes(id);
   }
 
   assertEnabled(reference, kind, id) {
