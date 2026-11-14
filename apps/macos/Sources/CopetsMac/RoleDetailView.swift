@@ -1,7 +1,22 @@
 import SwiftUI
+import CorptieConversation
 
 // Role 详情页：承载 Profile、操作和 Memory。
-// 从侧栏 Agent 右键「打开详情」进入（sheet 弹窗）。
+// 角色管理页原位嵌入；其他入口保留独立展示。
+
+/// Owned by the gallery while a role is edited, so collapsing, switching cards
+/// or filtering the list never discards unsaved fields.
+final class RoleEditDraft: ObservableObject {
+    @Published var name: String
+    @Published var detail: String
+    @Published var systemPrompt: String
+
+    init(agent: Role) {
+        name = agent.name
+        detail = agent.description
+        systemPrompt = agent.systemPrompt
+    }
+}
 
 struct RoleDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -9,65 +24,48 @@ struct RoleDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let agent: Role
 
-    @State private var name: String
-    @State private var detail: String
-    @State private var systemPrompt: String
+    @StateObject private var draft: RoleEditDraft
+    private let embedded: Bool
+    private let onClose: (() -> Void)?
+    @State private var showsAvatarPicker = false
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
     @State private var showSessionCreation = false
     @State private var assistRoleId: String?
 
-    init(agent: Role) {
+    init(agent: Role, draft: RoleEditDraft? = nil, embedded: Bool = false, onClose: (() -> Void)? = nil) {
         self.agent = agent
-        _name = State(initialValue: agent.name)
-        _detail = State(initialValue: agent.description)
-        _systemPrompt = State(initialValue: agent.systemPrompt)
+        _draft = StateObject(wrappedValue: draft ?? RoleEditDraft(agent: agent))
+        self.embedded = embedded
+        self.onClose = onClose
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 22, height: 22)
-                        .background(Color.secondary.opacity(0.16), in: Circle())
+        Group {
+            if embedded {
+                detailContent
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Button(L10n("Close")) { close() }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                    }.padding(16)
+                    Divider()
+                    ScrollView { detailContent.padding(24) }
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help(L10n("Close"))
-                .accessibilityLabel(L10n("Close"))
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    Divider()
-                    form
-                    Divider()
-                    actions
-                    deleteButton
-                    Divider()
-                    MemoryManagementView(
-                        scope: .owner(type: "agent", id: agent.roleId),
-                        embedsListInParentScrollView: true
-                    )
-                }
-                .padding(24)
+                .frame(width: 760)
+                .frame(minHeight: 580, idealHeight: 680)
             }
         }
-        .frame(width: 760)
-        .frame(minHeight: 580, idealHeight: 680)
         .alert(L10n("删除 角色"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteRole(roleId: agent.roleId) }
-                dismiss()
+                close()
             }
             Button(L10n("取消"), role: .cancel) {}
         } message: {
@@ -75,11 +73,24 @@ struct RoleDetailView: View {
         }
         .sheet(isPresented: $showSessionCreation) {
             NewSessionCreationSheet(fixedAgent: agent) { session in
-                dismiss()
+                close()
                 router.openSession(session.id, source: .createdSession)
             }
         }
+    }
 
+    private var detailContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            Divider()
+            form
+            Divider()
+            actions
+            deleteButton
+            Divider()
+            MemoryManagementView(scope: .owner(type: "agent", id: agent.roleId),
+                                 embedsListInParentScrollView: true)
+        }
     }
 
     // MARK: - 头部
@@ -90,7 +101,7 @@ struct RoleDetailView: View {
                 .frame(width: 56, height: 56)
                 .overlay(alignment: .bottomTrailing) {
                     Button {
-                        chooseAvatar()
+                        showsAvatarPicker = true
                     } label: {
                         Image(systemName: "camera.fill")
                             .font(.system(size: 9, weight: .bold))
@@ -100,6 +111,19 @@ struct RoleDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .help(L10n("设置头像"))
+                    .accessibilityIdentifier("role-edit-avatar-picker")
+                    .popover(isPresented: $showsAvatarPicker) {
+                        RoleAvatarPicker(selectedPath: currentRole.resolvedAvatarPath) { path in
+                            Task {
+                                if await client.setRoleAvatar(roleId: agent.roleId, sourcePath: path) != nil {
+                                    showsAvatarPicker = false
+                                } else { saveError = client.errorMessage }
+                            }
+                        } upload: {
+                            showsAvatarPicker = false
+                            chooseAvatar()
+                        }
+                    }
                 }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -128,21 +152,13 @@ struct RoleDetailView: View {
     }
 
     // 头像：优先自定义头像，否则 Agent 级渐变+首字母（与浮球/会话一致）。
+    private var currentRole: Role {
+        client.roles.first(where: { $0.roleId == agent.roleId }) ?? agent
+    }
+
     private var agentAvatar: some View {
-        Group {
-            if let avatarPath = client.roles.first(where: { $0.roleId == agent.roleId })?.avatarPath ?? agent.avatarPath,
-               !avatarPath.isEmpty {
-                AnimatedAvatarImage(path: avatarPath)
-            } else {
-                DefaultInitialAvatarView(
-                    familySeed: agent.name,
-                    variationSeed: agent.roleId,
-                    initials: DefaultAvatarInitials.make(from: agent.name),
-                    size: 44
-                )
-            }
-        }
-        .clipShape(Circle())
+        AnimatedAvatarImage(path: currentRole.resolvedAvatarPath)
+            .clipShape(Circle())
     }
 
     // MARK: - 编辑表单
@@ -151,8 +167,8 @@ struct RoleDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             field(L10n("名称")) {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField(L10n("名称"), text: $name)
-                    EntityNameValidationMessage(value: name)
+                    TextField(L10n("名称"), text: $draft.name).accessibilityIdentifier("role-editor-name")
+                    EntityNameValidationMessage(value: draft.name)
                 }
             }
             if agent.isPlatformAssistant {
@@ -162,18 +178,18 @@ struct RoleDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 field(L10n("描述")) {
-                    TextField(L10n("描述"), text: $detail)
+                    TextField(L10n("描述"), text: $draft.detail).accessibilityIdentifier("role-editor-description")
                 } trailing: {
-                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)")
+                    AgentAssistButton(fieldLabel: "描述", text: $draft.detail, selectedRoleId: $assistRoleId, context: "角色 名称：\(draft.name)")
                 }
                 field("System Prompt") {
-                    TextEditor(text: $systemPrompt)
+                    TextEditor(text: $draft.systemPrompt)
                         .font(.body)
                         .frame(height: 80)
                         .padding(6)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                 } trailing: {
-                    AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(name)；描述：\(detail)")
+                    AgentAssistButton(fieldLabel: "System Prompt", text: $draft.systemPrompt, selectedRoleId: $assistRoleId, context: "角色 名称：\(draft.name)；描述：\(draft.detail)")
                 }
 
             }
@@ -198,9 +214,9 @@ struct RoleDetailView: View {
 
             Spacer()
 
-            if client.roles.first(where: { $0.roleId == agent.roleId })?.avatarPath ?? agent.avatarPath != nil {
+            if let path = currentRole.avatarPath, !path.isEmpty, BuiltinRoleAvatarCatalog.id(from: path) == nil {
                 Button(L10n("清除头像")) {
-                    Task { await client.clearRoleAvatar(roleId: agent.roleId) }
+                    Task { if await client.clearRoleAvatar(roleId: agent.roleId) == nil { saveError = client.errorMessage } }
                 }
                 .buttonStyle(.bordered)
             }
@@ -213,19 +229,19 @@ struct RoleDetailView: View {
                     if agent.isPlatformAssistant {
                         updated = await client.updateRole(
                             roleId: agent.roleId,
-                            name: name == agent.name ? nil : name
+                            name: draft.name == agent.name ? nil : draft.name
                         )
                     } else {
                         updated = await client.updateRole(
                             roleId: agent.roleId,
-                            name: name == agent.name ? nil : name,
-                            description: detail,
-                            systemPrompt: systemPrompt
+                            name: draft.name == agent.name ? nil : draft.name,
+                            description: draft.detail,
+                            systemPrompt: draft.systemPrompt
                         )
                     }
                     isSaving = false
                     if updated != nil {
-                        dismiss()
+                        close()
                     } else {
                         saveError = client.errorMessage ?? L10n("保存失败。")
                     }
@@ -241,7 +257,7 @@ struct RoleDetailView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSaving || !(name == agent.name || EntityNamePolicy.isValid(name)))
+            .disabled(isSaving || !(draft.name == agent.name || EntityNamePolicy.isValid(draft.name)))
         }
     }
 
@@ -253,7 +269,7 @@ struct RoleDetailView: View {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = AvatarImageSupport.allowedContentTypes
         if panel.runModal() == .OK, let url = panel.url {
-            Task { await client.setRoleAvatar(roleId: agent.roleId, sourcePath: url.path) }
+            Task { if await client.setRoleAvatar(roleId: agent.roleId, sourcePath: url.path) == nil { saveError = client.errorMessage } }
         }
     }
 

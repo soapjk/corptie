@@ -28,7 +28,7 @@ struct SessionTitleIdentity: Equatable {
         return Self(providerID: providers.canonicalProviderId(for: request.provider) ?? request.provider,
                     providerName: providers.displayName(for: request.provider) ?? request.provider,
                     model: nonempty(request.model), roleID: nonempty(request.roleID),
-                    roleName: role?.name, avatarPath: nonempty(role?.avatarPath))
+                    roleName: role?.name, avatarPath: nonempty(role?.resolvedAvatarPath))
     }
 
     static func updates(session: TaskSession, state: AnyPublisher<NormalizedAppState, Never>,

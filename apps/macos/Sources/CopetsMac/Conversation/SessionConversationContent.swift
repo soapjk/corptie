@@ -513,7 +513,31 @@ struct SessionConversationSurface: View {
         }
     }
 
+    private var centersAssistantComposer: Bool {
+        showsWelcome && selectedSession?.resolvedSessionKind == .assistantChat
+    }
+
+    @ViewBuilder
     private var conversationLayout: some View {
+        if centersAssistantComposer {
+            VStack(spacing: 0) {
+                conversationTopChrome
+                Spacer(minLength: 16)
+                ConversationWelcomeView(isAssistant: true)
+                    .padding(.horizontal, WorkbenchStyle.readingInset)
+                    .padding(.bottom, 28)
+                inputDock
+                Spacer(minLength: 16)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(WorkbenchStyle.canvas)
+            .accessibilityIdentifier("conversation.assistantWelcome")
+        } else {
+            standardConversationLayout
+        }
+    }
+
+    private var standardConversationLayout: some View {
         ConversationRegionStack(floating: AnyView(floatingDock),
             floatingClearanceInset: showsFloatingJumpControl ? ComposerQuickMessagesBar.jumpControlSize + floatingJumpGap : 0) {
             messageViewport
@@ -1028,7 +1052,7 @@ struct SessionConversationSurface: View {
         let agent = roles.first { $0.roleId == session.roleId }
         let providers = backendClient.modelCatalog.agentProviders
         return ConversationReplyIdentity(roleID: agent?.roleId ?? session.roleId ?? session.id,
-            name: agent?.name ?? L10n("Role"), avatarPath: agent?.avatarPath,
+            name: agent?.name ?? L10n("Role"), avatarPath: agent?.resolvedAvatarPath,
             providerLabel: sessionProviderIdentityLabel(
                 providerIdentity: session.external?.provider,
                 legacyAgentLabel: session.agent, providers: providers),

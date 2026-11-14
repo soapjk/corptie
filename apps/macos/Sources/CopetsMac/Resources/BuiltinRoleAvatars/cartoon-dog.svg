@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400" role="img" aria-label="美式卡通 · 小狗"><title>美式卡通 · 小狗</title><rect width="400" height="400" fill="#91c8b8"/><circle cx="200" cy="196" r="152" fill="#bce0bd"/>
+<g stroke="#352e3d" stroke-width="7" stroke-linejoin="round">
+<path d="M79 400Q90 325 148 311H251Q315 326 327 400" fill="#3c7181"/>
+<path d="M113 119Q72 91 58 142Q43 188 58 249Q65 274 91 256L132 195Z" fill="#aa6440"/>
+<path d="M279 116Q324 91 343 140Q358 190 343 249Q335 276 310 255L270 195Z" fill="#aa6440"/>
+<path d="M85 145Q66 171 75 224M317 143Q336 173 326 225" fill="none" stroke="#ce8855" stroke-width="5" stroke-linecap="round"/>
+<path d="M105 144Q132 106 199 109Q267 106 296 147L306 222Q303 284 252 309Q200 332 146 309Q96 283 94 222Z" fill="#e9b374"/>
+<path d="M183 112L211 112Q212 159 227 194L244 230Q225 245 201 240Q175 245 155 229L177 193Q192 155 183 112Z" fill="#fff0cc" stroke="none"/>
+<path d="M116 173Q136 156 155 168M246 169Q264 155 284 173" fill="none" stroke-width="6" stroke-linecap="round"/>
+<ellipse cx="139" cy="197" rx="10" ry="14" fill="#352e3d"/><ellipse cx="263" cy="197" rx="10" ry="14" fill="#352e3d"/>
+<path d="M150 226Q170 209 200 224Q230 209 252 226Q272 251 243 281Q202 314 159 281Q130 254 150 226Z" fill="#fff0cc" stroke-width="5"/>
+<path d="M179 227Q201 218 223 227Q221 246 201 251Q182 246 179 227Z" fill="#352e3d"/>
+<path d="M202 250V264M202 264Q218 280 236 264M202 264Q186 280 167 264" fill="none" stroke-width="4.5" stroke-linecap="round"/>
+<path d="M188 276Q201 285 214 276L212 294Q201 304 190 294Z" fill="#e68e8a" stroke-width="4"/>
+<path d="M135 312Q201 339 264 310L275 343L214 369L134 345Z" fill="#f4c45b"/>
+<path d="M215 357L249 399H193L187 367Z" fill="#e7a34e"/>
+</g>
+<g fill="#fff0cc"><circle cx="136" cy="192" r="3.5"/><circle cx="260" cy="192" r="3.5"/><path d="M347 94l5-13 5 13 13 5-13 5-5 13-5-13-13-5ZM43 293l3-9 4 9 9 4-9 4-4 9-3-9-10-4Z"/></g>
+<path d="M190 230h11" stroke="#837078" stroke-width="3" stroke-linecap="round"/><path d="M201 283v9" stroke="#bc6879" stroke-width="2" stroke-linecap="round"/></svg>
