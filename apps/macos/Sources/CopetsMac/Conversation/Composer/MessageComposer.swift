@@ -208,15 +208,6 @@ struct SessionMessageComposerSurface: View {
                 .frame(maxWidth: .infinity)
                 .opacity(ComposerCreationTransition.shared.concealedSessionID == sessionId ? 0 : 1)
                 .background(ComposerTransitionAnchor(sessionID: sessionId))
-                ComposerStatusSurface(sessionID: sessionId, status: status, isReady: isReady,
-                    notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onChange(of: "\(session?.external?.provider ?? ""):\(session?.external?.currentModel ?? "")") { _, _ in
-                        guard acceptsPresentationUpdates, backendClient.selectedSession?.id == sessionId else { return }
-                        backendClient.usageController.invalidateConfiguration()
-                        Task { await backendClient.usageController.loadUsage(for: sessionId) }
-                    }
-
             }
             if isImportingImages {
                 HStack(spacing: 6) {
@@ -326,13 +317,18 @@ struct SessionMessageComposerSurface: View {
     }
 
     private var composerToolbar: some View {
-        ComposerEditorRowLayout(minimumEditorWidth: 100, preservesLeadingContentWidth: true) {
-            HStack(spacing: 6) {
-                moreMenu
-                if let session {
-                    SessionComposerPermissionControl(session: session, backend: backendClient, enabled: allowsActions && !sendingMessage)
+        HStack(spacing: 8) {
+            moreMenu
+            ComposerStatusSurface(sessionID: sessionId, status: status, isReady: isReady,
+                notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: "\(session?.external?.provider ?? ""):\(session?.external?.currentModel ?? "")") { _, _ in
+                    guard acceptsPresentationUpdates, backendClient.selectedSession?.id == sessionId else { return }
+                    backendClient.usageController.invalidateConfiguration()
+                    Task { await backendClient.usageController.loadUsage(for: sessionId) }
                 }
-                Spacer(minLength: 0)
+            if let session {
+                SessionComposerPermissionControl(session: session, backend: backendClient, enabled: allowsActions && !sendingMessage)
             }
             ComposerActionSurface(showsModel: allowsModelSwitch && canSwitchModel,
                                   showsStop: showsStopControl) {
@@ -344,6 +340,7 @@ struct SessionMessageComposerSurface: View {
                 sendButton
             }
         }
+        .accessibilityIdentifier("conversation-composer-toolbar")
     }
 
     private var showsStopControl: Bool {
