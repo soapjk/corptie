@@ -4,6 +4,21 @@ import XCTest
 
 @MainActor
 final class MessageWithdrawalTests: XCTestCase {
+    func testWithdrawnMarkerDoesNotLeaveAProcessRowOrReplyIdentity() throws {
+        let item = try JSONDecoder().decode(CodexThreadItem.self, from: Data(#"{"id":"withdrawn","turnId":"turn:one","turnStatus":"cancelled","type":"userMessage","title":"User","text":"已撤回","status":"cancelled","userMessageStatus":"cancelled","withdrawnMessage":{"text":"Original instruction","images":[]}}"#.utf8))
+        XCTAssertTrue(item.timelineIsWithdrawn)
+        let entries = makeChatDisplayEntries(from: [item])
+        XCTAssertEqual(entries.map(\.id), ["message:withdrawn"])
+        let builder = ConversationNativeRowBuilder(sessionTitle: "Session", workingDirectory: nil,
+            allowsFork: false, forkUnavailableReason: nil, imageURL: { _ in nil },
+            replyIdentity: .init(roleID: "role", name: "Agent", avatarPath: nil))
+        let rows = entries.map { builder.nativeAppKitRow($0, expandedTurnIds: []) }
+        let projected = builder.applyingReplyIdentity(to: rows, entries: entries)
+        XCTAssertEqual(projected.count, 1)
+        XCTAssertNil(projected[0].replyIdentity)
+        XCTAssertEqual(projected[0].withdrawnMessageID, "withdrawn")
+    }
+
     private func row(withdrawn: Bool = false, status: String = "queued") throws -> AppKitChatTimelineRow {
         let message = try JSONDecoder().decode(CodexThreadItem.self, from: Data("""
         {"id":"message:one","turnId":"turn:one","turnStatus":"cancelled","type":"userMessage",
