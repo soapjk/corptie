@@ -106,7 +106,9 @@ function publicClientMessage(item) {
   try {
     const metadata = JSON.parse(item.rawMetadataJSON ?? "null");
     if (["summary","delivery","receipt","failure","decision"].includes(metadata?.coordinationEvent?.kind))
-      coordinationEvent = {kind:metadata.coordinationEvent.kind,batchId:typeof metadata.coordinationEvent.batchId === "string" ? metadata.coordinationEvent.batchId.slice(0,512) : null};
+      coordinationEvent = {kind:metadata.coordinationEvent.kind,batchId:typeof metadata.coordinationEvent.batchId === "string" ? metadata.coordinationEvent.batchId.slice(0,512) : null,
+        ...Object.fromEntries(["requestId","sessionId","phase","errorCode"].filter(key=>typeof metadata.coordinationEvent[key]==="string").map(key=>[key,metadata.coordinationEvent[key].slice(0,512)])),
+        ...(metadata.coordinationEvent.retryable===true?{retryable:true}:{})};
     else if (metadata?.executionMode === "shadow_report") coordinationEvent = { kind: "summary", batchId: metadata.progressBatchId ?? null };
     else if (typeof metadata?.progressBatchId === "string") coordinationEvent = { kind: "delivery", batchId: metadata.progressBatchId };
     if (typeof metadata?.replyToMessageId === "string" && metadata.replyToMessageId.trim()) {

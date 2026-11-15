@@ -8,6 +8,8 @@ export function projectCoordinationAssignment(input) {
   let state;
   if (input.acceptanceVerified === true) state = 'accepted';
   else if (input.deliveryVerified === true) state = 'delivered';
+  else if (input.deliveryState === 'blocked' || input.reclamationError) state = 'blocked';
+  else if (['delivery','reclamation'].includes(input.phase)) state = 'needs_review';
   else if (input.dispatchState === 'cancelled') state = 'cancelled';
   else if (input.inconsistent === true || ['completed','unknown'].includes(input.dispatchState)) state = 'needs_review';
   else if (input.waitingInput === true) state = 'waiting_input';
@@ -17,7 +19,7 @@ export function projectCoordinationAssignment(input) {
   else if (input.executionState === 'running' || input.dispatchState === 'running') state = 'running';
   else state = 'needs_review';
   return { assignmentId:input.assignmentId, taskId:input.taskId ?? null, sessionId:input.sessionId ?? null,
-    title:input.title, state, summary:input.summary ?? '', reason:input.reason ?? '',
+    title:input.title, state, phase:input.phase ?? null, previousExecutionStatus:input.previousExecutionStatus ?? null, summary:input.summary ?? '', reason:input.reason ?? '',
     reportMessageId:input.reportMessageId ?? null, updatedAt:input.updatedAt };
 }
 export function projectCoordinationProgress({ batchId, parentSessionId, revision, updatedAt, assignments, focus = '', decision = '' }) {
@@ -41,4 +43,4 @@ export const coordinationProgressSchema={type:'object',additionalProperties:fals
  counts:{type:'object',additionalProperties:{type:'integer',minimum:0},maxProperties:9},total:{type:'integer',minimum:0,maximum:10000},
  items:{type:'array',maxItems:3,items:{type:'object',additionalProperties:false,
  required:['assignmentId','taskId','sessionId','title','state','summary','reason','reportMessageId','updatedAt'],properties:{
- assignmentId:{type:'string',maxLength:512},taskId:nullableId,sessionId:nullableId,title:string,state:{enum:COORDINATION_PROGRESS_STATES},summary:string,reason:{type:'string',maxLength:2000},reportMessageId:nullableId,updatedAt:string}}},hasMore:{type:'boolean'},focus:string,decision:string}};
+ assignmentId:{type:'string',maxLength:512},taskId:nullableId,sessionId:nullableId,title:string,phase:{type:['string','null'],enum:['preparation','dispatch','execution','shadow','delivery','reclamation',null]},previousExecutionStatus:{type:['string','null'],maxLength:64},state:{enum:COORDINATION_PROGRESS_STATES},summary:string,reason:{type:'string',maxLength:2000},reportMessageId:nullableId,updatedAt:string}}},hasMore:{type:'boolean'},focus:string,decision:string}};

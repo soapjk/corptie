@@ -269,3 +269,51 @@ test("cleanup recovery starts pending code delivery and does not delete until it
   assert.equal(f.store.getTask(f.child.id),null);
   assert.equal(attempts,2);
 });
+
+test('reviewed preparation is single-flight and resumes from the same record after child becomes idle',async t=>{
+ const f=await fixture(t), now=new Date().toISOString();
+ f.store.db.run(`INSERT INTO coordination_shadow_reclamation(task_id,main_session_id,shadow_session_id,report_id,phase,recovery_json,created_at,updated_at)
+  VALUES(?,?,?,?,'delivery','{}',?,?)`,[f.child.id,'logical:main','logical:shadow','review:resume',now,now]);
+ const prepare=f.service.prepareVersion.bind(f.service);let calls=0,busy=true;
+ f.service.prepareVersion=async(...args)=>{calls++;if(busy)throw Object.assign(new Error('child still running'),{code:'TASK_HIERARCHY_BUSY'});return prepare(...args);};
+ const one=f.service.requestShadowDelivery(f.child.id),two=f.service.requestShadowDelivery(f.child.id);assert.equal(one,two);
+ await assert.rejects(one,{code:'TASK_HIERARCHY_BUSY'});assert.equal(calls,1);
+ assert.equal(f.store.selectOne('SELECT last_error FROM coordination_shadow_reclamation WHERE task_id=?',[f.child.id]).last_error,'TASK_HIERARCHY_BUSY');
+ let starts=0;f.service.wake=()=>{starts++;return Promise.resolve();};busy=false;
+ f.service.onRuntimeEvent('AgentWorkCompleted',{sessionId:'session:child'});
+ const operation=await f.service.preparing.get(f.child.id);assert.ok(operation.operationId);
+ await f.service.requestShadowDelivery(f.child.id);assert.equal(starts,2);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM child_task_delivery_operations WHERE child_task_id=?',[f.child.id]).n,1);
+ assert.equal(f.store.selectOne('SELECT last_error FROM coordination_shadow_reclamation WHERE task_id=?',[f.child.id]).last_error,null);
+});
+
+async function shadowReviewFixture(t) {
+ const f=await fixture(t),now=new Date().toISOString();
+ f.store.createSession({id:'session:main',title:'Main',provider:'codex-app-server',agentId:f.agent.agentId,sessionKind:'worker',workId:f.work.id,taskId:f.parent.id});
+ f.store.createLogicalSessionRoute({logicalSessionId:'logical:main',legacySessionId:'session:main',providerId:'codex-app-server',providerThreadId:'main',providerSessionId:'session:main',boundCwd:'/tmp'});
+ f.store.db.run(`INSERT INTO coordination_shadow_sessions(main_session_id,parent_task_id,shadow_session_id,state,scope_json,created_at,updated_at) VALUES(?,?,?,'ready','[]',?,?)`,['logical:main',f.parent.id,'logical:shadow',now,now]);
+ f.store.db.run(`INSERT INTO coordination_shadow_reports(report_id,main_session_id,shadow_session_id,source_turn_id,requirement_revision,body,created_at) VALUES(?,?,?,?,0,?,?)`,['review:auto','logical:main','logical:shadow','auto-turn','结果已检查',now]);
+ f.store.db.run(`INSERT INTO coordination_shadow_reclamation(task_id,main_session_id,shadow_session_id,report_id,phase,recovery_json,created_at,updated_at) VALUES(?,?,?,?,'delivery','{}',?,?)`,[f.child.id,'logical:main','logical:shadow','review:auto',now,now]);
+ return f;
+}
+
+test('post-delivery purge failure never changes completed delivery into blocked or replays delivery',async t=>{
+ const f=await shadowReviewFixture(t);
+ let purges=0;f.service.reclaimChild=async()=>{purges++;throw new Error('temporary purge failure');};
+ const operation=await f.service.requestShadowDelivery(f.child.id),result=await settled(f,operation.operationId);
+ assert.equal(result.state,'completed',result.errorMessage);assert.equal(purges,1);
+ assert.equal(f.service.repository.getOperation(operation.operationId).state,'completed');
+ assert.equal(f.store.getTask(f.child.id),null);
+});
+
+test('transient shadow cleanup failure retries its existing delivery without another model turn',async t=>{
+ const f=await shadowReviewFixture(t);let resume,scheduled=0;
+ f.service.schedule=callback=>{resume=callback;scheduled++;return {unref(){}};};f.service.cancelTimer=()=>{};
+ const deletion=f.deletion.deleteSession;let fail=true;
+ f.deletion.deleteSession=async(...args)=>{if(fail){fail=false;throw new Error('temporary cleanup failure');}return deletion(...args);};
+ const operation=await f.service.requestShadowDelivery(f.child.id);
+ assert.equal((await settled(f,operation.operationId)).state,'blocked');assert.equal(scheduled,1);
+ resume();assert.equal((await settled(f,operation.operationId)).state,'completed');
+ assert.equal(f.store.getTask(f.child.id),null);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM child_task_delivery_operations').n,1);
+});

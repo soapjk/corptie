@@ -333,7 +333,7 @@ export class ShadowSessionService {
     if(!rows.length)fail("SHADOW_REVIEW_EVIDENCE_UNAVAILABLE");
     return rows.map(row=>row.id);
   }
-  async deliver({ shadowId, taskId, reportId, evidence }) {
+  recordDelivery({ shadowId, taskId, reportId, evidence }) {
     const delegation = this.assertDelegate(shadowId, "deliver_children"), child = this.store.getTask(taskId);
     if (!child || child.parent_task_id !== delegation.parent_task_id) fail("SHADOW_CHILD_OUTSIDE_SCOPE");
     const report = this.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE report_id=? AND shadow_session_id=?", [reportId, shadowId]);
@@ -354,7 +354,31 @@ export class ShadowSessionService {
       [taskId, delegation.main_session_id, shadowId, reportId, "delivery", JSON.stringify({ evidence, latestDispatchId }), now, now]);
     this.store.scheduleSave();
     if (!this.deliverChild) fail("SHADOW_DELIVERY_UNAVAILABLE");
-    return this.deliverChild(taskId);
+  }
+  async deliver(input) {
+    this.recordDelivery(input);
+    return this.deliverChild(input.taskId);
+  }
+  admitReadyChildren({ shadowId, reportId, updates }) {
+    // First commit admission for the entire reviewed set. Git preparation and
+    // cleanup run outside this model turn and resume from these existing records.
+    const admitted = [];
+    let firstError;
+    for (const update of updates) {
+      try {
+        const evidence = this.deliveryEvidence(update.taskId);
+        this.recordDelivery({ shadowId, taskId: update.taskId, reportId, evidence });
+        admitted.push(update.taskId);
+      } catch (error) {
+        console.warn(`[shadow-delivery-admission] ${update.taskId} ${error.code ?? error.message}`);
+        firstError ??= error;
+      }
+    }
+    for (const taskId of admitted) setImmediate(() => {
+      Promise.resolve(this.deliverChild(taskId)).catch(error => console.warn(`[shadow-delivery-admission] ${taskId} ${error.code ?? error.message}`));
+    });
+    if (firstError) throw firstError;
+    return admitted;
   }
   resolveDecision(mainId, source, candidate) {
     const rows=this.store.selectAll(`SELECT report_id FROM coordination_shadow_reports WHERE main_session_id=?

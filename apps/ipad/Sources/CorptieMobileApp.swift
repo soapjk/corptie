@@ -903,7 +903,9 @@ struct ConversationView: View {
                         switch entry.kind {
                         case .message(let message):
                             if let event = message.coordinationEvent {
-                                CoordinationSummaryCard(event: event, text: message.text)
+                                CoordinationSummaryCard(event: event, text: message.text, api: {
+                                    ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
+                                })
                             } else if let progress = message.coordinationProgress {
                                 CoordinationProgressCard(progress: progress, api: {
                                     ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)

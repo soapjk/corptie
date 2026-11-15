@@ -29,3 +29,12 @@ test('projection bounds a large batch preview and does not rewrite input authori
  const result=batch(input);assert.equal(result.items.length,3);assert.equal(result.total,2000);
  assert.equal(result.counts.queued,2000);assert.equal(input[0].dispatchState,'queued');
 });
+
+test('delivery and cleanup phases preserve truthful progress rather than stale dispatch failure',()=>{
+ const delivery=projectCoordinationAssignment(row('delivery','completed',{phase:'delivery',deliveryState:'running'}));
+ assert.equal(delivery.state,'needs_review');assert.equal(delivery.phase,'delivery');
+ const blocked=projectCoordinationAssignment(row('cleanup','completed',{phase:'reclamation',deliveryState:'blocked'}));
+ assert.equal(blocked.state,'blocked');assert.equal(blocked.phase,'reclamation');
+ const shadow=projectCoordinationAssignment(row('followup','blocked',{phase:'shadow',previousExecutionStatus:'completed'}));
+ assert.equal(shadow.previousExecutionStatus,'completed');assert.equal(shadow.state,'blocked');
+});

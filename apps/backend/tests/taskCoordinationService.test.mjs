@@ -46,6 +46,13 @@ import { createCollaborationTimelinePresentation } from "../src/collaboration/co
 import { CoordinationReadService } from "../src/application/coordinationReadService.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
+// Seed historical reports to keep receipt migration/deduplication covered after
+// new child reports stopped creating Channel messages.
+function legacyUpwardMessage(channels, input) {
+  const policy = channels.upwardReportReceipt;
+  try { channels.upwardReportReceipt = () => null; return channels.requestChannel(input); }
+  finally { channels.upwardReportReceipt = policy; }
+}
 
 for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) test(`ordinary child admission reserves and restores a summary without changing user-input mode (${provider})`, async t => {
   const f = await recoveryFixture(t, provider);
@@ -94,7 +101,7 @@ test("an unstarted Channel handoff carries a differently worded final from the s
   const work = f.store.updateAgentTask(f.coordinator.get(id).operation_id, { status: "running", targetTurnId: "merge-result-turn" });
   const child = f.store.getLogicalSessionByLegacySessionId(work.sessionId);
   const channels = new SessionChannelService({ store: f.store, collaborationCore: f.core });
-  const sent = channels.requestChannel({ requestingSessionId: child.logicalSessionId, recipientSessionId: "logical:parent",
+  const sent = legacyUpwardMessage(channels, { requestingSessionId: child.logicalSessionId, recipientSessionId: "logical:parent",
     body: "Code and test files are ready", messageKind: "message", deliveryIntent: "action_required", idempotencyKey: "merge-handoff" });
   const deliveryId = sent.delivery.deliveryId;
   f.store.enqueueAgentTask({ taskId: "channel:queued-result", sessionId: f.source.sessionId, agentId: f.role.agentId,
@@ -118,7 +125,7 @@ test("legacy queued Channel work moves to the ordinary-mode summary before dispa
   f.workService.updateTask(f.parent.id, { coordinationEnabled: false });
   const child = f.child("Legacy_channel_child"), meta = f.open("legacy_channel_child", child.id);
   const channels = new SessionChannelService({ store: f.store, collaborationCore: f.core });
-  const sent = channels.requestChannel({ requestingSessionId: "logical:legacy_channel_child", recipientSessionId: "logical:parent",
+  const sent = legacyUpwardMessage(channels, { requestingSessionId: "logical:legacy_channel_child", recipientSessionId: "logical:parent",
     body: "Need a cross-module decision", messageKind: "question", deliveryIntent: "response_required", idempotencyKey: "legacy-question" });
   const deliveryId = sent.delivery.deliveryId;
   const operation = f.store.enqueueAgentTask({ taskId: "legacy-channel-work", sessionId: f.source.sessionId, agentId: f.role.agentId,
@@ -273,7 +280,7 @@ async function restrictedFixture(t, providerId = "codex-app-server", supported =
 }
 async function fixture(t, providerId = "codex-app-server", durable = false) {
   const dir = await mkdtemp(join(tmpdir(), "coordination-"));
-  const store = new CorptieStore({ dbPath: durable ? join(dir,"state.sqlite") : ":memory:", configPath: join(dir, "config.json"), manageProcessEnvironment: false });
+  const store = new CorptieStore({ dataRoot: dir, dbPath: durable ? join(dir,"state.sqlite") : ":memory:", configPath: join(dir, "config.json"), manageProcessEnvironment: false });
   await store.initialize({ resolveDataPath: false });
   let coordinator;
   t.after(async () => { await nextTick(); await Promise.all(coordinator?.running.values() ?? []); await store.close(); await rm(dir, { recursive: true, force: true }); });
@@ -322,18 +329,18 @@ async function fixture(t, providerId = "codex-app-server", durable = false) {
 test("ordinary coordination context exposes useful children without an extra planning phase or an empty index", () => {
   const task = { id: "task:parent", coordination_enabled: 0 };
   const empty = buildTaskCoordinationContext(task, { children: [], dispatches: [] });
-  assert.match(empty, /autonomously delegate/);
-  assert.match(empty, /prefer Corptie child Tasks/);
-  assert.match(empty, /Native subagents remain available for local reading/);
-  assert.match(empty, /No explicit user request to create children is needed/);
-  assert.match(empty, /do not add a separate planning model call/);
+  assert.match(empty, /delegate independent modules when useful/);
+  assert.match(empty, /Prefer Corptie child Tasks/);
+  assert.match(empty, /Provider-native subagents may assist local reading or review/);
+  assert.match(empty, /without an extra planning call or explicit user request to create children/);
+  assert.match(empty, /without an extra planning call/);
   assert.doesNotMatch(empty, /Current bounded child\/dispatch index/);
   const populated = buildTaskCoordinationContext(task, { children: [{ id: "task:existing", title: "已有工作" }], dispatches: [] });
   assert.match(populated, /task:existing/);
-  assert.match(populated, /Reuse a suitable existing child/);
+  assert.match(populated, /Reuse suitable children and pending dispatches/);
   const pending = buildTaskCoordinationContext(task, { children: [], dispatches: [{ dispatchId: "dispatch:pending", status: "preparing" }] });
   assert.match(pending, /dispatch:pending/);
-  assert.match(pending, /Inspect existing pending receipts/);
+  assert.match(pending, /Reuse suitable children and pending dispatches/);
 });
 
 test("mode defaults off, root user update persists without revising the definition; child cannot enable", async t => {
@@ -611,6 +618,14 @@ test("adopted child instructions recover from the mailbox turn, not the cancelle
   f.store.upsertSessionTurn(turn);
   f.mailbox.adopt(logical.logicalSessionId, [row.mailbox_message_id]);
   assert.equal(f.store.getAgentTask(row.operation_id).status, "cancelled");
+  f.store.upsertSessionTurn({ ...turn, executionStatus: "blocked" });
+  f.coordinator.recover(); assert.equal(f.coordinator.get(id).status, "waiting_input");
+  f.store.upsertSessionTurn({ ...turn, executionStatus: "running" });
+  f.coordinator.recover();
+
+  const diagnostic = new CoordinationReadService({store:f.store,mailbox:f.mailbox}).executionSnapshot(child,f.store.getSession(child.current_session_id));
+  assert.equal(diagnostic.status,"running");
+  assert.equal(diagnostic.timestamps.endedAt,null);
   const retry = f.coordinator.retryDispatch(f.source,f.role.agentId,id);
   assert.equal(retry.status,"running");
   assert.equal(retry.retryAction,"reuse_running");
@@ -1259,7 +1274,7 @@ test('read port scopes historical Sessions, searches long messages and preserves
   assert.throws(() => execute(readQuery('shell')), { code: 'COORDINATION_READ_TOOL_UNSUPPORTED' });
 });
 
-test('read pagination stays complete after byte trimming and mailbox inspection never acknowledges messages', async t => {
+test('read pagination retains requested items without a byte cap and mailbox inspection never acknowledges messages', async t => {
   const f = await restrictedFixture(t), child = f.child('分页'), meta = f.open('page-history', child.id);
   const read = new CoordinationReadService({ store: f.store, mailbox: f.mailbox });
   const execute = query => read.execute(f.reference(), f.parent.id, query);
@@ -1267,7 +1282,8 @@ test('read pagination stays complete after byte trimming and mailbox inspection 
   let cursor = null; const seen = [];
   do {
     const result = execute(readQuery('read_messages', { sessionId: meta.sessionId, limit: 6, cursor }));
-    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 8192);
+    assert.ok(result.items.length <= 6);
+    assert.equal(result.errorCode, undefined);
     seen.push(...result.items.map(i => i.id)); cursor = result.nextCursor;
   } while (cursor);
   assert.equal(new Set(seen).size, 8); assert.equal(seen.length, 8);
@@ -1321,9 +1337,8 @@ test('model and total deadlines save read progress and yield to the existing que
   for (const mode of ['call', 'total']) await t.test(mode, async t => {
     let clock = 0;
     const f = await restrictedFixture(t, 'codex-app-server', true, { now: () => clock });
-    f.run(async input => {
-      const count = JSON.parse(input.prompt).readResults.length;
-      if (count < 2) {
+    let calls=0;f.run(async input => {
+      if (++calls <= 2) {
         assert.equal(input.timeoutMs, 120000); clock += 110000;
         return { text: JSON.stringify({ kind: 'read', reply: '', items: [], queries: [readQuery('read_task')] }) };
       }
@@ -1607,7 +1622,7 @@ test('repeated unchanged reads do not generate an endless chain of continuation 
  clock+=300000;throw Object.assign(new Error('timeout'),{code:'BACKGROUND_TIMEOUT'});});
  const receipt=await f.application.sendMessage(f.source.sessionId,'查询',{idempotencyKey:'no-loop'});
  const operation=f.store.getAgentTask(receipt.continuation.operationId);
- f.run(async input=>{if(JSON.parse(input.prompt).readResults.length===1)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('read_task')]})};
+ let calls=0;f.run(async input=>{if(++calls===1)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[readQuery('read_task')]})};
  clock+=300000;throw Object.assign(new Error('timeout'),{code:'BACKGROUND_TIMEOUT'});});
  const result=await f.application.sendMessage(f.source.sessionId,operation.text,{idempotencyKey:operation.taskId,options:{agentTask:operation}});
  assert.equal(result.continuation,undefined);assert.equal(f.terminals.at(-1).status,'failed');
@@ -1804,7 +1819,7 @@ test("an identical final already sent through Channel is linked instead of repor
   const row=f.coordinator.get(id),work=f.store.updateAgentTask(row.operation_id,{status:"running",targetTurnId:"result-turn"});
   const child=f.store.getLogicalSessionByLegacySessionId(work.sessionId);
   const channels=new SessionChannelService({store:f.store,collaborationCore:f.core});
-  const sent=channels.requestChannel({requestingSessionId:child.logicalSessionId,recipientSessionId:"logical:parent",body:"实际交付结果",deliveryIntent:"response_required",idempotencyKey:"channel-final"});
+  const sent=legacyUpwardMessage(channels, {requestingSessionId:child.logicalSessionId,recipientSessionId:"logical:parent",body:"实际交付结果",deliveryIntent:"response_required",idempotencyKey:"channel-final"});
   assert.equal(sent.status,"sent");
   f.store.upsertTimelineItemProjection(work.sessionId,{id:"final:channel",turnId:"result-turn",type:"agentMessage",text:"实际交付结果",status:"completed",createdAt:new Date().toISOString()});
   f.coordinator.onRuntimeEvent("AgentWorkCompleted",{task:f.store.updateAgentTask(work.taskId,{status:"completed"})});
@@ -2573,7 +2588,7 @@ test("manual adoption cannot execute a child Channel on its original main recipi
   f.open("adoption_child", child.id);
   const channels = new SessionChannelService({ store: f.store, collaborationCore: f.core });
   channels.resolveDelegatedRecipient = envelope => f.shadow.channelRecipient(envelope);
-  const sent = channels.requestChannel({ requestingSessionId: "logical:adoption_child", recipientSessionId: "logical:parent",
+  const sent = legacyUpwardMessage(channels, { requestingSessionId: "logical:adoption_child", recipientSessionId: "logical:parent",
     body: "Independent result", deliveryIntent: "action_required", idempotencyKey: "adoption-boundary" });
   const mailbox = new SessionMailboxService({ store: f.store, channelService: channels });
   assert.throws(() => mailbox.validate({ recipient_session_id: "logical:parent", channel_delivery_id: sent.delivery.deliveryId }), { code: "SHADOW_HANDOFF_PENDING" });
@@ -2705,4 +2720,153 @@ test("host resolves manual child evidence without requiring the model to copy a 
  assert.deepEqual(f.shadow.deliveryEvidence(child.id),['manual-final']);
  const unrelated=f.child('Unrelated_evidence');f.open('unrelated_evidence',unrelated.id);
  assert.throws(()=>f.shadow.deliveryEvidence(unrelated.id),{code:'SHADOW_REVIEW_EVIDENCE_UNAVAILABLE'});
+});
+
+test("coordination accepts provider-bound input above 64 KiB without dropping context",async t=>{
+ const f=await requestFixture(t),large='完整上下文'.repeat(20000);
+ f.requests.buildContext=async()=>({prompt:large});
+ f.setPlanner(async input=>{assert.ok(Buffer.byteLength(input.prompt)>65536);assert.equal(JSON.parse(input.prompt).requestContext.conversation.instructions,large);return {text:JSON.stringify({kind:'discussion',reply:'已读取',items:[]})};});
+ const row=f.admit('简短问题');await f.requests.running.get(row.request_id);
+ assert.equal(f.requests.get(row.request_id).status,'completed');await Promise.all([...f.requests.reclaiming.values()]);
+});
+
+test("read evidence above former aggregate cap remains available across model rounds",async t=>{
+ const f=await restrictedFixture(t);let calls=0;
+ f.turns.readOnly.contextRead={execute:()=>({text:'证据'.repeat(9000),truncated:false})};
+ f.run(async input=>{
+  const payload=JSON.parse(input.prompt);
+  if(++calls===1)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:['one','two','three'].map(section=>readQuery('read_resource',{section}))})};
+  assert.equal(payload.readResults.length,3);for(const read of payload.readResults)assert.equal(read.result.text.length,18000);
+  assert.ok(Buffer.byteLength(input.prompt)>65536);return {text:JSON.stringify({kind:'discussion',reply:'证据完整',items:[]})};
+ });
+ await f.application.sendMessage(f.source.sessionId,'调查',{idempotencyKey:'large-evidence'});assert.equal(f.terminals.at(-1).status,'completed');
+});
+
+test("unchanged queries are reused while changed target facts invalidate the cache",async t=>{
+ const f=await restrictedFixture(t);let calls=0,executions=0;
+ const child=f.child('Cached_read');f.open('cached_read',child.id);
+ const original=f.turns.readOnly.execute.bind(f.turns.readOnly);
+ f.turns.readOnly.execute=(...args)=>{if(args[2].tool==='read_task')executions++;return original(...args);};
+ const query=readQuery('read_task',{taskId:child.id});
+ f.run(async input=>{
+  const payload=JSON.parse(input.prompt);calls++;
+  if(calls===3)f.store.db.run("UPDATE tasks SET execution_status='running' WHERE id=?",[child.id]);
+  if(calls<=3)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:[query]})};
+  assert.equal(executions,2);assert.equal(payload.readResults.at(-1).result.task.executionStatus,'running');
+  return {text:JSON.stringify({kind:'discussion',reply:'已核实',items:[]})};
+ });
+ await f.application.sendMessage(f.source.sessionId,'状态',{idempotencyKey:'query-reuse'});assert.equal(f.terminals.at(-1).status,'completed');
+});
+
+test("first model call receives actual child execution timing and explicit gaps",async t=>{
+ const f=await restrictedFixture(t);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('diagnostic-target')]});
+ await f.coordinator.runDispatch(accepted.dispatches[0].dispatchId);
+ const dispatch=f.coordinator.get(accepted.dispatches[0].dispatchId);
+ f.store.updateAgentTask(dispatch.operation_id,{status:'running',startedAt:'2026-11-15T01:00:00.000Z',targetTurnId:'diagnostic-turn'});
+ f.store.upsertTimelineItemProjection(f.store.getAgentTask(dispatch.operation_id).sessionId,{id:'diagnostic-command',turnId:'diagnostic-turn',type:'commandExecution',title:'Test runner',text:'npm test',status:'inProgress',createdAt:'2026-11-15T01:01:00.000Z'});
+ f.run(async input=>{const data=JSON.parse(input.prompt).executionDiagnostics.items.find(item=>item.taskId===dispatch.target_task_id);assert.ok(data);assert.equal(data.currentOperation.title,'Test runner');assert.ok(data.timestamps.startedAt);assert.ok(data.evidenceGaps.includes('fine_grained_phase_timing_unavailable'));return {text:JSON.stringify({kind:'discussion',reply:'说明当前执行',items:[]})};});
+ await f.application.sendMessage(f.source.sessionId,'为什么慢',{idempotencyKey:'initial-diagnostics'});assert.equal(f.terminals.at(-1).status,'completed');
+});
+
+test("creation failures and recovered failures remain visible with scoped retry metadata",async t=>{
+ const f=await requestFixture(t);f.requests.createSession=async()=>{throw Object.assign(new Error('provider unavailable'),{code:'PROVIDER_UNAVAILABLE'});};
+ const row=f.admit('创建失败');await f.requests.running.get(row.request_id);await Promise.all([...f.requests.reclaiming.values()]);
+ let item=f.store.getSessionItem(f.source.sessionId,`${row.request_id}:reply`),metadata=JSON.parse(item.rawMetadataJSON);
+ assert.equal(metadata.coordinationEvent.retryable,true);assert.equal(metadata.coordinationEvent.requestId,row.request_id);assert.equal(metadata.coordinationEvent.sessionId,'logical:parent');
+ f.store.removeItem(f.source.sessionId,item.id);f.requests.update(row.request_id,{response_item_id:null});
+ f.requests.recover();item=f.store.getSessionItem(f.source.sessionId,`${row.request_id}:reply`);assert.ok(item);assert.match(item.text,/provider unavailable/);
+ const other=f.admit('uncertain');await f.requests.running.get(other.request_id);f.requests.update(other.request_id,{phase:'admitting'});
+ await assert.rejects(f.requests.retry('logical:parent',other.request_id),{code:'REQUEST_OUTCOME_UNCERTAIN'});
+});
+
+
+test("planner prompts make host-driven inspection explicit across supported Providers",async t=>{
+ for(const provider of ["codex-app-server","claude-sdk"])await t.test(provider,async t=>{
+  const f=await restrictedFixture(t,provider);f.output({kind:"discussion",reply:"直接回答",items:[]});
+  await f.application.sendMessage(f.source.sessionId,"解释一下",{idempotencyKey:"compact-prompt"});
+  const prompt=f.requests[0].developerInstructions;
+  assert.match(prompt,/host detects stopped children/);
+  assert.match(prompt,/Children need not report completion or find the shadow/);
+  assert.match(prompt,/host owns batch IDs, card presentation/);
+  assert.doesNotMatch(prompt,/briefly acknowledge|Return batchId=null|presentation=progress/);
+  assert.equal(f.coordinator.listForParent(f.parent.id).length,0);
+ });
+});
+
+for (const status of ['completed','failed','cancelled','unknown','waiting_input','blocked']) test(`host collects ${status} without child final prose exactly once`, async t => {
+ const f=await recoveryFixture(t);
+ const id=await f.finish(`observe-${status}`), row=f.coordinator.get(id), work=f.store.getAgentTask(row.operation_id);
+ f.store.db.run('DELETE FROM session_items WHERE session_id=?',[work.sessionId]);
+ f.coordinator.update(id,{status,report_message_id:null});
+ f.coordinator.flushReports();const report=f.coordinator.get(id).report_message_id;assert.ok(report);
+ const message=f.store.selectOne('SELECT * FROM session_mailbox_messages WHERE message_id=?',[report]);
+ const auth=JSON.parse(message.authorization_json);assert.equal(auth.purpose,'shadow_report');
+ assert.notEqual(message.recipient_session_id,'logical:parent');
+ assert.match(message.body,/not_assessed/);assert.match(message.body,/finalMessageId":null/);
+ f.coordinator.validateMailbox(message,auth);
+ f.coordinator.flushReports();assert.equal(f.coordinator.get(id).report_message_id,report);
+ assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,0);
+});
+
+test('manual child completion is inspected after recovery without synthetic dispatches or upward messages',async t=>{
+ const f=await recoveryFixture(t), child=f.child('Manual_stop'), meta=f.open('manual_stop',child.id);
+ const work=f.store.enqueueAgentTask({taskId:'manual:finished',sessionId:meta.sessionId,agentId:f.role.agentId,kind:'user',priority:50,text:'independent work',source:{type:'desktop'}});
+ f.store.updateAgentTask(work.taskId,{status:'completed',targetTurnId:'manual:turn'});
+ f.coordinator.recover();await nextTick();
+ const message=f.store.selectOne("SELECT * FROM session_mailbox_messages WHERE source_id='manual:finished'");assert.ok(message);
+ f.coordinator.validateMailbox(message,JSON.parse(message.authorization_json));
+ f.coordinator.recover();await nextTick();
+ assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM session_mailbox_messages WHERE source_id='manual:finished'").n,1);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM task_coordination_dispatches WHERE target_task_id=?',[child.id]).n,0);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM session_collaboration_messages').n,0);
+});
+
+test('ordinary queue busy telemetry never schedules a summary inspection',async t=>{
+ const f=await recoveryFixture(t),id=await f.finish('quiet-busy');
+ for(const code of ['SESSION_BUSY','CHANNEL_BATCH_WAIT','SESSION_RECOVERING']){
+  f.coordinator.update(id,{status:'blocked',error_code:code,report_message_id:null});f.coordinator.flushReports();
+  assert.equal(f.coordinator.get(id).report_message_id,null);
+ }
+});
+
+for(const provider of ['codex-app-server','claude-sdk']) test(`ready outcomes start independent delivery without an explicit deliver plan (${provider})`,async t=>{
+ const f=await restrictedFixture(t,provider);
+ const shadow=new ShadowSessionService({store:f.store,createSession:async()=>f.store.getSession(f.open('outcome_shadow',f.parent.id,{deferTaskProjection:true,status:'idle'}).sessionId)});
+ f.coordinator.shadow=shadow;const delegation=await shadow.ensure('logical:parent');
+ const children=[f.child('Ready_one'),f.child('Ready_two')];
+ for(const [i,child]of children.entries()){const meta=f.open(`outcome_child_${i}`,child.id);historyItem(f,meta.sessionId,`outcome-final-${i}`,'Assigned result completed');}
+ const unfinished=f.child('Needs_more_work');f.open('unfinished_outcome',unfinished.id);
+ const started=[];shadow.deliverChild=async id=>{started.push(id);return {operationId:`delivery:${id}`};};
+ const reference=f.store.getLogicalSession(delegation.shadow_session_id);
+ const ref={sessionId:reference.legacySessionId,logicalSessionId:reference.logicalSessionId,bindingId:reference.activeBinding.bindingId,routingVersion:reference.routingVersion,providerId:provider};
+ f.output({kind:'discussion',reply:'两个独立模块已完成',items:[],progressUpdates:[...children.map(child=>({taskId:child.id,summary:'业务结果已检查',outcome:'ready'})),{taskId:unfinished.id,summary:'尚有实现工作',outcome:'needs_work'}]});
+ f.turns.resolveReference=id=>id===ref.logicalSessionId||id===ref.sessionId?ref:f.reference();
+ await f.turns.send(ref,'检查停止的子任务',{source:{type:'mailbox_event'}});await nextTick();
+ assert.deepEqual(new Set(started),new Set(children.map(child=>child.id)));
+ assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM coordination_shadow_reclamation WHERE phase='delivery'").n,2);
+ assert.equal(f.store.listAgentTasksForSession(f.source.sessionId).length,0);
+});
+
+test('progress separates a failed summary handoff from previous completed child execution',async t=>{
+ const f=await recoveryFixture(t),id=await f.finish('phase-previous');
+ const row=f.coordinator.get(id),work=f.store.getAgentTask(row.operation_id);
+ f.coordinator.update(id,{status:'blocked',operation_id:null,error_code:'SHADOW_EXECUTION_FAILED',error_message:'影子处理失败',runtime_json:JSON.stringify({managementExecutorSessionId:f.shadow.forMain('logical:parent').shadow_session_id})});
+ const facts=f.coordinator.progress.facts(f.coordinator.progress.batch(row.progress_batch_id));
+ assert.equal(facts[0].phase,'shadow');assert.equal(facts[0].previousExecutionStatus,'completed');
+ f.coordinator.progress.refresh(row.progress_batch_id);
+ const snapshot=f.coordinator.progress.latest(f.parent.id);assert.equal(snapshot.items[0].phase,'shadow');assert.equal(snapshot.items[0].state,'blocked');
+ assert.equal(f.store.getAgentTask(work.taskId).status,'completed');
+});
+
+test('a current child approval wait is observed without completing or approving its execution',async t=>{
+ const f=await recoveryFixture(t),id=await f.finish('approval-wait');
+ const row=f.coordinator.get(id),operation=f.store.getAgentTask(row.operation_id);
+ f.store.updateAgentTask(operation.taskId,{status:'running'});
+ f.store.db.run("UPDATE sessions SET status='blocked' WHERE id=?",[operation.sessionId]);
+ f.coordinator.onRuntimeEvent('SessionApprovalRequested',{sessionId:operation.sessionId});f.coordinator.flushReports();
+ const current=f.coordinator.get(id);assert.equal(current.status,'waiting_input');assert.ok(current.report_message_id);
+ assert.equal(f.store.getAgentTask(operation.taskId).status,'running');
+ const message=f.store.selectOne('SELECT * FROM session_mailbox_messages WHERE message_id=?',[current.report_message_id]);
+ assert.match(message.body,/execution_waiting_input/);assert.notEqual(message.recipient_session_id,'logical:parent');
 });

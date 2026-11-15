@@ -25,12 +25,7 @@ const bounded=(value,n=2000)=>String(value??"").slice(0,n);
 export class CoordinationReadService {
   constructor({store,mailbox,contextRead=null}){Object.assign(this,{store,mailbox,contextRead});}
   execute(reference,rootTaskId,input){
-    const source=this.store.getSession(reference.sessionId),route=this.store.getLogicalSessionByLegacySessionId(reference.sessionId);
-    const root=source?.taskId && this.store.getTask(source.taskId);
-    if(!root || root.id!==rootTaskId || source.sessionKind!=="worker" || source.workId!==root.work_id
-      || root.archived || root.deletion_status || source.archived || source.deletedAt || route?.archived
-      || route?.activeBinding?.state!=="active" || route.activeBinding.bindingId!==reference.bindingId)fail("COORDINATION_READ_SCOPE_INVALID");
-    if (root.current_session_id !== source.id && !coordinationDelegation(this.store, route.logicalSessionId)) fail("COORDINATION_READ_SCOPE_INVALID");
+    const {source,route,root}=this.scope(reference,rootTaskId);
     if(!tools.includes(input.tool))fail("COORDINATION_READ_TOOL_UNSUPPORTED");
     if(input.tool==="read_resource" || input.tool==="search_resources") {
       if(!this.contextRead)fail("COORDINATION_RESOURCE_READ_UNAVAILABLE");
@@ -63,24 +58,7 @@ export class CoordinationReadService {
         truncated:false};
     }else if(input.tool==="read_execution"){
       const session=this.session(root,task,input.sessionId);
-      const operation=this.store.getRunningAgentTaskForSession(session.id)
-        ?? this.store.listAgentTasksForSession(session.id).at(-1) ?? null;
-      const dispatch=operation && this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?",[operation.taskId]);
-      const adopted=operation && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE operation_id=? AND disposition='adopted' AND adopted_turn_id IS NOT NULL",[operation.taskId]);
-      const logical=this.store.getLogicalSessionByLegacySessionId(session.id);
-      const turnId=adopted?.adopted_turn_id ?? operation?.targetTurnId ?? session.external?.activeTurnId ?? null;
-      const bindingId=adopted?.adopted_binding_id ?? logical?.activeBinding?.bindingId;
-      const turn=turnId && this.store.getSessionTurn(session.id,bindingId,turnId);
-      const status=turn?.executionStatus ?? turn?.execution_status ?? (adopted ? "unknown" : operation?.status) ?? session.status;
-      const final=turnId && this.store.selectOne(`SELECT id,substr(text,1,1200) AS text FROM session_items WHERE session_id=? AND turn_id=?
-        AND type='agentMessage' AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY created_at DESC,id DESC LIMIT 1`,[session.id,turnId]);
-      result={taskId:task.id,sessionId:session.id,operationId:operation?.taskId??null,dispatchId:dispatch?.dispatch_id??null,
-        turnId,status,targetOutcome:"not_assessed",acceptanceState:task.lifecycle_state,
-        cancellation:operation?.executionEvidence?.cancellation??null,
-        latestResult:final?{messageId:final.id,excerpt:final.text}:null,
-        queueDepth:this.store.listQueuedAgentTasksForSession(session.id,100).length,
-        dispatchBlock:operation?.source?.dispatchBlock??null,
-        instruction:"执行轮次结束不代表目标完成；取消记录仅描述原执行。结果全文按messageId读取。"};
+      result=this.executionSnapshot(task,session);
     }else if(input.tool==="list_sessions"){
       result=page(this.store.selectAll(`SELECT id,title,status,archived,created_at AS createdAt FROM sessions
         WHERE task_id=? AND work_id=? AND deleted_at IS NULL
@@ -137,15 +115,70 @@ export class CoordinationReadService {
       }
     }
     const output={tool:input.tool,observedAt:new Date().toISOString(),referenceOnly:true,...result};
-    const entries=output.items ?? output.messages;
-    while(Array.isArray(entries) && entries.length>1 && Buffer.byteLength(JSON.stringify(output))>8000){
-      entries.pop();output.truncated=true;
-      const last=entries.at(-1);
-      if(output.messages){output.hasMore=true;output.beforeCursor=last.cursor;}
-      else output.nextCursor=JSON.stringify({id:last.id,createdAt:last.createdAt});
-    }
-    if(Buffer.byteLength(JSON.stringify(output))>8192) return {tool:input.tool,referenceOnly:true,errorCode:"COORDINATION_READ_RESULT_TOO_LARGE",message:"请缩小查询范围或分段读取。"};
     return output;
+  }
+  scope(reference,rootTaskId) {
+    const source=this.store.getSession(reference.sessionId),route=this.store.getLogicalSessionByLegacySessionId(reference.sessionId);
+    const root=source?.taskId && this.store.getTask(source.taskId);
+    if(!root || root.id!==rootTaskId || source.sessionKind!=="worker" || source.workId!==root.work_id
+      || root.archived || root.deletion_status || source.archived || source.deletedAt || route?.archived
+      || route?.activeBinding?.state!=="active" || route.activeBinding.bindingId!==reference.bindingId)fail("COORDINATION_READ_SCOPE_INVALID");
+    if (root.current_session_id !== source.id && !coordinationDelegation(this.store, route.logicalSessionId)) fail("COORDINATION_READ_SCOPE_INVALID");
+    return {source,route,root};
+  }
+  executionSnapshot(task,session) {
+    const latest=this.store.selectOne("SELECT task_id FROM agent_operations WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",[session.id]);
+    const operation=this.store.getRunningAgentTaskForSession(session.id) ?? (latest && this.store.getAgentTask(latest.task_id));
+    const dispatch=operation && this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?",[operation.taskId]);
+    const adopted=operation && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE operation_id=? AND disposition='adopted' AND adopted_turn_id IS NOT NULL",[operation.taskId]);
+    const logical=this.store.getLogicalSessionByLegacySessionId(session.id);
+    const turnId=adopted?.adopted_turn_id ?? operation?.targetTurnId ?? session.external?.activeTurnId ?? null;
+    const bindingId=adopted?.adopted_binding_id ?? logical?.activeBinding?.bindingId;
+    const turn=turnId && this.store.getSessionTurn(session.id,bindingId,turnId);
+    const status=turn?.executionStatus ?? turn?.execution_status ?? (adopted ? "unknown" : operation?.status) ?? session.status;
+    const final=turnId && this.store.selectOne(`SELECT id,substr(text,1,1200) AS text FROM session_items WHERE session_id=? AND turn_id=?
+      AND type='agentMessage' AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY created_at DESC,id DESC LIMIT 1`,[session.id,turnId]);
+    const activity=turnId && this.store.selectOne(`SELECT id,type,title,substr(text,1,800) AS text,status,created_at FROM session_items
+      WHERE session_id=? AND turn_id=? AND type IN ('commandExecution','toolExecution','mcpToolCall','customToolCall','webSearch')
+      ORDER BY created_at DESC,id DESC LIMIT 1`,[session.id,turnId]);
+    const acceptedAt=dispatch?.created_at ?? operation?.createdAt ?? null;
+    const startedAt=turn?.startedAt ?? turn?.started_at ?? (adopted ? null : operation?.startedAt) ?? null;
+    const endedAt=turn?.endedAt ?? turn?.ended_at ?? (adopted ? null : operation?.completedAt) ?? null;
+    const observedAt=new Date().toISOString();
+    const duration=(start,end)=>{const a=Date.parse(start),b=Date.parse(end);return Number.isFinite(a)&&Number.isFinite(b)&&b>=a?b-a:null;};
+    const dispatchBlock=operation?.source?.dispatchBlock ?? null;
+    return {taskId:task.id,sessionId:session.id,operationId:operation?.taskId??null,dispatchId:dispatch?.dispatch_id??null,
+      turnId,status,targetOutcome:"not_assessed",acceptanceState:task.lifecycle_state,
+      phase:dispatchBlock ? "waiting_dispatch" : ["queued","accepted"].includes(status) ? "queued" : status === "running" ? "executing" : status,
+      timestamps:{acceptedAt,startedAt,endedAt,lastActivityAt:session.external?.lastOutputAt ?? activity?.created_at ?? operation?.updatedAt ?? null,observedAt},
+      durations:{queueMs:duration(acceptedAt,startedAt),executionMs:duration(startedAt,endedAt ?? observedAt),totalMs:duration(acceptedAt,endedAt ?? observedAt)},
+      currentOperation:activity ? {messageId:activity.id,type:activity.type,title:activity.title,excerpt:activity.text,status:activity.status} : null,
+      evidenceGaps:[...(!startedAt?["execution_start_not_recorded"]:[]),...(!activity?["current_command_not_recorded"]:[]),"fine_grained_phase_timing_unavailable"],
+      cancellation:operation?.executionEvidence?.cancellation??null,
+      latestResult:final?{messageId:final.id,excerpt:final.text}:null,
+      queueDepth:this.store.listQueuedAgentTasksForSession(session.id,100).length,dispatchBlock,
+      instruction:"状态为running不能证明测试命令已启动。时间只来自记录，未知阶段不得推断。执行结束不代表目标完成；结果全文按messageId读取。"};
+  }
+  diagnostics(reference,rootTaskId) {
+    const targets=this.store.selectAll(`SELECT target_task_id FROM task_coordination_dispatches WHERE parent_task_id=? AND target_task_id IS NOT NULL
+      ORDER BY CASE WHEN status IN ('running','queued','preparing','waiting_dispatch','blocked') THEN 0 ELSE 1 END,created_at DESC LIMIT 20`,[rootTaskId]);
+    const ids=[...new Set(targets.map(row=>row.target_task_id))];
+    const snapshots=[];
+    for(const id of ids){try{snapshots.push(this.execute(reference,rootTaskId,{tool:"read_execution",taskId:id}));}
+      catch(error){snapshots.push({taskId:id,errorCode:error.code??"EXECUTION_DIAGNOSTICS_UNAVAILABLE"});}}
+    return {items:snapshots,selection:"active_and_recent_dispatch_targets",hasMore:targets.length===20};
+  }
+  revisionFor(reference,rootTaskId,input) {
+    const {root}=this.scope(reference,rootTaskId),task=this.task(root,input.taskId??rootTaskId);
+    if(!task)fail("COORDINATION_READ_TASK_OUTSIDE_SCOPE");
+    if(["read_execution","read_messages","read_message","read_mailbox"].includes(input.tool)) {
+      const session=this.session(root,task,input.sessionId);
+      const latest=this.store.selectOne("SELECT task_id,status,updated_at FROM agent_operations WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",[session.id]);
+      const mailbox=input.tool==="read_mailbox" ? this.store.selectOne("SELECT MAX(sequence) AS sequence,MAX(updated_at) AS updatedAt FROM session_mailbox_messages WHERE recipient_session_id=?",[this.store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId??session.id]):null;
+      return JSON.stringify([session.status,session.updatedAt,latest,this.store.sessionTimelineRevision(session.id),mailbox]);
+    }
+    if(input.tool==="read_task")return JSON.stringify([task.id,task.revision,task.resource_version,task.lifecycle_state,task.execution_status,task.creation_state,task.current_session_id,task.archived,task.deletion_status]);
+    return String(this.store.stateRevision());
   }
   task(root,id){
     const task=this.store.getTask(id);

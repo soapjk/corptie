@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildWorkSessionContext,
+  buildTaskCoordinationContext,
   mergeWorkerSessionContexts
 } from "../src/application/workSessionContext.mjs";
 import { SessionContextDelivery } from "../src/application/sessionContextDelivery.mjs";
@@ -344,4 +345,21 @@ test("critical workflow and full preferences are resent while unchanged Task and
   assert.ok(next.contextDelivery.reusedSectionIds.includes("task-definition"));
   assert.ok(next.contextDelivery.sentSectionIds.includes("execution-workflow"));
   assert.ok(build().prompt.indexOf(preference) < build().prompt.indexOf("This is the authoritative Task binding"));
+});
+
+
+test("child context leaves outcomes locally and never requires an upward completion handoff", () => {
+  const context=buildTaskCoordinationContext({parent_task_id:"task:parent"},null);
+  assert.match(context,/final response, then stop/);
+  assert.match(context,/host detects stopped execution/);
+  assert.match(context,/Do not send completion or status messages upward/);
+  assert.match(context,/Only an essential unresolved question/);
+  assert.doesNotMatch(context,/Deliver workspace.*once|briefly acknowledge|Send.*summary/);
+  for(const coordination_enabled of [0,1]) {
+    const parent=buildTaskCoordinationContext({coordination_enabled},null);
+    assert.match(parent,/shadow owns child questions, review, integration, verification and automatic reclamation/);
+    assert.match(parent,/do not discover a Session by a generic summary name/);
+    assert.match(parent,/execution completion is not acceptance/);
+    assert.doesNotMatch(parent,/briefly acknowledge/);
+  }
 });

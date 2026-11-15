@@ -115,7 +115,7 @@ export class CoordinationRequestService {
       // Keep a bounded window with an explicit cursor; older pages remain readable.
       const sharedContext = await measured(id, "context", () => this.buildContext(main, JSON.parse(row.message_json), JSON.parse(row.source_json)));
       signal?.throwIfAborted();
-      const items = []; let before = null, hasMore = false, bytes = 0, exhausted = false, pages = 0;
+      const items = []; let before = null, hasMore = false, pages = 0;
       // History is bounded at admission, so unrelated later inputs cannot become instructions.
       const boundary = row.created_at;
       before = { createdAt: boundary, id: "\uffff" };
@@ -126,11 +126,9 @@ export class CoordinationRequestService {
         for (const item of page.items) {
           if (item.createdAt > boundary) continue;
           const text = item.text ?? "";
-          if (bytes + Buffer.byteLength(text) > 32000) { hasMore = true; exhausted = true; before = items.at(-1)?.cursor ?? null; break; }
-          bytes += Buffer.byteLength(text);
           items.push({ id: item.id, role: item.type, text, truncated: Boolean(item.textTruncated), cursor: { id: item.id, createdAt: item.createdAt } });
         }
-        if (exhausted || bytes >= 26000 || items.length >= 100) break;
+        if (items.length >= 100) break;
       } while (hasMore && before && items.length < 100 && pages < 10);
       const instructions = sharedContext?.prompt ?? null;
       this.update(id, { context_json: JSON.stringify({ instructions, messages: items.reverse(), historyTruncated: hasMore }),
@@ -154,7 +152,7 @@ export class CoordinationRequestService {
       idempotencyKey: `${row.request_id}:${row.attempt + 1}`, source: JSON.parse(row.source_json), requestId: id
     });
     row = this.get(id);
-
+    if(row?.status === "running")this.finish(id,"failed",fault("REQUEST_RESULT_MISSING","后台处理已结束，但没有生成结果；请查看原派发状态。"));
   }
   dependency(id) {
     const row = this.get(id);
@@ -210,11 +208,15 @@ export class CoordinationRequestService {
     if (!message.text && !message.images?.length) throw fault("REQUEST_INPUT_UNAVAILABLE");
     // An explicit retry starts a fresh execution while retaining original input identity.
     this.update(id, { status: "accepted", phase: "reading", shadow_session_id: null,
-      message_json: JSON.stringify(message), source_json: JSON.stringify(source), error_code: null, error_message: null });
+      message_json: JSON.stringify(message), source_json: JSON.stringify(source), response_item_id:null, error_code: null, error_message: null });
     if (row.delivery_id && this.store.getMessageDelivery(row.delivery_id)) {
       this.store.updateMessageDelivery(row.delivery_id, { status: "processing", lastError: null });
       this.emitEvent("MessageDeliveryChanged", { delivery: this.store.getMessageDelivery(row.delivery_id) }, { sessionId: this.owner(row).sessionId });
     }
+    const main=this.owner(row),item={id:`${id}:reply`,turnId:id,type:"agentMessage",text:"重试请求已受理。",status:"inProgress",turnStatus:"running",createdAt:now(),
+      rawMetadataJSON:JSON.stringify({requestId:id,replyToMessageId:row.message_id,coordinationEvent:{kind:"receipt",requestId:id,sessionId:row.main_session_id}})};
+    this.store.upsertTimelineItemProjection(main.sessionId,item);
+    this.emitEvent("SessionCoordinationMilestone",{turnId:id,item},{sessionId:main.sessionId});
     this.publishStatus(id); this.schedule(id); return this.get(id);
   }
   async cancel(mainId, id) {
@@ -285,22 +287,25 @@ export class CoordinationRequestService {
       const main = this.store.getLogicalSession(row.main_session_id);
       this.emitEvent("MessageDeliveryChanged", { delivery: this.store.getMessageDelivery(row.delivery_id) }, { sessionId: main?.legacySessionId });
     }
-    const savedPreview = !this.previews.has(id) && this.store.selectOne(
-      "SELECT text,created_at AS createdAt FROM session_items WHERE id=? AND status='inProgress'", [`${id}:reply`]);
-    const partial = this.previews.get(id) ?? savedPreview;
-    if (status !== "completed") {
-      const main = this.store.getLogicalSession(row.main_session_id);
-      if (main) {
-        const item = { id: `${id}:reply`, turnId: id, type: "agentMessage", text: [partial?.text, status === "cancelled" ? "请求已取消。" : `请求处理失败：${error?.message ?? "未知错误"}`].filter(Boolean).join("\n\n"),
-          status, turnStatus: status, createdAt: partial?.createdAt ?? now(),
-          rawMetadataJSON: JSON.stringify({ coordinationEvent:{kind:"failure",requestId:id,errorCode:error?.code ?? null}, requestId: id, replyToMessageId: row.message_id, sourceSessionId: row.shadow_session_id }) };
-        this.store.upsertTimelineItemProjection(main.legacySessionId, item);
-        this.update(id,{response_item_id:item.id});
-        this.emitEvent("SessionCoordinationCompleted", { turnId: id, item }, { sessionId: main.legacySessionId });
-      }
-    }
+    if(status!=="completed")this.projectFailure(this.get(id),status,error);
     this.previews.delete(id);
     this.publishStatus(id); this.wakeDependents(id);
+  }
+  retryable(row) { return row?.status === "failed" && row.phase !== "admitting" && !row.dispatch_json; }
+  projectFailure(row,status,error=null) {
+    const id=row.request_id,main=this.store.getLogicalSession(row.main_session_id);
+    if(!main || this.store.getSession(main.legacySessionId)?.taskId!==row.parent_task_id)return;
+    const existing=this.store.getSessionItem(main.legacySessionId,`${id}:reply`);
+    const partial=this.previews.get(id) ?? (existing?.status==="inProgress" ? existing : null);
+    const retryable=this.retryable(row),cause=error?.message ?? row.error_message ?? "未知错误";
+    const outcome=row.dispatch_json || row.phase==="admitting" ? "已尝试派发，需核对原记录；不会自动重复执行。" : "本次未受理新的派发。";
+    const item={id:`${id}:reply`,turnId:id,type:"agentMessage",status,turnStatus:status,
+      text:[partial?.text,status==="cancelled"?"请求已取消。":`请求处理失败：${cause}`,outcome].filter(Boolean).join("\n\n"),
+      createdAt:existing?.createdAt ?? row.updated_at ?? now(),rawMetadataJSON:JSON.stringify({requestId:id,replyToMessageId:row.message_id,
+        sourceSessionId:row.shadow_session_id,coordinationEvent:{kind:"failure",requestId:id,sessionId:row.main_session_id,
+          phase:row.phase,errorCode:error?.code ?? row.error_code,retryable}})};
+    this.store.upsertTimelineItemProjection(main.legacySessionId,item);this.update(id,{response_item_id:item.id});
+    this.emitEvent("SessionCoordinationCompleted",{turnId:id,item},{sessionId:main.legacySessionId});
   }
   publishStatus(id) {
     const row = this.get(id);
@@ -360,7 +365,7 @@ export class CoordinationRequestService {
   }
   recover() {
     for (const row of this.store.selectAll("SELECT * FROM coordination_requests ORDER BY created_at")) {
-      if (terminal.has(row.status)) { if (row.context_json || row.message_json) void this.reclaim(row); continue; }
+      if (terminal.has(row.status)) { if(row.status!=="completed" && !row.response_item_id)this.projectFailure(row,row.status); if (row.context_json || row.message_json) void this.reclaim(row); continue; }
       if (row.response_item_id) { this.finish(row.request_id, "completed"); void this.reclaim(this.get(row.request_id)); continue; }
       if (row.status === "waiting") { this.wakeDependents(row.dependency_id); continue; }
       if (row.phase === "admitting") { this.finish(row.request_id, "failed", fault("REQUEST_OUTCOME_UNCERTAIN", "已尝试派发；请核对原派发记录，不会自动重复执行。")); continue; }

@@ -286,3 +286,10 @@ test("Channel tools forward explicit wake intent and stable history cursors", as
   });
   assert.equal(calls[1][1].deliveryIntent, "notification");
 });
+
+test('a host-collected child report is a successful no-op rather than an empty receipt or push',async()=>{
+ const result=await callCollaborationDynamicTool({post:async()=>({request:{status:'collected_by_host',reasonCode:'CHILD_REPORT_COLLECTED_BY_HOST'}})},
+  'corptie_collaboration_channel_open',{recipient_session_id:'session:parent',body:'完成',idempotency_key:'quiet-result'});
+ assert.equal(result.coordination.delivery,'collected_by_host');assert.equal(result.coordination.requiresUserAction,false);
+ assert.match(result.coordination.note,/No message was created/);
+});

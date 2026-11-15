@@ -299,7 +299,7 @@ export function handleCollaborationHttpRequest({
           senderSessionId: sessionMetadata.sessionId,
           ...input
         });
-        await onChannelMessageCreated?.(result);
+        if (result.status !== "collected_by_host") await onChannelMessageCreated?.(result);
         return sendJson(response, 201, result);
       }
 
@@ -694,7 +694,7 @@ async function handleProductRequest({ request, response, url, core, sessionChann
     const result = sessionChannelService.sendMessage({
       channelId: decodeURIComponent(productChannelMessageMatch[1]), ...input
     });
-    await onChannelMessageCreated?.(result);
+    if (result.status !== "collected_by_host") await onChannelMessageCreated?.(result);
     return sendJson(response, 201, result);
   }
 
