@@ -4,6 +4,38 @@ import CorptieClientCore
 @testable import CorptieMobileState
 
 @MainActor struct PadReplyProgressTests {
+    @Test func subagentActivityUpdatesOneMobileCardWithoutLosingMetadata() throws {
+        let workspace = PadWorkspace(defaults: UserDefaults(suiteName: "child:\(UUID())")!)
+        workspace.selection = "session:a"
+        func activity(_ id: String, child: String, event: String, status: String) throws -> ClientMessage {
+            let value: [String: Any] = ["id": id, "turnId": "turn", "type": "subAgentActivity",
+                "text": "", "turnStatus": "inProgress", "subagentActivity": ["schemaVersion": 1,
+                    "activityId": id, "childId": child, "name": "布局检查",
+                    "event": event, "status": status]]
+            return try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        let started = try activity("a:1", child: "a", event: "started", status: "running")
+        let done = try activity("a:2", child: "a", event: "completed", status: "completed")
+        let followup = try activity("a:3", child: "a", event: "interacted", status: "unknown")
+        let other = try activity("b:1", child: "b", event: "started", status: "running")
+        workspace.messages = [started]
+        let processID = try #require(workspace.displayEntries.first?.id)
+        #expect(workspace.processSteps[processID]?.first?.state == .running)
+        workspace.messages = [started, other, done, done]
+        let steps = try #require(workspace.processSteps[processID])
+        #expect(steps.map(\.id) == ["subagent:a", "subagent:b"])
+        #expect(steps.first?.subagent?.activities.count == 2)
+        #expect(steps.first?.state == .completed)
+        #expect(workspace.processPresentations[processID]?.subagentCount == 2)
+        workspace.messages = [started, other, done, followup]
+        #expect(workspace.displayEntries.first?.id == processID)
+        #expect(workspace.processSteps[processID]?.first?.id == "subagent:a")
+        #expect(workspace.processSteps[processID]?.first?.state == .unknown)
+        #expect(workspace.processSteps[processID]?.first?.subagent?.latest.event == "interacted")
+        workspace.selection = "session:b"
+        #expect(workspace.processSteps.isEmpty)
+    }
+
     private func message(_ id: String, type: String = "agentMessage", role: String? = "commentary",
                          status: String = "running", date: String = "2026-10-31T00:00:01Z") throws -> ClientMessage {
         var value: [String: Any] = ["id": id, "turnId": "turn", "type": type,

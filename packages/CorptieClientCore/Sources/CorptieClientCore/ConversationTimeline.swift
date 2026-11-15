@@ -489,7 +489,7 @@ private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: 
     // must remain visible until its presentation semantics are understood.
     case "reasoning", "commandExecution", "fileChange",
          "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction",
-         "sleep", "imageView", "collabAgentToolCall", "collabToolCall",
+         "sleep", "imageView", "collabAgentToolCall", "collabToolCall", "subAgentActivity",
          "functionCallOutput", "enteredReviewMode", "exitedReviewMode":
         return true
     default:

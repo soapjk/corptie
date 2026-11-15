@@ -1755,6 +1755,7 @@ private struct PadExecutionStepCard: View {
     let presentation: ExecutionStepDetailPresentation
     let structuredPresentation: ExecutionStructuredStepPresentation?
     @State private var showsFull = false
+    @Environment(\.locale) private var locale
 
     init(step: ConversationExecutionStep, isCommentary: Bool = false) {
         self.step = step
@@ -1778,6 +1779,8 @@ private struct PadExecutionStepCard: View {
             if isCommentary {
                 PadMessageText(text: step.detail ?? step.title, fromUser: false)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let subagent = ExecutionSubagentPresentation(step: step, languageCode: locale.identifier) {
+                ExecutionSubagentActivityView(presentation: subagent)
             } else if let plan = step.plan {
                 if plan.steps.count > 12 {
                     ScrollView {
@@ -1817,11 +1820,13 @@ private struct PadExecutionStepCard: View {
 private struct PadExecutionFullDetails: View {
     let step: ConversationExecutionStep
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                Text(ExecutionStepDetailPresentation.fullText(step))
+                Text(step.subagent == nil ? ExecutionStepDetailPresentation.fullText(step)
+                     : ExecutionSubagentPresentation.fullText(step: step, languageCode: locale.identifier))
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
