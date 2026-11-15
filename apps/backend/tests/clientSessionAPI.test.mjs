@@ -982,3 +982,24 @@ test("host failure and receipt metadata are public without leaking diagnostics",
  assert.equal(page.items[0].rawMetadataJSON,undefined);
  }finally{await f.close();}
 });
+
+test('historical item-wrapped coordination events keep card type and reply association on paired clients',async()=>{
+ const f=await fixture();try{
+ const kinds=['summary','failure','receipt','delivery','decision'];
+ const metadata=kind=>({coordinationEvent:{kind,batchId:'batch:history',requestId:'request:one',sessionId:'logical:main',phase:'reading',retryable:true},requestId:'request:one',replyToMessageId:'question:one',sourceSessionId:'logical:shadow',private:'do-not-publish'});
+ const wrap=value=>JSON.stringify({id:'historical:item',type:'agentMessage',rawMetadataJSON:value});
+ const api=new ClientSessionAPI({store:f.store,...callbacks,readWindow:async()=>({revision:1,items:[
+  ...kinds.map(kind=>({id:kind,type:'agentMessage',text:'historical body',rawMetadataJSON:wrap(wrap(JSON.stringify(metadata(kind))))})),
+  {id:'ordinary',type:'agentMessage',text:'**后台汇总**\n\n普通模型回复',rawMetadataJSON:wrap(JSON.stringify({text:'请求处理失败'}))}
+ ]})});
+ const page=await api.messages(identity,'session:test',new URLSearchParams());
+ for(const [i,kind]of kinds.entries()){
+  assert.equal(page.items[i].coordinationEvent.kind,kind);
+  assert.equal(page.items[i].coordinationEvent.requestId,'request:one');
+  assert.equal(page.items[i].replyAssociation.replyToMessageId,'question:one');
+  assert.equal(page.items[i].rawMetadataJSON,undefined);
+ }
+ assert.equal(page.items.at(-1).coordinationEvent,undefined);
+ assert.ok(!JSON.stringify(page).includes('do-not-publish'));
+ }finally{await f.close();}
+});

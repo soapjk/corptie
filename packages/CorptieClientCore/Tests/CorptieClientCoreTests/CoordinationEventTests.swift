@@ -19,4 +19,21 @@ final class CoordinationEventTests: XCTestCase {
             XCTAssertEqual(ConversationCoordinationEvent(rawMetadataJSON: raw)?.kind, kind)
         }
     }
+    func testHistoricalItemEnvelopeRestoresSpecialCardMetadataWithoutProseHeuristics() throws {
+        for kind in ["summary", "failure", "receipt", "delivery", "decision"] {
+            let metadata: [String: Any] = ["coordinationEvent": ["kind": kind, "requestId": "r", "sessionId": "s", "phase": "reading", "retryable": true]]
+            var encoded = String(decoding: try JSONSerialization.data(withJSONObject: metadata), as: UTF8.self)
+            for _ in 0..<3 {
+                encoded = String(decoding: try JSONSerialization.data(withJSONObject: ["type": "agentMessage", "rawMetadataJSON": encoded]), as: UTF8.self)
+                let event = try XCTUnwrap(ConversationCoordinationEvent(rawMetadataJSON: encoded))
+                XCTAssertEqual(event.kind, kind)
+                XCTAssertEqual(event.requestId, "r")
+                XCTAssertEqual(event.phase, "reading")
+                XCTAssertEqual(event.retryable, true)
+            }
+        }
+        XCTAssertNil(ConversationCoordinationEvent(rawMetadataJSON: #"{"rawMetadataJSON":"broken","text":"后台汇总"}"#))
+        XCTAssertNil(ConversationCoordinationEvent(rawMetadataJSON: #"{"payload":{"coordinationEvent":{"kind":"summary"}}}"#))
+    }
+
 }

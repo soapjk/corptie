@@ -73,7 +73,10 @@ export function createProductEventPublisher({
             }
             store.upsertTimelineItemProjection(sessionId, {
               ...item,
-              rawMetadataJSON: JSON.stringify(item)
+              // Coordination writers already provide canonical metadata. Do
+              // not wrap it in another item on every durable/SSE projection.
+              rawMetadataJSON: ["SessionCoordinationCompleted", "SessionCoordinationMilestone"].includes(type)
+                && typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : JSON.stringify(item)
             });
           }
         }

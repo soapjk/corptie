@@ -1,4 +1,5 @@
 import { imageVariant, deliverImageVariant } from "./messageImagePreview.mjs";
+import { coordinationMessageMetadata } from "../utils/coordinationMessageMetadata.mjs";
 import { unifiedSearch } from "../store/unifiedSearch.mjs";
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
@@ -104,7 +105,7 @@ function publicPresentationString(value, maximumLength = 4_000) {
 function publicClientMessage(item) {
   let replyAssociation, coordinationEvent;
   try {
-    const metadata = JSON.parse(item.rawMetadataJSON ?? "null");
+    const metadata = coordinationMessageMetadata(item.rawMetadataJSON);
     if (["summary","delivery","receipt","failure","decision"].includes(metadata?.coordinationEvent?.kind))
       coordinationEvent = {kind:metadata.coordinationEvent.kind,batchId:typeof metadata.coordinationEvent.batchId === "string" ? metadata.coordinationEvent.batchId.slice(0,512) : null,
         ...Object.fromEntries(["requestId","sessionId","phase","errorCode"].filter(key=>typeof metadata.coordinationEvent[key]==="string").map(key=>[key,metadata.coordinationEvent[key].slice(0,512)])),
