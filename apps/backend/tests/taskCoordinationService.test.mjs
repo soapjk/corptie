@@ -579,14 +579,14 @@ test("restart resumes accepted preparation even after mode is switched off", asy
   assert.equal(f.store.listTaskCoordinationDispatches(f.parent.id).length, 1);
 });
 
-test("retry retains failure as state and emits a result only after an actual final report", async t => {
+test("retry reports failure without prose and later delivers the actual final result", async t => {
   const f = await fixture(t); f.fail("PREPARATION_FAILED");
   f.store.db.run("UPDATE sessions SET status='idle' WHERE id=?", [f.source.sessionId]);
   const receipt = f.coordinator.acceptDispatch(f.source, f.role.agentId, { items: [f.item("report_retry")] });
   const id = receipt.dispatches[0].dispatchId;
   await f.coordinator.runDispatch(id); f.coordinator.flushReports();
   const failedReportID = f.coordinator.get(id).report_message_id;
-  assert.equal(failedReportID,null);
+  assert.ok(failedReportID);
   f.fail(null); f.coordinator.retryDispatch(f.source, f.role.agentId, id); await f.coordinator.runDispatch(id);
   const work = f.store.updateAgentTask(f.coordinator.get(id).operation_id, { status: "completed", targetTurnId: "retry-turn" });
   f.store.upsertTimelineItemProjection(work.sessionId,{id:"result:retry",turnId:"retry-turn",type:"agentMessage",text:"实际交付",status:"completed",createdAt:new Date().toISOString()});
@@ -594,7 +594,7 @@ test("retry retains failure as state and emits a result only after an actual fin
   const successReportID = f.coordinator.get(id).report_message_id;
   assert.ok(successReportID);
   assert.notEqual(successReportID, failedReportID);
-  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,1);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_mailbox_messages WHERE recipient_session_id='logical:parent'").n,2);
   const current = f.mailbox.raw("logical:parent", successReportID);
   f.coordinator.validateMailbox(current, JSON.parse(current.authorization_json));
 });
@@ -902,8 +902,9 @@ test("restricted coordination bypasses all native tools and sends on both no-too
     assert.equal(f.requests[0].preferredProviderId, provider);
     assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
     assert.equal(f.terminals[0].status, "completed");
-    assert.match(f.events.at(-1).payload.item.text, /已受理 1/);
-    assert.doesNotMatch(f.events.at(-1).payload.item.text, /不能把这个当作已完成/);
+    assert.equal(f.events.at(-1).payload.hasAgentMessage, false);
+    assert.ok(f.events.at(-1).payload.progressBatchId);
+    assert.equal(f.events.at(-1).payload.item, undefined);
     await f.application.sendMessage(f.source.sessionId, "retry", { idempotencyKey: "instruction-one" });
     assert.equal(f.requests.length, 1);
     assert.equal(f.coordinator.listForParent(f.parent.id).length, 1);
@@ -2126,15 +2127,16 @@ test("older unfinished requests remain visible after many completed inputs and m
   assert.equal(f.turns.state(f.reference("logical:parent")).requests[0].requestId, active.request_id);
 });
 
-test("a supplement waits for the original target without occupying an execution slot", async t => {
+test("a supplement preserves relation without forcing a dependency or fixed target", async t => {
   const f = await requestFixture(t);
   f.requests.schedule = () => {};
   const target = f.admit("target"), extra = f.admit("supplement");
   let dispatches = [{ dispatchId: "dispatch:target", taskId: null, status: "preparing" }];
   f.requests.dispatches = () => dispatches;
-  assert.equal(f.requests.relate(extra.request_id, "supplement", target.request_id).waiting, true);
+  assert.equal(f.requests.relate(extra.request_id, "supplement", target.request_id).waiting, false);
+  assert.equal(f.requests.get(extra.request_id).dependency_id,null);
   f.requests.finish(target.request_id, "completed");
-  assert.equal(f.requests.get(extra.request_id).status, "waiting");
+  assert.equal(f.requests.get(extra.request_id).status, "accepted");
   dispatches = [{ dispatchId: "dispatch:target", taskId: "task:target", status: "accepted" }];
   f.requests.wakeDependents(target.request_id);
   assert.equal(f.requests.get(extra.request_id).status, "accepted");
@@ -2640,4 +2642,67 @@ test("failed summary delivery updates original dispatch and retries only origina
   const result=f.coordinator.retryDispatch(f.source,f.role.agentId,id);
   assert.equal(result.retryAction,"resume_summary_management");
   assert.equal(f.coordinator.get(id).mailbox_message_id,message.message_id);
+});
+
+test("host owns batch and receipt even if legacy planner returns an arbitrary batch", async t => {
+ const f=await requestFixture(t);
+ f.setPlanner(async()=>({text:JSON.stringify({kind:"dispatch",reply:"model prose should not appear",batchId:"progress:foreign-or-invented",presentation:"message",items:[{action:"create",taskId:null,title:"Host_owned_batch",text:"implement module",agentId:f.role.agentId}]})}));
+ const request=f.admit("implement");await f.requests.running.get(request.request_id);
+ const row=f.requests.get(request.request_id);
+ assert.equal(row.status,"completed");assert.match(row.response_item_id,/^coordination-progress:/);
+ assert.equal(f.store.getSessionItem(f.source.sessionId,`${request.request_id}:reply`),null);
+ const dispatches=JSON.parse(row.dispatch_json);assert.equal(dispatches.length,1);
+ assert.notEqual(f.coordinator.get(dispatches[0].dispatchId).progress_batch_id,"progress:foreign-or-invented");
+ await Promise.all([...f.requests.reclaiming.values()]);
+});
+
+test("request failure without any partial reply remains visible after request reclamation", async t => {
+ const f=await requestFixture(t);f.setPlanner(async()=>{throw Object.assign(new Error("planner unavailable"),{code:"TEST_FAILURE"});});
+ const request=f.admit("failure");await f.requests.running.get(request.request_id);await Promise.all([...f.requests.reclaiming.values()]);
+ const row=f.requests.get(request.request_id);assert.equal(row.status,"failed");
+ const item=f.store.getSessionItem(f.source.sessionId,`${request.request_id}:reply`);
+ assert.ok(item);assert.match(item.text,/planner unavailable/);
+ assert.equal(JSON.parse(item.rawMetadataJSON).coordinationEvent.kind,"failure");
+ assert.equal(row.response_item_id,item.id);
+});
+
+test("terminal child executions with no final prose reach the summary mailbox once", async t => {
+ const f=await recoveryFixture(t),child=f.child("No_final_prose");const childMeta=f.open("no_final_prose",child.id);
+ const accepted=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{action:"send",taskId:child.id,text:"run",idempotencyKey:"no-prose"}]});
+ const id=accepted.dispatches[0].dispatchId;
+ // Bind a real failed execution directly to isolate result collection from management admission.
+ const work=f.store.enqueueAgentTask({taskId:"failed:no-prose",agentId:f.role.agentId,sessionId:childMeta.sessionId,kind:"user",priority:50,text:"run",source:{type:"desktop"}});
+ f.store.updateAgentTask(work.taskId,{status:"failed",lastError:"provider crashed"});
+ f.coordinator.update(id,{operation_id:work.taskId,status:"failed",error_message:"provider crashed"});
+ f.coordinator.flushReports();const row=f.coordinator.get(id);assert.ok(row.report_message_id);
+ const msg=f.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[row.report_message_id]);
+ assert.match(msg.body,/execution_failed/);assert.match(msg.body,/provider crashed/);
+ f.coordinator.flushReports();assert.equal(f.coordinator.get(id).report_message_id,msg.message_id);
+});
+
+test("host batch resolution ignores unrelated and ambiguous batches",async t=>{
+ const f=await fixture(t);const a=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item('batch-resolution')]});
+ const service=f.coordinator.progress;
+ assert.equal(service.resolveHostBatch({ownerId:'logical:parent',taskId:f.parent.id,source:{type:'desktop'}}),null);
+ assert.equal(service.resolveHostBatch({ownerId:'logical:parent',taskId:f.parent.id,source:{type:'mailbox_event',coordinationPurpose:'parent_report',coordinationDispatchId:a.dispatches[0].dispatchId}}),a.batchId);
+ assert.equal(service.resolveHostBatch({ownerId:'logical:foreign',taskId:f.parent.id,source:{type:'mailbox_event',coordinationPurpose:'parent_report',coordinationDispatchId:a.dispatches[0].dispatchId}}),null);
+});
+
+test("historical generated dispatch receipts are migrated by provenance without matching prose",async t=>{
+ const f=await requestFixture(t);f.requests.schedule=()=>{};
+ const row=f.admit("old dispatch");
+ f.requests.update(row.request_id,{response_item_id:`${row.request_id}:reply`,dispatch_json:JSON.stringify([{dispatchId:"legacy-dispatch"}])});
+ f.store.upsertTimelineItemProjection(f.source.sessionId,{id:`${row.request_id}:reply`,turnId:row.request_id,type:"agentMessage",text:"arbitrary translated generated text",status:"completed",createdAt:new Date().toISOString(),rawMetadataJSON:JSON.stringify({executionMode:"coordination-request",requestId:row.request_id})});
+ const {migrateMailboxTimeline}=await import('../src/store/migrations/mailboxTimelineMigrations.mjs');
+ migrateMailboxTimeline({db:f.store.db,selectAll:(...a)=>f.store.selectAll(...a),selectOne:(...a)=>f.store.selectOne(...a),runDataMigrationOnce:(key,fn)=>{if(key==='coordination-host-receipts-v1')fn();}});
+ const item=f.store.getSessionItem(f.source.sessionId,`${row.request_id}:reply`);
+ assert.equal(JSON.parse(item.rawMetadataJSON).coordinationEvent.kind,"receipt");assert.equal(item.text,"已受理 1 项指令。");
+});
+
+test("host resolves manual child evidence without requiring the model to copy a message ID",async t=>{
+ const f=await recoveryFixture(t),child=f.child('Manual_evidence');const meta=f.open('manual_evidence',child.id);
+ historyItem(f,meta.sessionId,'manual-final','Independent result ready');
+ assert.deepEqual(f.shadow.deliveryEvidence(child.id),['manual-final']);
+ const unrelated=f.child('Unrelated_evidence');f.open('unrelated_evidence',unrelated.id);
+ assert.throws(()=>f.shadow.deliveryEvidence(unrelated.id),{code:'SHADOW_REVIEW_EVIDENCE_UNAVAILABLE'});
 });

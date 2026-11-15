@@ -463,10 +463,10 @@ export class TaskCoordinationService {
     const rows = this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
       JOIN tasks parent ON parent.id=d.parent_task_id JOIN sessions s ON s.id=parent.current_session_id
       WHERE d.status IN ('completed','failed','cancelled') AND d.report_message_id IS NULL
-      AND EXISTS(SELECT 1 FROM agent_operations result_op WHERE result_op.task_id=d.operation_id
+      AND (d.status IN ('failed','cancelled') OR EXISTS(SELECT 1 FROM agent_operations result_op WHERE result_op.task_id=d.operation_id
         AND EXISTS(SELECT 1 FROM session_items result_item WHERE result_item.session_id=result_op.session_id
           AND result_item.turn_id=result_op.target_turn_id AND result_item.type='agentMessage'
-          AND COALESCE(result_item.presentation_role,'') NOT IN ('commentary','reasoning')))
+          AND COALESCE(result_item.presentation_role,'') NOT IN ('commentary','reasoning'))))
       AND s.archived=0 AND s.deleted_at IS NULL
       ${cursor ? "AND (d.created_at>? OR (d.created_at=? AND d.dispatch_id>?))" : ""}
       ORDER BY d.created_at,d.dispatch_id LIMIT 100`, cursor ? [cursor.created_at, cursor.created_at, cursor.dispatch_id] : []);
@@ -507,11 +507,12 @@ export class TaskCoordinationService {
           FROM session_items WHERE session_id=? AND turn_id=? AND type='agentMessage'
           AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY created_at DESC,id DESC LIMIT 1`, [work.sessionId, work.targetTurnId]) : null;
         return { ...this.receipt(row), childSessionId: work?.sessionId ?? null, turnId: work?.targetTurnId ?? null,
-          outcome: "execution_ended", targetOutcome: "not_assessed",
+          outcome: row.status === "failed" ? "execution_failed" : row.status === "cancelled" ? "execution_cancelled" : "execution_ended", targetOutcome: "not_assessed",
+          errorCode:row.error_code ?? null,errorMessage:row.error_message ?? work?.lastError ?? null,
           finalMessageId: reply?.id ?? null, bindingId: reply?.binding_id ?? null,
           resultExcerpt: reply?.text ?? null, excerptTruncated: (reply?.fullLength ?? 0) > 1200 };
       });
-      if (!results.some(result => result.finalMessageId)) continue;
+
       const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}本批为子会话执行结果，不是用户新指令，也不代表目标完成或已验收。一次读取本批全部结果，结合原请求判断交付、问题或后台等待；继续此前已授权的审查、集成、验证及后续待办。不要逐条确认收件、查询调度状态或向用户转述内部回执。只有实质决策或阶段成果才汇报。\n${JSON.stringify(results)}`;
       this.store.runInTransaction(() => {
         const message = this.mailbox.receiveEvent({ recipientSessionId, sourceType: "background", sourceId: first.dispatch_id,

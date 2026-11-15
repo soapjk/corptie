@@ -317,6 +317,22 @@ export class ShadowSessionService {
     this.store.scheduleSave();
     return this.forMain(mainId).requirement_revision;
   }
+  deliveryEvidence(taskId) {
+    const dispatch=this.store.selectOne("SELECT operation_id FROM task_coordination_dispatches WHERE target_task_id=? ORDER BY created_at DESC,dispatch_id DESC LIMIT 1",[taskId]);
+    const work=dispatch?.operation_id && this.store.getAgentTask(dispatch.operation_id);
+    if(!dispatch) {
+      const final=this.store.selectOne(`SELECT i.id FROM session_items i JOIN sessions s ON s.id=i.session_id
+        WHERE s.task_id=? AND i.type='agentMessage' AND COALESCE(i.presentation_role,'') NOT IN ('commentary','reasoning')
+        ORDER BY i.created_at DESC,i.id DESC LIMIT 1`,[taskId]);
+      if(final)return [final.id];
+    }
+    if(!work?.targetTurnId)fail("SHADOW_REVIEW_EVIDENCE_UNAVAILABLE");
+    const rows=this.store.selectAll(`SELECT i.id FROM session_items i JOIN sessions s ON s.id=i.session_id
+      WHERE s.task_id=? AND i.session_id=? AND i.turn_id=? AND i.type='agentMessage'
+      AND COALESCE(i.presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY i.created_at DESC,i.id DESC LIMIT 1`,[taskId,work.sessionId,work.targetTurnId]);
+    if(!rows.length)fail("SHADOW_REVIEW_EVIDENCE_UNAVAILABLE");
+    return rows.map(row=>row.id);
+  }
   async deliver({ shadowId, taskId, reportId, evidence }) {
     const delegation = this.assertDelegate(shadowId, "deliver_children"), child = this.store.getTask(taskId);
     if (!child || child.parent_task_id !== delegation.parent_task_id) fail("SHADOW_CHILD_OUTSIDE_SCOPE");
@@ -339,6 +355,14 @@ export class ShadowSessionService {
     this.store.scheduleSave();
     if (!this.deliverChild) fail("SHADOW_DELIVERY_UNAVAILABLE");
     return this.deliverChild(taskId);
+  }
+  resolveDecision(mainId, source, candidate) {
+    const rows=this.store.selectAll(`SELECT report_id FROM coordination_shadow_reports WHERE main_session_id=?
+      AND decision_json IS NOT NULL AND json_extract(decision_json,'$.answerMessageId') IS NULL`,[mainId]);
+    const explicit=source?.replyToMessageId ?? source?.messageContent?.replyToMessageId;
+    if(explicit && rows.some(row=>row.report_id===explicit))return explicit;
+    if(rows.length===1)return rows[0].report_id;
+    return rows.some(row=>row.report_id===candidate) ? candidate : null;
   }
   async answer(mainId, reportId, body, sourceTurnId, mailbox) {
     this.owner(mainId);
@@ -394,7 +418,7 @@ export class ShadowSessionService {
     const { logical: main } = this.owner(row.main_session_id);
     const item = { id: reportId, turnId: reportId, bindingId: main.activeBinding.bindingId,
       type: "agentMessage", presentationRole: "final_answer", text: `**后台汇总**\n\n${body}`, status: "completed", turnStatus: "completed", createdAt,
-      rawMetadataJSON: JSON.stringify({ executionMode: "shadow_report", sourceSessionId: shadowId, sourceTurnId: turnId, progressBatchId: batchId || null, decision }) };
+      rawMetadataJSON: JSON.stringify({ executionMode: "shadow_report", sourceSessionId: shadowId, sourceTurnId: turnId, progressBatchId: batchId || null, coordinationEvent:{kind:decision ? "decision" : "summary",batchId}, decision }) };
     this.store.runInTransaction(() => {
       if (old) this.store.db.run("UPDATE coordination_shadow_reports SET body=? WHERE report_id=?", [body, reportId]);
       else this.store.db.run(`INSERT INTO coordination_shadow_reports

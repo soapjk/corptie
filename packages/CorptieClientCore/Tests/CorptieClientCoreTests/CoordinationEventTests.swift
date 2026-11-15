@@ -11,5 +11,9 @@ final class CoordinationEventTests: XCTestCase {
         XCTAssertEqual(ConversationCoordinationEvent(rawMetadataJSON: #"{"progressBatchId":"b"}"#)?.kind, "delivery")
         XCTAssertNil(ConversationCoordinationEvent(rawMetadataJSON: #"{"text":"后台汇总"}"#))
         XCTAssertNil(ConversationCoordinationEvent(rawMetadataJSON: "invalid"))
+        for kind in ["failure", "receipt", "decision"] {
+            let raw = "{\"coordinationEvent\":{\"kind\":\"\(kind)\",\"batchId\":\"b\"}}"
+            XCTAssertEqual(ConversationCoordinationEvent(rawMetadataJSON: raw)?.kind, kind)
+        }
     }
 }
