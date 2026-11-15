@@ -858,7 +858,7 @@ struct ConversationView: View {
             case .process(_, let items): messages = items
             }
             let decoration = messages.map {
-                "\(workspace.outgoingStates[$0.id] ?? ""):\(workspace.timeSeparatorTextByMessageID[$0.id] ?? "")"
+                "\(workspace.outgoingStates[$0.id] ?? "")"
                     + ($0.replyAssociation.flatMap { workspace.replyQuestions[$0.replyToMessageId] } ?? "")
             }.joined(separator: "|") + ":\(connection.connected):\(connection.busy):\(scenePhase == .active)"
             result[entry.id] = .init(messages: messages, decoration: decoration,
@@ -941,7 +941,6 @@ struct ConversationView: View {
                                 MobileMessageBubble(message: message,
                                     replyQuestion: message.replyAssociation.flatMap { workspace.replyQuestions[$0.replyToMessageId] },
                                     locateReply: locateReplyAction(message.replyAssociation), groupedMessages: entry.mediaItems, deliveryState: workspace.outgoingStates[message.id],
-                                    timeSeparatorText: workspace.timeSeparatorTextByMessageID[message.id],
                                     laneWidth: width, connection: connection, sessionID: sessionID,
                                     images: messageImages,
                                     openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) },
@@ -2395,7 +2394,6 @@ private struct MobileMessageBubble: View {
     var locateReply: (() -> Void)? = nil
     var groupedMessages: [ClientMessage] = []
     var deliveryState: String? = nil
-    var timeSeparatorText: String? = nil
     let laneWidth: CGFloat
     let connection: PadConnection
     let sessionID: String
@@ -2482,14 +2480,6 @@ private struct MobileMessageBubble: View {
             type: message.type, authoritativeText: message.text,
             presentationText: message.presentationText, displayedText: displayText)
         VStack(spacing: 0) {
-            if let timeSeparatorText {
-                Text(timeSeparatorText)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28)
-                    .accessibilityLabel("时间：\(timeSeparatorText)")
-                    .accessibilityIdentifier("chat.timeline.time-separator")
-            }
             HStack(alignment: .bottom, spacing: 0) {
             if fromUser { Spacer(minLength: 0) }
             VStack(alignment: fromUser ? .trailing : .leading, spacing: 5) {
