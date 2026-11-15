@@ -150,6 +150,7 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     private var baseMethod: Method?
     private var installedMethods: Set<OpaquePointer> = []
     private var patchedClasses: Set<ObjectIdentifier> = []
+    private var lastObservedClassCount = 0
 
     private var seen = 0
     private var seenBase = 0
@@ -216,6 +217,9 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
 
     private func patchLoadedHostingClasses() {
         let estimated = Int(objc_getClassList(nil, 0))
+        lock.lock()
+        lastObservedClassCount = estimated
+        lock.unlock()
         guard estimated > 0 else { return }
         let buffer = UnsafeMutablePointer<AnyClass>.allocate(capacity: estimated)
         buffer.initialize(repeating: NSObject.self, count: estimated)
@@ -294,7 +298,7 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     // MARK: - Observability
 
     private func trace(_ message: String) {
-        let line = "\(Date().timeIntervalSince1970) \(message)\n"
+        let line = "\(Date().timeIntervalSince1970) pid=\(ProcessInfo.processInfo.processIdentifier) \(message)\n"
         guard let data = line.data(using: .utf8) else { return }
         if let handle = FileHandle(forWritingAtPath: Self.tracePath) {
             handle.seekToEndOfFile()
@@ -316,6 +320,18 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
             Self.logger.notice(
                 "kvl entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
             trace("entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
+            // SwiftUI registers each generic NSHostingView class lazily. A
+            // startup-only sweep sees almost none of them, and first-use
+            // discovery can only run inside an already-patched IMP. Re-scan
+            // whenever the ObjC class count changes so newly mounted roots
+            // get covered too.
+            let classCount = Int(objc_getClassList(nil, 0))
+            lock.lock()
+            let knownCount = lastObservedClassCount
+            lock.unlock()
+            if classCount != knownCount {
+                patchLoadedHostingClasses()
+            }
         }
     }
 
