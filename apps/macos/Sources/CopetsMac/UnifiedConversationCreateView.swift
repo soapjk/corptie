@@ -119,7 +119,8 @@ struct UnifiedConversationCreateView: View {
 
     private var work: Work? { client.works.first { $0.id == workID } }
     private var roles: [Role] {
-        client.roles.filter { $0.status == "available" && (!taskMode || work?.contributorRoleIds.contains($0.roleId) == true) }
+        // Roles are global resources; Work selection must not narrow this menu.
+        client.roles.filter { $0.status == "available" }
     }
     private var providers: [AgentProviderDescriptor] {
         catalog.agentProviders.filter { $0.supports("session.create") && $0.isExecutionEnabled }

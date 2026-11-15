@@ -144,21 +144,14 @@ test("Task version conflict and Work authorization failures create no startup op
   } finally { await cleanup(f); }
 });
 
-test("Agents outside the Work are rejected while every assigned Agent may execute", async () => {
+test("Roles outside the Work contributor list may execute", async () => {
   const f = await fixture();
   try {
     const outside = f.store.createAgent({
       id: "agent:outside", name: "Outside", role: "independentContributor"
     });
-    await assert.rejects(() => f.service.start(command({ assigneeAgentId: outside.agentId })), {
-      code: "AGENT_OUTSIDE_WORK"
-    });
-    const second = f.store.createAgent({ id: "agent:second", name: "Second" });
-    f.store.db.run(
-      "INSERT INTO work_contributors (work_id, agent_id, role, is_primary, created_at) VALUES (?, ?, 'contributor', 0, ?)",
-      [f.work.id, second.agentId, new Date().toISOString()]
-    );
-    await f.service.start(command({ assigneeAgentId: second.agentId }));
+    await f.service.start(command({ assigneeAgentId: outside.agentId }));
+
   } finally { await cleanup(f); }
 });
 

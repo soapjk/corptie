@@ -113,9 +113,6 @@ export class WorkSessionStartApplicationService {
       throw startContractError("TASK_OUTSIDE_WORK", "Task is outside the source Session scope.");
     }
     const work = this.store.getWork(task.work_id);
-    if (!(work?.contributorAgentIds ?? []).includes(task.main_agent_id)) {
-      throw startContractError("AGENT_OUTSIDE_WORK", "The Task assignee is no longer a Work contributor.");
-    }
     const operation = this.store.selectOne(`SELECT * FROM work_session_startup_operations
       WHERE task_id=? ORDER BY rowid DESC LIMIT 1`, [taskId]);
     return { task, operation };
@@ -164,9 +161,6 @@ export class WorkSessionStartApplicationService {
     if (!work) throw startContractError("TASK_OUTSIDE_WORK", "Task Work was not found.");
     const agent = this.store.getAgent(command.assigneeAgentId);
     if (!agent) throw startContractError("AGENT_NOT_FOUND", "Assignee Agent was not found.");
-    if (!(work.contributorAgentIds ?? []).includes(command.assigneeAgentId)) {
-      throw startContractError("AGENT_OUTSIDE_WORK", "Assignee Agent is not an Work contributor.");
-    }
     const workspaceContext = this.store.getTaskWorkspaceContext(task);
     const repositoryId = workspaceContext?.repository?.id;
     if (!workspaceContext?.workspace) {

@@ -432,13 +432,7 @@ export class TaskRepository {
   assertTaskAssociations(input, work) {
     if (input.mainAgentId) {
       this.assertAssignableAgent(input.mainAgentId, "mainAgentId");
-      if (!(work.contributorAgentIds ?? []).includes(input.mainAgentId)) {
-        throw associationError(
-          "ASSOCIATION_OUT_OF_SCOPE", "mainAgentId", "Agent in owning Work.contributorAgentIds",
-          input.mainAgentId,
-          "Task mainAgentId is outside its Work contributor scope."
-        );
-      }
+
     }
   }
 

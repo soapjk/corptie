@@ -91,8 +91,8 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   const { sessionId, session } = api.session(sourceID);
   if (!session.workId || session.workId !== taskInput.workId) throw deviceError("TASK_OUTSIDE_WORK", 403);
   const work = api.store.getWork(taskInput.workId);
-  if (!work || !(work.contributorAgentIds ?? []).includes(taskInput.mainAgentId)) {
-    throw deviceError("AGENT_OUTSIDE_WORK", 403);
+  if (!work) {
+    throw deviceError("TASK_OUTSIDE_WORK", 403);
   }
   if (!api.store.getAgent(taskInput.mainAgentId)) throw deviceError("AGENT_NOT_FOUND", 404);
   const provider = Object.fromEntries(providerFields.filter(key => input[key] !== undefined).map(key => [key, input[key]]));
@@ -108,8 +108,8 @@ export async function createClientTask(api, identity, sourceID, input, revalidat
   if (currentSession.sessionId !== sessionId || currentSession.session.workId !== taskInput.workId) {
     throw deviceError("SOURCE_SESSION_CHANGED", 409);
   }
-  if (!(api.store.getWork(taskInput.workId)?.contributorAgentIds ?? []).includes(taskInput.mainAgentId)) {
-    throw deviceError("AGENT_OUTSIDE_WORK", 403);
+  if (!api.store.getAgent(taskInput.mainAgentId)) {
+    throw deviceError("AGENT_NOT_FOUND", 404);
   }
   const raced = findReplay();
   if (raced) return raced;
