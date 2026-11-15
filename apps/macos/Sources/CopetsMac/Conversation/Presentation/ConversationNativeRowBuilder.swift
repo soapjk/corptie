@@ -35,7 +35,7 @@ struct ConversationNativeRowBuilder {
                     activeTurnID = nil
                     continue
                 }
-                guard kind == .agentMessage, item.messageOrigin != "scheduled_task" else { continue }
+                guard item.coordinationEvent == nil, kind == .agentMessage, item.messageOrigin != "scheduled_task" else { continue }
             case .process: break
             }
             let newTurn = !hasReply || (!turnID.isEmpty && activeTurnID != nil && activeTurnID != turnID)
@@ -261,6 +261,10 @@ struct ConversationNativeRowBuilder {
             isCollaboration = false
             collaborationRoute = nil
         }
+        if case .message(let item) = entry.kind, item.coordinationEvent != nil {
+            actions = []
+            showsHeader = false
+        }
         var row = AppKitChatTimelineRow(
             id: entry.id,
             contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
@@ -295,6 +299,9 @@ struct ConversationNativeRowBuilder {
             row.coordinationProgress = progress
             row.contentRevision = progress.revision
         }
+        if case .message(let item) = entry.kind, let event = item.coordinationEvent {
+            row.coordinationEvent = event
+        }
         row.forkItemID = forkItemID(for: entry)
         row.scheduledTrigger = scheduledTrigger
         if case .message(let item) = entry.kind, item.messageOrigin == "scheduled_task" {
@@ -323,7 +330,7 @@ struct ConversationNativeRowBuilder {
         }
         row.forkUnavailableReason = forkUnavailableReason(for: entry)
         if case .message(let item) = entry.kind {
-            row.showsReplyActions = item.type == "agentMessage" && item.presentationRole == "final_answer"
+            row.showsReplyActions = item.coordinationEvent == nil && item.type == "agentMessage" && item.presentationRole == "final_answer"
                 && item.messageOrigin != "scheduled_task"
                 && ["complete", "completed", "interrupted", "cancelled", "canceled", "failed"].contains(item.turnStatus)
             row.isCommentary = ConversationPresentationKind.isCommentary(

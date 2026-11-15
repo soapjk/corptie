@@ -77,6 +77,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let images: [ClientMessageImage]
     public var rawMetadataJSON: String? = nil
     public var replyAssociation: ConversationMessageReply? = nil
+    public var coordinationEvent: ConversationCoordinationEvent? = nil
     public var coordinationProgress: ClientCoordinationProgress? = nil
     public let executionPlan: ConversationExecutionPlan?
     public var subagentActivity: ConversationSubagentActivity? = nil
@@ -101,12 +102,13 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         case messageOrigin, automationRunId, automationRunStatus, automationRunError
         case automationTriggerType, automationScheduleType, automationIntervalSeconds, automationConditionCheckIntervalSeconds, automationProcessPollIntervalSeconds
         case automationExpiresAt, systemEventKind, systemEventReason, systemEventSource
-        case subagentActivity, rawMetadataJSON, replyAssociation, coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
+        case subagentActivity, rawMetadataJSON, replyAssociation, coordinationEvent, coordinationProgress, processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         coordinationProgress = try? container.decodeIfPresent(ClientCoordinationProgress.self, forKey: .coordinationProgress)
         rawMetadataJSON = try? container.decodeIfPresent(String.self, forKey: .rawMetadataJSON)
+        coordinationEvent = (try? container.decodeIfPresent(ConversationCoordinationEvent.self, forKey: .coordinationEvent)) ?? ConversationCoordinationEvent(rawMetadataJSON: rawMetadataJSON)
         replyAssociation = ConversationMessageReply(rawMetadataJSON: rawMetadataJSON)
             ?? (try? container.decodeIfPresent(ConversationMessageReply.self, forKey: .replyAssociation))
         id = try container.decode(String.self, forKey: .id)

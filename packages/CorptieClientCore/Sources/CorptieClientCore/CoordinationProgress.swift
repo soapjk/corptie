@@ -69,3 +69,17 @@ extension ClientCoordinationProgressItem {
         return ["blocked", "waiting_input"].contains(state) && !reason.isEmpty ? reason : summary
     }
 }
+
+/// Presentation metadata, never inferred from model-authored prose.
+public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
+    public let kind: String
+    public let batchId: String?
+    public init?(rawMetadataJSON: String?) {
+        guard let data = rawMetadataJSON?.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if raw["executionMode"] as? String == "shadow_report" { kind = "summary" }
+        else if raw["progressBatchId"] is String { kind = "delivery" }
+        else { return nil }
+        batchId = raw["progressBatchId"] as? String
+    }
+}

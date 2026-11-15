@@ -28,6 +28,7 @@ struct AppKitChatTimelineRow: Identifiable {
     var processParentID: String? = nil
     var processStep: NativeExecutionTimelineStep? = nil
     var hasVirtualProcessChildren = false
+    var coordinationEvent: ConversationCoordinationEvent? = nil
     var coordinationProgress: ClientCoordinationProgress? = nil
     var scheduledTrigger: ScheduledTriggerPresentation? = nil
     var replyIdentity: ConversationReplyIdentity? = nil
@@ -475,6 +476,7 @@ enum SDKRowContainerResetPolicy {
               previous.actions.isEmpty, next.actions.isEmpty,
               previous.executionPlan == nil, next.executionPlan == nil,
               previous.userInput == nil, next.userInput == nil,
+              previous.coordinationEvent == nil, next.coordinationEvent == nil,
               previous.coordinationProgress == nil, next.coordinationProgress == nil,
               previous.scheduledTrigger == nil, next.scheduledTrigger == nil,
               previous.collaborationRoute == nil, next.collaborationRoute == nil,

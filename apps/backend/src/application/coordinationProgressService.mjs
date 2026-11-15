@@ -84,6 +84,13 @@ export class CoordinationProgressService {
   milestone(batchId,key,text){
     const batch=this.batch(batchId),seen=JSON.parse(batch.milestones_json??'[]');if(seen.includes(key))return false;
     const route=this.store.getLogicalSession(batch.source_session_id);if(!route)return false;
+    // Delivery is already represented by the batch card counts. Do not append
+    // an assistant utterance or wake a Session for this presentation transition.
+    if (key === 'delivered' || key === 'accepted') {
+      this.store.db.run('UPDATE coordination_progress_batches SET milestones_json=? WHERE batch_id=?', [JSON.stringify([...seen, key]), batchId]);
+      this.store.scheduleSave();
+      return true;
+    }
     let item;
     this.store.runInTransaction(()=>{
       item={id:`coordination-summary:${batchId}:${seen.length}`,turnId:`coordination-summary:${batchId}:${seen.length}`,
