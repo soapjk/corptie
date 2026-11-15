@@ -53,3 +53,32 @@ test("startup repair rolls back partial failure and a successful retry is idempo
     await store.close();
   }
 });
+
+
+test("restart settles queued user-message metadata and legacy reads cannot display a failed message as waiting",async()=>{
+  const store=new CorptieStore({dbPath:':memory:',configPath:'/unused-budget-repair',manageProcessEnvironment:false});
+  try{
+    await store.initialize({resolveDataPath:false});
+    store.createAgent({id:'agent:test',name:'Test'});store.upsertSession({id:'session:test',title:'Test',agentId:'agent:test',provider:'test',status:'running'});
+    store.createUserMessageDelivery({deliveryId:'d',messageId:'m',sessionId:'session:test',agentId:'agent:test',binding:{bindingId:'b',providerId:'test',providerSessionId:'p',routingVersion:1},text:'继续'});
+    store.updateAgentTask('m',{lastError:'VERIFICATION_BUDGET_EXHAUSTED',source:{type:'desktop',dispatchBlock:{code:'VERIFICATION_BUDGET_EXHAUSTED',kind:'waiting',message:'预算用尽'}}});
+    const old=JSON.stringify({taskId:'m',userMessageStatus:'queued',queuePosition:1,processingError:null});
+    store.db.run("UPDATE session_items SET turn_status='queued',raw_metadata_json=? WHERE session_id='session:test' AND id='m'",[old]);
+    store.reconcileInterruptedSessionExecutionAtStartup('2026-11-15T00:00:00Z');
+    let row=store.selectOne("SELECT status,turn_status,raw_metadata_json FROM session_items WHERE session_id='session:test' AND id='m'");
+    assert.equal(row.status,'failed');assert.equal(row.turn_status,'failed');
+    assert.equal(JSON.parse(row.raw_metadata_json).userMessageStatus,'failed');
+    assert.equal(JSON.parse(row.raw_metadata_json).executionBlock.code,'VERIFICATION_BUDGET_EXHAUSTED');
+    assert.equal(JSON.parse(row.raw_metadata_json).executionBlock.kind,'settled');
+    assert.match(JSON.parse(row.raw_metadata_json).processingError,/restart/);
+    assert.equal(store.getAgentTask('m').source.dispatchBlock.kind,'settled');
+    // Recreate the exact legacy inconsistency as a read-only compatibility case.
+    store.db.run("UPDATE session_items SET turn_status='queued',raw_metadata_json=? WHERE session_id='session:test' AND id='m'",[old]);
+    const item=store.getSessionItem('session:test','m');
+    assert.equal(item.userMessageStatus,'failed');assert.equal(item.turnStatus,'failed');assert.equal(item.queuePosition,null);
+    assert.equal(item.executionBlock.code,'VERIFICATION_BUDGET_EXHAUSTED');assert.equal(item.executionBlock.kind,'settled');
+    assert.match(item.processingError,/restart/);
+    row=store.selectOne("SELECT turn_status,raw_metadata_json FROM session_items WHERE session_id='session:test' AND id='m'");
+    assert.equal(row.turn_status,'queued');assert.equal(row.raw_metadata_json,old);
+  }finally{await store.close();}
+});

@@ -142,3 +142,13 @@ test('coordination summary and failure projection preserve canonical metadata in
   assert.equal(JSON.parse(stored.rawMetadataJSON).rawMetadataJSON,undefined);
  }
 });
+
+
+test("dispatch blocked and ready events update the durable original user-message projection",()=>{
+  for(const type of ['AgentWorkDispatchBlocked','AgentWorkDispatchReady']) {
+    const f=fixture();const item={id:'m',type:'userMessage',userMessageStatus:type.endsWith('Blocked')?'paused':'queued'};
+    f.options.agentWorkTimelineItem=()=>item;
+    createProductEventPublisher(f.options).emitEvent(type,{task:{taskId:'m'}},{sessionId:'session:1'});
+    assert.ok(f.calls.some(call=>call[0]==='timeline' && call[2].id==='m'));
+  }
+});

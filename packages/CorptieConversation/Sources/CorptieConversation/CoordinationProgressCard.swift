@@ -204,19 +204,27 @@ private struct CoordinationPreviewHeight: PreferenceKey {
 public struct CoordinationSummaryCard: View {
     public let event: ConversationCoordinationEvent
     public let text: String
+    private let content: CoordinationSummaryContent
+    private let externalExpanded: Bool?
+    private let toggleExpansion: (() -> Void)?
+    private let occurredAt: Date?
+    @State private var localExpanded = false
+    private var expanded: Bool { externalExpanded ?? localExpanded }
     public var api: (() async throws -> ClientDetailAPI)?
     @State private var retryTask: Task<Void, Never>?
     @State private var pendingCommand: ClientDetailActionRequest?
     @State private var submitting = false
     @State private var retryMessage: String?
     @State private var retryAccepted = false
-    public init(event: ConversationCoordinationEvent, text: String, api: (() async throws -> ClientDetailAPI)? = nil) {
+    public init(event: ConversationCoordinationEvent, text: String, api: (() async throws -> ClientDetailAPI)? = nil,
+                expanded: Bool? = nil, toggle: (() -> Void)? = nil, occurredAt: Date? = nil) {
         self.event = event; self.text = text; self.api = api
+        content = CoordinationSummaryContent(kind: event.kind, text: text)
+        externalExpanded = expanded; toggleExpansion = toggle; self.occurredAt = occurredAt
     }
-    private var bodyText: String {
-        // Legacy reports carry this generated heading; classification uses metadata only.
-        event.kind == "summary" && text.hasPrefix("**后台汇总**\n\n")
-            ? String(text.dropFirst("**后台汇总**\n\n".count)) : text
+    private var bodyText: String { content.text }
+    private func toggleBody() {
+        if let toggleExpansion { toggleExpansion() } else { localExpanded.toggle() }
     }
     private var phaseTitle: String {
         switch event.phase {
@@ -230,6 +238,7 @@ public struct CoordinationSummaryCard: View {
     }
     private var title: String {
         switch event.kind {
+        case "verification_budget": "验证预算耗尽"
         case "failure": "请求未完成"
         case "decision": "需要你决定"
         case "receipt": "请求进展"
@@ -239,15 +248,32 @@ public struct CoordinationSummaryCard: View {
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-            Label { Text(LocalizedStringKey(title), bundle: .module) }
-                icon: { Image(systemName: event.kind == "failure" ? "exclamationmark.circle" : event.kind == "decision" ? "questionmark.circle" : "text.alignleft") }
-                .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Button { copyResourceText(bodyText) } label: { Image(systemName: "doc.on.doc") }
-                    .buttonStyle(.plain).accessibilityLabel(Text("复制", bundle: .module))
+            HStack(spacing: 8) {
+                if content.canExpand {
+                    Button(action: toggleBody) { heading }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Text(expanded ? "收起汇总" : "展开汇总", bundle: .module))
+                        .accessibilityValue(Text(expanded ? "已展开" : "已收起", bundle: .module))
+                } else { heading }
+                Spacer(minLength: 4)
+                if let occurredAt { Text(occurredAt, style: .time).font(.caption2).foregroundStyle(.tertiary).monospacedDigit() }
+                Button { copyResourceText(bodyText) } label: { Image(systemName: "doc.on.doc").font(.caption) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(Text("复制", bundle: .module))
             }
-            Text(bodyText).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Text(content.attributed).font(.system(size: 13)).lineSpacing(2)
+                .lineLimit(content.canExpand && !expanded ? CoordinationSummaryContent.previewLines : nil)
+                .truncationMode(.tail).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if content.canExpand && expanded {
+                Button(action: toggleBody) { Label { Text("收起汇总", bundle: .module) } icon: { Image(systemName: "chevron.up") } }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            }
+            if event.kind == "verification_budget", event.sessionId != nil, event.instructionId != nil, api != nil {
+                if !retryAccepted { Button { retryTask = Task { await retry() } } label: {
+                    Text(submitting ? "正在处理…" : "增加 3 次并继续", bundle: .module)
+                }.buttonStyle(.borderless).disabled(submitting) }
+                if let retryMessage { Text(LocalizedStringKey(retryMessage), bundle: .module).font(.caption).foregroundStyle(.secondary) }
+            }
             if event.kind == "failure" {
                 if event.phase != nil {
                     Text(LocalizedStringKey(phaseTitle), bundle: .module).font(.caption).foregroundStyle(.secondary)
@@ -259,13 +285,22 @@ public struct CoordinationSummaryCard: View {
                 }
                 if let retryMessage { Text(LocalizedStringKey(retryMessage), bundle: .module).font(.caption).foregroundStyle(.secondary) }
             }
-        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
             .modifier(ConversationSkinSurface(role: .structured, radius: 12,
                 legacyFill: WorkbenchCanvasSurface.defaultColor, legacyBorder: Color.primary.opacity(0.10)))
             .onDisappear { retryTask?.cancel(); retryTask = nil }
     }
+    private var heading: some View {
+        HStack(spacing: 6) {
+            Image(systemName: event.kind == "failure" ? "exclamationmark.circle" : event.kind == "decision" ? "questionmark.circle" : event.kind == "verification_budget" ? "pause.circle" : "text.alignleft")
+                .foregroundStyle(event.kind == "failure" ? Color.red : event.kind == "decision" || event.kind == "verification_budget" ? Color.orange : Color.secondary)
+            Text(LocalizedStringKey(title), bundle: .module).foregroundStyle(.primary)
+            if content.canExpand { Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2).foregroundStyle(.secondary) }
+        }.font(.system(size: 12, weight: .semibold))
+    }
     @MainActor private func retry() async {
-        guard !submitting, let api, let session = event.sessionId, let request = event.requestId else { return }
+        guard !submitting, let api, let session = event.sessionId, let request = event.requestId ?? event.instructionId else { return }
         submitting = true; defer { submitting = false }
         do {
             let client = try await api().nativeBusinessPolicy
@@ -278,14 +313,16 @@ public struct CoordinationSummaryCard: View {
                     receipt = try await client.actionTransport.command(sessionID: session, request: pendingCommand)
                 }
             } else {
-                let command = try await client.coordinationRetryCommand(sessionID: session, requestID: request)
+                let command = event.kind == "verification_budget"
+                    ? try await client.verificationControlCommand(sessionID: session, fields: ["action": .string("extend"), "instructionId": .string(request), "amount": .number(3), "resume": .bool(true)])
+                    : try await client.coordinationRetryCommand(sessionID: session, requestID: request)
                 pendingCommand = command
                 receipt = try await client.actionTransport.command(sessionID: session, request: command)
             }
             try Task.checkCancellation()
             retryAccepted = receipt.status == "completed" || receipt.status == "accepted" || receipt.status == "dispatching"
             if receipt.status == "rejected" { pendingCommand = nil }
-            retryMessage = retryAccepted ? "重试请求已受理。" : receipt.status == "rejected" ? "重试未受理，请查看详情。" : "重试结果待核实，请勿重复执行。"
+            retryMessage = retryAccepted ? (event.kind == "verification_budget" ? "增加预算与续作已受理。" : "重试请求已受理。") : receipt.status == "rejected" ? "重试未受理，请查看详情。" : "重试结果待核实，请勿重复执行。"
         } catch is CancellationError { }
         catch { if !Task.isCancelled { retryMessage = "操作失败，可核对重试结果。" } }
     }

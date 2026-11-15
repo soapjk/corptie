@@ -99,7 +99,7 @@ struct ConversationNativeRowBuilder {
                 legacyStatus: item.status,
                 queuePosition: item.queuePosition,
                 processingError: item.processingError,
-                showsPendingAsProcessing: true
+                showsPendingAsProcessing: true, executionBlock: item.executionBlock
             ) : nil
             images = (item.images ?? []).map { image in
                 ChatTimelineImage(
@@ -172,9 +172,10 @@ struct ConversationNativeRowBuilder {
             // its historical helper name does not change checklist semantics.
             let checklistDisclosureID = item.executionPlan?.taskId == nil ? nil
                 : ScheduledTriggerPresentation.expansionID(for: item.id)
-            expandableTurnId = collaborationDisclosureID ?? scheduledTrigger?.expansionID ?? checklistDisclosureID
-            isExpanded = collaborationDisclosureID != nil ? collaborationExpanded
-                : checklistDisclosureID.map { expandedTurnIds.contains($0) } ?? false
+            let coordinationDisclosureID = item.coordinationEvent.map { _ in CoordinationSummaryContent.expansionID(for: item.id) }
+            expandableTurnId = coordinationDisclosureID ?? collaborationDisclosureID ?? scheduledTrigger?.expansionID ?? checklistDisclosureID
+            isExpanded = coordinationDisclosureID.map { expandedTurnIds.contains($0) } ?? (collaborationDisclosureID != nil ? collaborationExpanded
+                : checklistDisclosureID.map { expandedTurnIds.contains($0) } ?? false)
             processCount = nil
             processDuration = nil
             processStartedAt = nil
@@ -313,7 +314,7 @@ struct ConversationNativeRowBuilder {
             row.deletableMessageID = item.id
         }
         if case .message(let item) = entry.kind, item.type == "userMessage",
-           item.userMessageStatus == "queued" {
+           ["queued","paused"].contains(item.userMessageStatus ?? "") {
             row.queuedMessageTaskID = item.taskId
         }
         if row.nativeStyle == .process { row.processLanguageCode = AppLanguageController.shared.languageCode }
@@ -324,7 +325,7 @@ struct ConversationNativeRowBuilder {
                 row.forkItemID = nil
                 row.deletableMessageID = nil
                 row.queuedMessageTaskID = nil
-            } else if item.withdrawalAvailable == true || item.deletionAvailable == true || item.userMessageStatus == "queued" {
+            } else if item.withdrawalAvailable == true || item.deletionAvailable == true || ["queued","paused"].contains(item.userMessageStatus ?? "") {
                 row.withdrawableMessageID = item.id
             }
         }
@@ -510,6 +511,7 @@ struct ConversationNativeRowBuilder {
         switch entry.kind {
         case .message(let item):
             hasher.combine(itemSignature(item))
+            hasher.combine(expandedTurnIds.contains(CoordinationSummaryContent.expansionID(for: item.id)))
             hasher.combine(expandedTurnIds.contains(ScheduledTriggerPresentation.expansionID(for: item.id)))
             hasher.combine(expandedTurnIds.contains(CollaborationBodyPreview.expansionID(for: item.id)))
         case .process(let turnId, let items):

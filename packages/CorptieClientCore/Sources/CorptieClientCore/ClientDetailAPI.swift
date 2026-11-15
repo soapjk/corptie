@@ -34,6 +34,24 @@ public struct ClientDetailAPI: Sendable {
         request.timeoutInterval = events ? 35 : 15
         return request
     }
+    public func verificationRecords(taskID: String, instructionID: String, before: String? = nil) async throws -> ClientVerificationRunPage {
+        let prefix = route == .desktop ? [] : ["client", "v1"]
+        var query = [URLQueryItem(name: "instructionId", value: instructionID)]
+        if let before { query.append(URLQueryItem(name: "before", value: before)) }
+        var request = try transport.endpoint.request(path: prefix + ["tasks", taskID, "verification-budgets"], query: query)
+        request.timeoutInterval = 15
+        let (data, _) = try await transport.data(for: request)
+        return try JSONDecoder().decode(ClientVerificationRunPage.self, from: data)
+    }
+    public func verificationControlCommand(sessionID: String, fields: [String: ClientInspectorValue]) async throws -> ClientDetailActionRequest {
+        let document = try await businessSnapshot(sessionID: sessionID)
+        guard let card = document.cards.first(where: { $0.kind == "turnMetrics" }),
+              let action = card.actions.first(where: { $0.operation == "verification.control" && $0.available }) else {
+            throw ClientServiceFailure(statusCode: 409, code: "VERIFICATION_CONTROL_UNAVAILABLE")
+        }
+        return ClientDetailActionRequest(requestId: UUID().uuidString, documentId: document.documentId,
+            cardId: card.id, actionId: action.id, expectedResourceRevision: action.expectedResourceRevision, fields: fields)
+    }
     /// Reuses the existing scoped Detail command and its durable receipt.
     public func coordinationRetryCommand(sessionID: String, requestID: String) async throws -> ClientDetailActionRequest {
         let document = try await businessSnapshot(sessionID: sessionID)

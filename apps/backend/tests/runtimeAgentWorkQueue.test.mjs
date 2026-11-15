@@ -379,3 +379,14 @@ test('workspace changes during worker claim release the reservation before Provi
   assert.equal(f.sends.length,0);
   assert.equal(f.tasks.get('message').status,'queued');
 });
+
+
+test("a budget-paused message stays unsent while an independent question can run",async()=>{
+  const f=fixture({sessionMailbox:{validateOperation(){},dispatchDecision:op=>op.taskId==='continue'?{allowed:false,kind:'paused',code:'VERIFICATION_BUDGET_EXHAUSTED',message:'预算用尽，不会自动继续',instructionId:'original',sessionId:'logical:root'}:{allowed:true},reportDispatchBlock(){}}});
+  f.add('continue');f.add('question');await f.queue.drainAgentWork('session');
+  assert.equal(f.tasks.get('continue').status,'queued');
+  assert.equal(f.tasks.get('continue').source.dispatchBlock.kind,'paused');
+  assert.equal(f.tasks.get('continue').source.dispatchBlock.instructionId,'original');
+  assert.equal(f.sends.length,1);assert.equal(f.sends[0][1],'question');
+  assert.ok(f.events.some(event=>event[0]==='AgentWorkDispatchBlocked'));
+});

@@ -7,6 +7,7 @@ const confirmed = { const: true };
  * Missing authorization/revision/execute ports make a command unavailable.
  */
 export const DETAIL_ACTION_OPERATIONS = Object.freeze({
+  "verification.control": {kind:"command",targetTypes:["session"],confirmation:"none",fields:{...object({action:{enum:["policy","configure","extend"]},instructionId:string(512,1),enabled:{type:"boolean"},limit:{type:"integer",minimum:1,maximum:9007199254740991},amount:{type:"integer",minimum:1,maximum:100},resume:{type:"boolean"}}),required:["action"]}},
   "task.shadow.recover": { kind: "command", targetTypes: ["task"], confirmation: "none", fields: object({}) },
   "task.request.control": { kind: "command", targetTypes: ["task"], confirmation: "none", fields: { ...object({ requestId: string(512, 1), action: { enum: ["cancel", "retry"] } }), required: ["requestId", "action"] } },
   "task.coordination.update": { kind: "command", targetTypes: ["task"], confirmation: "none", fields: { ...object({ coordinationEnabled: { type: "boolean" } }), required: ["coordinationEnabled"] } },

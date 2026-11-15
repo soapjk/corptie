@@ -11,7 +11,7 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
     func testHistoricalCoordinationMessagesUseSpecialCardsWithoutReplyIdentityOrActions() throws {
         var projection = builder()
         projection.replyIdentity = .init(roleID: "role", name: "Engineer", avatarPath: nil)
-        let entries = try ["summary", "failure", "delivery", "receipt", "decision"].map { kind in
+        let entries = try ["summary", "failure", "delivery", "receipt", "decision", "verification_budget"].map { kind in
             let metadata = String(decoding: try JSONSerialization.data(withJSONObject: ["coordinationEvent": ["kind": kind]]), as: UTF8.self)
             let historical = String(decoding: try JSONSerialization.data(withJSONObject: ["id": "old-" + kind, "rawMetadataJSON": metadata]), as: UTF8.self)
             return ChatDisplayEntry(kind: .message(try item(["id": "old-" + kind, "turnId": "turn-" + kind,
@@ -33,6 +33,67 @@ final class ConversationNativeRowBuilderTests: XCTestCase {
             cell.setContent(row, availableWidth: 480, onToggleExpansion: { _ in })
             XCTAssertTrue(cell.subviews.contains { $0 is NSHostingView<MacSharedMessageTextCard> })
         }
+    }
+
+    func testSummaryDisclosureUsesRowIdentityRevisionAndBoundedWidthWithoutUnusedMarkdownParsing() throws {
+        let source = String(repeating: "仍缺少完整查询证明与生产接线，保留全部报告内容。\n\n", count: 20)
+        let message = try item(["id": "notice", "turnId": "turn:notice", "text": "**后台汇总**\n\n" + source,
+            "rawMetadataJSON": #"{"coordinationEvent":{"kind":"decision"}}"#])
+        let entry = ChatDisplayEntry(kind: .message(message))
+        let key = CoordinationSummaryContent.expansionID(for: message.id)
+        let collapsed = builder().nativeAppKitRow(entry, expandedTurnIds: [])
+        let expanded = builder().nativeAppKitRow(entry, expandedTurnIds: [key])
+        XCTAssertEqual(collapsed.expandableTurnId, key)
+        XCTAssertFalse(collapsed.isExpanded); XCTAssertTrue(expanded.isExpanded)
+        XCTAssertNotEqual(collapsed.contentRevision, expanded.contentRevision)
+        XCTAssertEqual(collapsed.contentSurfaceRole, .structured)
+        XCTAssertEqual(collapsed.readingTypography(ConversationSkin.codexFlat.typography(for: .assistant)), .classic)
+        for width in [320.0, 480.0, 1200.0] {
+            let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: collapsed, columnWidth: width, skin: .codexFlat)
+            XCTAssertLessThanOrEqual(layout.cardWidth, min(780, width))
+            XCTAssertEqual(layout.attributedText.length, 0)
+            XCTAssertNil(layout.naturalWidthMetrics)
+        }
+    }
+
+    func testLongSummaryHasCompactPreviewAndNaturalExpandedHeightInTheActualNativeRenderer() throws {
+        _ = NSApplication.shared
+        let message = try item(["id": "layout-notice", "turnId": "turn:notice", "text": "**后台汇总**\n\n" + String(repeating: "开发仍未完成，不能验收。生产接线和完整查询证明仍有缺口。\n\n", count: 16),
+            "rawMetadataJSON": #"{"coordinationEvent":{"kind":"decision"}}"#])
+        let entry = ChatDisplayEntry(kind: .message(message))
+        let key = CoordinationSummaryContent.expansionID(for: message.id)
+        for skin in ConversationSkin.allCases {
+            for width in [320.0, 480.0, 1200.0] {
+                var heights: [CGFloat] = []
+                for expanded in [false, true] {
+                    let row = builder().nativeAppKitRow(entry, expandedTurnIds: expanded ? [key] : [])
+                    let layout = NativeTimelineLayoutCache.shared.intrinsicContent(for: row, columnWidth: width, skin: skin)
+                    let host = NSHostingView(rootView: MacSharedMessageTextCard(skin: skin, row: row, layout: layout)
+                        .frame(width: width).fixedSize(horizontal: false, vertical: true))
+                    host.frame = .init(x: 0, y: 0, width: width, height: 1)
+                    host.layoutSubtreeIfNeeded()
+                    let height = host.fittingSize.height
+                    XCTAssertTrue(height.isFinite && height > 50)
+                    heights.append(height)
+                    XCTAssertLessThanOrEqual(host.fittingSize.width, width + 1)
+                }
+                XCTAssertLessThan(heights[0], 230, "Long reports must not dominate the collapsed timeline")
+                XCTAssertGreaterThan(heights[1], heights[0] + 100, "Expanded content must grow the native row rather than paint over the next message")
+            }
+        }
+    }
+
+    func testBudgetPauseAndRestartFailureUseSharedStatusInsteadOfWaiting() throws {
+        let block: [String: Any] = ["code":"VERIFICATION_BUDGET_EXHAUSTED","kind":"paused","message":"budget","instructionId":"i","sessionId":"logical:s"]
+        let paused = try item(["id":"paused","type":"userMessage","userMessageStatus":"paused","status":"queued","taskId":"op","executionBlock":block])
+        let row = builder().nativeAppKitRow(.init(kind:.message(paused)),expandedTurnIds:[])
+        XCTAssertEqual(row.messageStatus?.kind,.processingPaused)
+        XCTAssertEqual(row.queuedMessageTaskID,"op")
+        XCTAssertTrue(row.messageStatus?.detail(languageCode:"zh").contains("不会自动继续") == true)
+        let failed = try item(["id":"failed","type":"userMessage","userMessageStatus":"queued","status":"failed","processingError":"restart interrupted","executionBlock":block])
+        let terminal = builder().nativeAppKitRow(.init(kind:.message(failed)),expandedTurnIds:[])
+        XCTAssertEqual(terminal.messageStatus?.kind,.processingFailed)
+        XCTAssertTrue(terminal.messageStatus?.detail(languageCode:"zh").contains("不会自动恢复") == true)
     }
 
     func testChildResultsAndScheduledTriggersUseSpecialCardsInBothSkins() throws {

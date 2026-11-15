@@ -32,7 +32,7 @@ export function startClientDeviceGateway({
     resourceWritesAllowed: !developmentPreview,
     automationNotifications: (_identity, cursor) => readAutomationNotifications(store, environmentName, cursor),
     detailActionService, detailWritesAllowed: detailWritesAllowed === true && !developmentPreview,
-    readAPI: new ClientReadAPI(store, { environmentName }),
+    readAPI: new ClientReadAPI(store, { environmentName,readVerificationPause:id=>verificationBudgetService?.pausedForSession(id) }),
     controlAPI: new ClientControlReadAPI({ resourceRevision: () => store.selectOne("SELECT revision FROM state_change_log WHERE entity_type = 'artifact' ORDER BY revision DESC LIMIT 1")?.revision ?? null, lists: {
       automations: () => store.listScheduledSessionTasks({ environment: environmentName }),
       agents: () => store.listAgents(), skills: () => store.listRegistrySkills(),

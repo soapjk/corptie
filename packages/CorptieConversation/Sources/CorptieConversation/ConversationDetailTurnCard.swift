@@ -7,6 +7,10 @@ public struct ConversationDetailTurnCard: View {
     private let activity: ConversationDetailPresentationActivity?
     private var state: ClientDetailTurnState { presentationState ?? commandState }
     private var active: Bool { activity?.isActive ?? true }
+    let verification: ClientVerificationPerformance?
+    let canControlVerification: Bool
+    let performVerification: ([String: ClientInspectorValue]) -> Void
+    let readVerificationRecords: ((String, String?) async throws -> ClientVerificationRunPage)?
     let executionID: String
     let expectedSessionIDs: [String]
     let readSummary: @MainActor () async throws -> ClientTurnSummary
@@ -21,7 +25,12 @@ public struct ConversationDetailTurnCard: View {
                 readTrace: @escaping @MainActor (String, String?) async throws -> ClientTurnTrace,
                 liveSnapshot: ClientTurnSummary? = nil,
                 presentationState: ClientDetailTurnState? = nil,
-                activity: ConversationDetailPresentationActivity? = nil) {
+                activity: ConversationDetailPresentationActivity? = nil, verification: ClientVerificationPerformance? = nil, canControlVerification: Bool = true,
+                performVerification: @escaping ([String: ClientInspectorValue]) -> Void = { _ in },
+                readVerificationRecords: ((String, String?) async throws -> ClientVerificationRunPage)? = nil) {
+        self.canControlVerification = canControlVerification
+        self.readVerificationRecords = readVerificationRecords
+        self.verification = verification; self.performVerification = performVerification
         self.commandState = state; self.presentationState = presentationState; self.activity = activity; self.executionID = executionID; self.expectedSessionIDs = expectedSessionIDs
         self.readSummary = readSummary; self.readTrace = readTrace
         self.liveSnapshot = liveSnapshot
@@ -35,18 +44,20 @@ public struct ConversationDetailTurnCard: View {
             set: { if let value = presentation?.section("\(prefix):trace") { value.expanded = $0 } else { localTraceExpanded = $0 } })
     }
     public var body: some View {
-        ConversationDetailModuleCard(title: "Turn 分析", systemImage: "point.3.connected.trianglepath.dotted", headerActions: {
+        ConversationDetailModuleCard(title: "会话性能", systemImage: "point.3.connected.trianglepath.dotted", headerActions: {
             Button { Task { await load(force: true) } } label: { ConversationDetailHeaderIcon(systemName: "arrow.clockwise") }
                 .buttonStyle(.plain).disabled(state.loading).help("刷新 Turn 摘要").accessibilityLabel("刷新 Turn 摘要")
         }) {
-            ConversationDetailDisclosure(isExpanded: expanded, header: {
+            if !executionID.isEmpty { ConversationDetailDisclosure(isExpanded: expanded, header: {
                 HStack {
                     Text("时间分析").foregroundStyle(Color.accentColor)
                     Spacer(minLength: 4)
                     if state.loading { ProgressView().controlSize(.small) }
                     else { Text(duration(state.summary?.wall.wallClockMs ?? state.summary?.wall.observedWatermarkMs)).monospacedDigit().foregroundStyle(.secondary) }
                 }.font(.caption)
-            }, content: { summaryContent })
+            }, content: { summaryContent }) }
+            else { Text("暂无执行耗时", bundle: .module).font(.caption).foregroundStyle(.secondary) }
+            if let verification { ConversationVerificationSection(value: verification, canControl: canControlVerification, perform: performVerification, readRecords: readVerificationRecords).id(verification.sessionId) }
             if let error = state.error { Text(error).font(.caption).foregroundStyle(.secondary) }
         }
         .task(id: active ? executionID : nil) { guard active else { return }; await load() }
@@ -124,6 +135,7 @@ public struct ConversationDetailTurnCard: View {
         }
     }
     private func load(force: Bool = false) async {
+        guard !executionID.isEmpty else { return }
         let generation = activity?.generation ?? 0
         guard activity?.allows(generation: generation) ?? true else { return }
         await commandState.loadSummary(executionID: executionID, expectedSessionIDs: expectedSessionIDs, force: force) {

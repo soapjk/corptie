@@ -95,3 +95,20 @@ test("reference add uses existing async normalization and rechecks owner revisio
     }
   }
 });
+
+
+test("verification controls use the shared user command service and reject foreign scopes or retired credentials",async()=>{
+  const calls=[];let revoked=false;
+  const snapshot={revision:'7'};
+  const inspector={verificationBudgetService:{snapshot:()=>snapshot,control:(...args)=>{calls.push(args);return snapshot;}},
+    scope:()=>({sessionId:'s',logicalSessionId:'logical:s',context:{}})};
+  const port=createDetailBusinessActionPorts({inspector})['verification.control'];
+  const scope={sessionId:'logical:s',identity:{kind:'local_user',principalId:'user'},revalidateSync:()=>{if(revoked)throw Object.assign(new Error('revoked'),{code:'AUTH_REVOKED'});}};
+  const target={resourceType:'session',id:'logical:s'},fields={action:'extend',instructionId:'i',amount:3,resume:true};
+  assert.equal(port.authorize(scope,target),true);
+  assert.equal(port.resource(scope,{...target,id:'other'}),null);
+  assert.equal(port.revision(port.resource(scope,target)),'7');
+  await port.execute(scope,target,fields,{fingerprint:'durable-command'});
+  assert.deepEqual(calls,[['logical:s',fields,{requestId:'durable-command'}]]);
+  revoked=true;assert.throws(()=>port.execute(scope,target,fields,{fingerprint:'next'}),{code:'AUTH_REVOKED'});
+});

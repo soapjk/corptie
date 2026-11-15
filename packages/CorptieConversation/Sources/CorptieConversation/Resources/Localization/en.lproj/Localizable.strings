@@ -90,3 +90,54 @@
 "上一轮执行失败，正在处理后续指令。" = "Previous execution failed; processing the follow-up.";
 
 "上一轮执行已取消，正在处理后续指令。" = "Previous execution was cancelled; processing the follow-up.";
+
+"会话性能" = "Conversation performance";
+"限制验证次数" = "Limit verification rounds";
+"对后续新指令生效，当前指令可单独调整" = "Applies to new instructions; adjust the current instruction separately";
+"子任务共享原始指令预算" = "Subtasks share the original instruction budget";
+"每条指令 %lld 次" = "%lld rounds per instruction";
+"指令" = "Instruction";
+"已用 %lld/%lld · 剩余 %lld 次" = "Used %lld/%lld · %lld remaining";
+"已用 %lld 次 · 不限次数" = "Used %lld · Unlimited";
+"本条不限次数" = "Remove limit for this instruction";
+"对本条开启限制" = "Limit this instruction";
+"调整本条指令预算" = "Adjust instruction budget";
+"与父会话共享预算" = "Shared with the parent conversation";
+"增加 3 次并继续" = "Add 3 rounds and continue";
+"自定义" = "Custom";
+"增加 %lld 次" = "Add %lld rounds";
+"增加预算并继续" = "Add budget and continue";
+"增加预算" = "Add budget";
+"只增加，不立即继续" = "Add without continuing";
+"续作已受理，等待原执行结束" = "Continuation accepted; waiting for the current execution to finish";
+"当前会话" = "This conversation";
+"子会话或影子会话" = "Child or shadow conversation";
+"验证记录" = "Verification history";
+"读取更早记录" = "Load earlier records";
+"尚未验证" = "No verification yet";
+"仅统计统一验证入口的批次，不包含原生 Shell 中的全部测试" = "Counts batches through the unified entry; native shell tests may bypass it";
+"当前会话没有可绑定的任务指令" = "No task instruction is available for this conversation";
+"不限次数" = "Unlimited";
+"正在验证" = "Verifying";
+"额度已用完" = "Budget exhausted";
+"后续验证已暂停，当前执行尚未结束" = "Further verification paused; current execution is still running";
+"因验证预算耗尽暂停" = "Paused because the verification budget is exhausted";
+"用户已停止" = "Stopped by user";
+"原执行结果待核对" = "Original result needs reconciliation";
+"可继续验证" = "Verification available";
+"未启动，不扣次数" = "Not started; no charge";
+"结果待核对" = "Result needs reconciliation";
+"验证中" = "Verifying";
+"已结束" = "Ended";
+"暂无执行耗时" = "No execution timing yet";
+"验证预算耗尽" = "Verification budget exhausted";
+"增加预算与续作已受理。" = "Budget increase and continuation accepted.";
+
+"父会话" = "Parent conversation";
+"通过" = "Passed";
+"失败" = "Failed";
+
+"收起汇总" = "Collapse summary";
+"展开汇总" = "Expand summary";
+"已展开" = "Expanded";
+"已收起" = "Collapsed";

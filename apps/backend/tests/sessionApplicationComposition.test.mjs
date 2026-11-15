@@ -15,7 +15,7 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     const task = { id: "task:one", work_id: "work:one", title: "Work", revision: 1, resource_version: 1, lifecycle_state: "in_progress" };
     const reference = { sessionId: session.id, logicalSessionId: "logical:existing", providerId,
       providerSessionId: "native:existing", bindingId: "binding:existing", metadata: { session } };
-    const sent = [];
+    const sent = [];let remaining=1;
     const registry = new AgentProviderRegistry([new CallbackAgentProvider({ id: providerId, displayName: providerId,
       transport: "test", capabilities: [C.CONVERSATION_SEND] }, {
       send: async (_reference, message, context) => {
@@ -28,11 +28,15 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
         getTask: () => task, getWork: () => ({ id: "work:one", name: "Work" }), selectOne: () => null,
         getSessionToolCatalogMaterialization: () => null },
       agentProviderRegistry: registry, sessionBindingRepository: { resolve: () => reference },
+      readVerificationContext: id => { assert.equal(id,reference.logicalSessionId);return {contextKey:'verification-state',contextReusable:false,prompt:`<corptie_verification_state>remaining=${remaining}</corptie_verification_state>`}; },
       artifactService: { indexForSession: () => assert.fail("ordinary messages must not build Artifact directories") }, resolveContextReferences: async () => null,
       mcpAssignmentRevisionForAgent: () => null, assertForkDispatchAllowed() {}, assertSessionRecoveryMessageBoundary() {}, emitEvent() {}
     });
     const messages = ["Custom startup: implement the feature and verify it", "Follow-up: repair the edge case and run its checks"];
-    for (const message of messages) await service.sendMessage(session.id, message);
+    for (const message of messages) { await service.sendMessage(session.id, message);remaining++; }
+    assert.match(sent[0].context.sessionContext.prompt,/remaining=1/);
+    assert.match(sent[1].context.sessionContext.prompt,/remaining=2/);
+    for(const value of sent){const section=value.context.sessionContext.contextSections.find(section=>section.id==='verification-state');assert.equal(section.reusable,false);}
     assert.deepEqual(sent.map(value => value.message), messages);
     for (const value of sent) {
       assert.ok(value.context.sessionContext.prompt.includes(EXECUTION_CHECKLIST_INSTRUCTIONS));

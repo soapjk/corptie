@@ -20,7 +20,7 @@ export function createSessionApplicationComposition({
   requiredToolDomainsForSession, assertForkDispatchAllowed, assertSessionRecoveryMessageBoundary,
   recoverSession, requireSessionReference, workChatContextService, resolveContextReferences,
   artifactService, memoryRecallService, memoryTopicService, mcpAssignmentRevisionForAgent,
-  resolveAssignedCapabilities = () => [],
+  resolveAssignedCapabilities = () => [], readVerificationContext = () => null,
   ensureCollaborationAgentForSession, ensureLogicalRouteForProviderSession,
   sessionWithLogicalWorkspace, collaborationCore, emitEvent
 }) {
@@ -214,7 +214,8 @@ export function createSessionApplicationComposition({
         prompt: `<corptie_message_presentation>\n${CHART_PRESENTATION_INSTRUCTIONS}\n</corptie_message_presentation>\n\nRole is reusable user configuration; Provider is the execution engine; Session is the only executor and authorization/collaboration actor. Historical Agent resource labels mean Role. Selecting a Role never grants permissions.` };
       if (globalPreferenceContext) globalPreferenceContext.contextKey = "global-preferences";
       const workflowContext = { prompt: DEVELOPMENT_WORKFLOW_INSTRUCTIONS };
-      const contexts = [workflowContext, directUserIntentContext, globalPreferenceContext, baseContext, discoveryContext, skillRoutingContext,
+      const verificationContext=readVerificationContext(reference.logicalSessionId ?? reference.sessionId);
+      const contexts = [workflowContext, verificationContext, directUserIntentContext, globalPreferenceContext, baseContext, discoveryContext, skillRoutingContext,
         presentationContext, mentionContext, memoryContext]
         .filter((item) => item?.prompt);
       const recordInjection = (globalIncluded, recallIncluded) => {
@@ -235,7 +236,7 @@ export function createSessionApplicationComposition({
           memoryContext,
           mentionContext,
           referenceContext,
-          requiredContexts: [globalPreferenceContext, discoveryContext, skillRoutingContext, presentationContext,
+          requiredContexts: [verificationContext, globalPreferenceContext, discoveryContext, skillRoutingContext, presentationContext,
             sessionApplicationService.coordinationTurns?.handoffContext(reference)].filter(Boolean)
         });
         recordInjection(Boolean(result), Boolean(result.memoryRecall));
@@ -248,6 +249,7 @@ export function createSessionApplicationComposition({
         prompt: contexts.map((item) => item.prompt).join("\n\n"),
         contextSections: [
           { id: "execution-workflow", prompt: DEVELOPMENT_WORKFLOW_INSTRUCTIONS, reusable: false },
+          { id: "verification-state", prompt: verificationContext?.prompt ?? "", reusable: false },
           { id: "direct-user-evidence", prompt: directUserIntentContext?.prompt ?? "", reusable: false },
           { id: "global-preferences", prompt: globalPreferenceContext?.prompt ?? "", reusable: false },
           ...(baseContext?.contextSections ?? [{ id: "base-context", prompt: baseContext?.prompt ?? "", reusable: true }]),

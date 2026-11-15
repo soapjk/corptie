@@ -42,7 +42,7 @@ const projectors = {
   sessions: (row, _store, context) => ({ id: row.id, title: row.title, workId: row.workId ?? null,
     ...(typeof row.external?.logicalSessionId === "string" && row.external.logicalSessionId.length <= 512
       && row.external.logicalSessionId.length > 0 ? { logicalSessionId: row.external.logicalSessionId } : {}),
-    taskId: row.taskId ?? null, sessionKind: row.sessionKind, executionStatus: row.executionStatus ?? row.status,
+    taskId: row.taskId ?? null, sessionKind: row.sessionKind, executionStatus: row.executionStatus ?? row.status, verificationPause: context.readVerificationPause?.(row.logicalSessionId ?? row.external?.logicalSessionId ?? row.id) ?? context.readVerificationPause?.(row.id) ?? null,
     activityStatus: typeof row.activityStatus === "string" ? row.activityStatus : null,
     // Same read-receipt inputs the desktop unread policy consumes; the device applies the identical rule.
     lastAgentMessageSequence: context.messageCursors.get(row.id)?.lastAgentMessageSequence ?? 0,
@@ -54,7 +54,7 @@ const projectors = {
 /** Read-only v1 inventory. Explicit projection; never expose paths, credentials, or Provider payloads. */
 export class ClientReadAPI {
   constructor(store, options = {}) {
-    this.store = store;
+    this.store = store; this.readVerificationPause=options.readVerificationPause;
     this.avatarsRoot = options.avatarsRoot ?? resolveAgentAvatarsRoot(options).avatarsRoot;
   }
   list(kind, parameters) {
@@ -80,7 +80,7 @@ export class ClientReadAPI {
       : kind === "tasks" ? this.store.listTaskPage({ limit, cursor, includeCompleted: true })
         : this.store.listSessionPage({ limit, cursor, archived: false });
     // One wake / read-cursor query per page instead of one per row.
-    const context = { pendingWakeTaskIds: new Set(), messageCursors: new Map(), messageTimes: new Map() };
+    const context = { readVerificationPause:this.readVerificationPause,pendingWakeTaskIds: new Set(), messageCursors: new Map(), messageTimes: new Map() };
     if (kind === "tasks") context.hierarchySummaries = this.store.hierarchySummaries?.(page.items.map(row => row.id));
     if (kind === "tasks" && page.items.length > 0 && typeof this.store.listTaskIdsWithPendingScheduledWake === "function") {
       context.pendingWakeTaskIds = new Set(this.store.listTaskIdsWithPendingScheduledWake());

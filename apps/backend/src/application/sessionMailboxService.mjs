@@ -300,15 +300,19 @@ export class SessionMailboxService {
     return this.dispatchDecision(operation).allowed;
   }
 
-  reportDispatchBlock() {
+  reportDispatchBlock(operation) {
+    if(operation?.source?.dispatchBlock?.code==='VERIFICATION_BUDGET_EXHAUSTED') {
+      void this.verificationBudget?.notifyOperationPaused(operation).catch(error=>console.warn(`[verification-pause] ${error.code ?? error.message}`));
+    }
     // Dispatch telemetry already lives on the original operation. It is not
     // a question or a result and must never create a parent mailbox operation.
   }
 
   dispatchDecision(operation) {
-    if (this.verificationBudget?.operationPaused(operation.taskId)) {
-      return dispatchBlocked("VERIFICATION_BUDGET_EXHAUSTED", "waiting");
-    }
+    if(this.verificationBudget?.operationBlock) {
+      const block=this.verificationBudget.operationBlock(operation.taskId);
+      if(block)return {...dispatchBlocked(block.code,'paused'),instructionId:block.instructionId,sessionId:block.sessionId};
+    } else if(this.verificationBudget?.operationPaused(operation.taskId))return dispatchBlocked('VERIFICATION_BUDGET_EXHAUSTED','paused');
     if (operation.source?.type === "scheduled_session_task" && this.resolveAutomationRecipient) {
       try {
         const target = this.resolveAutomationRecipient(operation);

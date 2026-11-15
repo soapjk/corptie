@@ -6,7 +6,7 @@ import { conversationWorktreeBlocker } from "./workChatReadOnlyTurnService.mjs";
 // revision stream. Probe ownership remains with the runtime lifecycle.
 export function createSessionReadinessProjection({
   store, agentProviderRegistry, scheduleStateSyncPublish,
-  readBindingProbe, readFallbackBindingReadiness, readMailboxSummary
+  readBindingProbe, readFallbackBindingReadiness, readMailboxSummary, readVerificationPause
 }) {
   const providerRuntimeReadiness = new Map(agentProviderRegistry.descriptors().map((provider) => [
     provider.id,
@@ -55,6 +55,7 @@ export function createSessionReadinessProjection({
     const logical = decorated.logicalSessionId
       ? store.getLogicalSession(decorated.logicalSessionId)
       : store.getLogicalSessionByLegacySessionId(decorated.id);
+    decorated.verificationPause=readVerificationPause?.(logical?.logicalSessionId ?? session.id) ?? readVerificationPause?.(session.id) ?? null;
     decorated.executionWait = decorated.deliveryStatus === "queued"
       ? conversationWorktreeBlocker(store, agentProviderRegistry, { sessionId: decorated.id, logicalSession: logical }) : null;
     if (decorated.executionWait && !["running", "blocked"].includes(decorated.executionStatus ?? decorated.status)) {

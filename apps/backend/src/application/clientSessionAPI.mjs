@@ -106,9 +106,9 @@ function publicClientMessage(item) {
   let replyAssociation, coordinationEvent;
   try {
     const metadata = coordinationMessageMetadata(item.rawMetadataJSON);
-    if (["summary","delivery","receipt","failure","decision"].includes(metadata?.coordinationEvent?.kind))
+    if (["summary","delivery","receipt","failure","decision","verification_budget"].includes(metadata?.coordinationEvent?.kind))
       coordinationEvent = {kind:metadata.coordinationEvent.kind,batchId:typeof metadata.coordinationEvent.batchId === "string" ? metadata.coordinationEvent.batchId.slice(0,512) : null,
-        ...Object.fromEntries(["requestId","sessionId","phase","errorCode"].filter(key=>typeof metadata.coordinationEvent[key]==="string").map(key=>[key,metadata.coordinationEvent[key].slice(0,512)])),
+        ...Object.fromEntries(["requestId","sessionId","phase","errorCode","instructionId"].filter(key=>typeof metadata.coordinationEvent[key]==="string").map(key=>[key,metadata.coordinationEvent[key].slice(0,512)])),
         ...(metadata.coordinationEvent.retryable===true?{retryable:true}:{})};
     else if (metadata?.executionMode === "shadow_report") coordinationEvent = { kind: "summary", batchId: metadata.progressBatchId ?? null };
     else if (typeof metadata?.progressBatchId === "string") coordinationEvent = { kind: "delivery", batchId: metadata.progressBatchId };
@@ -122,11 +122,12 @@ function publicClientMessage(item) {
     id: item.id, turnId: item.turnId ?? null, type: item.type, replyAssociation, coordinationEvent,
     text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
     createdAt: item.createdAt ?? null,
+    executionBlock:item.executionBlock && typeof item.executionBlock.code==='string'?Object.fromEntries(['code','kind','message','instructionId','sessionId'].map(key=>[key,typeof item.executionBlock[key]==='string'?item.executionBlock[key].slice(0,key==='message'?1200:512):null])):null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
     deletionAvailable: item.deletionAvailable === true,
     withdrawalAvailable: item.withdrawalAvailable === true,
     withdrawn: Boolean(item.withdrawnMessage),
-    queuedMessageTaskId: item.type === "userMessage" && item.userMessageStatus === "queued"
+    queuedMessageTaskId: item.type === "userMessage" && ["queued","paused"].includes(item.userMessageStatus)
       && typeof item.taskId === "string" ? item.taskId : null,
     ...Object.fromEntries(PUBLIC_PRESENTATION_STRING_FIELDS.map(key => [key,
       publicPresentationString(item[key], key === "presentationText" ? 200_000 : 4_000)])),

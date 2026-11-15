@@ -38,7 +38,12 @@ export function nativeBusinessModuleCard(name, result, { editors = false, page =
     if (source?.hierarchy) data.hierarchy = source.hierarchy;
     if (editors && data.worktreeId) actions.push(nav("editor.open", "worktree", data.worktreeId, "管理 Worktree")); break;
   case "turn":
-    data = { turnId: source?.resource.id ?? null, completeness: source?.completeness ?? "", wall: source?.wall ?? {}, wallPartition: source?.wallPartition ?? {}, inclusive: source?.inclusive ?? {} }; break;
+    data = { turnId: source?.resource?.id ?? null, completeness: source?.completeness ?? "", wall: source?.wall ?? {}, wallPartition: source?.wallPartition ?? {}, inclusive: source?.inclusive ?? {} };
+    if(source?.verification){
+      data.verification=source.verification;
+      if(editors&&source.verification.available)actions.push({id:'verification-control',kind:'command',operation:'verification.control',label:{fallback:'管理验证预算'},available:true,target:{resourceType:'session',id:source.verification.sessionId},expectedResourceRevision:source.verification.revision});
+    }
+    break;
   default: throw new Error("DETAIL_BUSINESS_KIND_INVALID");
   }
   if (page) actions.push({ id: "page", kind: "read", operation: "detail.collection.page", label: { fallback: "加载更多" }, available: page.nextCursor !== null, target: { resourceType: "session", id: page.sessionId } });

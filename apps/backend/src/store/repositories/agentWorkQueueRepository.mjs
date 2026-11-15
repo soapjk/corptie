@@ -233,6 +233,8 @@ export class AgentWorkQueueRepository {
         operationId: taskId, sessionId: item.sessionId, turnId: turnId ?? null
       };
     }
+    let source=Object.hasOwn(patch,'source')?(patch.source ?? {}):item.source;
+    if(['failed','cancelled','completed'].includes(status) && source?.dispatchBlock)source={...source,dispatchBlock:{...source.dispatchBlock,kind:'settled'}};
     this.db.run(
       `UPDATE agent_operations SET status = ?, session_id = ?, target_turn_id = ?, last_error = ?,
        started_at = ?, completed_at = ?, source_json = ?, execution_evidence_json = ?, updated_at = ? WHERE task_id = ?`,
@@ -243,7 +245,7 @@ export class AgentWorkQueueRepository {
         Object.hasOwn(patch, "lastError") ? patch.lastError : item.lastError,
         Object.hasOwn(patch, "startedAt") ? patch.startedAt : item.startedAt,
         completedAt,
-        JSON.stringify(Object.hasOwn(patch, "source") ? (patch.source ?? {}) : item.source),
+        JSON.stringify(source),
         JSON.stringify(evidence),
         timestamp,
         taskId

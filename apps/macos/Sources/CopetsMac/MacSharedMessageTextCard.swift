@@ -248,9 +248,9 @@ struct MacSharedMessageTextCard: View {
                     MacProcessBlockView(block: block, cardWidth: layout.cardWidth, baseDirectory: baseDirectory)
                 }
                 else if let event = row.coordinationEvent {
-                    CoordinationSummaryCard(event: event, text: row.nativeText, api: {
-                        ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
-                    })
+                    MacCoordinationSummaryCard(event: event, text: row.nativeText,
+                        expanded: row.isExpanded, occurredAt: row.messageDate, toggle: toggle)
+                        .frame(width: layout.cardWidth, alignment: .leading)
                 }
                 else if let progress = row.coordinationProgress {
                     MacCoordinationProgressCard(progress: progress)
@@ -1134,6 +1134,21 @@ private struct MacCoordinationProgressCard: View {
         CoordinationProgressCard(progress: progress, api: {
             ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
         }, openSession: { AppTabRouter.shared.openSession($0, source: .userSelection) })
+        .environment(\.locale, language.locale)
+    }
+}
+
+private struct MacCoordinationSummaryCard: View {
+    let event: ConversationCoordinationEvent
+    let text: String
+    let expanded: Bool
+    let occurredAt: Date?
+    let toggle: () -> Void
+    @ObservedObject private var language = AppLanguageController.shared
+    var body: some View {
+        CoordinationSummaryCard(event: event, text: text, api: {
+            ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
+        }, expanded: expanded, toggle: toggle, occurredAt: occurredAt)
         .environment(\.locale, language.locale)
     }
 }
