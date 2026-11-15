@@ -114,6 +114,193 @@ final class MainWindowPresentationState: ObservableObject {
     }
 }
 
+/// Holds SwiftUI's FocusBridge key-view-loop walk during window gestures.
+///
+/// Runtime facts measured on this machine (macOS 27 SDK), not assumptions:
+/// - `NSView._recursiveSetDefaultKeyViewLoop` has type encoding `@16@0:8`:
+///   it RETURNS an object. Replacing it with a Void-returning IMP is ABI-wrong.
+/// - `NSClassFromString("NSHostingView")` is nil. Real classes are mangled
+///   generics (`_TtGC7SwiftUI13NSHostingViewVS_4Text_`) plus their KVO
+///   subclasses, and each has its OWN override of the selector.
+/// - A standalone probe showed one root recursion enters the base IMP once
+///   and hosting IMPs 21 times, so patching only NSView misses ~95% of the
+///   walk. A 90s interaction sample recorded 404 base / 205 hosting entries.
+///
+/// The gate patches the base Method and every loaded hosting class Method,
+/// then patches newly minted hosting classes on first use. It drops a walk
+/// only inside a `MainWindow` while a drag or live resize is in flight; idle
+/// layout, other windows and off-main-thread calls keep the original IMP.
+private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
+    static let shared = FocusBridgeKeyViewLoopGate()
+
+    private typealias RecursiveIMP =
+        @convention(c) (AnyObject, Selector) -> UnsafeMutableRawPointer?
+
+    /// An ObjC object cannot be captured by a MainActor isolation probe
+    /// directly; this box keeps the probe free of non-Sendable captures.
+    private final class Target: @unchecked Sendable {
+        let object: AnyObject
+        init(_ object: AnyObject) { self.object = object }
+    }
+
+    private let lock = NSLock()
+    private let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
+    private var isInstalled = false
+    private var suppressUntil: TimeInterval = 0
+    private var baseMethod: Method?
+    private var installedMethods: Set<OpaquePointer> = []
+    private var patchedClasses: Set<ObjectIdentifier> = []
+
+    private var seen = 0
+    private var seenBase = 0
+    private var seenHosting = 0
+    private var suppressed = 0
+
+    private static let logger = Logger(subsystem: "com.corptie.mac", category: "key-view-loop")
+
+    // MARK: - Gesture window
+
+    func extendSuppression(_ seconds: TimeInterval = 0.25) {
+        let deadline = Date().timeIntervalSinceReferenceDate + seconds
+        lock.lock()
+        if deadline > suppressUntil { suppressUntil = deadline }
+        lock.unlock()
+    }
+
+    func clearSuppression() {
+        lock.lock()
+        suppressUntil = 0
+        lock.unlock()
+    }
+
+    private func suppressionDeadline() -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return suppressUntil
+    }
+
+    // MARK: - Installation
+
+    func installOnce() {
+        lock.lock()
+        guard !isInstalled else { lock.unlock(); return }
+        isInstalled = true
+        lock.unlock()
+
+        guard let base = class_getInstanceMethod(NSView.self, selector) else { return }
+        lock.lock()
+        baseMethod = base
+        installedMethods.insert(base)
+        lock.unlock()
+
+        install(original: method_getImplementation(base), on: base, isHosting: false)
+        patchLoadedHostingClasses()
+
+        lock.lock()
+        let count = installedMethods.count
+        lock.unlock()
+        Self.logger.notice("kvl installed patchedMethods=\(count)")
+    }
+
+    private func patchLoadedHostingClasses() {
+        let estimated = Int(objc_getClassList(nil, 0))
+        guard estimated > 0 else { return }
+        let buffer = UnsafeMutablePointer<AnyClass>.allocate(capacity: estimated)
+        buffer.initialize(repeating: NSObject.self, count: estimated)
+        let list = AutoreleasingUnsafeMutablePointer<AnyClass>(buffer)
+        let actual = Int(objc_getClassList(list, Int32(estimated)))
+        for i in 0..<actual {
+            let cls: AnyClass = buffer[i]
+            if String(cString: class_getName(cls)).contains("NSHostingView") {
+                patch(cls: cls)
+            }
+        }
+        buffer.deinitialize(count: estimated)
+        buffer.deallocate()
+    }
+
+    /// New generic hosting classes (and KVO-derived subclasses) appear after
+    /// installation. Patch them on first use so a newly mounted SwiftUI root
+    /// never escapes the gate.
+    private func discoverIfNeeded(_ object: AnyObject) {
+        guard let cls: AnyClass = object_getClass(object) else { return }
+        guard String(cString: class_getName(cls)).contains("NSHostingView") else { return }
+        patch(cls: cls)
+    }
+
+    private func patch(cls: AnyClass) {
+        let classID = ObjectIdentifier(cls)
+        lock.lock()
+        let knownClass = patchedClasses.contains(classID)
+        if !knownClass { patchedClasses.insert(classID) }
+        let base = baseMethod
+        lock.unlock()
+        guard !knownClass else { return }
+
+        guard let method = class_getInstanceMethod(cls, selector) else { return }
+        // A hosting class without its own override inherits the NSView Method,
+        // which is already patched.
+        guard method != base else { return }
+
+        lock.lock()
+        let alreadyInstalled = installedMethods.contains(method)
+        if !alreadyInstalled { installedMethods.insert(method) }
+        lock.unlock()
+        guard !alreadyInstalled else { return }
+
+        install(original: method_getImplementation(method), on: method, isHosting: true)
+    }
+
+    private func install(original: IMP, on method: Method, isHosting: Bool) {
+        let selector = self.selector
+        let originalFn = unsafeBitCast(original, to: RecursiveIMP.self)
+        let block: @convention(block) (AnyObject) -> UnsafeMutableRawPointer? = { object in
+            let gate = FocusBridgeKeyViewLoopGate.shared
+            gate.noteSeen(isHosting: isHosting)
+            guard Thread.isMainThread else { return originalFn(object, selector) }
+            gate.discoverIfNeeded(object)
+
+            let target = Target(object)
+            let shouldSuppress: Bool = MainActor.assumeIsolated {
+                guard let view = target.object as? NSView,
+                      let window = view.window,
+                      window is MainWindow else { return false }
+                return window.inLiveResize
+                    || Date().timeIntervalSinceReferenceDate < gate.suppressionDeadline()
+            }
+            guard shouldSuppress else {
+                return originalFn(object, selector)
+            }
+            gate.noteSuppressed()
+            // The walk is dropped for this frame. Returning a valid object
+            // keeps the `@16@0:8` contract intact for any caller that reads it.
+            return Unmanaged.passUnretained(object).toOpaque()
+        }
+        method_setImplementation(method, imp_implementationWithBlock(block))
+    }
+
+    // MARK: - Observability
+
+    private func noteSeen(isHosting: Bool) {
+        lock.lock()
+        seen += 1
+        if isHosting { seenHosting += 1 } else { seenBase += 1 }
+        let shouldLog = seen % 200 == 0
+        let snapshot = (seen, seenBase, seenHosting, suppressed, installedMethods.count)
+        lock.unlock()
+        if shouldLog {
+            Self.logger.notice(
+                "kvl entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
+        }
+    }
+
+    private func noteSuppressed() {
+        lock.lock()
+        suppressed += 1
+        lock.unlock()
+    }
+}
+
 /// Restores the standard title-bar double-click maximize/restore interaction
 /// for the full-size transparent title bar. SwiftUI owns the content under the
 /// title bar, so NSWindow's default empty-title-bar handler never sees it.
@@ -124,22 +311,37 @@ class MainWindow: NSWindow {
     /// Every live-resize layout pass makes AppKit rebuild the whole window's
     /// key view loop (`NSView._layoutSubtreeWithOldSize` →
     /// `_recursiveSetDefaultKeyViewLoop` → SwiftUI
-    /// `FocusBridge.updateDefaultKeyViewLoop`). That walk is O(views): a running
-    /// Session keeps accumulating hosting views, so dragging gets slower the
-    /// longer the app has been used and stays slow after the turn stops.
-    /// Rebuild the loop once after the resize ends instead of on every frame.
+    /// `FocusBridge.updateDefaultKeyViewLoop`). That walk is O(views) and
+    /// reaches every row of the AppKit timeline, so dragging gets slower as
+    /// history grows.
     ///
-    /// This only stops NSWindow's *automatic* rebuild. SwiftUI's FocusBridge
-    /// calls `NSView._recursiveSetDefaultKeyViewLoop` directly from
-    /// `NSHostingView.preferencesDidChange` on every layout pass, bypassing
-    /// `recalculateKeyViewLoop()` entirely. `MainWindowSurfaceContainer` holds
-    /// that walk at the content-view root; see the guard there.
+    /// `autorecalculatesKeyViewLoop = false` only stops NSWindow's automatic
+    /// rebuild. SwiftUI sends the NSView selector itself, starting at each
+    /// `NSHostingView` root — a content-view override is never on that path
+    /// (a 90s interaction sample recorded zero calls into it).
+    /// `FocusBridgeKeyViewLoopGate` intercepts the real entry points instead;
+    /// this window only supplies the gesture state and the settled rebuild.
     private var keyViewLoopResizeObserver: NSObjectProtocol?
+    private var keyViewLoopMoveObserver: NSObjectProtocol?
 
     override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
                   backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
-        super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
+        super.init(contentRect: contentRect, styleMask: style,
+                   backing: backingStoreType, defer: flag)
         autorecalculatesKeyViewLoop = false
+        FocusBridgeKeyViewLoopGate.shared.installOnce()
+        // Moving a window never enters inLiveResize, yet every move triggers a
+        // fresh FocusBridge walk. Each didMove extends the gesture deadline;
+        // it expires on its own once movement stops.
+        keyViewLoopMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: self,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                FocusBridgeKeyViewLoopGate.shared.extendSuppression()
+            }
+        }
         keyViewLoopResizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndLiveResizeNotification,
             object: self,
@@ -158,10 +360,14 @@ class MainWindow: NSWindow {
         if let keyViewLoopResizeObserver {
             NotificationCenter.default.removeObserver(keyViewLoopResizeObserver)
         }
+        if let keyViewLoopMoveObserver {
+            NotificationCenter.default.removeObserver(keyViewLoopMoveObserver)
+        }
     }
 
     override func recalculateKeyViewLoop() {
         guard !inLiveResize else { return }
+        FocusBridgeKeyViewLoopGate.shared.clearSuppression()
         super.recalculateKeyViewLoop()
     }
 
@@ -390,51 +596,12 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
         endResize(for: .liveResize)
     }
 
-    /// A 3s main-thread sample of a slow drag (production 0.5.132, 17 min
-    /// uptime) spent 92.6% of frames in
-    /// `NSHostingView.layout` → `preferencesDidChange` →
-    /// `FocusBridge.invalidateKeyViewLoop` → `_recursiveSetDefaultKeyViewLoop`.
-    /// Each hosting view re-enters the walk, so its cost multiplies with the
-    /// number of mounted SwiftUI roots. `NSWindow.autorecalculatesKeyViewLoop
-    /// = false` and the `recalculateKeyViewLoop()` guard above cannot stop it:
-    /// FocusBridge sends this NSView entry point itself, once per layout pass.
-    ///
-    /// The content view is always on AppKit's recursion path, so holding the
-    /// walk here cuts off the entire hosting subtree for the duration of a
-    /// gesture without freezing layout, rasterising anything or detaching
-    /// views. `MainWindow` rebuilds the Tab chain exactly once afterwards.
-    @objc(_recursiveSetDefaultKeyViewLoop)
-    nonisolated func suspendKeyViewLoopDuringLiveResize() {
-        MainActor.assumeIsolated {
-            // The resize state also covers full-screen transitions, where
-            // AppKit may not report `inLiveResize` on every layout pass. This
-            // early return is the whole fix: no work at all on a drag frame.
-            guard !resizeState.isLiveResize, !(window?.inLiveResize ?? false) else { return }
-            // Moving the window does not enter live resize, yet FocusBridge
-            // still asks for a full key-view-loop walk on every layout pass.
-            // Collapse those requests to at most one walk per interval; the
-            // next settled layout pass restores the Tab chain.
-            let now = Date().timeIntervalSinceReferenceDate
-            guard now - lastKeyViewLoopRebuildAt >= 0.12 else { return }
-            lastKeyViewLoopRebuildAt = now
-            rebuildKeyViewLoopNow()
-        }
-    }
-
-    private func rebuildKeyViewLoopNow() {
-        let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
-        guard let method = class_getInstanceMethod(NSView.self, selector) else { return }
-        // Calling the NSView implementation by IMP is required: sending
-        // the selector to `self` again would re-enter this guard forever.
-        // This path runs only outside a gesture, so the lookup cost is
-        // irrelevant; keeping it local avoids static state in a generic.
-        typealias RecursiveKeyViewLoop = @convention(c) (NSView, Selector) -> Void
-        let callBase = unsafeBitCast(method_getImplementation(method),
-                                     to: RecursiveKeyViewLoop.self)
-        callBase(self, selector)
-    }
-
-    private var lastKeyViewLoopRebuildAt: TimeInterval = 0
+    /// A content-view override of `_recursiveSetDefaultKeyViewLoop` used to
+    /// live here. A 90s interaction sample recorded zero calls into it:
+    /// SwiftUI's FocusBridge starts the walk at each NSHostingView root, so it
+    /// never passes through the content view. The interception now lives in
+    /// `FocusBridgeKeyViewLoopGate`; keeping a second, Void-signature override
+    /// here would also violate the selector's `@16@0:8` return contract.
 
     private func beginResize(for reason: ResizeReason) {
         let wasResizing = !resizeReasons.isEmpty
