@@ -151,8 +151,6 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     private var lastAllowedWalkAt: TimeInterval = 0
     private var baseMethod: Method?
     private var installedMethods: Set<OpaquePointer> = []
-    private var patchedClasses: Set<ObjectIdentifier> = []
-    private var lastObservedClassCount = 0
 
     private var seen = 0
     private var seenBase = 0
@@ -229,9 +227,6 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
 
     private func patchLoadedHostingClasses() {
         let estimated = Int(objc_getClassList(nil, 0))
-        lock.lock()
-        lastObservedClassCount = estimated
-        lock.unlock()
         guard estimated > 0 else { return }
         let buffer = UnsafeMutablePointer<AnyClass>.allocate(capacity: estimated)
         buffer.initialize(repeating: NSObject.self, count: estimated)
@@ -257,24 +252,17 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     }
 
     private func patch(cls: AnyClass) {
-        let classID = ObjectIdentifier(cls)
-        lock.lock()
-        let knownClass = patchedClasses.contains(classID)
-        if !knownClass { patchedClasses.insert(classID) }
-        let base = baseMethod
-        lock.unlock()
-        guard !knownClass else { return }
-
+        // Deduplicate by Method, not by class: several SwiftUI hosting classes
+        // (and their KVO subclasses) share one inherited Method, and a class
+        // that had no own override during the startup sweep may gain one after
+        // it is realized. Re-scanning must be able to pick those up.
         guard let method = class_getInstanceMethod(cls, selector) else { return }
-        // A hosting class without its own override inherits the NSView Method,
-        // which is already patched.
-        guard method != base else { return }
-
         lock.lock()
+        let base = baseMethod
         let alreadyInstalled = installedMethods.contains(method)
-        if !alreadyInstalled { installedMethods.insert(method) }
+        if method != base, !alreadyInstalled { installedMethods.insert(method) }
         lock.unlock()
-        guard !alreadyInstalled else { return }
+        guard method != base, !alreadyInstalled else { return }
 
         install(original: method_getImplementation(method), on: method, isHosting: true)
     }
@@ -334,18 +322,11 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
             Self.logger.notice(
                 "kvl entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
             trace("entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
-            // SwiftUI registers each generic NSHostingView class lazily. A
+            // SwiftUI realizes generic NSHostingView classes lazily. A
             // startup-only sweep sees almost none of them, and first-use
-            // discovery can only run inside an already-patched IMP. Re-scan
-            // whenever the ObjC class count changes so newly mounted roots
-            // get covered too.
-            let classCount = Int(objc_getClassList(nil, 0))
-            lock.lock()
-            let knownCount = lastObservedClassCount
-            lock.unlock()
-            if classCount != knownCount {
-                patchLoadedHostingClasses()
-            }
+            // discovery can only run inside an already-patched IMP, so rescan
+            // on a fixed cadence and let Method-level dedup keep it cheap.
+            patchLoadedHostingClasses()
         }
     }
 
