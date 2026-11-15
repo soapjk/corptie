@@ -37,23 +37,38 @@ export class CoordinationProgressService {
   scheduleDispatch(id){for(const row of this.store.selectAll('SELECT batch_id FROM coordination_progress_assignments WHERE dispatch_id=?',[id]))this.schedule(row.batch_id);}
   schedule(batchId){if(this.pending.has(batchId))return;this.pending.add(batchId);setImmediate(()=>{this.pending.delete(batchId);if(!this.store.db)return;try{this.refresh(batchId);}catch(error){console.warn('[coordination-progress]',error.code??error.message);}});}
   facts(batch,offset=null){
-    return this.store.selectAll(`SELECT a.*,d.status AS dispatch_state,d.target_task_id,d.error_message,d.error_code,d.operation_id,d.updated_at,
+    return this.store.selectAll(`SELECT a.*,d.status AS dispatch_state,d.target_task_id,d.error_message,d.error_code,d.operation_id,d.updated_at,d.runtime_json,
       t.title,t.current_session_id,t.lifecycle_state,s.status AS session_status,
       json_extract(d.request_json,'$.creation.title') AS requested_title,
-      (SELECT state FROM child_task_delivery_operations delivery WHERE delivery.child_task_id=COALESCE(d.target_task_id,a.task_id)
-        AND delivery.created_at>=COALESCE(d.created_at,a.created_at) ORDER BY delivery.created_at DESC LIMIT 1) AS delivery_state
+      delivery.state AS delivery_state,delivery.phase AS delivery_phase,delivery.error_message AS delivery_error,delivery.updated_at AS delivery_updated_at,
+      json_extract(mm.authorization_json,'$.purpose') AS mailbox_purpose,
+      r.phase AS reclamation_phase,r.last_error AS reclamation_error,
+      CASE WHEN d.operation_id IS NULL AND (json_extract(mm.authorization_json,'$.purpose')='shadow_requirement'
+        OR json_extract(d.runtime_json,'$.managementExecutorSessionId') IS NOT NULL OR d.error_code='SHADOW_REVIEW_PENDING')
+        THEN (SELECT op.status FROM agent_operations op WHERE op.session_id=t.current_session_id ORDER BY op.created_at DESC,op.rowid DESC LIMIT 1) ELSE NULL END AS latest_execution_status
       FROM coordination_progress_assignments a LEFT JOIN task_coordination_dispatches d ON d.dispatch_id=a.dispatch_id
-      LEFT JOIN tasks t ON t.id=COALESCE(d.target_task_id,a.task_id) LEFT JOIN sessions s ON s.id=t.current_session_id
+      LEFT JOIN tasks t ON t.id=COALESCE(d.target_task_id,a.task_id) LEFT JOIN sessions s ON s.id=t.current_session_id LEFT JOIN coordination_shadow_reclamation r ON r.task_id=t.id
+      LEFT JOIN session_mailbox_messages mm ON mm.message_id=d.mailbox_message_id
+      LEFT JOIN child_task_delivery_operations delivery ON delivery.rowid=(SELECT recent.rowid FROM child_task_delivery_operations recent
+        WHERE recent.child_task_id=COALESCE(d.target_task_id,a.task_id) AND recent.created_at>=COALESCE(d.created_at,a.created_at)
+        ORDER BY recent.created_at DESC,recent.rowid DESC LIMIT 1)
       WHERE a.batch_id=? AND (COALESCE(d.target_task_id,a.task_id) IS NULL OR (t.id IS NOT NULL AND t.lifecycle_state<>'done' AND COALESCE(t.archived,0)=0)) ORDER BY a.assignment_id LIMIT ? OFFSET ?`,[batch.batch_id,offset===null?10001:21,offset??0]).map(row=>({
       preparedState:row.state_json,assignmentId:row.assignment_id,taskId:row.target_task_id??row.task_id,sessionId:row.current_session_id,
-      title:row.title??row.requested_title??'准备子任务',dispatchState:row.dispatch_state??(row.lifecycle_state==='done'?'completed':row.session_status),
+      title:row.title??row.requested_title??'准备子任务',
+      phase:row.reclamation_phase==='purge'||row.delivery_phase==='cleanup' ? 'reclamation'
+        : row.delivery_phase||row.reclamation_phase==='delivery' ? 'delivery'
+        : row.error_code==='SHADOW_REVIEW_PENDING'||(!row.operation_id&&row.mailbox_purpose==='shadow_requirement')||(row.runtime_json&&JSON.parse(row.runtime_json).managementExecutorSessionId&&!row.operation_id) ? 'shadow'
+        : !row.target_task_id ? 'preparation' : !row.operation_id ? 'dispatch' : 'execution',
+      previousExecutionStatus:row.latest_execution_status??null,
+      deliveryState:row.delivery_state,reclamationError:row.reclamation_error,
+      dispatchState:row.dispatch_state??(row.lifecycle_state==='done'?'completed':row.session_status),
       executionState:row.session_status,waitingInput:row.session_status==='blocked' && (!row.dispatch_state || row.dispatch_state==='running'),
       inconsistent:row.dispatch_state==='running' && ['complete','completed','failed','cancelled'].includes(row.session_status),
       deliveryVerified:row.delivery_state==='completed',acceptanceVerified:row.delivery_state==='completed'&&row.lifecycle_state==='done',
-      summary:row.summary,reason:row.dispatch_state==='failed' && !row.target_task_id && !row.operation_id
+      summary:row.summary,reason:row.delivery_error??row.reclamation_error??(row.dispatch_state==='failed' && !row.target_task_id && !row.operation_id
         ? preparationFailureReason(row)
-        : ['completed','queued','running'].includes(row.dispatch_state)?'':row.error_message??'',
-      reportMessageId:row.report_message_id,updatedAt:row.updated_at??row.created_at
+        : ['completed','queued','running'].includes(row.dispatch_state)?'':row.error_message??''),
+      reportMessageId:row.report_message_id,updatedAt:row.delivery_updated_at??row.updated_at??row.created_at
     }));
   }
   refresh(batchId){

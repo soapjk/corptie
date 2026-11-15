@@ -40,3 +40,53 @@
 "请求进展" = "Request progress";
 
 "复制" = "Copy";
+
+"失败阶段：%@" = "Failure stage: %@";
+
+"正在处理…" = "Processing…";
+
+"重试" = "Retry";
+
+"核对重试结果" = "Check retry result";
+
+"重试请求已受理。" = "Retry accepted.";
+
+"重试未受理，请查看详情。" = "Retry rejected. Check details.";
+
+"重试结果待核实，请勿重复执行。" = "Retry result uncertain. Do not repeat execution.";
+
+"操作失败，可核对重试结果。" = "Operation failed. Check the retry result.";
+
+"读取信息" = "Reading information";
+
+"处理请求" = "Processing request";
+
+"等待执行" = "Waiting to execute";
+
+"派发任务" = "Dispatching work";
+
+"准备执行" = "Preparing execution";
+
+"后台处理" = "Background processing";
+
+"准备受阻" = "Preparation blocked";
+
+"派发受阻" = "Dispatch blocked";
+
+"后续派发受阻" = "Follow-up dispatch blocked";
+
+"交付受阻" = "Delivery blocked";
+
+"回收受阻" = "Cleanup blocked";
+
+"影子处理中" = "Shadow processing";
+
+"交付中" = "Delivering";
+
+"回收中" = "Cleaning up";
+
+"上一轮执行已结束，后续指令尚未送达。" = "Previous execution ended; the follow-up has not reached the child.";
+
+"上一轮执行失败，正在处理后续指令。" = "Previous execution failed; processing the follow-up.";
+
+"上一轮执行已取消，正在处理后续指令。" = "Previous execution was cancelled; processing the follow-up.";

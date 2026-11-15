@@ -248,7 +248,9 @@ struct MacSharedMessageTextCard: View {
                     MacProcessBlockView(block: block, cardWidth: layout.cardWidth, baseDirectory: baseDirectory)
                 }
                 else if let event = row.coordinationEvent {
-                    CoordinationSummaryCard(event: event, text: row.nativeText)
+                    CoordinationSummaryCard(event: event, text: row.nativeText, api: {
+                        ClientDetailAPI(transport: try BackendTransport(endpoint: BackendEndpoint(CorptieAppEnvironment.backendBaseURL)), route: .desktop)
+                    })
                 }
                 else if let progress = row.coordinationProgress {
                     MacCoordinationProgressCard(progress: progress)

@@ -5,6 +5,7 @@ import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 import { createStartupTiming } from "../utils/startupTiming.mjs";
 
 const terminal = new Set(["completed", "failed", "cancelled", "unknown"]);
+const inspectable = new Set([...terminal, "blocked", "waiting_input"]);
 const fail = (code, message = code, statusCode = 409) => { throw Object.assign(new Error(message), { code, statusCode }); };
 
 // Durable admission/outbox metadata. Message ownership, delivery and execution
@@ -275,6 +276,17 @@ export class TaskCoordinationService {
     });
   }
   validateMailbox(row, authorization) {
+    if (authorization.observedOperationId) {
+      const work = this.adoptedExecution(this.store.getAgentTask(authorization.observedOperationId));
+      const session = work && this.store.getSession(work.sessionId);
+      const child = session?.taskId && this.store.getTask(session.taskId);
+      const parent = child?.parent_task_id && this.store.getTask(child.parent_task_id);
+      const main = parent?.current_session_id && this.store.getLogicalSessionByLegacySessionId(parent.current_session_id);
+      if (!child || child.id !== authorization.childTaskId || child.work_id !== parent?.work_id
+        || row.source_id !== work.taskId || main?.logicalSessionId !== authorization.mainSessionId) fail("COORDINATION_REPORT_SCOPE_INVALID");
+      this.shadow?.assertRecipient(row, main.logicalSessionId);
+      return;
+    }
     const dispatch = this.get(authorization.coordinationDispatchId);
     if (!dispatch || dispatch.dispatch_id !== row.source_id) fail("COORDINATION_AUTHORIZATION_REVOKED");
     const { scope } = this.sourceContext(dispatch);
@@ -284,13 +296,13 @@ export class TaskCoordinationService {
     }
     if (authorization.purpose === "shadow_report") {
       this.shadow?.assertRecipient(row, this.reportOwner(dispatch));
-      if (!terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
+      if (!inspectable.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
       return;
     }
     if (authorization.purpose === "parent_report") {
       if (this.shadow) {
         this.shadow.assertRecipient(row, this.reportOwner(dispatch));
-        if (!terminal.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
+        if (!inspectable.has(dispatch.status) || authorization.reportGeneration !== dispatch.report_generation) fail("COORDINATION_REPORT_SCOPE_INVALID");
         return;
       }
       if (authorization.statusNotice && (!Number.isSafeInteger(authorization.reportGeneration)
@@ -311,7 +323,7 @@ export class TaskCoordinationService {
     if (!message) return operation;
     const turn = this.store.getSessionTurn(message.adopted_provider_session_id,message.adopted_binding_id,message.adopted_turn_id);
     const status = turn?.executionStatus ?? turn?.execution_status;
-    return { ...operation, status: ["running","blocked"].includes(status) ? "running"
+    return { ...operation, status: status === "blocked" ? "waiting_input" : status === "running" ? "running"
       : ["completed","failed","cancelled"].includes(status) ? status : "unknown",
       targetTurnId: message.adopted_turn_id };
   }
@@ -400,7 +412,7 @@ export class TaskCoordinationService {
     // Events are notifications about stored state, not a second state authority.
     // A late started/cancelled event must not roll a newer operation back.
     const work = currentWork ?? receivedWork;
-    if (currentWork && receivedWork?.status && currentWork.status !== receivedWork.status) return;
+    if (currentWork && receivedWork?.status && currentWork.status !== receivedWork.status && !["blocked", "waiting_input"].includes(currentWork.status)) return;
     if (currentWork?.updatedAt && receivedWork?.updatedAt && receivedWork.updatedAt < currentWork.updatedAt) return;
     if (work?.sessionId && ["AgentWorkStarted", "AgentWorkFailed", "AgentWorkCompleted"].includes(type)) {
       const logical = this.store.getLogicalSessionByLegacySessionId(work.sessionId);
@@ -439,12 +451,59 @@ export class TaskCoordinationService {
           error_message: type === "AgentWorkStarted" ? null : work.lastError ?? null });
       }
     }
-    if (["AgentWorkCompleted", "AgentWorkFailed", "SessionTurnCompleted", "SessionTurnFailed", "SessionRunCompleted", "SessionRunFailed", "SessionRunInterrupted", "TurnCompleted", "AgentTurnCompleted", "AgentTurnFailed", "MessageDeliveryChanged"].includes(type)) this.scheduleReports();
+    if (["AgentWorkCompleted", "AgentWorkFailed"].includes(type) && work) this.observeChildOperation(work);
+    if (["SessionTurnCompleted", "SessionTurnFailed", "SessionRunCompleted", "SessionRunFailed", "SessionRunInterrupted", "TurnCompleted", "AgentTurnCompleted", "AgentTurnFailed", "TaskBlocked", "SessionApprovalRequested"].includes(type)) {
+      const id = payload?.sessionId ?? payload?.session?.id;
+      const session = id && (this.store.getSession(id) ?? this.store.getSession(this.store.getLogicalSession(id)?.legacySessionId));
+      if (session) {
+        const latest = this.store.selectOne("SELECT task_id FROM agent_operations WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", [session.id]);
+        const operation = latest && this.adoptedExecution(this.store.getAgentTask(latest.task_id));
+        if (operation) {
+          const status = session.status === "blocked" && operation.status === "running" ? "waiting_input" : operation.status;
+          const row = this.store.selectOne("SELECT dispatch_id FROM task_coordination_dispatches WHERE operation_id=?", [operation.taskId]);
+          if (row && inspectable.has(status)) this.update(row.dispatch_id, { status });
+          else this.observeChildOperation({ ...operation, status });
+        }
+      }
+    }
+    if (["TaskBlocked", "SessionApprovalRequested", "AgentWorkDispatchBlocked", "AgentWorkCompleted", "AgentWorkFailed", "SessionTurnCompleted", "SessionTurnFailed", "SessionRunCompleted", "SessionRunFailed", "SessionRunInterrupted", "TurnCompleted", "AgentTurnCompleted", "AgentTurnFailed", "MessageDeliveryChanged"].includes(type)) this.scheduleReports();
   }
   scheduleReports() {
     if (this.reportScheduled) return;
     this.reportScheduled = true;
     setImmediate(() => { this.reportScheduled = false; Promise.resolve(this.flushReports()).catch(error => console.warn(`[coordination-report] ${error.code ?? error.message}`)); });
+  }
+  // Manual child turns share the same mailbox and delegation as dispatched
+  // turns. No synthetic dispatch, child-authored report or transcript is needed.
+  observeChildOperation(operation) {
+    if (!this.shadow || !operation) return;
+    const work = this.adoptedExecution(operation);
+    const session = this.store.getSession(work.sessionId), child = session?.taskId && this.store.getTask(session.taskId);
+    if (child?.current_session_id !== session?.id || !child?.parent_task_id || child.archived || child.deletion_status || !inspectable.has(work.status)) return;
+    if (this.store.selectOne("SELECT 1 FROM task_coordination_dispatches WHERE operation_id=? LIMIT 1", [work.taskId])) return;
+    // Ignore an obsolete execution if another operation now owns this child.
+    const latest = this.store.selectOne("SELECT task_id FROM agent_operations WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", [work.sessionId]);
+    if (latest?.task_id !== work.taskId) return;
+    const parent = this.store.getTask(child.parent_task_id);
+    const main = parent?.current_session_id && this.store.getLogicalSessionByLegacySessionId(parent.current_session_id);
+    if (!main || parent.work_id !== child.work_id) return;
+    this.shadow.reserve(main.logicalSessionId);
+    const target = this.shadow.resolveRecipient(main.logicalSessionId);
+    if (target.status !== "ready") {
+      if (target.status === "recovering") void this.shadow.requestRecovery(main.logicalSessionId).then(() => {
+        if (this.store.db && this.shadow.resolveRecipient(main.logicalSessionId).status === "ready") this.observeChildOperation(this.store.getAgentTask(work.taskId));
+      });
+      return;
+    }
+    const key = `child-stop:${work.taskId}:${work.targetTurnId ?? "none"}:${work.status}`;
+    if (this.store.selectOne("SELECT 1 FROM session_mailbox_messages WHERE source_type='background' AND source_id=? AND json_extract(authorization_json,'$.idempotencyKey')=? LIMIT 1", [work.taskId,key])) {
+      this.shadow.reconcileMailbox(this.mailbox,main.logicalSessionId); return;
+    }
+    this.mailbox.receiveEvent({ recipientSessionId: target.sessionId, sourceType: "background", sourceId: work.taskId,
+      intent: "response_required", priority: 5, idempotencyKey: key,
+      body: `${CHILD_TASK_RESULT_NOTICE_PREFIX}宿主检测到子会话停止或需要输入，请检查当前状态和结果；执行结束不代表目标完成。\n${JSON.stringify({ targetTaskId: child.id, childSessionId: work.sessionId, operationId: work.taskId, turnId: work.targetTurnId, status: work.status, targetOutcome: "not_assessed" })}`,
+      authorization: { ownerLogicalSessionId: target.sessionId, sourceId: work.taskId, purpose: "shadow_report",
+        observedOperationId: work.taskId, childTaskId: child.id, mainSessionId: main.logicalSessionId } });
   }
   activateShadow(taskId) { this.handleModeChanged(taskId); }
   handleModeChanged(taskId) {
@@ -462,11 +521,7 @@ export class TaskCoordinationService {
     const cursor = this.reportCursor;
     const rows = this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
       JOIN tasks parent ON parent.id=d.parent_task_id JOIN sessions s ON s.id=parent.current_session_id
-      WHERE d.status IN ('completed','failed','cancelled') AND d.report_message_id IS NULL
-      AND (d.status IN ('failed','cancelled') OR EXISTS(SELECT 1 FROM agent_operations result_op WHERE result_op.task_id=d.operation_id
-        AND EXISTS(SELECT 1 FROM session_items result_item WHERE result_item.session_id=result_op.session_id
-          AND result_item.turn_id=result_op.target_turn_id AND result_item.type='agentMessage'
-          AND COALESCE(result_item.presentation_role,'') NOT IN ('commentary','reasoning'))))
+      WHERE d.status IN ('completed','failed','cancelled','unknown','blocked','waiting_input') AND d.report_message_id IS NULL
       AND s.archived=0 AND s.deleted_at IS NULL
       ${cursor ? "AND (d.created_at>? OR (d.created_at=? AND d.dispatch_id>?))" : ""}
       ORDER BY d.created_at,d.dispatch_id LIMIT 100`, cursor ? [cursor.created_at, cursor.created_at, cursor.dispatch_id] : []);
@@ -474,7 +529,13 @@ export class TaskCoordinationService {
     let capacitySkipped = false, delivered = false;
     const groups = new Map();
     for (const row of rows) {
-      if (this.reconcileReportedResult(row)) continue;
+      const work = row.operation_id && this.store.getAgentTask(row.operation_id);
+      if (!this.shadow && (!["completed","failed","cancelled"].includes(row.status)
+        || row.status === "completed" && (!work?.targetTurnId || !this.store.selectOne(`SELECT 1 FROM session_items WHERE session_id=? AND turn_id=? AND type='agentMessage'
+          AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') LIMIT 1`, [work.sessionId,work.targetTurnId])))) continue;
+      if (row.status === "blocked" && work?.source?.dispatchBlock?.kind === "waiting") continue;
+      if (!terminal.has(row.status) && ["SESSION_BUSY", "CHANNEL_BATCH_WAIT", "SESSION_RECOVERING"].includes(row.error_code)) continue;
+      if (terminal.has(row.status) && this.reconcileReportedResult(row)) continue;
       const key = this.reportOwner(row);
       const group = groups.get(key) ?? [];
       if (group.length < 8) group.push(row); else capacitySkipped = true;
@@ -507,13 +568,13 @@ export class TaskCoordinationService {
           FROM session_items WHERE session_id=? AND turn_id=? AND type='agentMessage'
           AND COALESCE(presentation_role,'') NOT IN ('commentary','reasoning') ORDER BY created_at DESC,id DESC LIMIT 1`, [work.sessionId, work.targetTurnId]) : null;
         return { ...this.receipt(row), childSessionId: work?.sessionId ?? null, turnId: work?.targetTurnId ?? null,
-          outcome: row.status === "failed" ? "execution_failed" : row.status === "cancelled" ? "execution_cancelled" : "execution_ended", targetOutcome: "not_assessed",
+          outcome: row.status === "completed" ? "execution_ended" : `execution_${row.status}`, targetOutcome: "not_assessed",
           errorCode:row.error_code ?? null,errorMessage:row.error_message ?? work?.lastError ?? null,
           finalMessageId: reply?.id ?? null, bindingId: reply?.binding_id ?? null,
           resultExcerpt: reply?.text ?? null, excerptTruncated: (reply?.fullLength ?? 0) > 1200 };
       });
 
-      const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}本批为子会话执行结果，不是用户新指令，也不代表目标完成或已验收。一次读取本批全部结果，结合原请求判断交付、问题或后台等待；继续此前已授权的审查、集成、验证及后续待办。不要逐条确认收件、查询调度状态或向用户转述内部回执。只有实质决策或阶段成果才汇报。\n${JSON.stringify(results)}`;
+      const body = `${CHILD_TASK_RESULT_NOTICE_PREFIX}宿主检测到子会话执行停止，不代表目标完成或已验收。读取本批实际状态和最终结果，自行推进交付、返工或必要检查；仅缺少必要信息时提问。子任务无需主动汇报，不要求收件确认或查找汇总会话；实质结果集中展示。\n${JSON.stringify(results)}`;
       this.store.runInTransaction(() => {
         const message = this.mailbox.receiveEvent({ recipientSessionId, sourceType: "background", sourceId: first.dispatch_id,
           body, intent: "response_required", priority: 5, idempotencyKey: `report:${first.dispatch_id}:${first.report_generation}`,
@@ -620,7 +681,7 @@ export class TaskCoordinationService {
         const turn = this.store.getSessionTurn(adopted.adopted_provider_session_id, adopted.adopted_binding_id, adopted.adopted_turn_id);
         const status = turn?.executionStatus ?? turn?.execution_status;
         this.update(row.dispatch_id, { status: ["completed", "failed", "cancelled"].includes(status) ? status
-          : ["running", "blocked"].includes(status) ? "running" : "unknown" });
+          : status === "blocked" ? "waiting_input" : status === "running" ? "running" : "unknown" });
       }
       else if (!work) this.update(row.dispatch_id, { status: "unknown", error_code: "DELIVERY_STATE_UNKNOWN" });
       else if (!work.targetTurnId && work.source?.mailboxDispatchAttempted) {
@@ -628,6 +689,13 @@ export class TaskCoordinationService {
         this.update(row.dispatch_id, { status: "unknown", error_code: "PROVIDER_ACCEPTANCE_UNKNOWN" });
       }
       else if (["completed", "failed", "cancelled"].includes(work.status)) this.update(row.dispatch_id, { status: work.status, error_message: work.lastError ?? null });
+    }
+    if (this.shadow) for (const row of this.store.selectAll(`SELECT op.task_id FROM agent_operations op
+      JOIN sessions s ON s.id=op.session_id JOIN tasks t ON t.id=s.task_id
+      WHERE t.parent_task_id IS NOT NULL AND t.current_session_id=s.id AND t.archived=0
+        AND COALESCE(t.deletion_status,'')='' AND op.rowid=(SELECT recent.rowid FROM agent_operations recent WHERE recent.session_id=s.id ORDER BY recent.created_at DESC,recent.rowid DESC LIMIT 1)
+        AND NOT EXISTS(SELECT 1 FROM task_coordination_dispatches d WHERE d.operation_id=op.task_id)`)) {
+      this.observeChildOperation(this.store.getAgentTask(row.task_id));
     }
     this.scheduleReports();
   }

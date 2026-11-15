@@ -4,11 +4,11 @@ import { TaskWorktreeHierarchyService } from "./taskWorktreeHierarchyService.mjs
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 
 export class ChildTaskDeliveryService {
-  constructor({ store, gitWorkspaces, jobs, artifactService, deletionService, prepareProtection, onEvent = () => {} }) {
-    Object.assign(this,{store,gitWorkspaces,jobs,artifactService,deletionService,onEvent});
+  constructor({ store, gitWorkspaces, jobs, artifactService, deletionService, prepareProtection, onEvent = () => {}, schedule = setTimeout, cancelTimer = clearTimeout }) {
+    Object.assign(this,{store,gitWorkspaces,jobs,artifactService,deletionService,onEvent,schedule,cancelTimer});
     this.repository = new ChildTaskDeliveryRepository(store);
     this.hierarchy = new TaskWorktreeHierarchyService({store});
-    this.inFlight = new Map(); this.pending = new Set();
+    this.inFlight = new Map(); this.pending = new Set(); this.preparing = new Map(); this.cleanupRetries = new Map();
     this.prepareProtection=prepareProtection;
     this.deletionService.prepareChildDelivery = id => this.prepareCleanup(id);
   }
@@ -67,12 +67,28 @@ export class ChildTaskDeliveryService {
     return [...ids].sort().map(id=>this.store.getArtifact(id));
   }
   recordApproval(approval,snapshot,actor) { return this.repository.createFromApproval(approval,snapshot,actor); }
-  async requestShadowDelivery(taskId) {
+  requestShadowDelivery(taskId) {
+    if (this.preparing.has(taskId)) return this.preparing.get(taskId);
+    const flight = this.prepareShadowDelivery(taskId).catch(error => {
+      if (this.store.db) {
+        this.store.db.run("UPDATE coordination_shadow_reclamation SET last_error=?,updated_at=? WHERE task_id=? AND phase='delivery'",
+          [String(error.code ?? error.message).slice(0,1000),new Date().toISOString(),taskId]);
+        this.store.scheduleSave();
+        this.onEvent("TaskChanged",{action:"child-delivery-preparation",entity:this.store.getTask(taskId)});
+      }
+      throw error;
+    }).finally(() => this.preparing.delete(taskId));
+    this.preparing.set(taskId,flight);
+    return flight;
+  }
+  async prepareShadowDelivery(taskId) {
     const review = this.store.selectOne("SELECT * FROM coordination_shadow_reclamation WHERE task_id=?", [taskId]);
     if (!review || review.phase !== "delivery") throw failure("SHADOW_REVIEW_REQUIRED", "缺少影子会话的技术验收记录。");
     const existing = this.store.selectOne("SELECT operation_id FROM child_task_delivery_operations WHERE approval_operation_id=?", [review.report_id + ":" + taskId]);
     if (existing) { this.wake(existing.operation_id); return this.repository.getOperation(existing.operation_id); }
+    this.assertChildIdle(taskId);
     const snapshot = await this.prepareVersion(taskId);
+    this.store.db.run("UPDATE coordination_shadow_reclamation SET last_error=NULL WHERE task_id=?",[taskId]);
     const operation = this.repository.createFromApproval({ operationId: review.report_id + ":" + taskId }, snapshot,
       { type: "shadow_session", id: review.shadow_session_id });
     this.wake(operation.operationId);
@@ -291,25 +307,48 @@ export class ChildTaskDeliveryService {
         if (!operation) return this.repository.getOperation(id);
       }
       const completed = this.advance(operation,{state:"completed",phase:"completed",progress:{...operation.progress,completedAt:new Date().toISOString()}});
-      if (operation.actor.type === "shadow_session") await this.reclaimChild?.(operation.taskId);
+      // Purge has its own durable recovery record. A purge error cannot turn
+      // delivered code/Artifacts back into a blocked execution or replay Git.
+      if (operation.actor.type === "shadow_session") {
+        try { await this.reclaimChild?.(operation.taskId); }
+        catch (error) { console.warn(`[shadow-purge] ${error.code ?? error.message}`); }
+      }
       return completed;
     } catch(error) {
       operation=this.repository.getOperation(id);
       if (operation?.state === "superseded") return operation;
       const failed = this.advance(operation,{state:error.code==="TASK_HIERARCHY_BUSY" ? "waiting" : "blocked",
         errorCode:error.code ?? "CHILD_DELIVERY_FAILED",errorMessage:String(error.message).slice(0,1000)});
-      if (failed.state === "blocked" && failed.actor.type === "shadow_session") this.onShadowBlocked?.(failed);
+      if (failed.state === "blocked" && failed.actor.type === "shadow_session") {
+        this.scheduleCleanupRetry(failed);
+        this.onShadowBlocked?.(failed);
+      }
       return failed;
     }
   }
+  scheduleCleanupRetry(operation) {
+    if (operation.actor.type !== "shadow_session" || operation.phase !== "cleanup"
+      || operation.errorCode !== "CHILD_DELIVERY_CLEANUP_FAILED" || this.cleanupRetries.has(operation.operationId)) return;
+    const timer = this.schedule(() => {
+      this.cleanupRetries.delete(operation.operationId);
+      if (!this.store.db) return;
+      const current = this.repository.getOperation(operation.operationId);
+      if (current?.state === "blocked" && current.phase === "cleanup") {
+        try { this.retry(current.operationId); }
+        catch (error) { console.warn(`[shadow-cleanup-retry] ${error.code ?? error.message}`); }
+      }
+    }, 30_000);
+    timer.unref?.(); this.cleanupRetries.set(operation.operationId, timer);
+  }
   retry(id) {
+    if (this.cleanupRetries.has(id)) { this.cancelTimer(this.cleanupRetries.get(id)); this.cleanupRetries.delete(id); }
     let operation=this.repository.getOperation(id);
     if(!operation) throw failure("CHILD_DELIVERY_NOT_FOUND","收尾记录不存在。");
     if(operation.state==="completed") return this.present(operation);
     if(operation.state==="superseded") throw failure("CHILD_DELIVERY_APPROVAL_INVALID","此版本已被新的验收取代。");
     if(this.inFlight.has(id)) return this.present(operation);
     const progress={...operation.progress};
-    if(progress.deletionOperationId && this.deletionService.getOperation(progress.deletionOperationId).state==="failed") {
+    if(progress.deletionOperationId && this.deletionService.getOperation(progress.deletionOperationId)?.state==="failed") {
       progress.previousDeletionOperationId=progress.deletionOperationId;
       delete progress.deletionOperationId; progress.cleanupAttempt=(progress.cleanupAttempt ?? 0)+1;
     }
@@ -322,7 +361,9 @@ export class ChildTaskDeliveryService {
     // original operation/error key makes repeated startup delivery idempotent.
     for (const row of this.store.selectAll(`SELECT operation_id FROM child_task_delivery_operations
       WHERE state='blocked' AND json_extract(actor_json,'$.type')='shadow_session'`)) {
-      this.onShadowBlocked?.(this.repository.getOperation(row.operation_id));
+      const blocked = this.repository.getOperation(row.operation_id);
+      this.scheduleCleanupRetry(blocked);
+      this.onShadowBlocked?.(blocked);
     }
     for (const row of this.store.selectAll(`SELECT r.task_id FROM coordination_shadow_reclamation r
       JOIN tasks t ON t.id=r.task_id WHERE t.deletion_status='deleted'`)) {
@@ -340,12 +381,22 @@ export class ChildTaskDeliveryService {
     // Never scan durable deliveries for token deltas or timeline updates.
     if(!["WorktreeIntegrationJobChanged","SessionRunCompleted","SessionRunFailed","SessionRunInterrupted",
       "SessionTurnCompleted","TurnCompleted","AgentTurnCompleted","CodexThreadCompleted","AgentTurnFailed",
-      "AgentWorkCompleted","MessageDeliveryChanged","ArtifactChanged"].includes(type)) return;
+      "AgentWorkCompleted","AgentWorkFailed","MessageDeliveryChanged","ArtifactChanged","GitWorktreeChanged","WorkspaceChanged"].includes(type)) return;
     const id=payload?.job?.id ?? payload?.entity?.id ?? payload?.jobId ?? payload?.id;
     const sessionId=payload?.sessionId ?? payload?.session?.id ?? id;
     const session=sessionId ? this.store.getSession(sessionId) : null;
     const resource=payload?.artifact ?? payload?.entity;
     const artifactTaskId=resource?.boundTaskId ?? (resource?.boundSessionId ? this.store.getSession(resource.boundSessionId)?.taskId : null);
+    const affected = new Set([session?.taskId, artifactTaskId].filter(Boolean));
+    // Resume reviews admitted before Git preparation, including the crash window
+    // before a delivery operation existed. Only lifecycle/resource events reach here.
+    for (const row of this.store.selectAll(`SELECT r.task_id,t.parent_task_id FROM coordination_shadow_reclamation r
+      JOIN tasks t ON t.id=r.task_id WHERE r.phase='delivery' AND COALESCE(t.deletion_status,'')=''
+      AND NOT EXISTS(SELECT 1 FROM child_task_delivery_operations d WHERE d.child_task_id=r.task_id)`)) {
+      if (affected.has(row.task_id) || affected.has(row.parent_task_id) || ["WorktreeIntegrationJobChanged","GitWorktreeChanged","WorkspaceChanged"].includes(type)) {
+        void this.requestShadowDelivery(row.task_id).catch(error => console.warn(`[shadow-delivery-resume] ${error.code ?? error.message}`));
+      }
+    }
     for(const op of this.repository.listRecoverableOperations()) {
       if((id && op.progress.gitJobId===id) || session?.taskId===op.taskId || session?.taskId===op.parentTaskId || artifactTaskId===op.taskId) void this.wake(op.operationId);
     }

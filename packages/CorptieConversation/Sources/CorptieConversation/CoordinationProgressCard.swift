@@ -75,6 +75,10 @@ private struct CoordinationProgressRow: View {
                     status
                 }
             }
+            if let previous = item.previousExecutionTitle {
+                Text(LocalizedStringKey(previous), bundle: .module).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
             if !description.isEmpty {
                 Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -146,6 +150,7 @@ private struct CoordinationProgressItemDetail: View {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                         .buttonStyle(.plain).accessibilityLabel(Text("关闭", bundle: .module))
                 }
+                if let previous = item.previousExecutionTitle { Text(LocalizedStringKey(previous), bundle: .module).font(.caption).foregroundStyle(.secondary) }
                 if !item.previewSummary.isEmpty { Text(item.previewSummary).font(.callout).textSelection(.enabled) }
                 if !item.reason.isEmpty, item.reason != item.previewSummary {
                     Text(item.reason).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -199,11 +204,29 @@ private struct CoordinationPreviewHeight: PreferenceKey {
 public struct CoordinationSummaryCard: View {
     public let event: ConversationCoordinationEvent
     public let text: String
-    public init(event: ConversationCoordinationEvent, text: String) { self.event = event; self.text = text }
+    public var api: (() async throws -> ClientDetailAPI)?
+    @State private var retryTask: Task<Void, Never>?
+    @State private var pendingCommand: ClientDetailActionRequest?
+    @State private var submitting = false
+    @State private var retryMessage: String?
+    @State private var retryAccepted = false
+    public init(event: ConversationCoordinationEvent, text: String, api: (() async throws -> ClientDetailAPI)? = nil) {
+        self.event = event; self.text = text; self.api = api
+    }
     private var bodyText: String {
         // Legacy reports carry this generated heading; classification uses metadata only.
         event.kind == "summary" && text.hasPrefix("**后台汇总**\n\n")
             ? String(text.dropFirst("**后台汇总**\n\n".count)) : text
+    }
+    private var phaseTitle: String {
+        switch event.phase {
+        case "reading": "读取信息"
+        case "planning", "waiting_model": "处理请求"
+        case "queued": "等待执行"
+        case "admitting", "dispatch": "派发任务"
+        case "preparing": "准备执行"
+        default: "后台处理"
+        }
     }
     private var title: String {
         switch event.kind {
@@ -225,8 +248,45 @@ public struct CoordinationSummaryCard: View {
                     .buttonStyle(.plain).accessibilityLabel(Text("复制", bundle: .module))
             }
             Text(bodyText).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if event.kind == "failure" {
+                if event.phase != nil {
+                    Text(LocalizedStringKey(phaseTitle), bundle: .module).font(.caption).foregroundStyle(.secondary)
+                }
+                if event.retryable == true, event.requestId != nil, event.sessionId != nil, api != nil, !retryAccepted {
+                    Button { retryTask = Task { await retry() } } label: {
+                        Text(submitting ? "正在处理…" : pendingCommand == nil ? "重试" : "核对重试结果", bundle: .module)
+                    }.buttonStyle(.borderless).disabled(submitting)
+                }
+                if let retryMessage { Text(LocalizedStringKey(retryMessage), bundle: .module).font(.caption).foregroundStyle(.secondary) }
+            }
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .modifier(ConversationSkinSurface(role: .structured, radius: 12,
                 legacyFill: WorkbenchCanvasSurface.defaultColor, legacyBorder: Color.primary.opacity(0.10)))
+            .onDisappear { retryTask?.cancel(); retryTask = nil }
+    }
+    @MainActor private func retry() async {
+        guard !submitting, let api, let session = event.sessionId, let request = event.requestId else { return }
+        submitting = true; defer { submitting = false }
+        do {
+            let client = try await api().nativeBusinessPolicy
+            let receipt: ClientCommandReceipt
+            if let pendingCommand {
+                do { receipt = try await client.actionTransport.receipt(sessionID: session, requestID: pendingCommand.requestId) }
+                catch let failure as ClientServiceFailure where failure.statusCode == 404 {
+                    // A user click may resubmit the exact command only after the
+                    // host proves no receipt exists; the idempotency ID is retained.
+                    receipt = try await client.actionTransport.command(sessionID: session, request: pendingCommand)
+                }
+            } else {
+                let command = try await client.coordinationRetryCommand(sessionID: session, requestID: request)
+                pendingCommand = command
+                receipt = try await client.actionTransport.command(sessionID: session, request: command)
+            }
+            try Task.checkCancellation()
+            retryAccepted = receipt.status == "completed" || receipt.status == "accepted" || receipt.status == "dispatching"
+            if receipt.status == "rejected" { pendingCommand = nil }
+            retryMessage = retryAccepted ? "重试请求已受理。" : receipt.status == "rejected" ? "重试未受理，请查看详情。" : "重试结果待核实，请勿重复执行。"
+        } catch is CancellationError { }
+        catch { if !Task.isCancelled { retryMessage = "操作失败，可核对重试结果。" } }
     }
 }

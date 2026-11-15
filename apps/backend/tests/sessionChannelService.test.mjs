@@ -70,8 +70,8 @@ async function childFixture(t) {
   f.service.collaborationCore.bindSession({ agentId: "agent:b", sessionId: "provider:child" });
   f.store.db.run("UPDATE tasks SET current_session_id='provider:a' WHERE id='task:a'");
   f.store.db.run("UPDATE tasks SET current_session_id='provider:child' WHERE id='task:child'");
-  f.input = { requestingSessionId: "session:child", recipientSessionId: "session:a", body: "子会话主动回报",
-    deliveryIntent: "response_required", messageKind: "update", idempotencyKey: "child-first" };
+  f.input = { requestingSessionId: "session:child", recipientSessionId: "session:a", body: "需要确定接口约定",
+    deliveryIntent: "response_required", messageKind: "question", idempotencyKey: "child-first" };
   return f;
 }
 
@@ -260,7 +260,7 @@ test("automatic HTTP and dynamic tool flow resolves an old card without asking f
         "x-corptie-task-id": "task:child", "x-corptie-work-id": "work:channel" }, body: JSON.stringify(body) });
     const value = await response.json(); assert.equal(response.status, 201, JSON.stringify(value)); return value;
   } };
-  const input = { recipient_session_id: "session:a", body: f.input.body, message_kind: "update",
+  const input = { recipient_session_id: "session:a", body: f.input.body, message_kind: "question",
     delivery_intent: "response_required", idempotency_key: f.input.idempotencyKey };
   const result = await callCollaborationDynamicTool(client, "corptie_collaboration_channel_open", input);
   assert.equal(result.request.status, "sent"); assert.equal(result.request.requestId, pending.requestId);
@@ -295,7 +295,7 @@ test("current parent to direct child auto-authorizes one durable channel; siblin
     assert.equal(f.service.pendingRequestForSession("session:a"),null);
     assert.equal(f.service.requestChannel(input).message.messageId,first.message.messageId);
     assert.equal(f.service.listMessages(first.channel.channelId,"session:a").length,1);
-    const reply=f.service.sendMessage({channelId:first.channel.channelId,senderSessionId:"session:child",body:"received",idempotencyKey:"child-reply"});
+    const reply=f.service.sendMessage({channelId:first.channel.channelId,senderSessionId:"session:child",body:"需要确定接口约定",messageKind:"question",idempotencyKey:"child-reply"});
     assert.equal(reply.message.recipientSessionId,"session:a");
     assert.equal(f.service.requestChannel({...input,recipientSessionId:"session:b",idempotencyKey:"unrelated"}).status,"pending");
     f.service.revokeChannel(first.channel.channelId,"session:a","stop");
@@ -1059,4 +1059,19 @@ test("mixed reports return to their queue only before submission, while uncertai
   f.mailbox.mark(batch.batch_id,'accepted',{turnId:'late:receipt'});
   assert.equal(inbox.raw('session:b',report.messageId).adopted_turn_id,'late:receipt');
  }finally{await f.close();}
+});
+
+test('child completion and status reports create neither messages nor wakeable deliveries',async t=>{
+ const f=await childFixture(t);
+ for(const messageKind of ['message','update'])for(const deliveryIntent of ['action_required','response_required','notification','acknowledgement']){
+  const result=f.service.requestChannel({...f.input,messageKind,deliveryIntent,idempotencyKey:`quiet:${messageKind}:${deliveryIntent}`});
+  assert.equal(result.status,'collected_by_host');assert.equal(result.reasonCode,'CHILD_REPORT_COLLECTED_BY_HOST');
+ }
+ for(const table of ['session_collaboration_messages','session_collaboration_deliveries','session_collaboration_channel_requests'])assert.equal(f.store.selectOne(`SELECT COUNT(*) n FROM ${table}`).n,0);
+ const question=f.service.requestChannel({...f.input,idempotencyKey:'essential-question'});assert.equal(question.status,'sent');
+ const quiet=f.service.sendMessage({channelId:question.channel.channelId,senderSessionId:'session:child',body:'已完成',idempotencyKey:'quiet:active'});
+ assert.equal(quiet.status,'collected_by_host');
+ const parentQuestion=f.service.sendMessage({channelId:question.channel.channelId,senderSessionId:'session:a',messageKind:'question',body:'必要接口参数是什么',idempotencyKey:'parent-question'});
+ const answer=f.service.sendMessage({channelId:question.channel.channelId,senderSessionId:'session:child',body:'参数值为一',inReplyToMessageId:parentQuestion.message.messageId,idempotencyKey:'essential-answer'});
+ assert.ok(answer.message.messageId);
 });

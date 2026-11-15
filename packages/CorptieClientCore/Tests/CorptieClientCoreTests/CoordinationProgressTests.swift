@@ -35,3 +35,20 @@ struct CoordinationProgressNativeTests {
         guard case .unsupported = value.cards[0].payload else { Issue.record("Future card must be unsupported"); return }
     }
 }
+
+@Suite("Coordination stage presentation")
+struct CoordinationStageTests {
+    @Test func followupBlockKeepsPreviousCompletionSeparate() throws {
+        let data = Data(#"{"assignmentId":"one","taskId":"child","sessionId":"session","title":"模块","state":"blocked","phase":"shadow","previousExecutionStatus":"completed","summary":"","reason":"影子处理失败","reportMessageId":null,"updatedAt":"now"}"#.utf8)
+        let item = try JSONDecoder().decode(ClientCoordinationProgressItem.self, from: data)
+        #expect(item.statusTitle == "后续派发受阻")
+        #expect(item.previousExecutionTitle == "上一轮执行已结束，后续指令尚未送达。")
+        #expect(item.previewSummary == "影子处理失败")
+        var delivery = item
+        delivery.phase = "delivery"
+        #expect(delivery.statusTitle == "交付受阻")
+        #expect(delivery.previousExecutionTitle == nil)
+        delivery.phase = "reclamation"
+        #expect(delivery.statusTitle == "回收受阻")
+    }
+}

@@ -34,6 +34,18 @@ public struct ClientDetailAPI: Sendable {
         request.timeoutInterval = events ? 35 : 15
         return request
     }
+    /// Reuses the existing scoped Detail command and its durable receipt.
+    public func coordinationRetryCommand(sessionID: String, requestID: String) async throws -> ClientDetailActionRequest {
+        let document = try await businessSnapshot(sessionID: sessionID)
+        for card in document.cards {
+            if let action = card.actions.first(where: { $0.operation == "task.request.control" && $0.available }) {
+                return ClientDetailActionRequest(requestId: UUID().uuidString, documentId: document.documentId,
+                    cardId: card.id, actionId: action.id, expectedResourceRevision: action.expectedResourceRevision,
+                    fields: ["requestId": .string(requestID), "action": .string("retry")])
+            }
+        }
+        throw ClientServiceFailure(statusCode: 409, code: "REQUEST_RETRY_UNAVAILABLE")
+    }
     public func coordinationProgressPage(sessionID: String, batchID: String, offset: Int = 0) async throws -> ClientCoordinationProgressPage {
         let prefix = route == .desktop ? [] : ["client", "v1"]
         let request = try transport.endpoint.request(path: prefix + ["sessions", sessionID, "coordination-progress", batchID],

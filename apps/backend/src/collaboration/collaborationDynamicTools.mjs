@@ -177,7 +177,7 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_services_describe", "Describe a service, its owner, endpoint, version, metadata, and consumers.", {
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
-  tool("corptie_collaboration_channel_open", "Send a first or follow-up message directly to an exact @Session name, opening or reusing its durable Channel. Pass recipient_session_name immediately without pre-discovery; the server resolves exact names and aliases (with or without @). Only if it returns structured not-found or ambiguity details should you discover Sessions and retry with recipient_session_id. Current direct parent/child Sessions in the same Work auto-authorize in BOTH directions, including child-first contact: call normally without asking for separate approval. The server checks current bindings and respects revocation; unrelated pairs retain ordinary authorization. A missing target may be created only through explicit user confirmation.", {
+  tool("corptie_collaboration_channel_open", "Send a first or follow-up message directly to an exact @Session name, opening or reusing its durable Channel. Pass recipient_session_name immediately without pre-discovery; the server resolves exact names and aliases (with or without @). Only if it returns structured not-found or ambiguity details should you discover Sessions and retry with recipient_session_id. Current direct parent/child Sessions in the same Work auto-authorize in BOTH directions, including child-first contact: call normally without asking for separate approval. The server checks current bindings and respects revocation; unrelated pairs retain ordinary authorization. A missing target may be created only through explicit user confirmation. Child Sessions use upward messages only for essential unresolved questions; completion is collected by the host. Use message_kind=question for an essential unresolved question; normal completion/status reports return collected_by_host without creating a message. Do not search for a summary Session or send completion/status reports.", {
     recipient_session_name: { type: "string", minLength: 1, description: "Exact Session name or alias, optionally prefixed with @. Prefer this direct route before Session discovery." },
     recipient_session_id: sessionIdSchema,
     session_agent_id: { ...agentIdSchema, description: "Agent resource used only when Corptie must create the target Worker Session." },
@@ -292,6 +292,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
   }
   const value = await handler();
   if (name === "corptie_collaboration_channel_open") requireChannelRequestReceipt(value);
+  const collected = value?.request?.status === "collected_by_host" || value?.status === "collected_by_host";
   const pendingConfirmation = value?.request?.status === "pending";
   const intent = value?.message?.deliveryIntent ?? value?.request?.message?.deliveryIntent ?? input.delivery_intent;
   const silent = ["notification", "acknowledgement"].includes(intent);
@@ -299,11 +300,11 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     ? {
         ...value,
         coordination: {
-          delivery: pendingConfirmation ? "awaiting_user_confirmation" : silent ? "saved_without_wake" : "push",
+          delivery: collected ? "collected_by_host" : pendingConfirmation ? "awaiting_user_confirmation" : silent ? "saved_without_wake" : "push",
           waitRequired: false,
           requiresUserAction: pendingConfirmation,
           nextAction: pendingConfirmation ? "end_current_turn" : "continue_current_turn",
-          note: pendingConfirmation
+          note: collected ? "No message was created or sent. Leave the result in this child Session and finish when the assigned work is done. The host collects stopped executions; do not retry or look for another recipient." : pendingConfirmation
             ? "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
             : silent ? "Message saved without waking the recipient. Continue independent work; no receipt reply or polling is needed."
             : "Continue the current user-requested work when independent steps remain. Sending does not require ending the turn or waiting for a peer reply. Do not resend this message or poll; Corptie pushes peer messages into this Session's unified queue. End normally if the user's request is fulfilled."
@@ -313,6 +314,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
 }
 
 function requireChannelRequestReceipt(value) {
+  if (value?.request?.status === "collected_by_host" && value.request.reasonCode === "CHILD_REPORT_COLLECTED_BY_HOST") return value;
   if (value?.request?.status === "sent" && value.request.channel?.channelId) return value;
   if (typeof value?.request?.requestId === "string" && value.request.requestId.trim()) return value;
   const error = new Error("Corptie Channel request did not return a durable receipt.");

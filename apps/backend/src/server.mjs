@@ -554,7 +554,7 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
     if (authorization.checklistTaskId) {
       throw Object.assign(new Error("Legacy checklist continuation retired"), { code: "CHECKLIST_CONTINUATION_RETIRED" });
     }
-    if (authorization.coordinationDispatchId) {
+    if (authorization.coordinationDispatchId || authorization.observedOperationId) {
       if (!taskCoordinationService) throw Object.assign(new Error("Coordination unavailable."), { code: "CAPABILITY_UNAVAILABLE" });
       return taskCoordinationService.validateMailbox(row, authorization);
     }
@@ -2132,8 +2132,9 @@ function sessionTitleErrorPayload(error, extra = {}) {
 
 
 function emitEvent(type, payload, options = {}) {
-  childTaskDeliveryService?.onRuntimeEvent(type,payload);
-  taskCoordinationService?.onRuntimeEvent(type,payload);
+  const runtimePayload = options.sessionId ? { ...payload, sessionId: options.sessionId } : payload;
+  childTaskDeliveryService?.onRuntimeEvent(type,runtimePayload);
+  taskCoordinationService?.onRuntimeEvent(type,runtimePayload);
   productEventPublisher ??= createProductEventPublisher({
     store, eventLog, sseClients, now,
     getClientDeviceGateway: () => clientDeviceGateway,

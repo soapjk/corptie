@@ -22,6 +22,8 @@ public struct ClientCoordinationProgressItem: Codable, Equatable, Identifiable, 
     public let sessionId: String?
     public let title: String
     public let state: String
+    public var phase: String? = nil
+    public var previousExecutionStatus: String? = nil
     public let summary: String
     public let reason: String
     public let reportMessageId: String?
@@ -40,7 +42,20 @@ public struct ClientCoordinationProgressReport: Decodable, Sendable {
 
 extension ClientCoordinationProgressItem {
     public var statusTitle: String {
-        switch state {
+        if state == "blocked" {
+            switch phase {
+            case "preparation": return "准备受阻"
+            case "dispatch": return "派发受阻"
+            case "shadow": return "后续派发受阻"
+            case "delivery": return "交付受阻"
+            case "reclamation": return "回收受阻"
+            default: break
+            }
+        }
+        if phase == "shadow", state == "queued" { return "影子处理中" }
+        if state == "needs_review", phase == "delivery" { return "交付中" }
+        if state == "needs_review", phase == "reclamation" { return "回收中" }
+        return switch state {
         case "preparing": "准备中"
         case "queued": "排队中"
         case "running": "执行中"
@@ -63,6 +78,15 @@ extension ClientCoordinationProgressItem {
         default: "clock"
         }
     }
+    public var previousExecutionTitle: String? {
+        guard phase == "shadow" else { return nil }
+        switch previousExecutionStatus {
+        case "completed": return "上一轮执行已结束，后续指令尚未送达。"
+        case "failed": return "上一轮执行失败，正在处理后续指令。"
+        case "cancelled": return "上一轮执行已取消，正在处理后续指令。"
+        default: return nil
+        }
+    }
     public var previewSummary: String {
         let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -74,12 +98,20 @@ extension ClientCoordinationProgressItem {
 public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
     public let kind: String
     public let batchId: String?
+    public var requestId: String? = nil
+    public var sessionId: String? = nil
+    public var phase: String? = nil
+    public var errorCode: String? = nil
+    public var retryable: Bool? = nil
     public init?(rawMetadataJSON: String?) {
         guard let data = rawMetadataJSON?.data(using: .utf8),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         if let event = raw["coordinationEvent"] as? [String: Any],
            let value = event["kind"] as? String, ["summary", "delivery", "receipt", "failure", "decision"].contains(value) {
-            kind = value; batchId = event["batchId"] as? String; return
+            kind = value; batchId = event["batchId"] as? String
+            requestId = event["requestId"] as? String; sessionId = event["sessionId"] as? String
+            phase = event["phase"] as? String; errorCode = event["errorCode"] as? String
+            retryable = event["retryable"] as? Bool; return
         }
         if raw["executionMode"] as? String == "shadow_report" { kind = "summary" }
         else if raw["progressBatchId"] is String { kind = "delivery" }

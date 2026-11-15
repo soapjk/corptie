@@ -24,6 +24,8 @@ export class SessionChannelService {
     }
     const body = requiredText(input.body, "body");
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
+    const collected = recipient && this.upwardReportReceipt(source.logicalSessionId, recipient.logicalSessionId, input);
+    if (collected) return collected;
     const existingRequest = this.store.selectOne(
       "SELECT * FROM session_collaboration_channel_requests WHERE requesting_session_id=? AND idempotency_key=?",
       [source.logicalSessionId, idempotencyKey]
@@ -356,6 +358,8 @@ export class SessionChannelService {
     if (![channel.sessionAId, channel.sessionBId].includes(sender.logicalSessionId)) {
       throw channelError("CHANNEL_PARTICIPANT_REQUIRED", "Only a Channel participant may send a message.", 403);
     }
+    const collected = this.upwardReportReceipt(sender.logicalSessionId, peerSessionId(channel, sender.logicalSessionId), input);
+    if (collected) return collected;
     const existing = this.store.selectOne(
       "SELECT * FROM session_collaboration_messages WHERE sender_session_id=? AND idempotency_key=?",
       [sender.logicalSessionId, requiredText(input.idempotencyKey, "idempotencyKey")]
@@ -403,6 +407,20 @@ export class SessionChannelService {
       delivery: this.getDeliveryByMessage(message.messageId),
       idempotentReplay: false
     };
+  }
+
+  upwardReportReceipt(senderId, recipientId, input) {
+    const sender = this.#resourceContext(senderId), recipient = this.#resourceContext(recipientId);
+    const child = sender.taskId && this.store.getTask(sender.taskId);
+    if (!child?.parent_task_id || child.parent_task_id !== recipient.taskId || sender.workId !== recipient.workId) return null;
+    if (normalizeMessageKind(input.messageKind) === "question") return null;
+    const reply = input.inReplyToMessageId && this.store.selectOne(`SELECT message_kind,sender_session_id,recipient_session_id
+      FROM session_collaboration_messages WHERE message_id=?`, [input.inReplyToMessageId]);
+    if (reply?.message_kind === "question" && reply.sender_session_id === recipientId && reply.recipient_session_id === senderId) return null;
+    // A successful no-op, not an error to retry and not a passive mailbox item.
+    // The actual execution result is collected independently when it stops.
+    return { status: "collected_by_host", reasonCode: "CHILD_REPORT_COLLECTED_BY_HOST", childTaskId: child.id,
+      instruction: "无需发送完成、状态或收件回执。请在本会话留下最终结果后结束；宿主会触发影子检查。只有无法自行确定的必要问题使用 message_kind=question。不要重试此汇报或寻找其他接收会话。" };
   }
 
   listMessages(channelId, actorSessionId, options = {}) {
