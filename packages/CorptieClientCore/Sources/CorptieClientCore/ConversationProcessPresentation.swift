@@ -48,6 +48,7 @@ public struct ConversationProcessPresentation: Sendable {
         case .sending: return chinese ? "正在发送" : "Sending"
         case .waiting: return chinese ? "等待执行" : "Waiting to run"
         case .running:
+            if count <= 0 { return chinese ? "处理中…" : "Working…" }
             let currentStep = currentStepTitle.map { " · \($0)" } ?? ""
             if let displayedDuration, !displayedDuration.isEmpty {
                 return chinese ? "处理中 \(displayedDuration)\(currentStep) · \(steps)"
