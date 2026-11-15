@@ -6,6 +6,11 @@ import CorptieClientSecurity
 enum MacCredentialServices {
     static let store = MacAppCredentialStore(directory: CorptieAppEnvironment.credentialDirectory,
                                             environmentId: CorptieAppEnvironment.credentialEnvironmentID)
+    static let loopbackMessageSender = LoopbackMessageSender(
+        directory: CorptieAppEnvironment.credentialDirectory.deletingLastPathComponent()
+            .appendingPathComponent("LoopbackMessageOutbox", isDirectory: true),
+        credentialStore: store
+    )
     static var legacyRecoveryDirectories: [URL] {
         // Development must never inspect or import production recovery data.
         let root = CorptieAppEnvironment.credentialDirectory.deletingLastPathComponent()

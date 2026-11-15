@@ -61,7 +61,7 @@ final class SessionMessageController {
         self.loadWorkspaceRecoveryStatus = loadWorkspaceRecoveryStatus
         self.currentError = currentError
         self.reportError = reportError
-        Task { await LoopbackMessageSender.shared.resume(baseURL: baseURL) }
+        Task { await MacCredentialServices.loopbackMessageSender.resume(baseURL: baseURL) }
     }
 
     @discardableResult
@@ -146,7 +146,7 @@ final class SessionMessageController {
                 latencyTrace.log(stage: "request_sent", requestStartedAtMs: requestStartedAtMs)
                 let result: (Data, URLResponse)
                 if presentsAcknowledgedUserMessage && !trimmed.hasPrefix("/") {
-                    result = try await LoopbackMessageSender.shared.send(request, baseURL: baseURL,
+                    result = try await MacCredentialServices.loopbackMessageSender.send(request, baseURL: baseURL,
                         sessionID: session.id, messageID: messageID)
                 } else {
                     result = try await URLSession.shared.data(for: request)

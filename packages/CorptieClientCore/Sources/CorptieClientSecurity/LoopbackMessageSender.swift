@@ -6,15 +6,28 @@ public enum LoopbackSubmissionError: Error { case awaitingConfirmation }
 /// Desktop transport adapter for the same durable, encrypted outbox used by
 /// remote clients. A transport failure never creates a new message identity.
 public actor LoopbackMessageSender {
-    public static let shared = LoopbackMessageSender()
-    private let outbox: ReliableMessageOutbox
+    private let makeOutbox: @Sendable () async throws -> ReliableMessageOutbox
+    private var loadedOutbox: ReliableMessageOutbox?
     private let transport: @Sendable (URLRequest) async throws -> (Data, URLResponse)
-    public init(outbox: ReliableMessageOutbox? = nil,
+
+    public init(outbox: ReliableMessageOutbox,
                 transport: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
-        self.outbox = outbox ?? ReliableMessageOutbox(directory: FileManager.default.urls(for: .applicationSupportDirectory,
-            in: .userDomainMask)[0].appendingPathComponent("Corptie/LoopbackMessageOutbox"))
+        self.makeOutbox = { outbox }
+        self.loadedOutbox = outbox
         self.transport = transport
     }
+
+    #if os(macOS)
+    public init(directory: URL, credentialStore: MacAppCredentialStore,
+                transport: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
+        self.makeOutbox = {
+            let key = try await credentialStore.cacheKey(purpose: "message-outbox", legacyDirectories: [directory])
+            return ReliableMessageOutbox(directory: directory, key: key)
+        }
+        self.transport = transport
+    }
+    #endif
+
     private var active: Set<String> = []
     private var recovery: Task<Void, Never>?
 
@@ -23,18 +36,31 @@ public actor LoopbackMessageSender {
               let id = messageID.split(separator: ":").last, UUID(uuidString: String(id)) != nil else { throw ReliableOutboxError.invalidIdentity }
         let record = ReliableOutgoingMessage(serverID: baseURL.absoluteString, deviceID: identity,
             sessionID: sessionID, displaySessionID: sessionID, text: text, id: String(id))
+        let outbox = try await resolveOutbox()
         try await outbox.save(record)
         defer { scheduleRecovery(baseURL) }
-        return try await deliver(record, request: request, baseURL: baseURL)
+        return try await deliver(record, request: request, baseURL: baseURL, outbox: outbox)
     }
 
     public func resume(baseURL: URL) { scheduleRecovery(baseURL) }
+
+    private func resolveOutbox() async throws -> ReliableMessageOutbox {
+        if let loadedOutbox { return loadedOutbox }
+        let candidate = try await makeOutbox()
+        // A send and launch recovery can both await the credential store.
+        if let loadedOutbox { return loadedOutbox }
+        loadedOutbox = candidate
+        return candidate
+    }
+
     private var identity: String {
         "desktop:" + SHA256.hash(data: Data((Bundle.main.executableURL?.path ?? "desktop").utf8)).map { String(format: "%02x", $0) }.joined()
     }
     private func scheduleRecovery(_ baseURL: URL) {
         guard recovery == nil else { return }
         recovery = Task {
+            defer { recovery = nil }
+            guard let outbox = try? await resolveOutbox() else { return }
             while !Task.isCancelled {
                 let pending = (try? await outbox.all())?.filter { $0.serverID == baseURL.absoluteString && $0.deviceID == identity && $0.state == .waiting } ?? []
                 if pending.isEmpty { break }
@@ -43,14 +69,14 @@ public actor LoopbackMessageSender {
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "content-type")
                     request.httpBody = Data(record.text.utf8)
-                    _ = try? await deliver(record, request: request, baseURL: baseURL)
+                    _ = try? await deliver(record, request: request, baseURL: baseURL, outbox: outbox)
                 }
                 try? await Task.sleep(for: .seconds(5))
             }
-            recovery = nil
         }
     }
-    private func deliver(_ record: ReliableOutgoingMessage, request: URLRequest, baseURL: URL) async throws -> (Data, URLResponse) {
+    private func deliver(_ record: ReliableOutgoingMessage, request: URLRequest, baseURL: URL,
+                         outbox: ReliableMessageOutbox) async throws -> (Data, URLResponse) {
         guard active.insert(record.id).inserted else { throw LoopbackSubmissionError.awaitingConfirmation }
         defer { active.remove(record.id) }
         let payload = try JSONSerialization.jsonObject(with: Data(record.text.utf8)) as? [String: Any]

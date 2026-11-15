@@ -5,11 +5,21 @@ import CryptoKit
 
 private actor LostAcknowledgementServer {
     var posts = 0
+    var savedBeforePost = false
     let messageID: String
-    init(_ messageID: String) { self.messageID = messageID }
+    let outboxDirectory: URL
+
+    init(_ messageID: String, outboxDirectory: URL) {
+        self.messageID = messageID
+        self.outboxDirectory = outboxDirectory
+    }
+
     func respond(_ request: URLRequest) throws -> (Data, URLResponse) {
         if request.httpMethod == "POST" {
             posts += 1
+            let id = String(messageID.dropFirst("message:".count))
+            savedBeforePost = FileManager.default.fileExists(atPath:
+                outboxDirectory.appendingPathComponent(id + ".sealed").path)
             throw URLError(.networkConnectionLost)
         }
         let accepted = posts > 0
@@ -22,12 +32,20 @@ private actor LostAcknowledgementServer {
 }
 final class LoopbackMessageSenderTests: XCTestCase {
     func testCommittedMessageWithLostReplyIsReconciledWithoutSecondPost() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("LoopbackMessageOutbox")
         let messageID = "message:" + UUID().uuidString
-        let server = LostAcknowledgementServer(messageID)
+        let server = LostAcknowledgementServer(messageID, outboxDirectory: directory)
+        #if os(macOS)
+        let credentialStore = MacAppCredentialStore(directory: root.appendingPathComponent("security"),
+                                                    environmentId: "loopback-test")
+        let sender = LoopbackMessageSender(directory: directory, credentialStore: credentialStore,
+                                          transport: { try await server.respond($0) })
+        #else
+        let outbox = ReliableMessageOutbox(directory: directory, key: SymmetricKey(size: .bits256))
         let sender = LoopbackMessageSender(outbox: outbox, transport: { try await server.respond($0) })
+        #endif
         let base = URL(string: "http://127.0.0.1:47321")!
         var request = URLRequest(url: base.appending(path: "sessions/session/messages"))
         request.httpMethod = "POST"
@@ -35,8 +53,10 @@ final class LoopbackMessageSenderTests: XCTestCase {
         let (_, response) = try await sender.send(request, baseURL: base, sessionID: "session", messageID: messageID)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         let posts = await server.posts
-        let remaining = try await outbox.all()
+        let savedBeforePost = await server.savedBeforePost
         XCTAssertEqual(posts, 1)
-        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertTrue(savedBeforePost)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        XCTAssertFalse(files.contains { $0.pathExtension == "sealed" })
     }
 }
