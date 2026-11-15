@@ -189,26 +189,41 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
 
     private static func replacementIMP(for original: IMP, selector: Selector) -> IMP {
         typealias RecursiveIMP = @convention(c) (AnyObject, Selector) -> Void
+        // The Objective-C self reference and the C implementation pointer are
+        // not Sendable. Wrap them once so the main-actor probe below never
+        // captures them across an isolation boundary.
+        final class Invocation: @unchecked Sendable {
+            let object: AnyObject
+            private let callOriginal: RecursiveIMP
+            private let selector: Selector
+
+            init(_ object: AnyObject, _ callOriginal: RecursiveIMP, _ selector: Selector) {
+                self.object = object
+                self.callOriginal = callOriginal
+                self.selector = selector
+            }
+
+            func invoke() { callOriginal(object, selector) }
+        }
+
         let callOriginal = unsafeBitCast(original, to: RecursiveIMP.self)
         let block: @convention(block) (AnyObject) -> Void = { object in
+            let invocation = Invocation(object, callOriginal, selector)
             guard Thread.isMainThread else {
-                callOriginal(object, selector)
+                invocation.invoke()
                 return
             }
-            MainActor.assumeIsolated {
-                guard let view = object as? NSView,
+            let suppressed = MainActor.assumeIsolated { () -> Bool in
+                guard let view = invocation.object as? NSView,
                       let window = view.window,
                       window is MainWindow,
                       shared.shouldSuppress(
                         now: Date().timeIntervalSinceReferenceDate,
                         inLiveResize: window.inLiveResize
-                      ) else {
-                    callOriginal(object, selector)
-                    return
-                }
-                // Drop this frame's walk. Tab navigation is restored once by
-                // MainWindow.recalculateKeyViewLoop() after the gesture ends.
+                      ) else { return false }
+                return true
             }
+            if !suppressed { invocation.invoke() }
         }
         return imp_implementationWithBlock(block)
     }
