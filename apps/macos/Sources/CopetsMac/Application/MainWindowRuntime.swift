@@ -114,106 +114,6 @@ final class MainWindowPresentationState: ObservableObject {
     }
 }
 
-/// SwiftUI's FocusBridge sends `NSView._recursiveSetDefaultKeyViewLoop`
-/// directly from `NSHostingView.preferencesDidChange` on every layout pass.
-/// It starts a fresh walk at each mounting hosting view, so overriding the
-/// selector on the window's content view never sees it, and
-/// `NSWindow.autorecalculatesKeyViewLoop = false` has no effect on it.
-///
-/// A 90s sample of a real interaction on 0.5.153 recorded 522 FocusBridge
-/// walks and 404 full-tree recursions. The walk also pulls in
-/// `NSTableRowData.updateKeyViewLoopForAllRows`, so its cost grows with the
-/// timeline length. Every one of those runs on the main thread during a
-/// resize, window drag or page materialisation.
-///
-/// Swizzle the shared entry point instead, and skip work only inside a Corptie
-/// main window while a gesture is in flight. All other windows, all idle
-/// layout passes and anything off the main thread call the original
-/// implementation unchanged. Once the gesture settles, MainWindow rebuilds
-/// the Tab chain exactly once.
-private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
-    static let shared = FocusBridgeKeyViewLoopGate()
-
-    private let lock = NSLock()
-    private var suppressUntil: TimeInterval = 0
-    private var isInstalled = false
-    private let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
-
-    /// Event handling and window-move notifications keep extending this small
-    /// window, so a continuous drag stays covered without needing a matching
-    /// mouse-up. The deadline expires on its own after the gesture stops.
-    func extendSuppression(_ seconds: TimeInterval = 0.25) {
-        let deadline = Date().timeIntervalSinceReferenceDate + seconds
-        lock.lock()
-        defer { lock.unlock() }
-        if deadline > suppressUntil { suppressUntil = deadline }
-    }
-
-    func clearSuppression() {
-        lock.lock()
-        defer { lock.unlock() }
-        suppressUntil = 0
-    }
-
-    private func shouldSuppress(now: TimeInterval, inLiveResize: Bool) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return inLiveResize || now < suppressUntil
-    }
-
-    func installOnce() {
-        lock.lock()
-        guard !isInstalled else { lock.unlock(); return }
-        isInstalled = true
-        lock.unlock()
-
-        let selector = self.selector
-        guard let baseMethod = class_getInstanceMethod(NSView.self, selector) else { return }
-        let baseIMP = method_getImplementation(baseMethod)
-
-        // Capture both implementations before replacing anything: after the
-        // base swizzle, an inherited Method would report the new IMP and look
-        // like a distinct hosting override.
-        let hostingMethod = NSClassFromString("NSHostingView").flatMap {
-            class_getInstanceMethod($0, selector)
-        }
-        let hostingIMP = hostingMethod.map(method_getImplementation)
-
-        method_setImplementation(
-            baseMethod, Self.replacementIMP(for: baseIMP, selector: selector))
-        if let hostingMethod, let hostingIMP, hostingIMP != baseIMP {
-            method_setImplementation(
-                hostingMethod, Self.replacementIMP(for: hostingIMP, selector: selector))
-        }
-    }
-
-    private static func replacementIMP(for original: IMP, selector: Selector) -> IMP {
-        typealias RecursiveIMP = @convention(c) (AnyObject, Selector) -> Void
-        let callOriginal = unsafeBitCast(original, to: RecursiveIMP.self)
-        let block: @convention(block) (AnyObject) -> Void = { object in
-            guard Thread.isMainThread else {
-                callOriginal(object, selector)
-                return
-            }
-            MainActor.assumeIsolated {
-                guard let view = object as? NSView,
-                      let window = view.window,
-                      window is MainWindow,
-                      shared.shouldSuppress(
-                        now: Date().timeIntervalSinceReferenceDate,
-                        inLiveResize: window.inLiveResize
-                      ) else {
-                    callOriginal(object, selector)
-                    return
-                }
-                // Drop this frame's walk. Tab navigation is restored once by
-                // MainWindow.recalculateKeyViewLoop() after the gesture ends.
-            }
-        }
-        return imp_implementationWithBlock(block)
-    }
-}
-
 /// Restores the standard title-bar double-click maximize/restore interaction
 /// for the full-size transparent title bar. SwiftUI owns the content under the
 /// title bar, so NSWindow's default empty-title-bar handler never sees it.
@@ -232,28 +132,14 @@ class MainWindow: NSWindow {
     /// This only stops NSWindow's *automatic* rebuild. SwiftUI's FocusBridge
     /// calls `NSView._recursiveSetDefaultKeyViewLoop` directly from
     /// `NSHostingView.preferencesDidChange` on every layout pass, bypassing
-    /// `recalculateKeyViewLoop()` entirely. FocusBridgeKeyViewLoopGate holds
-    /// that walk during gestures; see the sample-backed note above it.
+    /// `recalculateKeyViewLoop()` entirely. `MainWindowSurfaceContainer` holds
+    /// that walk at the content-view root; see the guard there.
     private var keyViewLoopResizeObserver: NSObjectProtocol?
-    private var keyViewLoopMoveObserver: NSObjectProtocol?
 
     override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
                   backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
         super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
         autorecalculatesKeyViewLoop = false
-        FocusBridgeKeyViewLoopGate.shared.installOnce()
-        // Dragging the window never enters inLiveResize, yet every move
-        // triggers a fresh FocusBridge walk. Keep the gate closed until the
-        // drag stops, then let the settled layout rebuild the Tab chain.
-        keyViewLoopMoveObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: self,
-            queue: .main
-        ) { _ in
-            MainActor.assumeIsolated {
-                FocusBridgeKeyViewLoopGate.shared.extendSuppression()
-            }
-        }
         keyViewLoopResizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndLiveResizeNotification,
             object: self,
@@ -272,24 +158,14 @@ class MainWindow: NSWindow {
         if let keyViewLoopResizeObserver {
             NotificationCenter.default.removeObserver(keyViewLoopResizeObserver)
         }
-        if let keyViewLoopMoveObserver {
-            NotificationCenter.default.removeObserver(keyViewLoopMoveObserver)
-        }
     }
 
     override func recalculateKeyViewLoop() {
         guard !inLiveResize else { return }
-        // The one explicit rebuild after a gesture must pass through the gate,
-        // otherwise the Tab chain never gets restored.
-        FocusBridgeKeyViewLoopGate.shared.clearSuppression()
         super.recalculateKeyViewLoop()
     }
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown || event.type == .leftMouseDragged
-            || event.type == .rightMouseDragged {
-            FocusBridgeKeyViewLoopGate.shared.extendSuppression()
-        }
         if event.type == .leftMouseDown, !isOverStandardWindowButton(event),
            compactWindowControls?.button(at: event.locationInWindow) == nil {
             MainWindowMouseActivation.prepare(event, window: self,
