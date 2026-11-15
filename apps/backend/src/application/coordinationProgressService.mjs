@@ -135,6 +135,32 @@ export class CoordinationProgressService {
       ? this.store.selectAll('SELECT dispatch_id FROM task_coordination_dispatches WHERE report_message_id=?',[source.mailboxMessageId]).map(row=>row.dispatch_id)
       : typeof source.coordinationDispatchId==='string'?[source.coordinationDispatchId]:[];
   }
+  resolveHostBatch({ownerId, taskId, source, request}) {
+    const candidates = new Set();
+    const reported = this.reportBatch(source, ownerId);
+    const reportIds=this.reportDispatches(source);
+    if(reportIds?.length) {
+      for(const id of reportIds){const row=this.store.selectOne("SELECT progress_batch_id FROM task_coordination_dispatches WHERE dispatch_id=? AND parent_task_id=?",[id,taskId]);if(row?.progress_batch_id)candidates.add(row.progress_batch_id);}
+    } else if (reported) candidates.add(reported);
+    if (source?.coordinationPurpose === "shadow_requirement" && source.coordinationDispatchId) {
+      const row=this.store.selectOne("SELECT progress_batch_id FROM task_coordination_dispatches WHERE dispatch_id=? AND parent_task_id=?",[source.coordinationDispatchId,taskId]);
+      if(row?.progress_batch_id)candidates.add(row.progress_batch_id);
+    }
+    if (request?.related_request_id && request.relation === "supplement") {
+      for(const row of this.store.selectAll(`SELECT DISTINCT d.progress_batch_id FROM task_coordination_dispatches d
+        JOIN coordination_requests r ON r.shadow_session_id=d.executor_session_id
+        WHERE r.request_id=? AND r.main_session_id=? AND d.parent_task_id=?`,[request.related_request_id,ownerId,taskId]))
+        if(row.progress_batch_id)candidates.add(row.progress_batch_id);
+    }
+    const valid=[...candidates].filter(id=>{const b=this.batch(id);return b?.parent_task_id===taskId && b.source_session_id===ownerId;});
+    // Multiple batches retain separate progress; never guess or block execution.
+    return valid.length===1 ? valid[0] : null;
+  }
+  annotateHostReports(source,ownerId,taskId,content) {
+    const ids=this.reportDispatches(source);if(!ids?.length)return;
+    const batches=new Set(ids.map(id=>this.store.selectOne("SELECT progress_batch_id FROM task_coordination_dispatches WHERE dispatch_id=? AND parent_task_id=?",[id,taskId])?.progress_batch_id).filter(Boolean));
+    for(const id of batches){const batch=this.batch(id);if(batch?.source_session_id===ownerId)this.annotate(id,{...content,reportDispatchIds:ids});}
+  }
   reportBatch(source,parentSessionId){
     if(source?.type==='mailbox_event' && ['parent_report','shadow_report'].includes(source.coordinationPurpose) && typeof source.coordinationDispatchId==='string'){
       const row=this.store.selectOne('SELECT progress_batch_id,source_session_id FROM task_coordination_dispatches WHERE dispatch_id=?',[source.coordinationDispatchId]);

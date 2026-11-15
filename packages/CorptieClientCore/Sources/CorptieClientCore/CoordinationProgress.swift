@@ -77,6 +77,10 @@ public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
     public init?(rawMetadataJSON: String?) {
         guard let data = rawMetadataJSON?.data(using: .utf8),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let event = raw["coordinationEvent"] as? [String: Any],
+           let value = event["kind"] as? String, ["summary", "delivery", "receipt", "failure", "decision"].contains(value) {
+            kind = value; batchId = event["batchId"] as? String; return
+        }
         if raw["executionMode"] as? String == "shadow_report" { kind = "summary" }
         else if raw["progressBatchId"] is String { kind = "delivery" }
         else { return nil }

@@ -205,11 +205,25 @@ public struct CoordinationSummaryCard: View {
         event.kind == "summary" && text.hasPrefix("**后台汇总**\n\n")
             ? String(text.dropFirst("**后台汇总**\n\n".count)) : text
     }
+    private var title: String {
+        switch event.kind {
+        case "failure": "请求未完成"
+        case "decision": "需要你决定"
+        case "receipt": "请求进展"
+        case "summary": "任务汇总"
+        default: "交付通知"
+        }
+    }
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label { Text(event.kind == "summary" ? "任务汇总" : "交付通知", bundle: .module) }
-                icon: { Image(systemName: event.kind == "summary" ? "text.alignleft" : "checkmark.circle") }
+            HStack {
+            Label { Text(LocalizedStringKey(title), bundle: .module) }
+                icon: { Image(systemName: event.kind == "failure" ? "exclamationmark.circle" : event.kind == "decision" ? "questionmark.circle" : "text.alignleft") }
                 .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button { copyResourceText(bodyText) } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.plain).accessibilityLabel(Text("复制", bundle: .module))
+            }
             Text(bodyText).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .modifier(ConversationSkinSurface(role: .structured, radius: 12,

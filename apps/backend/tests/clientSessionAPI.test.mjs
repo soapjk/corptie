@@ -971,3 +971,14 @@ test("paired collaboration cards preserve minimal provenance without exposing ra
     assert.equal(items[0].rawMetadataJSON, undefined);
   } finally { await f.close(); }
 });
+
+
+test("host failure and receipt metadata are public without leaking diagnostics",async()=>{
+ const f=await fixture();try{
+ const api=new ClientSessionAPI({store:f.store,...callbacks,readWindow:async()=>({revision:1,items:[
+ {id:"f",type:"agentMessage",text:"failed",rawMetadataJSON:JSON.stringify({coordinationEvent:{kind:"failure",errorCode:"private-debug",batchId:null}})}]})});
+ const page=await api.messages(identity,"session:test",new URLSearchParams());
+ assert.deepEqual(page.items[0].coordinationEvent,{kind:"failure",batchId:null});
+ assert.equal(page.items[0].rawMetadataJSON,undefined);
+ }finally{await f.close();}
+});

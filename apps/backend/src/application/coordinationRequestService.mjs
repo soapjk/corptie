@@ -190,9 +190,9 @@ export class CoordinationRequestService {
       seen.add(cursor.request_id);
       cursor = cursor.dependency_id ? this.get(cursor.dependency_id) : null;
     }
-    this.update(id, { relation, related_request_id: targetId, dependency_id: ["depends_on", "supplement"].includes(relation) ? targetId : null });
+    this.update(id, { relation, related_request_id: targetId, dependency_id: relation === "depends_on" ? targetId : null });
     if (relation === "cancel") return this.cancel(row.main_session_id, targetId);
-    if (relation === "depends_on" && !terminal.has(target.status) || relation === "supplement" && this.supplementPending(target)) { this.update(id, { status: "waiting" }); return { waiting: true }; }
+    if (relation === "depends_on" && !terminal.has(target.status)) { this.update(id, { status: "waiting" }); return { waiting: true }; }
     return { waiting: false, target };
   }
   async retry(mainId, id) {
@@ -254,13 +254,20 @@ export class CoordinationRequestService {
     this.store.upsertTimelineItemProjection(main.sessionId, item);
     this.emitEvent("SessionCoordinationMilestone", { item, turnId: id }, { sessionId: main.sessionId });
   }
+  publishDispatch(id, batchId) {
+    const row=this.get(id); if(!row || terminal.has(row.status))return;
+    this.turns.dispatch.progress?.refresh(batchId);
+    this.update(id,{response_item_id:batchId ? `coordination-progress:${batchId}` : null,
+      dispatch_json:JSON.stringify(this.dispatches(row))});
+    this.finish(id,"completed");
+  }
   publish(id, item, dispatches = null) {
     const row = this.get(id);
     if (!row || terminal.has(row.status)) return;
     const main = this.owner(row), itemId = `${id}:reply`;
     const projected = { ...item, createdAt: this.previews.get(id)?.createdAt ?? item.createdAt, id: itemId, turnId: id, bindingId: main.bindingId,
       rawMetadataJSON: JSON.stringify({ executionMode: "coordination-request", requestId: id,
-        replyToMessageId: row.message_id, sourceSessionId: row.shadow_session_id }) };
+        coordinationEvent:item.coordinationEvent ?? undefined, replyToMessageId: row.message_id, sourceSessionId: row.shadow_session_id }) };
     this.store.runInTransaction(() => {
       this.store.upsertTimelineItemProjection(main.sessionId, projected);
       this.update(id, { response_item_id: itemId, dispatch_json: JSON.stringify(this.store.selectAll("SELECT dispatch_id AS dispatchId,target_task_id AS taskId,status FROM task_coordination_dispatches WHERE executor_session_id=?", [row.shadow_session_id])) });
@@ -281,13 +288,14 @@ export class CoordinationRequestService {
     const savedPreview = !this.previews.has(id) && this.store.selectOne(
       "SELECT text,created_at AS createdAt FROM session_items WHERE id=? AND status='inProgress'", [`${id}:reply`]);
     const partial = this.previews.get(id) ?? savedPreview;
-    if (partial && status !== "completed") {
+    if (status !== "completed") {
       const main = this.store.getLogicalSession(row.main_session_id);
       if (main) {
-        const item = { id: `${id}:reply`, turnId: id, type: "agentMessage", text: partial.text,
-          status, turnStatus: status, createdAt: partial.createdAt,
-          rawMetadataJSON: JSON.stringify({ requestId: id, replyToMessageId: row.message_id, sourceSessionId: row.shadow_session_id }) };
+        const item = { id: `${id}:reply`, turnId: id, type: "agentMessage", text: [partial?.text, status === "cancelled" ? "请求已取消。" : `请求处理失败：${error?.message ?? "未知错误"}`].filter(Boolean).join("\n\n"),
+          status, turnStatus: status, createdAt: partial?.createdAt ?? now(),
+          rawMetadataJSON: JSON.stringify({ coordinationEvent:{kind:"failure",requestId:id,errorCode:error?.code ?? null}, requestId: id, replyToMessageId: row.message_id, sourceSessionId: row.shadow_session_id }) };
         this.store.upsertTimelineItemProjection(main.legacySessionId, item);
+        this.update(id,{response_item_id:item.id});
         this.emitEvent("SessionCoordinationCompleted", { turnId: id, item }, { sessionId: main.legacySessionId });
       }
     }
