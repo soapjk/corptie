@@ -158,6 +158,17 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
 
     private static let logger = Logger(subsystem: "com.corptie.mac", category: "key-view-loop")
 
+    /// unified logging is not readable from an agent session on this machine,
+    /// so mirror the counters into a plain file that can be inspected without
+    /// elevated privileges. One append per 200 entries keeps it off the hot
+    /// path.
+    private static let tracePath: String = {
+        let directory = NSHomeDirectory() + "/Library/Logs/Corptie"
+        try? FileManager.default.createDirectory(atPath: directory,
+                                                  withIntermediateDirectories: true)
+        return directory + "/kvl-gate.log"
+    }()
+
     // MARK: - Gesture window
 
     func extendSuppression(_ seconds: TimeInterval = 0.25) {
@@ -200,6 +211,7 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
         let count = installedMethods.count
         lock.unlock()
         Self.logger.notice("kvl installed patchedMethods=\(count)")
+        trace("installed patchedMethods=\(count)")
     }
 
     private func patchLoadedHostingClasses() {
@@ -281,6 +293,18 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
 
     // MARK: - Observability
 
+    private func trace(_ message: String) {
+        let line = "\(Date().timeIntervalSince1970) \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = FileHandle(forWritingAtPath: Self.tracePath) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: Self.tracePath))
+        }
+    }
+
     private func noteSeen(isHosting: Bool) {
         lock.lock()
         seen += 1
@@ -291,6 +315,7 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
         if shouldLog {
             Self.logger.notice(
                 "kvl entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
+            trace("entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
         }
     }
 
