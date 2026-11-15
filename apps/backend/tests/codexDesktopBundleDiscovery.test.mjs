@@ -79,3 +79,11 @@ test("resolveCodexCommand keeps desktop bundles in its fallback chain", async ()
   assert.match(source, /codex-cli/);
   assert.match(source, /appBundleCandidates\(defaultAppBundleRoots\(\)\)/);
 });
+
+test("managed standalone CLI is discoverable before desktop fallbacks", () => {
+  const candidates = codexExecutableCandidates({ roots: ["/unused-applications"] });
+  const managed = candidates.findIndex(entry => entry.path.includes("corptie-runtime/codex-cli/node_modules/.bin/codex"));
+  assert.ok(managed >= 0);
+  assert.equal(candidates[managed].source, "cli");
+  assert.ok(managed < candidates.findIndex(entry => entry.source !== "cli"));
+});

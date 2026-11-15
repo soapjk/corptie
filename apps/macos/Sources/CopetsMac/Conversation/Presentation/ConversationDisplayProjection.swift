@@ -600,47 +600,47 @@ func detailItemSignature(_ item: CodexThreadItem) -> String {
     let rawMetadataCount = String(rawMetadata.count)
     let rawMetadataSuffix = String(rawMetadata.suffix(96))
     let imageSignature = (item.images ?? []).map(\.managedPath).joined(separator: ",")
-    let collaborationSignature = [
-        item.collaborationConfirmationStatus ?? "",
-        item.collaborationAuthorizationKind ?? "",
-        item.collaborationChannelId ?? "",
-        item.collaborationProcessingStatus ?? "",
-        item.collaborationSenderName ?? "",
-        item.collaborationRecipientName ?? "",
-        item.collaborationInitiatorSessionId ?? "",
-        item.collaborationRecipientSessionId ?? "",
-        item.collaborationRecipientSessionTitle ?? "",
-        item.collaborationTaskTitle ?? "",
-        item.collaborationSourceCorptieTaskId ?? "",
-        item.collaborationTargetCorptieTaskId ?? "",
-        item.collaborationRelation ?? "",
-        item.collaborationRouteStatus ?? "",
-        item.collaborationRoutingVersion.map(String.init) ?? ""
-    ].joined(separator: ":")
-    return [
-        item.id,
-        item.type,
-        item.status ?? "",
-        item.userMessageStatus ?? "",
-            item.withdrawalAvailable == true ? "withdrawable" : "",
-            item.withdrawnMessage != nil ? "withdrawn" : "",
-        item.queuePosition.map(String.init) ?? "",
-        item.processingError ?? "",
-        item.turnStatus,
-        item.processStartedAt ?? "",
-        item.processEndedAt ?? "",
-        item.presentationRole ?? "",
-        imageSignature,
-        collaborationSignature,
-        "\(text.count)",
-        String(text.suffix(96)),
-        "\(presentationText.count)",
-        String(presentationText.suffix(96)),
-        item.subagentActivity.map { "\($0.childId):\($0.event):\($0.status):\($0.name)" } ?? "",
-        rawMetadataCount,
-        rawMetadataSuffix,
-        fileChangesSignature(item)
-    ].joined(separator: ":")
+    var collaborationParts: [String] = []
+    collaborationParts.append(item.collaborationConfirmationStatus ?? "")
+    collaborationParts.append(item.collaborationAuthorizationKind ?? "")
+    collaborationParts.append(item.collaborationChannelId ?? "")
+    collaborationParts.append(item.collaborationProcessingStatus ?? "")
+    collaborationParts.append(item.collaborationSenderName ?? "")
+    collaborationParts.append(item.collaborationRecipientName ?? "")
+    collaborationParts.append(item.collaborationInitiatorSessionId ?? "")
+    collaborationParts.append(item.collaborationRecipientSessionId ?? "")
+    collaborationParts.append(item.collaborationRecipientSessionTitle ?? "")
+    collaborationParts.append(item.collaborationTaskTitle ?? "")
+    collaborationParts.append(item.collaborationSourceCorptieTaskId ?? "")
+    collaborationParts.append(item.collaborationTargetCorptieTaskId ?? "")
+    collaborationParts.append(item.collaborationRelation ?? "")
+    collaborationParts.append(item.collaborationRouteStatus ?? "")
+    collaborationParts.append(item.collaborationRoutingVersion.map(String.init) ?? "")
+    let collaborationSignature = collaborationParts.joined(separator: ":")
+    var signatureParts: [String] = []
+    signatureParts.append(item.id)
+    signatureParts.append(item.type)
+    signatureParts.append(item.status ?? "")
+    signatureParts.append(item.userMessageStatus ?? "")
+    signatureParts.append(item.withdrawalAvailable == true ? "withdrawable" : "")
+    signatureParts.append(item.withdrawnMessage != nil ? "withdrawn" : "")
+    signatureParts.append(item.queuePosition.map(String.init) ?? "")
+    signatureParts.append(item.processingError ?? "")
+    signatureParts.append(item.turnStatus)
+    signatureParts.append(item.processStartedAt ?? "")
+    signatureParts.append(item.processEndedAt ?? "")
+    signatureParts.append(item.presentationRole ?? "")
+    signatureParts.append(imageSignature)
+    signatureParts.append(collaborationSignature)
+    signatureParts.append("\(text.count)")
+    signatureParts.append(String(text.suffix(96)))
+    signatureParts.append("\(presentationText.count)")
+    signatureParts.append(String(presentationText.suffix(96)))
+    signatureParts.append(item.subagentActivity.map { "\($0.childId):\($0.event):\($0.status):\($0.name)" } ?? "")
+    signatureParts.append(rawMetadataCount)
+    signatureParts.append(rawMetadataSuffix)
+    signatureParts.append(fileChangesSignature(item))
+    return signatureParts.joined(separator: ":")
 }
 
 func timelineTailContentRevision(for items: [CodexThreadItem]) -> String {

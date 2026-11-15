@@ -3,6 +3,16 @@ import CryptoKit
 import CorptieClientCore
 
 enum ConversationDetailWebRegistry {
+    private final class BundleAnchor {}
+    private static let resourceBundle: Bundle? = {
+        let name = "CorptieConversation_CorptieConversation.bundle"
+        let bases = [Bundle.main.resourceURL, Bundle.main.bundleURL,
+                     Bundle.main.executableURL?.deletingLastPathComponent(),
+                     Bundle(for: BundleAnchor.self).resourceURL]
+        return bases.compactMap { $0 }.compactMap {
+            Bundle(url: $0.appendingPathComponent(name))
+        }.first
+    }()
     static let rendererID = "detail.sections.v1"
     static let assetHash = "sha256:c858c8f7d8993429a2090d11662bf41ea5259888105da8d1ce254614edf8563f"
     struct Package: Sendable { let entry: URL; let script: String; let hash: String }
@@ -12,7 +22,7 @@ enum ConversationDetailWebRegistry {
         var script: String?
         for name in ["card.html", "runtime.js", "tokens.css"] {
             let parts = name.split(separator: ".").map(String.init)
-            guard let url = Bundle.module.url(forResource: parts[0], withExtension: parts[1], subdirectory: "DetailWeb"),
+            guard let url = resourceBundle?.url(forResource: parts[0], withExtension: parts[1], subdirectory: "DetailWeb"),
                   let data = try? Data(contentsOf: url) else { return nil }
             bytes.append(Data((name + "\0").utf8)); bytes.append(data)
             if name == "card.html" { entry = url }

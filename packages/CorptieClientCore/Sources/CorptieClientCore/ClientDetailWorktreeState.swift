@@ -42,10 +42,11 @@ import Observation
     }
     public var estimatedRetainedBytes: Int {
         let tree = detail?.worktree
-        return 16384 + (tree?.path.utf8.count ?? 0) * 2
-            + (tree?.changedFiles.reduce(0) { $0 + $1.utf8.count * 2 + 128 } ?? 0)
-            + (tree?.conflictFiles.reduce(0) { $0 + $1.utf8.count * 2 + 128 } ?? 0)
-            + (job?.plan.items.count ?? 0) * 4096
+        let pathBytes = (tree?.path.utf8.count ?? 0) * 2
+        let changedBytes = tree?.changedFiles.reduce(0) { $0 + $1.utf8.count * 2 + 128 } ?? 0
+        let conflictBytes = tree?.conflictFiles.reduce(0) { $0 + $1.utf8.count * 2 + 128 } ?? 0
+        let planBytes = (job?.plan.items.count ?? 0) * 4096
+        return 16384 + pathBytes + changedBytes + conflictBytes + planBytes
     }
     public func bind(_ id: String) {
         guard bindingID != id else { return }
