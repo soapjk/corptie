@@ -22,7 +22,7 @@ public struct ClientDetailBusinessDocument: Decodable, Equatable, Sendable {
             throw ClientDetailFailure.invalidGraph
         }
         for card in document.cards {
-            do { try card.validate() }
+            do { try card.validate(sessionID: document.sessionId) }
             catch {
                 ClientFailureDiagnostics.logDetailValidation(error, cardID: card.id, sessionID: document.sessionId)
                 throw error
@@ -178,7 +178,7 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
             if case .unsupported = payload { actions = [] } else { actions = try value.decode([ClientDetailAction].self, forKey: .actions) }
         } else { payload = .unsupported; actions = [] }
     }
-    func validate() throws {
+    func validate(sessionID: String) throws {
         func validText(_ value: String, maximum: Int = 65536) -> Bool { value.count <= maximum }
         guard !id.isEmpty, id.count <= 128, !revision.isEmpty, ["ready", "empty", "error"].contains(loadState),
               actions.count <= 64, Set(actions.map(\.id)).count == actions.count,
@@ -188,8 +188,18 @@ public struct ClientDetailBusinessCard: Decodable, Equatable, Identifiable, Send
                 (action.target?.id.count ?? 1000) <= 512,
                 action.kind == "navigation" && ["resource.open", "editor.open"].contains(action.operation)
                 || action.kind == "read" && ["detail.collection.page", "artifact.content"].contains(action.operation)
-                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control", "task.shadow.recover"].contains(action.operation)
+                || action.kind == "command" && ["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control", "task.shadow.recover", "verification.control"].contains(action.operation)
             else { throw ClientDetailFailure.invalidGraph }
+        }
+        for action in actions where action.operation == "verification.control" {
+            guard case .turn(let turn) = payload, let verification = turn.verification,
+                  verification.available, verification.sessionId == sessionID,
+                  action.kind == "command", action.target?.resourceType == "session",
+                  action.target?.id == sessionID, !verification.revision.isEmpty,
+                  verification.revision.unicodeScalars.count <= 256,
+                  action.expectedResourceRevision == verification.revision else {
+                throw ClientDetailFailure.invalidGraph
+            }
         }
         switch payload {
         case .coordinationProgress(let value):
