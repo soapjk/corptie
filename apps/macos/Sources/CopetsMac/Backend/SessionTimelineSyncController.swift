@@ -134,24 +134,7 @@ final class SessionTimelineSyncController {
         for session: TaskSession,
         desiredRevision: Int
     ) {
-        guard shouldEagerlyHydrate(session) else { return }
         activeTimelineSyncEngine.schedule(session, desiredRevision: desiredRevision)
-    }
-
-    /// Startup used to fan out one full `stored-snapshot` fetch plus a complete
-    /// display projection for every Session in the snapshot, then repeat the
-    /// same fan-out when the event stream replayed the timeline revision
-    /// index. With a large store that loads hundreds of megabytes of history
-    /// before the first window is usable, although the sidebar only needs
-    /// Session rows. A Session nobody has opened has no resident Timeline:
-    /// selecting it performs a `forceSnapshot` load on demand, and the state
-    /// stream keeps its row and summary current in the meantime. Explicit
-    /// loads go through `synchronizeStoredTimeline` directly and are never
-    /// gated here.
-    private func shouldEagerlyHydrate(_ session: TaskSession) -> Bool {
-        if session.id == selectedSession?.id { return true }
-        if session.executionTaskStatus == .running { return true }
-        return SessionTimelineRepository.shared.detail(for: session.id) != nil
     }
 
     func synchronizeStoredTimeline(
