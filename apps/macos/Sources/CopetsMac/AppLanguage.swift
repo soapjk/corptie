@@ -51,6 +51,9 @@ final class AppLanguageController: ObservableObject {
         }
     }
 
+    private var cachedLocalizationBundle: Bundle?
+    private var cachedLocalizationIdentifier: String?
+
     var localizationBundle: Bundle {
         let localization: String
         switch selection {
@@ -63,16 +66,27 @@ final class AppLanguageController: ObservableObject {
         case .simplifiedChinese:
             localization = "zh-Hans"
         }
-        guard let stringsPath = AppResourceBundle.bundle.path(
+        // SwiftUI re-evaluates body on every resize/layout pass. Resolving the
+        // .lproj path and constructing a Bundle each time is main-thread disk
+        // I/O; the identifier only changes when the language selection does.
+        if let cachedLocalizationBundle, cachedLocalizationIdentifier == localization {
+            return cachedLocalizationBundle
+        }
+        let resolved: Bundle
+        if let stringsPath = AppResourceBundle.bundle.path(
             forResource: "Localizable",
             ofType: "strings",
             inDirectory: nil,
             forLocalization: localization
         ),
-              let bundle = Bundle(path: URL(fileURLWithPath: stringsPath).deletingLastPathComponent().path) else {
-            return AppResourceBundle.bundle
+              let bundle = Bundle(path: URL(fileURLWithPath: stringsPath).deletingLastPathComponent().path) {
+            resolved = bundle
+        } else {
+            resolved = AppResourceBundle.bundle
         }
-        return bundle
+        cachedLocalizationIdentifier = localization
+        cachedLocalizationBundle = resolved
+        return resolved
     }
 
     private let storageKey = "corptie.appLanguage"

@@ -410,18 +410,31 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
             // AppKit may not report `inLiveResize` on every layout pass. This
             // early return is the whole fix: no work at all on a drag frame.
             guard !resizeState.isLiveResize, !(window?.inLiveResize ?? false) else { return }
-            let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
-            guard let method = class_getInstanceMethod(NSView.self, selector) else { return }
-            // Calling the NSView implementation by IMP is required: sending
-            // the selector to `self` again would re-enter this guard forever.
-            // This path runs only outside a gesture, so the lookup cost is
-            // irrelevant; keeping it local avoids static state in a generic.
-            typealias RecursiveKeyViewLoop = @convention(c) (NSView, Selector) -> Void
-            let callBase = unsafeBitCast(method_getImplementation(method),
-                                         to: RecursiveKeyViewLoop.self)
-            callBase(self, selector)
+            // Moving the window does not enter live resize, yet FocusBridge
+            // still asks for a full key-view-loop walk on every layout pass.
+            // Collapse those requests to at most one walk per interval; the
+            // next settled layout pass restores the Tab chain.
+            let now = Date().timeIntervalSinceReferenceDate
+            guard now - lastKeyViewLoopRebuildAt >= 0.12 else { return }
+            lastKeyViewLoopRebuildAt = now
+            rebuildKeyViewLoopNow()
         }
     }
+
+    private func rebuildKeyViewLoopNow() {
+        let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
+        guard let method = class_getInstanceMethod(NSView.self, selector) else { return }
+        // Calling the NSView implementation by IMP is required: sending
+        // the selector to `self` again would re-enter this guard forever.
+        // This path runs only outside a gesture, so the lookup cost is
+        // irrelevant; keeping it local avoids static state in a generic.
+        typealias RecursiveKeyViewLoop = @convention(c) (NSView, Selector) -> Void
+        let callBase = unsafeBitCast(method_getImplementation(method),
+                                     to: RecursiveKeyViewLoop.self)
+        callBase(self, selector)
+    }
+
+    private var lastKeyViewLoopRebuildAt: TimeInterval = 0
 
     private func beginResize(for reason: ResizeReason) {
         let wasResizing = !resizeReasons.isEmpty

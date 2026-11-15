@@ -362,7 +362,7 @@ private struct MainTabPageHost: NSViewRepresentable {
                     .environmentObject(router.sidebarState(for: tab))
             )
             hostingView.sizingOptions = []
-            hostingView.layerContentsRedrawPolicy = .duringViewResize
+            hostingView.layerContentsRedrawPolicy = .onSetNeedsDisplay
             return hostingView
         }
         container.select(selection, animated: false)
