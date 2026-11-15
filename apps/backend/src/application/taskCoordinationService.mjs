@@ -215,12 +215,17 @@ export class TaskCoordinationService {
   async execute(id) {
     let row = this.get(id);
     if (!row || !["accepted", "preparing", "waiting_workspace"].includes(row.status)) return;
+    const contextStarted = performance.now();
     const { metadata, scope } = this.sourceContext(row), request = JSON.parse(row.request_json);
+    console.info("[coordination-dispatch-performance]", JSON.stringify({dispatchId:id,phase:"source-context",elapsedMs:performance.now()-contextStarted,
+      admissionAgeMs:Date.now()-Date.parse(row.created_at)}));
     const runtime = JSON.parse(row.runtime_json);
     const canonical = !row.target_task_id && this.pendingCreation(row.parent_task_id, row.source_role_id, request, runtime);
     if (canonical && canonical.dispatch_id !== id) { this.retireDuplicateCreation(row, canonical, request); return; }
-    if (request.action === "send" && this.shadow && !runtime.managementExecutorSessionId && !this.shadow.forShadow(row.executor_session_id)) {
+    if (request.action === "send" && this.shadow && !this.requests?.forShadow(row.executor_session_id) && !runtime.managementExecutorSessionId && !this.shadow.forShadow(row.executor_session_id)) {
+      const prepareStarted = performance.now();
       const target = await this.shadow.readyRecipient(this.reportOwner(row));
+      console.info("[coordination-dispatch-performance]", JSON.stringify({dispatchId:id,phase:"summary-recipient",elapsedMs:performance.now()-prepareStarted}));
       const message = this.mailbox.receiveEvent({ recipientSessionId: target.sessionId, sourceType: "background", sourceId: id,
         body: `主会话提交了对子任务的后续要求，尚未发送给子任务。由你判断并组织后续执行；需要交付原要求时使用 kind=dispatch、一个 action=send 指向此 taskId，宿主复用原派发及原文，不重复发送。不要要求主会话集成或验收。\n${JSON.stringify({ dispatchId: id, taskId: row.target_task_id, text: request.text })}`,
         intent: "action_required", idempotencyKey: `management:${id}`,
@@ -313,6 +318,16 @@ export class TaskCoordinationService {
   retryDispatch(metadata, actorId, id) {
     const scope = this.collaboration.coordinationScope(metadata, actorId), row = this.get(id);
     if (!row || row.source_session_id !== scope.logicalSessionId || row.parent_task_id !== scope.parent.id) fail("TASK_PARENT_OUTSIDE_SCOPE");
+    const managementMessage = row.mailbox_message_id && !row.operation_id
+      ? this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [row.mailbox_message_id]) : null;
+    const managementWork = managementMessage?.operation_id && this.store.getAgentTask(managementMessage.operation_id);
+    if (managementMessage?.disposition === "pending" && managementWork?.status === "failed"
+      && managementWork.source?.dispatchBlock?.kind === "rejected") {
+      this.store.updateAgentTask(managementWork.taskId, {status:"queued",lastError:null});
+      this.update(id,{status:"waiting_dispatch",error_code:"SHADOW_REVIEW_PENDING",error_message:"正在恢复汇总处理，子任务尚未收到指令。"});
+      this.mailbox.wake(managementWork.sessionId,managementWork.taskId);
+      return {...this.receipt(this.get(id)),reused:true,retryAction:"resume_summary_management"};
+    }
     if (row.error_code === "SHADOW_REVIEW_PENDING") {
       void this.shadow.requestRecovery(this.reportOwner(row));
       return { ...this.receipt(row), reused: true, retryAction: "await_summary_management" };
@@ -387,6 +402,25 @@ export class TaskCoordinationService {
     const work = currentWork ?? receivedWork;
     if (currentWork && receivedWork?.status && currentWork.status !== receivedWork.status) return;
     if (currentWork?.updatedAt && receivedWork?.updatedAt && receivedWork.updatedAt < currentWork.updatedAt) return;
+    if (work?.sessionId && ["AgentWorkStarted", "AgentWorkFailed", "AgentWorkCompleted"].includes(type)) {
+      const logical = this.store.getLogicalSessionByLegacySessionId(work.sessionId);
+      const shadow = logical && this.shadow?.forShadow(logical.logicalSessionId);
+      if (shadow) {
+        this.store.db.run("UPDATE coordination_shadow_sessions SET last_error=? WHERE main_session_id=?",
+          [work.status === "failed" ? work.lastError ?? "SHADOW_EXECUTION_FAILED" : null, shadow.main_session_id]);
+        this.store.scheduleSave();this.shadow.changed(shadow.main_session_id);
+      }
+    }
+    if (work?.taskId && ["AgentWorkFailed", "AgentWorkCompleted"].includes(type)
+      && ["failed", "cancelled"].includes(work.status)) {
+      for (const pending of this.store.selectAll(`SELECT d.* FROM task_coordination_dispatches d
+        JOIN session_mailbox_messages m ON m.message_id=d.mailbox_message_id
+        WHERE m.operation_id=? AND d.error_code='SHADOW_REVIEW_PENDING'`, [work.taskId])) {
+        this.update(pending.dispatch_id, { status: "blocked",
+          error_code: work.source?.dispatchBlock?.code ?? "SHADOW_EXECUTION_FAILED",
+          error_message: work.lastError ?? "汇总处理失败，子任务尚未收到指令。" });
+      }
+    }
     if(work?.taskId && ["AgentWorkDispatchBlocked","AgentWorkDispatchReady"].includes(type)) {
       const row=this.store.selectOne("SELECT * FROM task_coordination_dispatches WHERE operation_id=?",[work.taskId]);
       if(row && !terminal.has(row.status)) {
@@ -570,7 +604,14 @@ export class TaskCoordinationService {
       WHERE s.archived=0 AND s.deleted_at IS NULL ORDER BY b.created_at DESC LIMIT 1000`)) this.progress.schedule(row.batch_id);
     for (const row of this.store.selectAll("SELECT * FROM task_coordination_dispatches WHERE status NOT IN ('completed','failed','cancelled','unknown')")) {
       if (["accepted", "preparing", "waiting_workspace"].includes(row.status)) { setImmediate(() => this.runDispatch(row.dispatch_id)); continue; }
-      if (row.error_code === "SHADOW_REVIEW_PENDING") continue;
+      if (row.error_code === "SHADOW_REVIEW_PENDING") {
+        const message = this.store.selectOne("SELECT operation_id FROM session_mailbox_messages WHERE message_id=?",[row.mailbox_message_id]);
+        const management = message?.operation_id && this.store.getAgentTask(message.operation_id);
+        if (["failed","cancelled"].includes(management?.status)) this.update(row.dispatch_id,{
+          status:"blocked",error_code:management.source?.dispatchBlock?.code ?? "SHADOW_EXECUTION_FAILED",
+          error_message:management.lastError ?? "汇总处理失败，子任务尚未收到指令。"});
+        continue;
+      }
       const work = this.store.getAgentTask(row.operation_id);
       if(["waiting_dispatch","blocked"].includes(row.status) && work?.status === "queued") continue;
       const adopted = row.mailbox_message_id && this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=? AND disposition='adopted'", [row.mailbox_message_id]);

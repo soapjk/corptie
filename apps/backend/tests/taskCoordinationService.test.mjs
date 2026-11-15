@@ -2603,3 +2603,41 @@ test("summary admits multiple amendments without replacing their original reques
   assert.deepEqual(replay.dispatches.map(r => r.dispatchId), accepted.dispatches.map(r => r.dispatchId));
   assert.equal(f.store.selectOne("SELECT count(*) n FROM task_coordination_dispatches WHERE parent_task_id=?", [f.parent.id]).n, 2);
 });
+
+test("request-planned follow-up reaches child without another summary decision", async t => {
+  const f=await requestFixture(t);
+  const child=f.child("Direct_request_child");f.open("direct_request_child",child.id);
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  f.setPlanner(async()=>{await gate;return {text:JSON.stringify({kind:"discussion",reply:"ok",items:[]})};});
+  const request=f.admit("new instruction");
+  await nextTick();await nextTick();
+  const shadow=f.requests.get(request.request_id).shadow_session_id;
+  assert.ok(shadow);
+  const reference=f.reference(shadow);
+  const admitted=f.coordinator.acceptDispatch({sessionId:shadow,providerBindingId:reference.bindingId},f.role.agentId,
+    {items:[{action:"send",taskId:child.id,text:"implement now",idempotencyKey:"direct-request"}]});
+  const id=admitted.dispatches[0].dispatchId;
+  await f.coordinator.runDispatch(id);
+  assert.equal(f.coordinator.get(id).status,"queued");
+  assert.notEqual(f.coordinator.get(id).error_code,"SHADOW_REVIEW_PENDING");
+  release();await f.requests.running.get(request.request_id);
+  await Promise.all([...f.requests.reclaiming.values()]);
+});
+
+test("failed summary delivery updates original dispatch and retries only original mailbox", async t => {
+  const f=await recoveryFixture(t),child=f.child("Failed_summary_child");f.open("failed_summary_child",child.id);
+  const receipt=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{action:"send",taskId:child.id,text:"work",idempotencyKey:"summary-failure"}]});
+  const id=receipt.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+  const row=f.coordinator.get(id);
+  const message=f.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[row.mailbox_message_id]);
+  const work=f.store.getAgentTask(message.operation_id);
+  assert.ok(work);
+  const failed=f.store.updateAgentTask(work.taskId,{status:"failed",lastError:"missing rollout",source:{...work.source,dispatchBlock:{kind:"rejected",code:"SESSION_NOT_READY"}}});
+  f.coordinator.onRuntimeEvent("AgentWorkFailed",{task:failed});
+  assert.equal(f.coordinator.get(id).status,"blocked");
+  assert.equal(f.coordinator.get(id).error_code,"SESSION_NOT_READY");
+  assert.equal(f.coordinator.get(id).operation_id,null);
+  const result=f.coordinator.retryDispatch(f.source,f.role.agentId,id);
+  assert.equal(result.retryAction,"resume_summary_management");
+  assert.equal(f.coordinator.get(id).mailbox_message_id,message.message_id);
+});

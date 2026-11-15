@@ -329,3 +329,24 @@ test("queue claim rechecks coordination before a busy main Session can reject th
     { fromAgentWorkQueue: true, agentTask: { taskId: "operation", sessionId: "session", source: { deliveryId: "delivery" } } });
   assert.equal(result.requestId, "request:existing"); assert.equal(claims[0][4].taskId, "operation");
 });
+
+test("background coordination does not resume an empty native thread for any Provider", async () => {
+  for (const providerId of [CODEX_APP_SERVER_PROVIDER_ID, CLAUDE_AGENT_SDK_PROVIDER_ID, OPENCLACKY_PROVIDER_ID]) {
+    let admitted = false;
+    const {operation,calls} = fixture({
+      requireSessionReference: () => ({sessionId:"session",logicalSessionId:"logical",providerId,metadata:{session:{id:"session",status:"complete"}}}),
+      sessionApplicationService: {coordinationTurns:{enabled:()=>true,supported:()=>true},
+        coordinationRequests:{accepts:()=>true,admit:()=>{admitted=true;return {request_id:"request"};}}},
+      sessionBindingReadinessProbe:{verify:()=>assert.fail("must not resume native thread")},
+      store:{getLogicalSession:()=>({}),getMessageDelivery:()=>null}
+    });
+    await operation.sendUnifiedSessionMessage("session","instruction",{type:"desktop"},{fromAgentWorkQueue:true,agentTask:{sessionId:"session"}});
+    assert.equal(admitted,true);assert.equal(calls.length,0);
+  }
+});
+
+test("unsupported coordination fails without falling back to native execution", async () => {
+  const {operation}=fixture({sessionApplicationService:{coordinationTurns:{enabled:()=>true,supported:()=>false}},
+    sessionBindingReadinessProbe:{verify:()=>assert.fail("no fallback")}});
+  await assert.rejects(operation.sendUnifiedSessionMessage("session","instruction"),{code:"PROVIDER_CAPABILITY_UNSUPPORTED"});
+});

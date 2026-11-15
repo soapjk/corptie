@@ -143,7 +143,7 @@ export function createCodexEnvironmentRuntime({ registry, environment, prepare, 
         try { return await runtime[method](threadId, await attach(source, input), ...rest); }
         catch (error) {
           if (account && account.profileId !== source.profileId && error?.code === "PROVIDER_SESSION_UNAVAILABLE") {
-            throw switchError("CODEX_ACCOUNT_RESUME_FAILED", "当前账号无法恢复原 Codex 线程。请重试，原线程和历史仍保留。");
+            throw switchError("CODEX_ACCOUNT_RESUME_FAILED", "当前 Codex 运行环境找不到原线程的执行记录。原会话历史仍保留，请恢复会话后重试。");
           }
           throw error;
         }
