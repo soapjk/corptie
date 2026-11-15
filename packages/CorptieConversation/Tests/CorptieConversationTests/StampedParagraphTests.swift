@@ -49,8 +49,9 @@ import SwiftUI
         #expect(!native.contains("title: \"内容\""))
         #expect(native.contains("NativeBusinessTextSection(title: kindTitle"))
         #expect(native.contains("ConversationStampedParagraph(title: title"))
-        let task = try String(contentsOf: directory.appendingPathComponent("ConversationInspectorSection.swift"), encoding: .utf8)
-        #expect(task.contains("ConversationStampedParagraph(title: titles[index]"))
+        let task = try String(contentsOf: directory.appendingPathComponent("ConversationDetailRenderer.swift"), encoding: .utf8)
+        #expect(task.contains("state.card.id == \"task-information\""))
+        #expect(task.contains("ConversationStampedParagraph(title: node.props.label?.fallback"))
     }
 
 }
