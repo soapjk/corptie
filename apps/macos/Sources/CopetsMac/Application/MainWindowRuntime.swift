@@ -127,9 +127,10 @@ final class MainWindowPresentationState: ObservableObject {
 ///   walk. A 90s interaction sample recorded 404 base / 205 hosting entries.
 ///
 /// The gate patches the base Method and every loaded hosting class Method,
-/// then patches newly minted hosting classes on first use. It drops a walk
-/// only inside a `MainWindow` while a drag or live resize is in flight; idle
-/// layout, other windows and off-main-thread calls keep the original IMP.
+/// then patches newly minted hosting classes on first use. Inside a
+/// `MainWindow` it drops every walk during a drag/live resize and coalesces
+/// the idle layout-driven flood to one walk per 100ms. Other windows and
+/// off-main-thread calls keep the original IMP.
 private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     static let shared = FocusBridgeKeyViewLoopGate()
 
@@ -147,6 +148,7 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     private let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
     private var isInstalled = false
     private var suppressUntil: TimeInterval = 0
+    private var lastAllowedWalkAt: TimeInterval = 0
     private var baseMethod: Method?
     private var installedMethods: Set<OpaquePointer> = []
     private var patchedClasses: Set<ObjectIdentifier> = []
@@ -182,13 +184,23 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     func clearSuppression() {
         lock.lock()
         suppressUntil = 0
+        // Force the next walk through, so a settled layout always gets one
+        // real Tab-chain rebuild after a gesture.
+        lastAllowedWalkAt = 0
         lock.unlock()
     }
 
-    private func suppressionDeadline() -> TimeInterval {
+    /// Gestures drop every walk. Outside a gesture SwiftUI still requests a
+    /// full walk on every preferences change (thousands during startup), so
+    /// coalesce those to one per 100ms. Tab order only depends on the view
+    /// hierarchy, which does not change within that window.
+    private func shouldSuppressWalk(now: TimeInterval, inLiveResize: Bool) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return suppressUntil
+        if inLiveResize || now < suppressUntil { return true }
+        if now - lastAllowedWalkAt < 0.1 { return true }
+        lastAllowedWalkAt = now
+        return false
     }
 
     // MARK: - Installation
@@ -281,8 +293,10 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
                 guard let view = target.object as? NSView,
                       let window = view.window,
                       window is MainWindow else { return false }
-                return window.inLiveResize
-                    || Date().timeIntervalSinceReferenceDate < gate.suppressionDeadline()
+                return gate.shouldSuppressWalk(
+                    now: Date().timeIntervalSinceReferenceDate,
+                    inLiveResize: window.inLiveResize
+                )
             }
             guard shouldSuppress else {
                 return originalFn(object, selector)
