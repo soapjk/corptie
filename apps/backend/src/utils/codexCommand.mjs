@@ -8,6 +8,10 @@ const appBundleNames = ["Codex", "ChatGPT"];
 // never silently removes the only executable Corptie can discover.
 const appBundleBinaryPaths = [join("codex-cli", "bin", "codex"), "codex"];
 
+function managedCodexCandidates() {
+  return [join(homedir(), ".local", "share", "corptie-runtime", "codex-cli", "node_modules", ".bin", "codex")];
+}
+
 function defaultAppBundleRoots() {
   return ["/Applications", join(homedir(), "Applications")];
 }
@@ -29,6 +33,7 @@ export function controlledCodexCommand() {
 // injectable so the layout can be tested without writing into /Applications.
 export function codexExecutableCandidates({ roots = defaultAppBundleRoots() } = {}) {
   return [...externalCommandCandidates("codex").map(path => ({ path, source: "cli" })),
+    ...managedCodexCandidates().map(path => ({ path, source: "cli" })),
     ...appBundleCandidates(roots)];
 }
 
@@ -36,6 +41,6 @@ export function resolveCodexCommand(requestedCommand = "") {
   return resolveExternalCommand("codex", {
     requested: requestedCommand,
     environmentVariables: ["CORPTIE_CODEX_PATH", "CORPTIE_CODEX_REAL_PATH"],
-    extraCandidates: appBundleCandidates(defaultAppBundleRoots()).map(entry => entry.path)
+    extraCandidates: [...managedCodexCandidates(), ...appBundleCandidates(defaultAppBundleRoots()).map(entry => entry.path)]
   });
 }

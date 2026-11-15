@@ -523,44 +523,44 @@ struct ConversationNativeRowBuilder {
         let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let presentationText = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let imageSignature = (item.images ?? []).map(\.managedPath).joined(separator: ",")
-        let collaborationSignature = [
-            item.collaborationProcessingStatus ?? "",
-            item.collaborationSenderName ?? "",
-            item.collaborationRecipientName ?? "",
-            item.collaborationInitiatorSessionId ?? "",
-            item.collaborationRecipientSessionId ?? "",
-            item.collaborationRecipientSessionTitle ?? "",
-            item.collaborationTaskTitle ?? "",
-            item.collaborationSourceCorptieTaskId ?? "",
-            item.collaborationTargetCorptieTaskId ?? "",
-            item.collaborationRelation ?? "",
-            item.collaborationRouteStatus ?? "",
-            item.collaborationRoutingVersion.map(String.init) ?? ""
-        ].joined(separator: ":") + ":" + imageSignature
-        return [
-            item.id,
-            item.type,
-            item.status ?? "",
-            item.userMessageStatus ?? "",
-            item.withdrawalAvailable == true ? "withdrawable" : "",
-            item.withdrawnMessage != nil ? "withdrawn" : "",
-            item.messageOrigin ?? "",
-            item.automationName ?? "",
-            item.automationRunStatus ?? "",
-            item.automationRunError ?? "",
-            item.queuePosition.map(String.init) ?? "",
-            item.turnStatus,
-            item.executionPlan.map { "plan:\($0.revision)" } ?? "",
-            item.toolExecution.map { "tool:\($0.hashValue)" } ?? "",
-            item.changeSet.map { "changes:\($0.hashValue)" } ?? "",
-            item.userInput.map { "input:\($0.hashValue)" } ?? "",
-            item.presentationRole ?? "",
-            collaborationSignature,
-            "\(text.count)",
-            String(text.suffix(96)),
-            "\(presentationText.count)",
-            String(presentationText.suffix(96)),
-            fileChangesSignature(item)
-        ].joined(separator: ":")
+        var collaborationParts: [String] = []
+        collaborationParts.append(item.collaborationProcessingStatus ?? "")
+        collaborationParts.append(item.collaborationSenderName ?? "")
+        collaborationParts.append(item.collaborationRecipientName ?? "")
+        collaborationParts.append(item.collaborationInitiatorSessionId ?? "")
+        collaborationParts.append(item.collaborationRecipientSessionId ?? "")
+        collaborationParts.append(item.collaborationRecipientSessionTitle ?? "")
+        collaborationParts.append(item.collaborationTaskTitle ?? "")
+        collaborationParts.append(item.collaborationSourceCorptieTaskId ?? "")
+        collaborationParts.append(item.collaborationTargetCorptieTaskId ?? "")
+        collaborationParts.append(item.collaborationRelation ?? "")
+        collaborationParts.append(item.collaborationRouteStatus ?? "")
+        collaborationParts.append(item.collaborationRoutingVersion.map(String.init) ?? "")
+        let collaborationSignature = collaborationParts.joined(separator: ":") + ":" + imageSignature
+        var signatureParts: [String] = []
+        signatureParts.append(item.id)
+        signatureParts.append(item.type)
+        signatureParts.append(item.status ?? "")
+        signatureParts.append(item.userMessageStatus ?? "")
+        signatureParts.append(item.withdrawalAvailable == true ? "withdrawable" : "")
+        signatureParts.append(item.withdrawnMessage != nil ? "withdrawn" : "")
+        signatureParts.append(item.messageOrigin ?? "")
+        signatureParts.append(item.automationName ?? "")
+        signatureParts.append(item.automationRunStatus ?? "")
+        signatureParts.append(item.automationRunError ?? "")
+        signatureParts.append(item.queuePosition.map(String.init) ?? "")
+        signatureParts.append(item.turnStatus)
+        signatureParts.append(item.executionPlan.map { "plan:\($0.revision)" } ?? "")
+        signatureParts.append(item.toolExecution.map { "tool:\($0.hashValue)" } ?? "")
+        signatureParts.append(item.changeSet.map { "changes:\($0.hashValue)" } ?? "")
+        signatureParts.append(item.userInput.map { "input:\($0.hashValue)" } ?? "")
+        signatureParts.append(item.presentationRole ?? "")
+        signatureParts.append(collaborationSignature)
+        signatureParts.append("\(text.count)")
+        signatureParts.append(String(text.suffix(96)))
+        signatureParts.append("\(presentationText.count)")
+        signatureParts.append(String(presentationText.suffix(96)))
+        signatureParts.append(fileChangesSignature(item))
+        return signatureParts.joined(separator: ":")
     }
 }

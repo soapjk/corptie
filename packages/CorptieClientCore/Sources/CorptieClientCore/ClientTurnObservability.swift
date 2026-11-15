@@ -236,8 +236,11 @@ public struct ClientTurnTrace: Decodable, Equatable, Sendable {
         self.trace = trace
         slowestSpans = Array(trace.spans.filter { $0.operation != "persistence" && $0.durationMs > 0.01 }
             .sorted { $0.durationMs > $1.durationMs }.prefix(trace.spans.count > 200 ? 30 : 10))
-        traceBytes = trace.spans.reduce(0) { $0 + 512 + ($1.operation.utf8.count + $1.traceId.utf8.count + $1.spanId.utf8.count
-            + ($1.parentSpanId?.utf8.count ?? 0) + $1.intervalClass.utf8.count + $1.status.utf8.count) * 2 }
+        traceBytes = trace.spans.reduce(0) { total, span in
+            let identityBytes = span.operation.utf8.count + span.traceId.utf8.count + span.spanId.utf8.count
+            let metadataBytes = (span.parentSpanId?.utf8.count ?? 0) + span.intervalClass.utf8.count + span.status.utf8.count
+            return total + 512 + (identityBytes + metadataBytes) * 2
+        }
     }
     public func loadSummary(executionID: String, expectedSessionIDs: [String], force: Bool = false, using read: @escaping @MainActor () async throws -> ClientTurnSummary) async {
         if !force, summary?.turnExecutionId == executionID { return }
