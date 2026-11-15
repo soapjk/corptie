@@ -3,6 +3,20 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationProcessPresentationTests {
+    @Test func runningWithoutStepsShowsOnlyWorkingLabel() {
+        for duration: String? in [nil, "", "0s", "30s"] {
+            let empty = ConversationProcessPresentation(state: .running, count: 0,
+                duration: duration, currentStepTitle: "Reasoning")
+            #expect(empty.summary(languageCode: "zh-Hans") == "处理中…")
+            #expect(empty.summary(languageCode: "en") == "Working…")
+        }
+        let active = ConversationProcessPresentation(state: .running, count: 1)
+        #expect(active.summary(languageCode: "zh-Hans") == "处理中… · 1 步")
+        #expect(active.summary(languageCode: "en") == "Working… · 1 step")
+        #expect(ConversationProcessPresentation(state: .completed, count: 0)
+            .summary(languageCode: "zh-Hans") == "已完成 · 0 步")
+    }
+
     @Test(arguments: [(0.01, "0s"), (4.2, "4s"), (9.999, "10s"), (22.61, "23s"),
         (59.49, "59s"), (59.5, "1m 0s"), (59.999, "1m 0s"), (60.01, "1m 0s"),
         (3599.999, "1h 0m 0s"), (3661.234, "1h 1m 1s")])
