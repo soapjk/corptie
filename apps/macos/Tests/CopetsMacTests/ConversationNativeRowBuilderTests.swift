@@ -8,6 +8,33 @@ import CorptieConversation
 
 @MainActor
 final class ConversationNativeRowBuilderTests: XCTestCase {
+    func testHistoricalCoordinationMessagesUseSpecialCardsWithoutReplyIdentityOrActions() throws {
+        var projection = builder()
+        projection.replyIdentity = .init(roleID: "role", name: "Engineer", avatarPath: nil)
+        let entries = try ["summary", "failure", "delivery", "receipt", "decision"].map { kind in
+            let metadata = String(decoding: try JSONSerialization.data(withJSONObject: ["coordinationEvent": ["kind": kind]]), as: UTF8.self)
+            let historical = String(decoding: try JSONSerialization.data(withJSONObject: ["id": "old-" + kind, "rawMetadataJSON": metadata]), as: UTF8.self)
+            return ChatDisplayEntry(kind: .message(try item(["id": "old-" + kind, "turnId": "turn-" + kind,
+                "text": kind == "summary" ? "**后台汇总**\n\n真实结果" : "请求处理失败", "rawMetadataJSON": historical])))
+        }
+        let rows = entries.map { projection.nativeAppKitRow($0, expandedTurnIds: []) }
+        let rendered = projection.applyingReplyIdentity(to: rows, entries: entries)
+        for row in rendered {
+            XCTAssertNotNil(row.coordinationEvent)
+            XCTAssertTrue(MacSharedMessageTextCard.supports(row))
+            XCTAssertFalse(row.showsHeader)
+            XCTAssertFalse(row.showsReplyActions)
+            XCTAssertTrue(row.actions.isEmpty)
+            XCTAssertNil(row.replyIdentity)
+            XCTAssertEqual(row.replyIdentityHeight, 0)
+            _ = NSApplication.shared
+            let cell = AppKitSharedMessageTextCell(identifier: .init("historical-special-card"))
+            cell.frame = .init(x: 0, y: 0, width: 480, height: 200)
+            cell.setContent(row, availableWidth: 480, onToggleExpansion: { _ in })
+            XCTAssertTrue(cell.subviews.contains { $0 is NSHostingView<MacSharedMessageTextCard> })
+        }
+    }
+
     func testChildResultsAndScheduledTriggersUseSpecialCardsInBothSkins() throws {
         let summary = "收到 1 个子任务的执行结果。\n\n子任务 1 · 已完成\n实现完成"
         let notice = try item(["id": "mailbox-event:result", "type": "userMessage", "presentationRole": "system_event",

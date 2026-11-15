@@ -130,3 +130,15 @@ test('preparation publishes the ordinary timeline projection without claiming Pr
   assert.ok(f.calls.some(call => call[0] === 'timeline' && call[2].userMessageStatus === 'preparing'));
   assert.ok(!f.calls.some(call => call[0] === 'scheduled'));
 });
+
+test('coordination summary and failure projection preserve canonical metadata instead of wrapping it',()=>{
+ for(const type of ['SessionCoordinationCompleted','SessionCoordinationMilestone'])for(const kind of ['summary','failure','receipt','delivery','decision']){
+  const f=fixture();const rawMetadataJSON=JSON.stringify({coordinationEvent:{kind,batchId:'batch:one'},requestId:'request:one'});
+  const item={id:`${type}:${kind}`,type:'agentMessage',text:'产品生成的消息',rawMetadataJSON};
+  createProductEventPublisher(f.options).emitEvent(type,{item},{sessionId:'session:1'});
+  const stored=f.calls.find(([kind])=>kind==='timeline')[2];
+  assert.equal(stored.rawMetadataJSON,rawMetadataJSON);
+  assert.equal(JSON.parse(stored.rawMetadataJSON).coordinationEvent.kind,kind);
+  assert.equal(JSON.parse(stored.rawMetadataJSON).rawMetadataJSON,undefined);
+ }
+});
