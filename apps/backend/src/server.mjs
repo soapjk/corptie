@@ -11,6 +11,7 @@ import { createProviderCredentialAdapters, selectedCredentialEnvironment } from 
 import { conversationWorktreeBlocker, WorkChatReadOnlyTurnService } from "./application/workChatReadOnlyTurnService.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
 import { VerificationBudgetService } from "./application/verificationBudgetService.mjs";
+let verificationBudgetService = null;
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
 import { ShadowSessionService } from "./application/shadowSessionService.mjs";
@@ -548,6 +549,13 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   },
   changed: sessionId => emitEvent("SessionMailboxChanged", { sessionId, ...sessionMailbox.summary(sessionId) }, { sessionId }),
   validateExternal: (row, authorization) => {
+    if (authorization.purpose === "verification_continuation") {
+      const operation=store.getAgentTask(row.operation_id),id=operation?.source?.verificationContinuation?.instructionId;
+      const budget=id&&verificationBudgetService.read(id);
+      const session=operation&&store.getSession(operation.sessionId),task=session?.taskId&&store.getTask(session.taskId);
+      if(!budget || !task || !verificationBudgetService.taskCanManage(task.id,budget) || !budget.resumeOperationIds.includes(operation.taskId))throw Object.assign(new Error("验证续作已失效"),{code:"VERIFICATION_RESUME_RETIRED"});
+      return;
+    }
     if (authorization.purpose === "shadow_decision") return taskCoordinationService.shadow.validateDecision(row, authorization);
     if (authorization.purpose === "shadow_request") return taskCoordinationService.shadow.validateRequest(row, authorization);
     if (authorization.purpose === "shadow_delivery_blocked") return taskCoordinationService.shadow.validateDeliveryEvent(row, authorization);
@@ -586,13 +594,18 @@ const executionChecklistService = new ExecutionChecklistService({ store,
   changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision, checklist: executionChecklistService.display(value, false) },
     { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId })
 });
-const verificationBudgetService = new VerificationBudgetService({ store,
+verificationBudgetService = new VerificationBudgetService({ store, emitEvent,
+  resumeQueued: operation => scheduleAgentWorkDrain(operation.sessionId),
+  resume: ({operationId,session,sourceOperationId,instructionId}) => sessionMailbox.enqueueExternalOperation({ taskId:operationId,sessionId:session.id,agentId:session.agentId,kind:"user",priority:10,localVisibility:"status_only",text:"用户已增加验证预算并要求继续原指令。读取现有结果，从尚未完成的步骤继续；不要重跑已经完成的验证或Git操作。",source:{type:"mailbox_event",verificationContinuation:{instructionId,sourceOperationId}} },{sourceType:"system",authorization:{sourceId:operationId,purpose:"verification_continuation",ownerLogicalSessionId:store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId}}),
   readOnly: developmentPreview,
   scope: metadata => executionChecklistService.scope(metadata),
   workingDirectory: sessionId => projectWorkingDirectoryForSession(sessionId),
   interrupt: sessionId => interruptUnifiedSession(sessionId, { type: "verification_budget" }, { reason: "verification_budget_exhausted" }),
-  changed: budget => emitEvent("VerificationBudgetChanged", budget, {
-    sessionId: store.getLogicalSession(budget.sessionId)?.legacySessionId ?? budget.sessionId })
+  changed: budget => {
+    const notice=verificationBudgetService.notice(budget);
+    const ids=new Set([budget.sessionId,...(budget.instructionId?store.selectAll('SELECT DISTINCT executor_session_id FROM verification_budget_charges WHERE instruction_id=?',[budget.instructionId]).map(row=>row.executor_session_id):[])].filter(Boolean));
+    for(const id of ids)emitEvent("VerificationBudgetChanged",{...budget,notice},{sessionId:store.getLogicalSession(id)?.legacySessionId ?? id,...(notice?{eventId:`${notice.id}:state:${id}`}:{})});
+  }
 });
 sessionMailbox.verificationBudget = verificationBudgetService;
 const {
@@ -1408,6 +1421,7 @@ sessionCollaborationService = createSessionCollaborationComposition({
   defaultProviderId: agentProviderRegistry.defaultProviderId
 });
 const { setProviderRuntimeReadiness, decorateSessionForClient } = createSessionReadinessProjection({
+  readVerificationPause:id=>verificationBudgetService.pausedForSession(id),
   readMailboxSummary: sessionId => {
     const logical = store.getLogicalSessionByLegacySessionId(sessionId) ?? store.getLogicalSession(sessionId);
     return logical ? sessionMailbox.summary(logical.logicalSessionId) : null;
@@ -1516,6 +1530,7 @@ const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService(
   ])
 });
 const sessionApplicationService = createSessionApplicationComposition({
+  readVerificationContext:id=>verificationBudgetService.contextForSession(id),
   store, agentProviderRegistry, sessionBindingRepository, toolHostService, toolMaterializationPort,
   requiredToolDomainsForSession,
   assertForkDispatchAllowed: (sessionId) => sessionForkService.assertCanDispatch(sessionId),
@@ -2133,6 +2148,7 @@ function sessionTitleErrorPayload(error, extra = {}) {
 
 function emitEvent(type, payload, options = {}) {
   const runtimePayload = options.sessionId ? { ...payload, sessionId: options.sessionId } : payload;
+  verificationBudgetService?.onRuntimeEvent(type,runtimePayload);
   childTaskDeliveryService?.onRuntimeEvent(type,runtimePayload);
   taskCoordinationService?.onRuntimeEvent(type,runtimePayload);
   productEventPublisher ??= createProductEventPublisher({
@@ -2837,13 +2853,13 @@ detailServiceFor(store, detailMigration).coordinationState = id => sessionApplic
 detailServiceFor(store, detailMigration).configureBusinessPorts(createDetailBusinessReadPorts({
   store, references: sessionContextReferenceService, artifacts: artifactService,
   schedules: scheduledSessionTaskService, observability: turnObservability,
-  providerRegistry: agentProviderRegistry,
+  providerRegistry: agentProviderRegistry, verificationBudgetService,
   readWorktree: id => projectWorktreeStatusReader.worktreeDetail(id)
 }));
 detailActionService = createLocalDetailBusinessActionService({ commandAPI: new ClientSessionAPI({ store }), workService, store,
   documentService: detailServiceFor(store, detailMigration),
   resolveSession: requireSessionReference, references: sessionContextReferenceService,
-  artifacts: artifactService, schedules: scheduledSessionTaskService, observability: turnObservability });
+  artifacts: artifactService, schedules: scheduledSessionTaskService, observability: turnObservability, verificationBudgetService });
 detailServiceFor(store, detailMigration).configureBusinessActionRegistry(detailActionService.registry);
 
 await initializeBackendStoreReadiness({

@@ -436,6 +436,7 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
            let state = UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
                legacyStatus: item.timelineLegacyMessageStatus)
            let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)
+           if state == .paused { return false }
            guard (state == .processing && !isTerminalTurn) || (kind == .userMessage
                && (state != nil || item.timelineIsLocalSubmission)) else { return false }
            return kind == .userMessage || kind == .systemEvent || kind == .automationEvent

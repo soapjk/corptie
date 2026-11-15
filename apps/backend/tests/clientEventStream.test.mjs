@@ -494,3 +494,20 @@ test("v2 waits for socket drain instead of treating normal backpressure as failu
     assert.equal(response.destroyed, false);
   } finally { hub.close(); }
 });
+
+
+test("verification pause notices use opt-in operation events with bounded recovery, never timeline messages",async()=>{
+  const notice={id:'verification:one',sessionId:'logical:one',instructionId:'instruction:one',title:'Paused',body:'Limit reached',occurredAt:'2026-11-15T00:00:00Z'};
+  const hub=new ClientEventStream({operationNotices:()=>[notice]});
+  const old=new Response(),current=new Response();
+  try{
+    hub.attachV2(old,()=>identity);
+    hub.attachV2(current,()=>({deviceId:'two'}),{operationNotifications:true});
+    await Promise.all([...hub.clients].map(c=>c.tail));
+    assert.equal(old.frames.some(f=>f.includes('event: operation-notice')),false);
+    assert.deepEqual(data(current.frames.find(f=>f.includes('event: operation-notice'))),notice);
+    assert.equal(current.frames.some(f=>f.includes('event: timeline')),false);
+    hub.publishOperationNotice({...notice,id:'verification:two'});
+    assert.equal(current.frames.filter(f=>f.includes('event: operation-notice')).length,2);
+  }finally{hub.close();}
+});

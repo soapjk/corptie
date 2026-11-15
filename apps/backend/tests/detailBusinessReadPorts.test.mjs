@@ -75,3 +75,10 @@ test("scope and byte bounds evict cached pages without preserving raw source row
   for (const principalId of ["a", "b", "c"]) await cache.read(scope, "test", { ...identity, principalId });
   assert.ok(cache.scopes.size <= 2); assert.ok(cache.bytes <= 400);
 });
+
+
+test("performance budget is visible before the first observed turn",()=>{
+  const verification={sessionId:'logical:s',available:true,policy:{enabled:false,limit:3},budgets:[]};
+  const ports=createDetailBusinessReadPorts({observability:{latestSummary:()=>null},verificationBudgetService:{snapshot:id=>{assert.equal(id,'logical:s');return verification;}}});
+  assert.deepEqual(ports.turn.read({logicalSessionId:'logical:s'}),{verification});
+});

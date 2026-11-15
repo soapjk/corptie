@@ -1,4 +1,7 @@
 const messages = {
+  VERIFICATION_BUDGET_EXHAUSTED:"执行已暂停：验证预算已用尽。不会自动继续，请增加预算后选择继续。",
+  VERIFICATION_STOPPED_BY_USER:"用户已停止本条指令，不会自动继续。",
+  VERIFICATION_OUTCOME_UNKNOWN:"原验证结果待核对，不会自动重新执行。",
   MAILBOX_MESSAGE_NOT_FOUND:"邮箱消息记录不存在，无法派发。",
   MAILBOX_MESSAGE_IGNORED:"消息已被忽略。",
   MAILBOX_MESSAGE_ADOPTED:"消息已由其他执行回合接管。",

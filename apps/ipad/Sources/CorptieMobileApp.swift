@@ -2458,7 +2458,7 @@ private struct MobileMessageBubble: View {
             legacyStatus: message.status,
             localDeliveryState: deliveryState,
             queuePosition: message.queuePosition,
-            processingError: message.processingError
+            processingError: message.processingError, executionBlock: message.executionBlock
         )
     }
     private var cardWidth: CGFloat {

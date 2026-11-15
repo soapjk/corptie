@@ -80,7 +80,7 @@ export class ClientDeviceGateway {
       artifacts: sessionAPI.inspector.artifacts, writesAllowed: resourceWritesAllowed }) : null;
     this.inspectorEvents = new ClientInspectorStream({ snapshot: (identity, id) => this.sessionAPI.inspector.snapshot(identity, id) });
     this.events = new ClientEventStream({
-      automationNotifications,
+      automationNotifications, operationNotices:()=>verificationBudgetService?.pendingNotices() ?? [],
       stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
       controlSnapshot: async () => this.controlAPI?.realtimeSnapshot?.() ?? null,
       timeline: async (identity, sessionId, after, options) =>
@@ -184,18 +184,22 @@ export class ClientDeviceGateway {
         const service = this.verificationBudgetService;
         const taskId = verification && decode(verification[1], "INVALID_TASK_ID");
         if (taskId && !service.store.getTask(taskId)) throw deviceError("TASK_NOT_FOUND", 404);
+        if(request.method==='GET' && verification && url.searchParams.has('instructionId'))return reply(response,200,service.records(taskId,url.searchParams.get('instructionId'),url.searchParams.get('before')));
         if (request.method === "GET") return reply(response, 200, verificationDefaults
-          ? { limit: service.defaultLimit(), enforcement: "entry_only" } : { budgets: service.list(taskId) });
+          ? { limit: service.defaultLimit(), enabled:service.defaultEnabled(), enforcement: "entry_only", notices:service.pendingNotices() } : { budgets: service.list(taskId) });
         if (request.method !== "POST") throw deviceError("REQUEST_NOT_ALLOWED", 405);
         if (!this.resourceWritesAllowed) throw deviceError("CAPABILITY_UNAVAILABLE", 403);
         const input = await body(request);
         if (this.authenticateRequest(request).deviceId !== identity.deviceId) throw deviceError("DEVICE_AUTH_CHANGED", 403);
-        if (verificationDefaults) return reply(response, 200, service.setDefault(input.limit));
+        if (verificationDefaults) return reply(response, 200, service.setDefault(input.limit,{enabled:input.enabled ?? true}));
         if (!verification[2] || !verification[3]) throw deviceError("VERIFICATION_ACTION_INVALID", 400);
         if (verification[3] === "extend" && (typeof input.requestId !== "string" || !input.requestId.trim() || input.requestId.length > 200)) throw deviceError("VERIFICATION_ID_INVALID", 400);
         const id = decode(verification[2], "INVALID_INSTRUCTION_ID");
-        try { return reply(response, 200, { budget: verification[3] === "extend"
-          ? service.extend(taskId, id, { ...input, requestId: `${identity.deviceId}:${input.requestId}` }) : service.stop(taskId, id) }); }
+        try {
+          const budget=verification[3] === "extend" ? service.extend(taskId,id,{...input,requestId:`${identity.deviceId}:${input.requestId}`}) : service.stop(taskId,id);
+          if(budget.resumeRequested)await service.resumeBudget(id);
+          return reply(response,200,{budget:service.read(id)});
+        }
         catch (error) { throw deviceError(error.code ?? "VERIFICATION_FAILED", error.statusCode ?? 500); }
       }
       const deliveryAPI=this.sessionAPI?.entityCommands?.childDelivery;

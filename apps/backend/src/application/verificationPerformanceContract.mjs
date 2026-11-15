@@ -1,0 +1,5 @@
+const str={type:'string',maxLength:512},text={type:'string',maxLength:1024},bool={type:'boolean'},num={type:'integer',minimum:0};
+const nullable=type=>({anyOf:[type,{type:'null'}]});
+const object=properties=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
+export const verificationPerformanceSchema=object({sessionId:str,taskId:nullable(str),available:bool,policyEditable:bool,revision:str,limitation:text,
+ policy:object({enabled:bool,limit:num,revision:num}),budgets:{type:'array',maxItems:20,items:object({instructionId:str,taskId:str,sessionId:str,instruction:text,enabled:bool,limit:num,used:num,remaining:nullable(num),status:str,paused:bool,pauseReason:nullable(str),running:bool,executionRunning:bool,revision:num,resumeRequested:bool,resumeOperationIds:{type:'array',maxItems:100,items:str},runsHasMore:bool,nextRunCursor:nullable(str),runs:{type:'array',maxItems:20,items:object({executionId:str,status:str,createdAt:str,executorSessionId:nullable(str),executorTaskId:nullable(str)})}})}});

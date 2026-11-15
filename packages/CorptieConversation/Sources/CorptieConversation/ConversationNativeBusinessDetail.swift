@@ -72,7 +72,7 @@ struct ConversationNativeBusinessDetail: View {
     }
 
     private func usesNaturalHeight(_ card: SizedCard) -> Bool {
-        ["provider", "taskInfo"].contains(card.state.card.kind) && card.state.card.loadState != "error"
+        ["provider", "taskInfo", "turnMetrics"].contains(card.state.card.kind) && card.state.card.loadState != "error"
     }
     private func grid(_ snapshot: [SizedCard]) -> some View {
         DetailWidgetLayout(sizes: snapshot.map(\.size), fixedWidth: fixedContentWidth,
@@ -93,7 +93,7 @@ struct ConversationNativeBusinessDetail: View {
                 #endif
                 .detailWidget(sized.size)
                 .environment(\.detailPrefersNaturalContent,
-                    state.card.kind == "taskInfo" || state.card.kind == "provider" || state.card.loadState == "error")
+                    state.card.kind == "taskInfo" || state.card.kind == "provider" || state.card.kind == "turnMetrics" || state.card.loadState == "error")
                 .environment(\.detailCardDrag, canReorder ? .init(scope: reorderScope, cardID: state.id) : nil)
                 .modifier(ConversationDetailCardDropTarget(enabled: canReorder) { payload, after in
                     guard canReorder else { return false }
@@ -112,13 +112,21 @@ struct ConversationNativeBusinessDetail: View {
             ConversationDetailProviderCard(configuration: adapters.configuration, scope: handle.scope.sessionID,
                 providerIcon: adapters.providerIcon, select: adapters.selectConfiguration, reload: adapters.reloadConfiguration).disabled(!store.isCurrent)
         case .turn(let value):
-            if let id = value.turnId {
-                ConversationDetailTurnCard(state: handle.turn, executionID: id,
+            let id = value.turnId ?? ""
+            ConversationDetailTurnCard(state: handle.turn, executionID: id,
                     expectedSessionIDs: [handle.scope.sessionID, store.sessionID ?? ""],
                     readSummary: { try await adapters.readTurnSummary(id) }, readTrace: adapters.readTurnTrace, liveSnapshot: adapters.turnSnapshot,
-                    presentationState: renderState?.turn, activity: activity)
+                    presentationState: renderState?.turn, activity: activity, verification: value.verification,
+                    canControlVerification: state.card.actions.first(where: { $0.operation == "verification.control" }).map { canCommand(state.id, $0) } ?? false,
+                    performVerification: { fields in
+                        if let action = state.card.actions.first(where: { $0.operation == "verification.control" }), canCommand(state.id, action) {
+                            perform(state.id, action, fields)
+                        }
+                    }, readVerificationRecords: { instructionID, cursor in
+                        guard let api, let taskID = value.verification?.taskId else { throw ClientConnectionError.invalidResponse }
+                        return try await api.verificationRecords(taskID: taskID, instructionID: instructionID, before: cursor)
+                    })
                     .disabled(!store.isCurrent)
-            }
         case .worktree(let value):
             ConversationWorktreeCard(sessionID: handle.scope.sessionID, refreshID: "\(value.worktreeId ?? ""):\(state.card.revision)",
                 api: { try await adapters.worktreeAPI(value.worktreeId) }, onJob: adapters.onWorktreeJob,
@@ -493,7 +501,7 @@ private struct NativeBusinessCard: View {
         case "schedules": "计划任务"
         case "provider": "Provider"
         case "worktree": "Workspace / Worktree"
-        case "turnMetrics": "Turn 分析"
+        case "turnMetrics": "会话性能"
         default: "卡片暂不支持"
         }
     }

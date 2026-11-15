@@ -906,42 +906,20 @@ struct ThreadItemView: View {
         isAgentMessage ? .infinity : ChatBubbleWidthPolicy.maximumWidth
     }
 
-    private var userMessageStatusLabel: String? {
-        switch item.authoritativeUserMessageState {
-        case .queued:
-            if let position = item.queuePosition {
-                return L10nFormat("Queued · position %lld", Int64(position))
-            }
-            return L10n("Queued for processing")
-        case .preparing: return L10n("Preparing")
-        case .processing: return L10n("Processing")
-        case .failed: return L10n("Processing failed")
-        case .cancelled: return L10n("Cancelled before processing")
-        case .consumed, .none: return nil
-        }
+    private var outgoingStatus: UserMessageStatusPresentation? {
+        guard isUserMessage else { return nil }
+        return UserMessageStatusPresentation(authoritativeStatus:item.userMessageStatus, legacyStatus:item.status,
+            queuePosition:item.queuePosition, processingError:item.processingError, executionBlock:item.executionBlock)
     }
-
-    private var userMessageStatusAccessibilityLabel: String {
-        userMessageStatusLabel ?? ""
-    }
-
-    private var userMessageStatusIcon: String {
-        switch item.authoritativeUserMessageState {
-        case .queued: "clock.fill"
-        case .preparing: "hourglass"
-        case .processing: "clock.arrow.circlepath"
-        case .failed: "exclamationmark.circle.fill"
-        case .cancelled: "xmark.circle.fill"
-        case .consumed, .none: ""
-        }
-    }
-
+    private var userMessageStatusLabel: String? { outgoingStatus?.shortLabel(languageCode:AppLanguageController.shared.languageCode) }
+    private var userMessageStatusAccessibilityLabel: String { outgoingStatus?.detail(languageCode:AppLanguageController.shared.languageCode) ?? "" }
+    private var userMessageStatusIcon: String { outgoingStatus?.symbolName ?? "" }
     private var userMessageStatusColor: Color {
-        switch item.authoritativeUserMessageState {
-        case .queued, .preparing: CorptiePalette.amber
-        case .processing: CorptiePalette.running
-        case .failed, .cancelled: .red
-        case .consumed, .none: CorptiePalette.secondaryText
+        switch outgoingStatus?.tone {
+        case .amber: CorptiePalette.amber
+        case .green: CorptiePalette.running
+        case .red: .red
+        default: CorptiePalette.secondaryText
         }
     }
 

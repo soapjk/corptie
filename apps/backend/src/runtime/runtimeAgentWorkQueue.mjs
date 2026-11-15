@@ -64,7 +64,8 @@ export function createRuntimeAgentWorkQueue({
 
   function recordBlocked(item, reason) {
     if(!item || reason.allowed || reason.kind === "settled") return;
-    const block={code:reason.code,message:redactInlineSecrets(String(reason.message)).slice(0,1200),kind:reason.kind};
+    const block={code:reason.code,message:redactInlineSecrets(String(reason.message)).slice(0,1200),kind:reason.kind,
+      ...(typeof reason.instructionId==='string'?{instructionId:reason.instructionId}:{}),...(typeof reason.sessionId==='string'?{sessionId:reason.sessionId}:{})};
     const old=item.source?.dispatchBlock;
     if(old?.code===block.code && old?.message===block.message && old?.kind===block.kind) {
       try { sessionMailbox?.reportDispatchBlock?.(item); } catch(error) { console.warn(`[mailbox-dispatch-report] ${error.code ?? "REPORT_FAILED"}`); }

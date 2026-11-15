@@ -2,10 +2,11 @@ import Foundation
 import Observation
 
 public enum OperationNotificationCategory: String, Codable, CaseIterable, Sendable {
-    case worktree, developmentService, dataMigration, gitPush, environment, mcp
+    case worktree, developmentService, dataMigration, gitPush, environment, mcp, verification
 
     public var title: String {
         switch self {
+        case .verification: "Verification budgets"
         case .worktree: "Worktree operations"
         case .developmentService: "Development services"
         case .dataMigration: "Data migration"

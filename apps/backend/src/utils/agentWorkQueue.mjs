@@ -74,7 +74,8 @@ export function assertAgentWorkSessionReference(task, reference) {
   return reference;
 }
 
-export function userMessageStatusForAgentWork(status, targetTurnId = undefined) {
+export function userMessageStatusForAgentWork(status, targetTurnId = undefined, block = null) {
+  if(status==='queued' && (block?.kind==='paused' || block?.code==='VERIFICATION_BUDGET_EXHAUSTED'))return 'paused';
   switch (status) {
     case "queued": return "queued";
     case "running": return targetTurnId === null ? "preparing" : "processing";
@@ -94,4 +95,13 @@ export function agentWorkFailureMessage(error) {
   } catch {
     return String(error);
   }
+}
+
+export function agentWorkExecutionBlock(task) {
+  const value=task?.source?.dispatchBlock;if(!value?.code)return null;
+  const terminal=['completed','failed','cancelled'].includes(task.status);
+  return {code:String(value.code).slice(0,128),kind:terminal?'settled':value.kind,
+    message:String(task.lastError ?? value.message ?? value.code).slice(0,1200),
+    instructionId:typeof value.instructionId==='string'?value.instructionId:null,
+    sessionId:typeof value.sessionId==='string'?value.sessionId:null};
 }

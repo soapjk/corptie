@@ -9,6 +9,30 @@ export class TimelineReadRepository {
     this.getSession = getSession;
   }
 
+  normalizeItem(item,provider,sessionId,operations=null) {
+    return normalizeStoredItem(item,provider,taskId=>{
+      if(operations)return operations.get(taskId) ?? null;
+      const row=this.selectOne(`SELECT op.status,op.last_error,op.source_json,
+        (SELECT d.last_error FROM message_deliveries d WHERE d.delivery_id=op.delivery_id AND d.session_id=op.session_id) delivery_error
+        FROM agent_operations op WHERE op.task_id=? AND op.session_id=?`,[taskId,sessionId]);
+      return row?{status:row.status,lastError:[...new Set([row.last_error,row.delivery_error].filter(Boolean))].join('; ')||null,source:parseJson(row.source_json,{})}:null;
+    });
+  }
+
+  legacyTerminalOperations(rows,sessionId) {
+    const ids=[];
+    for(const row of rows) {
+      if(row.type!=='userMessage' || !['failed','cancelled'].includes(row.status))continue;
+      const metadata=parseJson(row.raw_metadata_json,{});
+      if(['queued','preparing','processing','paused','inProgress'].includes(metadata.userMessageStatus ?? row.turn_status))ids.push(metadata.taskId ?? row.id);
+    }
+    if(!ids.length)return new Map();
+    const operations=this.selectAll(`SELECT op.task_id,op.status,op.last_error,op.source_json,d.last_error AS delivery_error
+      FROM agent_operations op LEFT JOIN message_deliveries d ON d.delivery_id=op.delivery_id AND d.session_id=op.session_id
+      WHERE op.session_id=? AND op.task_id IN (${ids.map(()=>'?').join(',')})`,[sessionId,...ids]);
+    return new Map(operations.map(row=>[row.task_id,{status:row.status,lastError:[...new Set([row.last_error,row.delivery_error].filter(Boolean))].join('; ')||null,source:parseJson(row.source_json,{})}]));
+  }
+
   // Bounded keyset scan using the existing latest index. No schema changes,
   // provider history, raw metadata, or unbounded COUNT/OFFSET query.
   readUserMessageNavigationPage(sessionId, { cursor = null, direction = "older" } = {}) {
@@ -90,7 +114,7 @@ export class TimelineReadRepository {
         createdAt: row.created_at
       }))
       .filter((item) => !item.text || !isAgentNoise(item.text))
-      .map((item) => normalizeStoredItem(item, provider));
+      .map((item) => this.normalizeItem(item, provider, sessionId));
     return items;
   }
 
@@ -142,7 +166,7 @@ export class TimelineReadRepository {
        ORDER BY created_at ASC, id ASC`,
       [sessionId, turnId]
     );
-    return rows.map((row) => normalizeStoredItem({
+    return rows.map((row) => this.normalizeItem({
       id: row.id,
       turnId: row.turn_id,
       turnStatus: row.turn_status,
@@ -156,7 +180,7 @@ export class TimelineReadRepository {
       presentationText: row.presentation_text ?? null,
       status: row.status,
       createdAt: row.created_at
-    }, provider));
+    }, provider, sessionId));
   }
 
   getFileChangeItemsForTurn(sessionId, turnId, provider = "", limit = 500) {
@@ -175,7 +199,7 @@ export class TimelineReadRepository {
       error.code = "TURN_CHANGE_SET_TOO_LARGE";
       throw error;
     }
-    return rows.map((row) => normalizeStoredItem({
+    return rows.map((row) => this.normalizeItem({
       id: row.id,
       turnId: row.turn_id,
       turnStatus: row.turn_status,
@@ -189,7 +213,7 @@ export class TimelineReadRepository {
       presentationText: row.presentation_text ?? null,
       status: row.status,
       createdAt: row.created_at
-    }, provider));
+    }, provider, sessionId));
   }
 
   latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit) {
@@ -324,8 +348,9 @@ export class TimelineReadRepository {
        AND (created_at > ? OR (created_at = ? AND id > ?)) LIMIT 1`,
       [sessionId, last.created_at, last.created_at, last.id]
     ));
+    const operations=this.legacyTerminalOperations(rows,sessionId);
     return {
-      items: rows.map((row) => normalizeStoredItem({
+      items: rows.map((row) => this.normalizeItem({
         id: row.id,
         turnId: row.turn_id,
         turnStatus: row.turn_status,
@@ -339,7 +364,7 @@ export class TimelineReadRepository {
         presentationText: row.presentation_text ?? null,
         status: row.status,
         createdAt: row.created_at
-      }, provider)),
+      }, provider, sessionId, operations)),
       hasEarlier,
       hasLater
     };
@@ -374,8 +399,9 @@ export class TimelineReadRepository {
     if (rows.length === 0) {
       return { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "exhausted" };
     }
+    const operations=this.legacyTerminalOperations(rows,sessionId);
     return {
-      items: rows.map((row) => normalizeStoredItem({
+      items: rows.map((row) => this.normalizeItem({
         id: row.id,
         turnId: row.turn_id,
         turnStatus: row.turn_status,
@@ -389,7 +415,7 @@ export class TimelineReadRepository {
         presentationText: row.presentation_text ?? null,
         status: row.status,
         createdAt: row.created_at
-      }, provider)),
+      }, provider, sessionId, operations)),
       hasMoreHistory,
       // Exact remaining counts require a linear history scan and are not used
       // by the client. hasMoreHistory is the authoritative continuation signal.
@@ -419,8 +445,9 @@ export class TimelineReadRepository {
        LIMIT 1`,
       [sessionId, first.created_at, first.created_at, first.id]
     ));
+    const operations=this.legacyTerminalOperations(rows,sessionId);
     return {
-      items: rows.map((row) => normalizeStoredItem({
+      items: rows.map((row) => this.normalizeItem({
         id: row.id,
         turnId: row.turn_id,
         turnStatus: row.turn_status,
@@ -434,7 +461,7 @@ export class TimelineReadRepository {
         presentationText: row.presentation_text ?? null,
         status: row.status,
         createdAt: row.created_at
-      }, provider)),
+      }, provider, sessionId, operations)),
       authoritativeItemIds,
       supplementalItemIds,
       hasEarlier,
@@ -477,7 +504,7 @@ export class TimelineReadRepository {
     );
     if (!row) return null;
     const provider = this.getSession(sessionId)?.external?.provider ?? "";
-    return normalizeStoredItem({
+    return this.normalizeItem({
       id: row.id,
       turnId: row.turn_id,
       turnStatus: row.turn_status,
@@ -491,7 +518,7 @@ export class TimelineReadRepository {
       presentationText: row.presentation_text ?? null,
       status: row.status,
       createdAt: row.created_at
-    }, provider);
+    }, provider, sessionId);
   }
 
   getItemsForBinding(sessionId, bindingId, limit = 20_000) {
@@ -505,7 +532,7 @@ export class TimelineReadRepository {
        WHERE session_id = ? AND binding_id = ?
        ORDER BY created_at ASC, id ASC LIMIT ?`,
       [sessionId, bindingId, pageLimit]
-    ).map((row) => normalizeStoredItem({
+    ).map((row) => this.normalizeItem({
       id: row.id,
       turnId: row.turn_id,
       turnStatus: row.turn_status,
@@ -519,6 +546,6 @@ export class TimelineReadRepository {
       presentationText: row.presentation_text ?? null,
       status: row.status,
       createdAt: row.created_at
-    }, provider));
+    }, provider, sessionId));
   }
 }

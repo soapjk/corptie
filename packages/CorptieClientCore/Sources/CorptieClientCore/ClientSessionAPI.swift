@@ -8,13 +8,14 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let text: String
     public let status: String?
     public let createdAt: String?
+    public var executionBlock: ClientExecutionBlock? = nil
     public let userMessageStatus: String?
     public let queuePosition: Int?
     public let deletionAvailable: Bool?
     public var withdrawn: Bool? = nil
     public let queuedMessageTaskId: String?
     public var cancellableQueuedMessageTaskID: String? {
-        guard type == "userMessage", userMessageStatus == "queued",
+        guard type == "userMessage", ["queued","paused"].contains(userMessageStatus ?? ""),
               let queuedMessageTaskId, !queuedMessageTaskId.isEmpty else { return nil }
         return queuedMessageTaskId
     }
@@ -88,7 +89,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let options: [ClientApprovalOption]?
 
     enum CodingKeys: String, CodingKey {
-        case withdrawn
+        case withdrawn, executionBlock
         case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition, queuedMessageTaskId, deletionAvailable
         case turnStatus, title, presentationRole, presentationText, sourceType, localVisibility, processingError
         case collaborationDirection, collaborationSenderAgentId, collaborationSenderName
@@ -119,6 +120,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         text = try container.decode(String.self, forKey: .text)
         status = try container.decodeIfPresent(String.self, forKey: .status)
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        executionBlock = try container.decodeIfPresent(ClientExecutionBlock.self, forKey: .executionBlock)
         userMessageStatus = try container.decodeIfPresent(String.self, forKey: .userMessageStatus)
         queuePosition = try container.decodeIfPresent(Int.self, forKey: .queuePosition)
         deletionAvailable = try container.decodeIfPresent(Bool.self, forKey: .deletionAvailable)
