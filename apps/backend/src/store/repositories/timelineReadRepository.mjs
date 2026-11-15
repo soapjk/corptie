@@ -23,7 +23,10 @@ export class TimelineReadRepository {
     const ids=[];
     for(const row of rows) {
       if(row.type!=='userMessage' || !['failed','cancelled'].includes(row.status))continue;
-      const metadata=parseJson(row.raw_metadata_json,{});
+      // JSON.parse(null) and JSON.parse("null") return null, not the fallback.
+      // Match normalizeStoredItem: only object metadata can override row fields.
+      const parsed=parseJson(row.raw_metadata_json,null);
+      const metadata=parsed && typeof parsed==='object' && !Array.isArray(parsed) ? parsed : {};
       if(['queued','preparing','processing','paused','inProgress'].includes(metadata.userMessageStatus ?? row.turn_status))ids.push(metadata.taskId ?? row.id);
     }
     if(!ids.length)return new Map();
