@@ -79,6 +79,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var processButtonBottomConstraint: NSLayoutConstraint!
     private var actionStackHeight: NSLayoutConstraint!
     private var collaborationSentStatusHeight: NSLayoutConstraint!
+    private var collaborationSentStatusBottomConstraint: NSLayoutConstraint!
+    private var collaborationSentStatusBottomToActionsConstraint: NSLayoutConstraint!
     private var cardWidthConstraint: NSLayoutConstraint!
     private var cardLeadingConstraint: NSLayoutConstraint!
     private var cardTrailingConstraint: NSLayoutConstraint!
@@ -268,6 +270,8 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         processButtonBottomConstraint = processButton.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -3)
         actionStackHeight = actionStack.heightAnchor.constraint(equalToConstant: 0)
         collaborationSentStatusHeight = collaborationSentStatus.heightAnchor.constraint(equalToConstant: 0)
+        collaborationSentStatusBottomConstraint = collaborationSentStatus.bottomAnchor.constraint(equalTo: processSeparator.topAnchor, constant: -4)
+        collaborationSentStatusBottomToActionsConstraint = collaborationSentStatus.bottomAnchor.constraint(equalTo: actionStack.topAnchor, constant: -4)
         cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: ChatBubbleWidthPolicy.maximumWidth)
         cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -ChatBubbleWidthPolicy.userTrailingInset)
@@ -325,7 +329,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             actionStack.bottomAnchor.constraint(equalTo: processSeparator.topAnchor, constant: -4),
             actionStackHeight,
             collaborationSentStatus.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
-            collaborationSentStatus.bottomAnchor.constraint(equalTo: processSeparator.topAnchor, constant: -4),
+            collaborationSentStatusBottomConstraint,
             collaborationSentStatusHeight,
             processSeparator.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             processSeparator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
@@ -768,6 +772,14 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private func configureCollaborationSentStatus(_ isVisible: Bool) {
         collaborationSentStatus.isHidden = !isVisible
         collaborationSentStatusHeight.constant = isVisible ? 22 : 0
+        let hasActions = isVisible && !timelineActions.isEmpty
+        if hasActions {
+            collaborationSentStatusBottomConstraint.isActive = false
+            collaborationSentStatusBottomToActionsConstraint.isActive = true
+        } else {
+            collaborationSentStatusBottomToActionsConstraint.isActive = false
+            collaborationSentStatusBottomConstraint.isActive = true
+        }
         labelBottomToSentStatusConstraint.isActive = isVisible
         if isVisible {
             labelBottomToProcessConstraint.isActive = false

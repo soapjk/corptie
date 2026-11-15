@@ -1243,6 +1243,47 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertNil(button(in: cell, identifier: "chat.timeline.action.confirm"))
     }
 
+    func testConfirmedCollaborationStatusAndDisclosureNeverOverlapAcrossReuse() throws {
+        for skin in [ConversationSkin.classic, .codexFlat] {
+            let harness = makeHarness(followsLatest: false, height: 700)
+            harness.coordinator.updateSkin(skin)
+            var revision = 0
+            for width: CGFloat in [260, 420, 760, 300] {
+                harness.window.setContentSize(NSSize(width: width, height: 700))
+                for (confirmed, hasAction, expanded) in [(true, true, false), (true, true, true),
+                    (false, true, false), (true, false, false), (true, true, false)] {
+                    revision += 1
+                    let action = AppKitChatTimelineRow.Action(id: "disclosure", label: expanded ? "收起" : "展开全文",
+                        isDestructive: false, kind: .toggleMessageExpansion(id: "collaboration-body"))
+                    let row = AppKitChatTimelineRow(id: "same-collaboration", contentRevision: revision,
+                        nativeText: String(repeating: "这是已经确认的协作消息正文。", count: expanded ? 30 : 4),
+                        copyText: "Body", nativeStyle: .agent, title: "协作消息", metadata: "",
+                        isCollaboration: true, expandableTurnId: nil, isExpanded: expanded,
+                        showsHeader: true, actions: hasAction ? [action] : [], showsCollaborationSentStatus: confirmed)
+                    harness.coordinator.apply(rows: [row])
+                    harness.window.contentView?.layoutSubtreeIfNeeded()
+                    let cell = try XCTUnwrap(harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true))
+                    cell.layoutSubtreeIfNeeded()
+                    let status = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.collaboration-sent"))
+                    XCTAssertEqual(status.isHidden, !confirmed)
+                    let button = button(in: cell, identifier: "chat.timeline.action.disclosure")
+                    XCTAssertEqual(button != nil, hasAction)
+                    if confirmed, let button {
+                        let statusRect = cell.convert(status.bounds, from: status)
+                        let buttonRect = cell.convert(button.bounds, from: button)
+                        XCTAssertFalse(statusRect.intersects(buttonRect))
+                        XCTAssertTrue(statusRect.maxY + 3 <= buttonRect.minY || buttonRect.maxY + 3 <= statusRect.minY)
+                        let card = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.card"))
+                        let cardRect = cell.convert(card.bounds, from: card)
+                        XCTAssertTrue(cardRect.contains(statusRect), "Status must remain inside its card")
+                        XCTAssertTrue(cardRect.contains(buttonRect), "Disclosure must remain inside its card")
+                        XCTAssertTrue(button.isEnabled)
+                    }
+                }
+            }
+        }
+    }
+
     func testRunningExecutionSummaryIncludesElapsedDurationWhenAvailable() throws {
         let harness = makeHarness(followsLatest: true)
         let process = AppKitChatTimelineRow(
