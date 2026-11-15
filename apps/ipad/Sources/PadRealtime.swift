@@ -178,6 +178,8 @@ extension PadWorkspace {
                         #if canImport(UIKit)
                         PadNotificationManager.shared.consumeAutomationNotifications(batch)
                         #endif
+                    case .operationNotice(let notice):
+                        if let event = notice.notification { PadOperationNotifications.shared.complete(event) }
                     case .operation(let job):
                         PadOperationNotifications.shared.observe(job)
                     case .ready:

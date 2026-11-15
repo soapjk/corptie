@@ -103,6 +103,7 @@ public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
     public var phase: String? = nil
     public var errorCode: String? = nil
     public var retryable: Bool? = nil
+    public var instructionId: String? = nil
     public init?(rawMetadataJSON: String?) {
         var encoded = rawMetadataJSON
         // Historical product events wrapped the complete item around its raw
@@ -111,11 +112,11 @@ public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let event = raw["coordinationEvent"] as? [String: Any] {
                 guard let value = event["kind"] as? String,
-                      ["summary", "delivery", "receipt", "failure", "decision"].contains(value) else { return nil }
+                      ["summary", "delivery", "receipt", "failure", "decision", "verification_budget"].contains(value) else { return nil }
                 kind = value; batchId = event["batchId"] as? String
                 requestId = event["requestId"] as? String; sessionId = event["sessionId"] as? String
                 phase = event["phase"] as? String; errorCode = event["errorCode"] as? String
-                retryable = event["retryable"] as? Bool; return
+                retryable = event["retryable"] as? Bool; instructionId = event["instructionId"] as? String; return
             }
             if raw["executionMode"] as? String == "shadow_report" { kind = "summary" }
             else if raw["progressBatchId"] is String { kind = "delivery" }

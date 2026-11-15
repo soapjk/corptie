@@ -57,7 +57,7 @@ const durations = value => Object.fromEntries(Object.entries(value ?? {}).filter
 /** Internal read ports, not a new wire schema or a second renderer. No loaders,
  * remote URLs, Artifact bodies, Provider events or arbitrary metadata escape. */
 export function createDetailBusinessReadPorts({ store, references, artifacts, schedules, observability,
-  providerRegistry, readWorktree, localScheduleActor = { type: "user", id: "user:local-macos" } }) {
+  providerRegistry, readWorktree, verificationBudgetService = null, localScheduleActor = { type: "user", id: "user:local-macos" } }) {
   const context = (scope, identity) => ({ kind: "local_user", actorId: identity.principalId
     ?? (identity.deviceId ? `client-device:${identity.deviceId}` : "local-user"), workId: scope.work?.id });
   const ports = {
@@ -130,9 +130,10 @@ export function createDetailBusinessReadPorts({ store, references, artifacts, sc
     } },
     turn: { cacheable: false, dependencies: ["turn"], read: scope => {
       const value = observability.latestSummary(scope.logicalSessionId, { kind: "local_user" });
-      if (!value) return null;
+      const verification=verificationBudgetService?.snapshot(scope.logicalSessionId);
+      if (!value) return verification?{verification}:null;
       if (value.identity?.logicalSessionId !== scope.logicalSessionId) throw Object.assign(new Error("Turn scope mismatch"), { status: 403 });
-      return { resource: ref("turn", value.identity.turnExecutionId), wall: durations(value.wall),
+      return { ...(verification?{verification}:{}),resource: ref("turn", value.identity.turnExecutionId), wall: durations(value.wall),
         wallPartition: durations(value.wallPartition), inclusive: durations(value.inclusive), completeness: string(value.completeness?.state, 64) };
     } },
     worktree: { cacheable: false, dependencies: ["worktree", "workspace", "repository", "sessionMetadata"], read: async scope => {

@@ -1003,3 +1003,26 @@ test('historical item-wrapped coordination events keep card type and reply assoc
  assert.ok(!JSON.stringify(page).includes('do-not-publish'));
  }finally{await f.close();}
 });
+
+
+test("paired verification pause is explicitly projected as a special card with exact instruction association",async()=>{
+  const f=await fixture();
+  try{
+    const api=new ClientSessionAPI({store:f.store,...callbacks,readWindow:async()=>({revision:1,items:[{id:'budget:pause',type:'agentMessage',text:'Paused',rawMetadataJSON:JSON.stringify({coordinationEvent:{kind:'verification_budget',sessionId:'logical:s',instructionId:'instruction:one'},privateMetadata:'do not expose'})}]})});
+    const page=await api.messages(identity,'session:test',new URLSearchParams());
+    assert.equal(page.items[0].coordinationEvent.kind,'verification_budget');
+    assert.equal(page.items[0].coordinationEvent.instructionId,'instruction:one');
+    assert.equal(page.items[0].rawMetadataJSON,undefined);
+    assert.doesNotMatch(JSON.stringify(page),/privateMetadata/);
+  }finally{await f.close();}
+});
+
+
+test("paired clients receive the bounded structured pause reason without private source fields",async()=>{
+  const f=await fixture();try{
+    const api=new ClientSessionAPI({store:f.store,...callbacks,readWindow:async()=>({revision:1,items:[{id:'m',type:'userMessage',text:'继续',status:'queued',userMessageStatus:'paused',taskId:'m',executionBlock:{code:'VERIFICATION_BUDGET_EXHAUSTED',kind:'paused',message:'预算用尽',instructionId:'i',sessionId:'logical:p',secret:'private'}}]})});
+    const page=await api.messages(identity,'session:test',new URLSearchParams());
+    assert.equal(page.items[0].userMessageStatus,'paused');assert.equal(page.items[0].executionBlock.code,'VERIFICATION_BUDGET_EXHAUSTED');
+    assert.equal(page.items[0].queuedMessageTaskId,'m');assert.equal(page.items[0].executionBlock.secret,undefined);
+  }finally{await f.close();}
+});

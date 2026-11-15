@@ -1,3 +1,4 @@
+import { verificationPerformanceSchema } from "./verificationPerformanceContract.mjs";
 import { coordinationProgressSchema } from './coordinationProgressProjection.mjs';
 import { createHash } from "node:crypto";
 import Ajv from "ajv";
@@ -37,7 +38,7 @@ const schemas = {
   worktree: extended({ attached: boolean, worktreeId: nullable(string(512)), mainBranch: string(512), blockedReason: string(128),
     tree: nullable(object({ branchName: string(512), isMain: boolean, dirty: nullable(boolean), availability: string(64), aheadOfMain: integer, behindMain: integer, changedFileCount: integer, operationState: string(64) })),
     autoFollow: object({ enabled: boolean, status: string(64), reason: string(128) }), job: nullable(object({ jobId: string(512), status: string(64), phase: string(64) })) }, { hierarchy: nullable(worktreeHierarchySchema) }),
-  turnMetrics: object({ turnId: nullable(string(512)), completeness: string(64), wall: metric, wallPartition: metric, inclusive: metric })
+  turnMetrics: extended({ turnId: nullable(string(512)), completeness: string(64), wall: metric, wallPartition: metric, inclusive: metric }, {verification: verificationPerformanceSchema})
 };
 const ajv = new Ajv({ strict: true, allErrors: false });
 const validate = Object.fromEntries(Object.entries(schemas).map(([kind, schema]) => [kind, ajv.compile(schema)]));
@@ -65,7 +66,7 @@ export function validateNativeBusinessDocument(document) {
       if (!action(value) || actionIDs.has(value.id)) fail(); actionIDs.add(value.id);
       if (value.kind === "navigation" && !["resource.open", "editor.open"].includes(value.operation)
         || value.kind === "read" && !["detail.collection.page", "artifact.content"].includes(value.operation)
-        || value.kind === "command" && !["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control", "task.shadow.recover"].includes(value.operation)) fail();
+        || value.kind === "command" && !["memory.update", "memory.delete", "reference.add", "reference.remove", "schedule.cancel", "task.coordination.update", "task.request.control", "task.shadow.recover", "verification.control"].includes(value.operation)) fail();
     }
   }
   if (document.order.length !== ids.size || new Set(document.order).size !== ids.size || document.order.some(id => !ids.has(id))

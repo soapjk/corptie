@@ -88,6 +88,7 @@ struct SessionAttention: Codable, Equatable, Sendable {
 }
 
 struct TaskSession: Identifiable, Codable, Equatable, Sendable {
+    var verificationPause: ClientVerificationPause? = nil
     let id: String
     let title: String
     let agent: String
@@ -216,6 +217,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     }
     // Legacy transport names remain stable; business code uses Role.
     enum CodingKeys: String, CodingKey {
+        case verificationPause
         case id
         case title
         case agent
@@ -1732,6 +1734,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     /// insufficient to measure a single-step turn accurately.
     var processStartedAt: String? = nil
     var processEndedAt: String? = nil
+    var executionBlock: ClientExecutionBlock? = nil
     var userMessageStatus: String? = nil
     var deletionAvailable: Bool? = nil
     var withdrawalAvailable: Bool? = nil

@@ -116,6 +116,7 @@ struct AppKitChatTimelineRow: Identifiable {
     /// Source-labelled events retain a surface in flat skins. Ordinary replies
     /// and execution traces keep their existing reading presentation.
     var contentSurfaceRole: ConversationSurfaceRole {
+        if coordinationEvent != nil { return .structured }
         if isPendingInteraction || isCollaboration || collaborationRoute != nil { return .interaction }
         if nativeStyle == .user { return .user }
         if nativeStyle == .process { return .process }
@@ -273,7 +274,7 @@ enum AppKitChatRowReusePolicy {
 @MainActor
 extension AppKitChatTimelineRow {
     func readingTypography(_ requested: ConversationTypography) -> ConversationTypography {
-        guard contentSurfaceRole != .interaction, nativeStyle != .process, !isWorkspaceCard, !isCollaboration,
+        guard coordinationEvent == nil, contentSurfaceRole != .interaction, nativeStyle != .process, !isWorkspaceCard, !isCollaboration,
               collaborationRoute == nil, userInput == nil, executionPlan == nil else { return .classic }
         return requested
     }
@@ -344,7 +345,7 @@ enum ChatBubbleWidthPolicy {
     static func prepareWidth(for row: AppKitChatTimelineRow, typography: ConversationTypography,
                              reusing previous: NaturalWidthMetrics?) -> NaturalWidthMetrics? {
         guard !row.isWorkspaceCard, row.scheduledTrigger == nil, row.nativeStyle != .process,
-              row.collaborationRoute == nil, row.userInput == nil, row.executionPlan == nil else { return nil }
+              row.collaborationRoute == nil, row.userInput == nil, row.executionPlan == nil, row.coordinationEvent == nil else { return nil }
         let title = row.showsHeader ? row.title : ""
         let metadata = row.showsHeader ? row.metadata : ""
         if let previous, previous.title == title, previous.metadata == metadata { return previous }
@@ -372,6 +373,7 @@ enum ChatBubbleWidthPolicy {
     }
 
     static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat, typography: ConversationTypography = .classic, prepared: NaturalWidthMetrics? = nil) -> CGFloat {
+        if row.coordinationEvent != nil { return min(780, MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)) }
         if row.isWorkspaceCard {
             return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
         }

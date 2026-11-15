@@ -100,6 +100,8 @@ export function createProductEventPublisher({
         logger.warn(`[events] client write failed type=${type}: ${error.message}`);
       }
     }
+    if(type === "VerificationBudgetChanged")clientDeviceGateway?.events.invalidate({inventory:true});
+    if (type === "VerificationBudgetChanged" && payload?.notice) clientDeviceGateway?.events.publishOperationNotice?.(payload.notice);
     if (type === "WorktreeIntegrationJobChanged" && payload?.job?.notification) {
       clientDeviceGateway?.events.publishOperation?.(payload.job.notification);
     }
@@ -155,7 +157,7 @@ export function createProductEventPublisher({
     if (["SessionCommandCompleted", "SessionCoordinationCompleted", "SessionCoordinationMilestone", "SessionToolPreparationWarning"].includes(type) && payload?.item) {
       items.push(payload.item);
     }
-    if (["AgentWorkQueued", "AgentWorkPreparing", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
+    if (["AgentWorkQueued", "AgentWorkPreparing", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed", "AgentWorkDispatchBlocked", "AgentWorkDispatchReady"].includes(type)) {
       const item = agentWorkTimelineItem(payload?.task, sessionId, payload?.queuePosition);
       if (item) items.push(item);
     }

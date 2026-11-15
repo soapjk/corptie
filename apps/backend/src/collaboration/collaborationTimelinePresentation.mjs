@@ -2,7 +2,7 @@ import { childManagementRelation } from "../application/childManagementRoute.mjs
 import { collaborationMessagePresentationRoute } from "./collaborationPresentationRoute.mjs";
 import { collaborationWorkPresentation } from "./collaborationWorkPresentation.mjs";
 import { collaborationEnvelopeFailure } from "../utils/sessionEventPresentation.mjs";
-import { userMessageStatusForAgentWork } from "../utils/agentWorkQueue.mjs";
+import { userMessageStatusForAgentWork, agentWorkExecutionBlock } from "../utils/agentWorkQueue.mjs";
 import { userMessageWithdrawalEligibility } from "../application/userMessageWithdrawal.mjs";
 import { userMessageDeletionEligibility } from "../application/userMessageDeletion.mjs";
 import { isMailboxOperation } from "../application/mailboxTimelinePolicy.mjs";
@@ -13,7 +13,7 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
     if (isMailboxOperation(task)) return null;
     if (!task?.taskId || task.source?.deleted === true || task.source?.batchedInto || task.source?.mailboxDisposition) return null;
     const presentation = collaborationPresentationForTask(task, sessionId);
-    const userMessageStatus = userMessageStatusForAgentWork(task.status, task.targetTurnId ?? null);
+    const userMessageStatus = userMessageStatusForAgentWork(task.status, task.targetTurnId ?? null,task.source?.dispatchBlock);
     const canonicalId = task.kind === "user"
       ? (task.source?.messageId ?? task.taskId)
       : `work:${task.taskId}`;
@@ -34,9 +34,10 @@ export function createCollaborationTimelinePresentation({ store, collaborationCo
       images: task.source?.withdrawnMessage ? [] : task.source?.messageContent?.images ?? [],
       status: task.status,
       userMessageStatus,
+      executionBlock:agentWorkExecutionBlock(task),
       deletionAvailable: task.kind === "user" && !task.source?.withdrawnMessage && ["failed", "cancelled"].includes(task.status)
         && userMessageDeletionEligibility(store, sessionId, canonicalId).available,
-      queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
+      queuePosition: userMessageStatus==='queued' && Number(queuePosition) > 0 ? Number(queuePosition) : null,
       processingError: task.lastError ?? null,
       createdAt: task.createdAt,
       sourceType: presentation.presentationRole === "system_event" ? "system" : task.kind,

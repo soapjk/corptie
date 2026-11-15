@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CorptieClientCore
 
@@ -70,4 +71,21 @@ struct UserMessageStatusPresentationTests {
         ))
         #expect(status.kind == .processing)
     }
+    @Test func pauseIsExplicitAndTerminalServerStatusCannotRegressToWaiting() throws {
+        let block = try JSONDecoder().decode(ClientExecutionBlock.self, from: Data(#"{"code":"VERIFICATION_BUDGET_EXHAUSTED","kind":"paused","message":"quota","instructionId":"i","sessionId":"s"}"#.utf8))
+        let paused = try #require(UserMessageStatusPresentation(authoritativeStatus:"paused",legacyStatus:"queued",queuePosition:2,executionBlock:block))
+        #expect(paused.kind == .processingPaused)
+        #expect(paused.queuePosition == nil)
+        #expect(!paused.lightPulses)
+        #expect(paused.detail(languageCode:"zh").contains("验证预算已用尽"))
+        #expect(paused.detail(languageCode:"zh").contains("不会自动继续"))
+        #expect(paused.detail(languageCode:"en").contains("will not continue automatically"))
+        let failed = try #require(UserMessageStatusPresentation(authoritativeStatus:"queued",legacyStatus:"failed",processingError:"restart interrupted",executionBlock:block))
+        #expect(failed.kind == .processingFailed)
+        #expect(failed.detail(languageCode:"zh").contains("不会自动恢复"))
+        #expect(failed.detail(languageCode:"zh").contains("restart interrupted"))
+        let cancelled = try #require(UserMessageStatusPresentation(authoritativeStatus:"queued",legacyStatus:"cancelled"))
+        #expect(cancelled.kind == .cancelled)
+    }
+
 }

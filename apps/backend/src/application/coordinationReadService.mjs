@@ -149,7 +149,7 @@ export class CoordinationReadService {
     const dispatchBlock=operation?.source?.dispatchBlock ?? null;
     return {taskId:task.id,sessionId:session.id,operationId:operation?.taskId??null,dispatchId:dispatch?.dispatch_id??null,
       turnId,status,targetOutcome:"not_assessed",acceptanceState:task.lifecycle_state,
-      phase:dispatchBlock ? "waiting_dispatch" : ["queued","accepted"].includes(status) ? "queued" : status === "running" ? "executing" : status,
+      phase:['completed','failed','cancelled'].includes(status) ? status : dispatchBlock?.kind==='paused' ? 'paused' : dispatchBlock ? "waiting_dispatch" : ["queued","accepted"].includes(status) ? "queued" : status === "running" ? "executing" : status,
       timestamps:{acceptedAt,startedAt,endedAt,lastActivityAt:session.external?.lastOutputAt ?? activity?.created_at ?? operation?.updatedAt ?? null,observedAt},
       durations:{queueMs:duration(acceptedAt,startedAt),executionMs:duration(startedAt,endedAt ?? observedAt),totalMs:duration(acceptedAt,endedAt ?? observedAt)},
       currentOperation:activity ? {messageId:activity.id,type:activity.type,title:activity.title,excerpt:activity.text,status:activity.status} : null,

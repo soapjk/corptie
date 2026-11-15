@@ -45,7 +45,7 @@ test("user work preserves canonical message identity, queue and error metadata",
   assert.equal(item.turnId, "work:work");
   assert.equal(item.title, "IMgateway");
   assert.equal(item.userMessageStatus, "failed");
-  assert.equal(item.queuePosition, 2);
+  assert.equal(item.queuePosition, null);
   assert.equal(item.feishuVisibility, "hidden");
   assert.equal(item.processingError, "offline");
   assert.deepEqual(item.images, ["image"]);
@@ -144,4 +144,15 @@ test("confirmation projections retain distinct authorization contracts and fallb
   assert.equal(channel.collaborationRecipientSessionTitle, "Recipient logical");
   assert.equal(channel.collaborationSourceWorkName, "work-s");
   assert.equal(channel.collaborationTargetTaskId, "task-r");
+});
+
+
+test("budget dispatch pause is structured and terminal failure takes precedence",()=>{
+  const {api}=fixture();
+  const task={taskId:'m',kind:'user',text:'继续',status:'queued',source:{type:'desktop',dispatchBlock:{code:'VERIFICATION_BUDGET_EXHAUSTED',kind:'paused',message:'预算用尽',instructionId:'i',sessionId:'logical:p'}}};
+  const paused=api.agentWorkTimelineItem(task,'recipient',2);
+  assert.equal(paused.userMessageStatus,'paused');assert.equal(paused.queuePosition,null);
+  assert.equal(paused.executionBlock.instructionId,'i');
+  const failed=api.agentWorkTimelineItem({...task,status:'failed',lastError:'restart interrupted'},'recipient',2);
+  assert.equal(failed.userMessageStatus,'failed');assert.equal(failed.executionBlock.kind,'settled');
 });

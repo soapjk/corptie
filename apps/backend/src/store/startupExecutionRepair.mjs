@@ -27,9 +27,10 @@ export function reconcileInterruptedSessionExecutionAtStartup({ selectOne, runIn
     db.run(
       `UPDATE agent_operations
        SET status='failed', completed_at=COALESCE(completed_at, ?),
-           last_error=COALESCE(last_error, ?), updated_at=?
+           last_error=CASE WHEN last_error IS NULL THEN ? ELSE last_error || '; ' || ? END,
+           source_json=CASE WHEN json_type(source_json,'$.dispatchBlock')='object' THEN json_set(source_json,'$.dispatchBlock.kind','settled') ELSE source_json END, updated_at=?
        WHERE status IN ('queued','running')`,
-      [timestamp, interruption, timestamp]
+      [timestamp, interruption, interruption, timestamp]
     );
     db.run(
       `UPDATE message_deliveries
@@ -55,12 +56,19 @@ export function reconcileInterruptedSessionExecutionAtStartup({ selectOne, runIn
       [interruption, timestamp]
     );
     db.run(
-      `UPDATE session_items SET status='failed'
-       WHERE id IN (
-         SELECT message_id FROM message_deliveries
-         WHERE status='failed' AND updated_at=?
-       )`,
-      [timestamp]
+      `UPDATE session_items SET status='failed',turn_status='failed',
+         raw_metadata_json=json_set(CASE WHEN json_valid(raw_metadata_json) THEN raw_metadata_json ELSE '{}' END,
+           '$.userMessageStatus','failed','$.queuePosition',NULL,
+           '$.executionBlock',json((SELECT CASE WHEN json_type(op.source_json,'$.dispatchBlock')='object'
+             THEN json_set(json_extract(op.source_json,'$.dispatchBlock'),'$.kind','settled','$.message',op.last_error) ELSE NULL END
+             FROM agent_operations op WHERE op.session_id=session_items.session_id AND op.task_id=COALESCE(json_extract(CASE WHEN json_valid(session_items.raw_metadata_json) THEN session_items.raw_metadata_json ELSE '{}' END,'$.taskId'),session_items.id))),
+           '$.processingError',COALESCE(
+             (SELECT last_error FROM agent_operations op WHERE op.session_id=session_items.session_id AND op.task_id=COALESCE(json_extract(CASE WHEN json_valid(session_items.raw_metadata_json) THEN session_items.raw_metadata_json ELSE '{}' END,'$.taskId'),session_items.id)),?))
+       WHERE (session_id,id) IN (
+         SELECT d.session_id,d.message_id FROM message_deliveries d WHERE d.status='failed' AND d.updated_at=?
+         UNION SELECT op.session_id,COALESCE(json_extract(op.source_json,'$.messageId'),op.task_id)
+         FROM agent_operations op WHERE op.kind='user' AND op.status='failed' AND op.updated_at=?)`,
+      [interruption,timestamp,timestamp]
     );
     db.run(
       `UPDATE session_turns

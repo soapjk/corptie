@@ -100,6 +100,7 @@ public struct ClientTask: Decodable, Sendable, Identifiable, Equatable {
     }
 }
 public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
+    public var verificationPause: ClientVerificationPause? = nil
     public let summary: String?
     public let id: String
     public let logicalSessionId: String?
@@ -118,10 +119,11 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, logicalSessionId, title, workId, taskId, sessionKind, executionStatus, activityStatus, summary
-        case lastAgentMessageSequence, lastReadMessageSequence, lastMessageAt, updatedAt
+        case lastAgentMessageSequence, lastReadMessageSequence, lastMessageAt, updatedAt, verificationPause
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        verificationPause = try container.decodeIfPresent(ClientVerificationPause.self, forKey: .verificationPause)
         id = try container.decode(String.self, forKey: .id)
         logicalSessionId = try container.decodeIfPresent(String.self, forKey: .logicalSessionId)
         title = try container.decode(String.self, forKey: .title)

@@ -14,6 +14,7 @@ final class OperationNotificationManager {
     private let baseURL: URL
     var visibleRepositoryID: String?
     var visibleJobID: String?
+    var visibleSessionIDs: () -> Set<String> = { [] }
     private var resultWindow: NSWindow?
     private var recovery: Task<Void, Never>?
     private static let logger = Logger(subsystem: "com.corptie.mac", category: "OperationNotifications")
@@ -47,7 +48,7 @@ final class OperationNotificationManager {
 
     /// One bounded reconciliation on stream start/gap; existing SSE owns live updates.
     func recoverJobs() {
-        guard recovery == nil, !ledger.recoverableJobIDs.isEmpty else { return }
+        guard recovery == nil else { return }
         recovery = Task { [weak self] in
             guard let self else { return }
             defer { self.recovery = nil }
@@ -55,6 +56,15 @@ final class OperationNotificationManager {
                 let job: Job
                 struct Job: Decodable { let notification: OperationJobSnapshot? }
             }
+            do {
+                struct Budgets: Decodable { let notices: [ClientVerificationNotice]? }
+                let (data, response) = try await URLSession.shared.data(from: self.baseURL.appending(path: "settings/verification-budget"))
+                if (response as? HTTPURLResponse)?.statusCode == 200 {
+                    for notice in try JSONDecoder().decode(Budgets.self, from: data).notices ?? [] {
+                        if let event = notice.notification { self.complete(event) }
+                    }
+                }
+            } catch { Self.logger.debug("Verification notice recovery deferred") }
             for id in self.ledger.recoverableJobIDs {
                 guard !Task.isCancelled else { return }
                 do {
@@ -107,6 +117,8 @@ final class OperationNotificationManager {
         if let id = info["operationEventId"] as? String,
            let event = ledger.results.first(where: { $0.id == id }), !preferences.allows(event) { return [] }
         if preferences.suppressWhenVisible, NSApp.isActive,
+           let session = info["sessionId"] as? String, visibleSessionIDs().contains(session) { return [] }
+        if preferences.suppressWhenVisible, NSApp.isActive,
            AppTabRouter.shared.selectedTab == .worktrees,
            let repository = info["repositoryId"] as? String, repository == visibleRepositoryID,
            (info["jobId"] == nil || info["jobId"] as? String == visibleJobID) { return [] }
@@ -115,6 +127,11 @@ final class OperationNotificationManager {
 
     func handleResponse(_ info: [AnyHashable: Any]) {
         NSApp.activate(ignoringOtherApps: true)
+        if info["category"] as? String == OperationNotificationCategory.verification.rawValue,
+           let session = info["sessionId"] as? String {
+            NotificationCenter.default.post(name: .openSessionConversation, object: nil, userInfo: ["sessionId": session])
+            return
+        }
         if let id = info["operationEventId"] as? String, let event = ledger.results.first(where: { $0.id == id }) {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 200),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false)

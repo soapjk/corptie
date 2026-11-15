@@ -47,6 +47,7 @@ public struct ClientDetailBusinessWorktree: Decodable, Equatable, Sendable {
     public var hierarchy: WorktreeHierarchy? = nil
 }
 public struct ClientDetailBusinessTurn: Decodable, Equatable, Sendable {
+    public var verification: ClientVerificationPerformance? = nil
     public let turnId: String?; public let completeness: String
     public let wall: [String: String]; public let wallPartition: [String: String]; public let inclusive: [String: String]
 }

@@ -110,6 +110,7 @@ struct ConsoleSessionRow<MenuContent: View>: View {
                     Image(systemName: "envelope.badge").font(.caption2).foregroundStyle(.secondary)
                         .accessibilityLabel("信箱有待处理消息")
                 }
+                if session.verificationPause != nil { Label("验证预算耗尽", systemImage: "pause.circle").font(.caption2).foregroundStyle(.orange) }
                 if [.running, .blocked, .failed].contains(session.executionTaskStatus) {
                     TaskActivityIndicator(activity: .resolve(hasBinding: true,
                         sessionExecutionStatus: session.executionTaskStatus.rawValue, taskExecutionStatus: nil),
@@ -160,6 +161,7 @@ struct ConsoleWorkChatRowContent: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                if session.verificationPause != nil { Label("验证预算耗尽", systemImage: "pause.circle").font(.caption2).foregroundStyle(.orange) }
                 if [.running, .blocked, .failed].contains(session.executionTaskStatus) {
                     TaskActivityIndicator(activity: .resolve(hasBinding: true,
                         sessionExecutionStatus: session.executionTaskStatus.rawValue, taskExecutionStatus: nil),
@@ -210,6 +212,7 @@ struct ConsoleTaskRowContent: View {
                     ConsoleScheduledWakeIcon()
                 }
                 Spacer(minLength: 0)
+                if session?.verificationPause != nil { Label("验证预算耗尽", systemImage: "pause.circle").font(.caption2).foregroundStyle(.orange) }
                 if [.processing, .waitingForInput, .paused, .failed].contains(sessionActivity) {
                     TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState,
                         label: L10nFormat("Session: %@", sessionActivity.label), isActive: isActive)

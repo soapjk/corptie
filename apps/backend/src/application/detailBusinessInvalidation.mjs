@@ -70,7 +70,7 @@ export class DetailBusinessInvalidation {
       : /^Workspace/.test(type) ? "workspace" : /^Provider(Capabilities|Settings|State|Registry)Changed$/.test(type) ? "provider"
       : /^MemoryRecall/.test(type) ? "recall" : /^Memory/.test(type) ? "memory"
       : /^(ContextReference|SessionContextReference)/.test(type) ? "reference"
-      : /^Artifact/.test(type) ? "artifact" : /^(Turn|CodeTaskObservability)/.test(type) ? "turn" : null;
+      : /^Artifact/.test(type) ? "artifact" : /^(Turn|CodeTaskObservability|VerificationBudget)/.test(type) ? "turn" : null;
     if (resourceType) this.invalidate({ resourceType, ...(sessionId ? { sessionId } : {}) });
   }
 }

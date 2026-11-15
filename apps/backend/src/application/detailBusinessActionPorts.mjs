@@ -43,6 +43,14 @@ export function createDetailBusinessActionPorts({ inspector, schedules }) {
     }
   });
   return {
+    "verification.control": {
+      capability:()=>Boolean(inspector.verificationBudgetService),
+      resource:(scope,target)=>target.id===scope.sessionId?inspector.verificationBudgetService.snapshot(bound(scope).logicalSessionId):null,
+      revision:row=>row.revision,
+      authorize:(scope,target)=>target.id===scope.sessionId,
+      validateFields:(_scope,_target,fields)=>fields.action==='policy'?typeof fields.enabled==='boolean'&&Number.isSafeInteger(fields.limit):typeof fields.instructionId==='string',
+      execute:(scope,target,fields,{fingerprint})=>{scope.revalidateSync?.();scope.readGuard?.();return inspector.verificationBudgetService.control(bound(scope).logicalSessionId,fields,{requestId:fingerprint});}
+    },
     "task.shadow.recover": {
       capability: () => typeof inspector.recoverCoordinationShadow === "function",
       resource: (scope, target) => { const value = bound(scope); return value.task?.id === target.id ? value.task : null; },

@@ -148,7 +148,7 @@ test("child dispatches use the parent's original operation budget and queued wor
   const scope = f.service.operationRoot(raw);
   assert.throws(() => f.service.reserve(scope, "child:run"), { code: "VERIFICATION_BUDGET_EXHAUSTED" });
   f.service.stop(f.task.id, "instruction:1"); assert.equal(f.service.operationPaused("child:operation"), true);
-  f.service.extend(f.task.id, "instruction:1", { requestId: "more" }); assert.equal(f.service.operationPaused("child:operation"), false);
+  f.service.extend(f.task.id, "instruction:1", { requestId: "more" }); assert.equal(f.service.operationPaused("child:operation"), true);
 });
 
 test("an interrupted verification aborts only its own executor", async t => {
@@ -217,4 +217,194 @@ test("the entry executes a real local process and returns its actual output", as
   ] });
   assert.equal(result.results[0].stdout, "verification-entry-ok");
   assert.equal(result.budget.runs[0].status, "passed");
+});
+
+
+test("budget is off by default and records more than three rounds without pausing", async t => {
+  const f=await fixture(t);
+  assert.equal(f.service.defaultEnabled(),false);
+  for(let n=0;n<5;n++)await f.service.execute(f.metadata,f.input(`run:${n}`));
+  const budget=f.service.read('instruction:1');
+  assert.equal(budget.enabled,false);assert.equal(budget.used,5);assert.equal(budget.remaining,null);
+  assert.equal(budget.status,'disabled');assert.deepEqual(f.service.pendingNotices(),[]);
+  assert.equal(f.interrupts.length,0);
+});
+
+test("policy is frozen at instruction admission; explicit control changes current instruction",async t=>{
+  const f=await fixture(t);
+  f.service.capturePolicy(f.store.getAgentTask('instruction:1'));
+  const revision=f.service.snapshot(f.logical.logicalSessionId).revision;
+  f.service.updatePolicy(f.logical.logicalSessionId,{enabled:true,limit:1});
+  assert.notEqual(f.service.snapshot(f.logical.logicalSessionId).revision,revision);
+  await f.service.execute(f.metadata,f.input('first'));
+  assert.equal(f.service.read('instruction:1').enabled,false);
+  await f.service.control(f.logical.logicalSessionId,{action:'configure',instructionId:'instruction:1',enabled:true,limit:2},{requestId:'config'});
+  assert.equal(f.service.read('instruction:1').remaining,1);
+});
+
+test("pause produces one typed card and stable native notice; list state clears after extension",async t=>{
+  const f=await fixture(t,{run:async()=>{throw Object.assign(new Error('failed'),{code:1,stdout:'original output'});}});
+  f.service.setDefault(1);const before=f.store.stateRevision();
+  const result=await f.service.execute(f.metadata,f.input('failure'));
+  assert.equal(result.results[0].stdout,'original output');assert.equal(result.budget.pauseReason,'budget');
+  assert.ok(f.store.stateRevision()>before);
+  const item=f.store.selectOne("SELECT * FROM session_items WHERE id LIKE 'verification-budget:%'");
+  assert.equal(JSON.parse(item.raw_metadata_json).coordinationEvent.kind,'verification_budget');
+  const notice=f.service.pendingNotices()[0];assert.equal(notice.instructionId,'instruction:1');
+  assert.equal(f.service.pendingNotices()[0].id,notice.id);
+  assert.ok(f.service.pausedForSession(f.logical.logicalSessionId));
+  f.service.extend(f.task.id,'instruction:1',{requestId:'only-add',amount:1});
+  assert.ok(f.service.pausedForSession(f.logical.logicalSessionId));
+  assert.equal(f.service.read('instruction:1').resumeRequested,false);
+  f.service.extend(f.task.id,'instruction:1',{requestId:'add-continue',amount:1,resume:true});
+  assert.equal(f.service.pausedForSession(f.logical.logicalSessionId),null);
+  assert.deepEqual(f.service.pendingNotices(),[]);assert.equal(f.service.read('instruction:1').resumeRequested,true);
+});
+
+test("add and continue waits for original terminal state, queues once, and survives retry",async t=>{
+  const f=await fixture(t,{run:async()=>{throw Object.assign(new Error('failed'),{code:1});}});
+  f.service.setDefault(1);await f.service.execute(f.metadata,f.input('failed'));
+  const resumed=[];
+  f.service.resume=({operationId,session,instructionId})=>{
+    resumed.push(operationId);
+    f.store.enqueueAgentTask({taskId:operationId,sessionId:session.id,agentId:f.agent.agentId,kind:'user',priority:0,text:'Continue',source:{verificationContinuation:{instructionId}}});
+  };
+  const input={action:'extend',instructionId:'instruction:1',amount:3,resume:true};
+  await f.service.control(f.logical.logicalSessionId,input,{requestId:'same'});
+  assert.equal(resumed.length,0);assert.equal(f.service.read('instruction:1').resumeRequested,true);
+  f.store.updateAgentTask('instruction:1',{status:'completed'});
+  await f.service.resumeBudget('instruction:1');
+  await f.service.control(f.logical.logicalSessionId,input,{requestId:'same'});
+  assert.equal(resumed.length,1);assert.equal(f.service.read('instruction:1').limit,4);
+  assert.equal(f.service.operationRoot(f.store.selectOne('SELECT * FROM agent_operations WHERE task_id=?',[resumed[0]])).instructionId,'instruction:1');
+});
+
+test("continuation admission rolls back its identity when mailbox acceptance fails",async t=>{
+  const f=await fixture(t,{run:async()=>{throw Object.assign(new Error('failed'),{code:1});}});
+  f.service.setDefault(1);await f.service.execute(f.metadata,f.input('failed'));
+  f.store.updateAgentTask('instruction:1',{status:'completed'});
+  f.service.resume=()=>{throw new Error('queue unavailable');};
+  await assert.rejects(f.service.control(f.logical.logicalSessionId,{action:'extend',instructionId:'instruction:1',amount:1,resume:true},{requestId:'retry'}));
+  let budget=f.service.read('instruction:1');assert.equal(budget.limit,2);assert.equal(budget.resumeRequested,true);assert.deepEqual(budget.resumeOperationIds,[]);
+  f.service.resume=({operationId,session})=>f.store.enqueueAgentTask({taskId:operationId,sessionId:session.id,agentId:f.agent.agentId,kind:'user',priority:0,text:'Continue'});
+  await f.service.control(f.logical.logicalSessionId,{action:'extend',instructionId:'instruction:1',amount:1,resume:true},{requestId:'retry'});
+  assert.equal(f.service.read('instruction:1').resumeOperationIds.length,1);
+});
+
+test("adding budget never resumes explicit stop, unknown outcome, or user cancellation",async t=>{
+  for(const mode of ['user','unknown','cancelled']){
+    const f=await fixture(t,{run:async()=>{throw Object.assign(new Error('failed'),{code:1});}});
+    f.service.setDefault(1);await f.service.execute(f.metadata,f.input('failed'));
+    if(mode==='user')f.service.stop(f.task.id,'instruction:1');
+    if(mode==='unknown')f.store.db.run("UPDATE verification_budgets SET pause_reason='recovery_unknown' WHERE instruction_id='instruction:1'");
+    f.store.updateAgentTask('instruction:1',{status:'cancelled',cancellation:{actor:'user',reason:'USER_STOP'}});
+    let launches=0;f.service.resume=()=>{launches++;};
+    await f.service.control(f.logical.logicalSessionId,{action:'extend',instructionId:'instruction:1',amount:1,resume:true},{requestId:'more'});
+    assert.equal(launches,0);
+    if(mode!=='cancelled')assert.equal(f.service.read('instruction:1').pauseReason,mode==='user'?'user':'recovery_unknown');
+  }
+});
+
+test("verification history is cursor-paged, scope checked, and contains no output copies",async t=>{
+  const f=await fixture(t);for(let n=0;n<25;n++)await f.service.execute(f.metadata,f.input(`run:${n}`));
+  const budget=f.service.read('instruction:1');assert.equal(budget.runs.length,20);assert.equal(budget.runsHasMore,true);
+  const page=f.service.records(f.task.id,'instruction:1',budget.nextRunCursor);
+  assert.equal(page.runs.length,5);assert.equal(page.hasMore,false);
+  assert.equal(page.runs[0].executionId,'run:4');assert.equal(page.runs[4].executionId,'run:0');
+  assert.equal(page.runs[0].stdout,undefined);
+  assert.throws(()=>f.service.records('foreign','instruction:1'),{code:'VERIFICATION_NOT_FOUND'});
+  assert.throws(()=>f.service.records(f.task.id,'instruction:1','-1'),{code:'VERIFICATION_CURSOR_INVALID'});
+});
+
+test("native performance card exposes strict user controls before any turn exists",async t=>{
+  const f=await fixture(t);
+  const {nativeBusinessModuleCard}=await import('../src/application/detailNativeBusinessProjection.mjs');
+  const {verificationPerformanceSchema}=await import('../src/application/verificationPerformanceContract.mjs');
+  const verification=f.service.snapshot(f.logical.logicalSessionId);
+  assert.equal(verification.policy.enabled,false);assert.deepEqual(verification.budgets,[]);
+  const validate=new Ajv({strict:false}).compile(verificationPerformanceSchema);
+  assert.equal(validate(verification),true,JSON.stringify(validate.errors));
+  await f.service.execute(f.metadata,f.input('run'));
+  assert.equal(validate(f.service.snapshot(f.logical.logicalSessionId)),true,JSON.stringify(validate.errors));
+  const card=nativeBusinessModuleCard('turn',{data:{verification}},{editors:true});
+  assert.equal(card.data.turnId,null);assert.ok(card.actions.some(a=>a.operation==='verification.control'));
+});
+
+
+test("follow-up budget lookup exposes the extended original instead of treating null as exhausted",async t=>{
+  const f=await fixture(t);f.service.setDefault(1);
+  await f.service.execute(f.metadata,f.input('original:run'));
+  f.service.extend(f.task.id,'instruction:1',{requestId:'user:more',amount:1});
+  f.store.updateAgentTask('instruction:1',{status:'completed'});
+  f.store.enqueueAgentTask({taskId:'question:budget',sessionId:f.sessionId,agentId:f.agent.agentId,kind:'user',priority:0,text:'我已经追加了预算，看起来你感知不到',source:{type:'desktop'}});
+  f.store.claimAgentTask('question:budget');
+  const result=callVerificationBudgetTool(f.service,{metadata:f.metadata,arguments:{action:'get',executionId:'original:run'}});
+  assert.equal(result.instructionId,'question:budget');assert.equal(result.budget,null);
+  assert.equal(result.currentState.status,'not_started');assert.equal(result.currentState.used,0);
+  assert.equal(result.currentState.remaining,1);
+  assert.equal(result.relatedBudgets[0].instructionId,'instruction:1');
+  assert.equal(result.relatedBudgets[0].limit,2);assert.equal(result.relatedBudgets[0].used,1);assert.equal(result.relatedBudgets[0].remaining,1);
+  assert.equal(result.executionReceipt.status,'found');assert.equal(result.executionReceipt.matches[0].budget.remaining,1);
+  assert.match(result.instruction,/不表示没有额度或未收到增额/);
+  assert.equal(f.service.current(f.metadata).instructionId,'question:budget');
+  assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM verification_budgets').n,1);
+});
+
+test("historical receipt lookup is ancestry scoped and never chooses between duplicate execution IDs",async t=>{
+  const f=await fixture(t);await f.service.execute(f.metadata,f.input('shared-id'));
+  const foreign=f.store.createTask({workId:f.work.id,title:'Other',mainAgentId:f.agent.agentId});
+  f.service.reserve({instructionId:'foreign:i',taskId:foreign.id,sessionId:f.logical.logicalSessionId},'foreign:run');
+  f.service.finish('foreign:i','foreign:run','passed');
+  let result=f.service.inspect(f.metadata,{executionId:'foreign:run'});
+  assert.equal(result.executionReceipt.status,'not_found');assert.deepEqual(result.executionReceipt.matches,[]);
+  f.service.reserve({instructionId:'second:i',taskId:f.task.id,sessionId:f.logical.logicalSessionId},'shared-id');
+  f.service.finish('second:i','shared-id','passed');
+  result=f.service.inspect(f.metadata,{executionId:'shared-id'});
+  assert.equal(result.executionReceipt.status,'ambiguous');assert.equal(result.executionReceipt.matches.length,2);
+  assert.equal(result.instructionId,'instruction:1');
+});
+
+test("fresh host budget context is non-reusable, sees increments, and never initializes another ledger",async t=>{
+  const f=await fixture(t);f.service.setDefault(1);await f.service.execute(f.metadata,f.input('r'));
+  const before=f.service.contextForSession(f.logical.logicalSessionId);
+  assert.equal(before.contextReusable,false);assert.match(before.prompt,/"remaining":0/);
+  f.service.extend(f.task.id,'instruction:1',{requestId:'more',amount:3});
+  const after=f.service.contextForSession(f.logical.logicalSessionId);
+  assert.match(after.prompt,/"remaining":3/);assert.notEqual(before.prompt,after.prompt);
+  assert.equal(f.service.read('instruction:1').used,1);
+  assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM verification_budgets').n,1);
+});
+
+
+test("pre-dispatch budget pause publishes a card without a model and resumes the exact queued message once",async t=>{
+  const f=await fixture(t);f.service.setDefault(1);await f.service.execute(f.metadata,f.input('last-pass'));
+  f.store.updateAgentTask('instruction:1',{status:'completed'});
+  f.store.enqueueAgentTask({taskId:'continue:queued',sessionId:f.sessionId,agentId:f.agent.agentId,kind:'user',priority:0,text:'继续',source:{type:'desktop'}});
+  const block=f.service.operationBlock('continue:queued');assert.equal(block.code,'VERIFICATION_BUDGET_EXHAUSTED');
+  const paused=f.store.updateAgentTask('continue:queued',{source:{type:'desktop',dispatchBlock:{...block,kind:'paused',message:'预算用尽'}}});
+  let wakes=0;f.service.resumeQueued=op=>{assert.equal(op.taskId,'continue:queued');wakes++;};
+  f.service.resume=()=>assert.fail('a queued original must not create a duplicate continuation');
+  await f.service.notifyOperationPaused(paused);await f.service.notifyOperationPaused(paused);
+  assert.equal(f.store.selectAll("SELECT id FROM session_items WHERE session_id=? AND id LIKE 'verification-budget:%'",[f.sessionId]).length,1);
+  assert.equal(f.store.getAgentTask('continue:queued').status,'queued');assert.equal(wakes,0);
+  const fields={action:'extend',instructionId:'instruction:1',amount:1,resume:true};
+  await f.service.control(f.logical.logicalSessionId,fields,{requestId:'resume:same'});
+  await f.service.control(f.logical.logicalSessionId,fields,{requestId:'resume:same'});
+  assert.equal(wakes,1);assert.equal(f.service.operationBlock('continue:queued'),null);
+  assert.equal(f.store.getAgentTask('continue:queued').source.dispatchBlock,undefined);
+  assert.deepEqual(f.service.read('instruction:1').resumeOperationIds,[]);
+});
+
+
+test("a queued continuation takes precedence over creating another continuation for the same running Session",async t=>{
+  const f=await fixture(t);f.service.setDefault(1);await f.service.execute(f.metadata,f.input('last'));
+  const originalSource=f.store.getAgentTask('instruction:1').source;
+  f.store.enqueueAgentTask({taskId:'continue:q',sessionId:f.sessionId,agentId:f.agent.agentId,kind:'user',priority:0,text:'继续',source:{type:'desktop'}});
+  await f.service.notifyOperationPaused(f.store.getAgentTask('continue:q'));
+  let wakes=0;f.service.resumeQueued=()=>wakes++;f.service.resume=()=>assert.fail('must reuse the queued continuation');
+  await f.service.control(f.logical.logicalSessionId,{action:'extend',instructionId:'instruction:1',amount:1,resume:true},{requestId:'more'});
+  assert.equal(wakes,1);assert.equal(f.service.read('instruction:1').resumeRequested,false);
+  f.store.updateAgentTask('instruction:1',{status:'completed',source:originalSource});
+  await f.service.resumeBudget('instruction:1');
+  assert.deepEqual(f.service.read('instruction:1').resumeOperationIds,[]);
 });

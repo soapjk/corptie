@@ -737,7 +737,7 @@ final class PadOperationNotifications {
 }
 
 func operationNotificationLabel(_ key: String) -> String {
-    ["Basic Operation Notifications": "基础操作通知", "Enable operation notifications": "启用基础操作通知",
+    ["Verification budgets": "验证预算", "Basic Operation Notifications": "基础操作通知", "Enable operation notifications": "启用基础操作通知",
      "Operation completed": "操作完成", "Operation partially completed": "操作部分完成",
      "Operation failed": "操作失败", "Operation result unconfirmed": "操作结果待确认", "Operation needs attention": "操作需要处理", "Operation cancelled": "操作已取消",
      "Worktree operations": "Worktree 操作", "Development services": "开发服务",

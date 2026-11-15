@@ -375,7 +375,7 @@ final class NativeTimelineLayoutCache {
             : row.isCollaboration && row.expandableTurnId != nil && !row.isExpanded
             ? NSAttributedString(string: row.nativeText, attributes: [
                 .font: NSFont.systemFont(ofSize: typography.bodySize), .foregroundColor: NSColor.labelColor])
-            : row.userInput != nil || row.executionPlan != nil || row.coordinationProgress != nil
+            : row.userInput != nil || row.executionPlan != nil || row.coordinationProgress != nil || row.coordinationEvent != nil
             || !processBlocks.isEmpty || hasRich || (row.nativeStyle == .process && !row.isExpanded)
             ? NSAttributedString(string: "")
             : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle, typography: typography))

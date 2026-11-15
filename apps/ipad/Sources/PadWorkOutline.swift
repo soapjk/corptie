@@ -626,6 +626,7 @@ struct PadWorkOutline: View {
             }
         } label: {
             HStack(spacing: WorkOutlineMetrics.rowSpacing) {
+                if let sessionID, workspace.sessionsByID[sessionID]?.verificationPause != nil { Label("验证预算耗尽", systemImage: "pause.circle").font(.caption2).foregroundStyle(.orange) }
                 TaskActivityIndicator(activity: activity, lifecycleState: task.lifecycleState, isActive: isActive)
                 Text(task.title)
                     .font(rowFont)

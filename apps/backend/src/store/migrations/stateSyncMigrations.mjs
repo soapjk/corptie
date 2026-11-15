@@ -67,6 +67,19 @@ export function ensureStateSyncTables({ db }) {
     ["artifact_versions", "artifact", "artifact_id"],
     ["artifact_references", "artifact", "artifact_id"]
   ];
+  // Budget pause is derived Session state. Publish only transitions, never
+  // command output or per-token activity, through the existing state clock.
+  db.run(`CREATE TRIGGER IF NOT EXISTS state_sync_verification_pause
+    AFTER UPDATE OF enabled,pause_reason ON verification_budgets
+    WHEN OLD.enabled IS NOT NEW.enabled OR OLD.pause_reason IS NOT NEW.pause_reason
+    BEGIN
+      UPDATE sessions SET archive_dependency_version=archive_dependency_version+1
+        WHERE deleted_at IS NULL AND (
+          id=NEW.session_id OR id IN (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id=NEW.session_id)
+          OR id IN (SELECT json_extract(value,'$.sessionId') FROM json_each(NEW.pause_targets_json))
+          OR id IN (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id IN
+            (SELECT executor_session_id FROM verification_budget_charges WHERE instruction_id=NEW.instruction_id)));
+    END;`);
   const noOpUpdateGuards = {
     sessions: [
       "id", "title", "agent", "provider", "command", "args_json", "cwd", "status",

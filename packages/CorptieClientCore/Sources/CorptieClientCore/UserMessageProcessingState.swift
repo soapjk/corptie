@@ -2,9 +2,14 @@ import Foundation
 
 /// Shared authoritative lifecycle mapping for desktop and mobile messages.
 public enum UserMessageProcessingState: String, Equatable, Sendable {
-    case queued, preparing, processing, consumed, failed, cancelled
+    case queued, preparing, processing, paused, consumed, failed, cancelled
 
     public init?(authoritativeValue: String?, legacyStatus: String?) {
+        if ["queued", "preparing", "processing", "paused", "inProgress"].contains(authoritativeValue ?? ""),
+           let terminal = legacyStatus?.lowercased(), ["failed", "cancelled"].contains(terminal) {
+            self = terminal == "failed" ? .failed : .cancelled
+            return
+        }
         if let authoritativeValue {
             guard let state = Self(rawValue: authoritativeValue.lowercased()) else { return nil }
             self = state
@@ -12,6 +17,8 @@ public enum UserMessageProcessingState: String, Equatable, Sendable {
         }
         // Receipt acceptance and timeline position never imply processing.
         switch legacyStatus?.lowercased() {
+        case "failed": self = .failed
+        case "cancelled": self = .cancelled
         case "queued": self = .queued
         case "running", "processing": self = .processing
         default: return nil
@@ -24,7 +31,7 @@ public enum UserMessageProcessingState: String, Equatable, Sendable {
 public struct UserMessageStatusPresentation: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case sending, deliveryUnknown, accepted, queued, preparing, processing
-        case deliveryFailed, processingFailed, cancelled
+        case deliveryFailed, processingFailed, processingPaused, cancelled
         case waitingToSend, retrying, deliveryBlocked, retryStopped
         case uploading, submitting
     }
@@ -32,11 +39,13 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public let kind: Kind
     public let queuePosition: Int?
     public let failureReason: String?
+    public let reasonCode: String?
     private let transferProgress: String?
 
     public init?(authoritativeStatus: String?, legacyStatus: String?,
                  localDeliveryState: String? = nil, queuePosition: Int? = nil,
-                 processingError: String? = nil, showsPendingAsProcessing: Bool = false) {
+                 processingError: String? = nil, showsPendingAsProcessing: Bool = false, executionBlock: ClientExecutionBlock? = nil) {
+        reasonCode = executionBlock?.code
         transferProgress = localDeliveryState?.hasPrefix("上传图片 ") == true
             ? String(localDeliveryState!.dropFirst("上传图片 ".count)) : nil
         if let state = UserMessageProcessingState(
@@ -46,12 +55,13 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
             case .queued: kind = .queued
             case .preparing: kind = showsPendingAsProcessing ? .processing : .preparing
             case .processing: kind = .processing
+            case .paused: kind = .processingPaused
             case .failed: kind = .processingFailed
             case .cancelled: kind = .cancelled
             case .consumed: return nil
             }
             self.queuePosition = kind == .queued && (queuePosition ?? 0) > 0 ? queuePosition : nil
-            failureReason = kind == .processingFailed ? Self.nonempty(processingError) : nil
+            failureReason = [.processingFailed, .processingPaused].contains(kind) ? Self.nonempty(processingError ?? executionBlock?.message) : nil
             return
         }
         // An unknown authoritative value must not fall back to a stale local
@@ -96,6 +106,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case .accepted: "checkmark.circle"
         case .queued: "clock"
         case .preparing: "hourglass"
+        case .processingPaused: "pause.circle"
         case .processing: "circle.dotted.circle"
         case .deliveryFailed, .processingFailed: "exclamationmark.circle.fill"
         case .cancelled: "xmark.circle"
@@ -111,7 +122,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         switch kind {
         case .sending, .uploading, .submitting, .waitingToSend, .retrying: .blue
         case .deliveryUnknown, .accepted, .deliveryBlocked, .preparing: .purple
-        case .queued: .orange
+        case .queued, .processingPaused: .orange
         case .processing: .green
         case .deliveryFailed, .processingFailed: .red
         case .cancelled, .retryStopped: .off
@@ -120,7 +131,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public var lightPulses: Bool { light == .blue || light == .green }
     public var tone: Tone {
         switch kind {
-        case .queued, .preparing: .amber
+        case .queued, .preparing, .processingPaused: .amber
         case .waitingToSend, .retrying, .deliveryBlocked: .amber
         case .processing: .green
         case .deliveryFailed, .processingFailed: .red
@@ -139,6 +150,7 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
         case .queued: return chinese ? "排队中" : "Queued"
         case .preparing: return chinese ? "准备中" : "Preparing"
         case .processing: return chinese ? "处理中" : "Processing"
+        case .processingPaused: return chinese ? "执行已暂停" : "Execution paused"
         case .deliveryFailed: return chinese ? "发送失败" : "Send failed"
         case .processingFailed: return chinese ? "处理失败" : "Processing failed"
         case .cancelled: return chinese ? "已取消" : "Cancelled"
@@ -152,6 +164,16 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
     public func detail(languageCode: String) -> String {
         let label = shortLabel(languageCode: languageCode)
         let chinese = languageCode.lowercased().hasPrefix("zh")
+        if kind == .processingPaused {
+            if reasonCode == "VERIFICATION_BUDGET_EXHAUSTED" {
+                return chinese ? "执行已暂停：验证预算已用尽。不会自动继续；请在会话性能中增加预算并选择继续。" : "Execution paused: verification budget exhausted. It will not continue automatically. Add budget and choose Continue in Conversation performance."
+            }
+            return chinese ? "执行已暂停，不会自动继续。\(failureReason ?? "")" : "Execution paused; it will not continue automatically. \(failureReason ?? "")"
+        }
+        if kind == .processingFailed, reasonCode == "VERIFICATION_BUDGET_EXHAUSTED" {
+            let explanation = chinese ? "请求已终止：此前因验证预算不足而未执行，不会自动恢复。请在会话性能中增加预算后手动继续。" : "Request terminated after verification budget exhaustion. It will not resume automatically; add budget and continue manually in Conversation performance."
+            return explanation + (failureReason.map { "\n" + $0 } ?? "")
+        }
         if let failureReason { return "\(label)：\(failureReason)" }
         if kind == .queued, let queuePosition {
             return chinese ? "\(label)，当前第 \(queuePosition) 位" : "\(label), position \(queuePosition)"
@@ -187,4 +209,12 @@ public struct UserMessageStatusPresentation: Equatable, Sendable {
               !trimmed.isEmpty else { return nil }
         return trimmed
     }
+}
+
+public struct ClientExecutionBlock: Codable, Equatable, Sendable {
+    public let code: String
+    public let kind: String
+    public let message: String
+    public let instructionId: String?
+    public let sessionId: String?
 }

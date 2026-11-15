@@ -17,6 +17,14 @@ struct ConversationReplyProgressProjectionTests {
         ConversationReplyProgressProjection.project(ConversationTimeline.makeEntries(from: items))
     }
 
+    @Test func pausedUserMessageDoesNotCreateAnEmptyWaitingProcess() throws {
+        let message = try JSONDecoder().decode(ClientMessage.self, from: Data(#"{"id":"paused","type":"userMessage","text":"继续","status":"queued","turnId":"work:paused","turnStatus":"paused","userMessageStatus":"paused","queuedMessageTaskId":"operation","executionBlock":{"code":"VERIFICATION_BUDGET_EXHAUSTED","kind":"paused","message":"budget","instructionId":"i","sessionId":"s"}}"#.utf8))
+        let value = project([message])
+        #expect(!value.entries.contains { $0.isProcessGroup })
+        #expect(message.cancellableQueuedMessageTaskID == "operation")
+        #expect(message.executionBlock?.instructionId == "i")
+    }
+
     @Test func authoritativeProcessingShowsTheExistingProcessCardBeforeAnyOutput() throws {
         func user(_ status: String) throws -> ClientMessage {
             let value: [String: Any] = ["id": "user", "type": "userMessage", "text": "request",

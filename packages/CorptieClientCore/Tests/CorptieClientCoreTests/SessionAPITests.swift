@@ -199,6 +199,22 @@ struct SessionAPITests {
         #expect(ClientMessage(id: "local", text: "draft").presentationRole == nil)
     }
 
+    @Test func withdrawalAndExecutionBlockSurviveMessageRoundTrip() throws {
+        let data = Data(#"{"id":"paused","type":"userMessage","text":"pending","withdrawn":true,"userMessageStatus":"paused","queuedMessageTaskId":"task:queued","executionBlock":{"code":"verification_budget_exhausted","kind":"verification","message":"Budget exhausted","instructionId":"instruction:one","sessionId":"session:one"}}"#.utf8)
+        let decoder = JSONDecoder()
+        let message = try decoder.decode(ClientMessage.self, from: data)
+        #expect(message.withdrawn == true)
+        #expect(message.executionBlock?.code == "verification_budget_exhausted")
+        #expect(message.cancellableQueuedMessageTaskID == "task:queued")
+        let restored = try decoder.decode(ClientMessage.self, from: JSONEncoder().encode(message))
+        #expect(restored.withdrawn == message.withdrawn)
+        #expect(restored.executionBlock == message.executionBlock)
+        let legacy = try decoder.decode(ClientMessage.self,
+            from: Data(#"{"id":"old","type":"userMessage","text":"hello"}"#.utf8))
+        #expect(legacy.withdrawn == nil)
+        #expect(legacy.executionBlock == nil)
+    }
+
     @Test func approvalOptionsAndSubmissionStateDecodeWithoutProviderData() throws {
         let data = Data(#"{"id":"approval:one","type":"approval","text":"Proceed?","status":"submitted","options":[{"id":"yes","label":"允许","role":"approve","selected":false},{"id":"no","label":"拒绝","role":"deny","selected":false}]}"#.utf8)
         let message = try JSONDecoder().decode(ClientMessage.self, from: data)
