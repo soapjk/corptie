@@ -12,7 +12,7 @@ enum BuiltinRoleAvatarImage {
     static func image(for reference: String) -> NSImage? {
         guard let id = BuiltinRoleAvatarCatalog.id(from: reference) else { return nil }
         if let cached = images[id] { return cached }
-        guard let url = Bundle.module.url(forResource: id, withExtension: "png",
+        guard let url = AppResourceBundle.bundle.url(forResource: id, withExtension: "png",
                                           subdirectory: "BuiltinRoleAvatars"),
               let data = try? Data(contentsOf: url),
               let bitmap = NSBitmapImageRep(data: data) else { return nil }

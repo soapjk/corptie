@@ -172,7 +172,7 @@ private struct ConcurrentActivity: View {
         configuration.width = Int(window.frame.width * 2); configuration.height = Int(window.frame.height * 2)
         configuration.showsCursor = false; configuration.ignoreShadowsSingleWindow = true
         let before = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        let activityRegion = CGRect(x: 32, y: Double(before.height) - hosting.frame.height * 2 + 32,
+        let activityRegion = CGRect(x: 32, y: CGFloat(before.height) - hosting.frame.height * 2 + 32,
                                     width: 160, height: 16)
         let activityBefore = try require(before.cropping(to: activityRegion)?.dataProvider?.data) as Data
         try await Task.sleep(for: .milliseconds(100))

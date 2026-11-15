@@ -69,10 +69,10 @@ public actor MacAppCredentialStore {
         }
         return snapshot
     }
-    private func read<T>(_ operation: (Envelope) throws -> T) throws -> T {
+    private func read<T>(_ operation: @Sendable (Envelope) throws -> T) throws -> T {
         try file.access { root in try operation(decode(file.read(at: root))) }
     }
-    private func update<T>(_ operation: (inout Envelope) throws -> T) throws -> T {
+    private func update<T>(_ operation: @Sendable (inout Envelope) throws -> T) throws -> T {
         try file.access { root in
             var snapshot = try decode(file.read(at: root))
             let value = try operation(&snapshot)
