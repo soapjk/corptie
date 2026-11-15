@@ -77,10 +77,16 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   }
   const bindingStartedAt = Date.now();
   logSessionMessageLatency(latencyTrace, "binding_verification_started");
-  const bindingVerification = await sessionBindingReadinessProbe.verify(
-    routedSessionId,
-    { reuseReady: true }
-  );
+  // Coordination executes through BackgroundAgent, not this Session's native
+  // conversation thread. An empty historical thread has no resumable rollout.
+  const hostExecution = sessionApplicationService.coordinationTurns?.enabled(reference) === true;
+  if (hostExecution && !sessionApplicationService.coordinationTurns.supported(reference.providerId)) {
+    throw Object.assign(new Error("Provider does not support background coordination execution."), {
+      code: "PROVIDER_CAPABILITY_UNSUPPORTED", dispatchState: "not_sent"
+    });
+  }
+  const bindingVerification = hostExecution ? { ready: true }
+    : await sessionBindingReadinessProbe.verify(routedSessionId, { reuseReady: true });
   logSessionMessageLatency(latencyTrace, "binding_verification_completed", { durationMs: Date.now() - bindingStartedAt });
   if (bindingVerification.ready !== true) {
     const error = new Error(
