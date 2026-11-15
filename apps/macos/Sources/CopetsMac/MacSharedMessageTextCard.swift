@@ -210,7 +210,7 @@ struct MacSharedMessageTextCard: View {
     }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
-        row.withdrawnMessageID == nil && (row.processStep != nil || row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
+        row.withdrawnMessageID == nil && (row.processStep != nil || row.coordinationEvent != nil || row.coordinationProgress != nil || row.scheduledTrigger != nil || row.userInput != nil || row.executionPlan != nil || supportsProcess(row) || (row.nativeStyle != .process && (!row.showsHeader || row.scheduledMessageSource != nil) && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
             && (row.actions.allSatisfy { if case .locateMessage = $0.kind { return true }; return false } || (row.nativeStyle == .agent
                 && (row.nativeText.contains("```corptie-chart") || row.nativeText.contains("|"))))
@@ -246,6 +246,9 @@ struct MacSharedMessageTextCard: View {
             Group {
                 if row.processStep != nil, let block = layout.processBlocks.first {
                     MacProcessBlockView(block: block, cardWidth: layout.cardWidth, baseDirectory: baseDirectory)
+                }
+                else if let event = row.coordinationEvent {
+                    CoordinationSummaryCard(event: event, text: row.nativeText)
                 }
                 else if let progress = row.coordinationProgress {
                     MacCoordinationProgressCard(progress: progress)

@@ -102,9 +102,11 @@ function publicPresentationString(value, maximumLength = 4_000) {
 }
 
 function publicClientMessage(item) {
-  let replyAssociation;
+  let replyAssociation, coordinationEvent;
   try {
     const metadata = JSON.parse(item.rawMetadataJSON ?? "null");
+    if (metadata?.executionMode === "shadow_report") coordinationEvent = { kind: "summary", batchId: metadata.progressBatchId ?? null };
+    else if (typeof metadata?.progressBatchId === "string") coordinationEvent = { kind: "delivery", batchId: metadata.progressBatchId };
     if (typeof metadata?.replyToMessageId === "string" && metadata.replyToMessageId.trim()) {
       replyAssociation = { replyToMessageId: metadata.replyToMessageId.slice(0, 1024),
         requestId: typeof metadata.requestId === "string" ? metadata.requestId.slice(0, 512) : null,
@@ -112,7 +114,7 @@ function publicClientMessage(item) {
     }
   } catch { /* Legacy/provider metadata is not a public message contract. */ }
   const message = {
-    id: item.id, turnId: item.turnId ?? null, type: item.type, replyAssociation,
+    id: item.id, turnId: item.turnId ?? null, type: item.type, replyAssociation, coordinationEvent,
     text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
     createdAt: item.createdAt ?? null,
     userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,

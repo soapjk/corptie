@@ -1468,6 +1468,9 @@ test('separate batches keep their own execution receipt and scope amendments to 
  const before=f.coordinator.progress.refresh(two.batchId);
  f.coordinator.progress.annotate(two.batchId,{updates:[{taskId:'task:foreign',summary:'不可写入'}]});
  assert.equal(f.coordinator.progress.refresh(two.batchId).items[0].summary,before.items[0].summary);
+ assert.equal(f.coordinator.progress.milestone(two.batchId,'delivered','delivery'),true);
+ assert.equal(f.coordinator.progress.milestone(two.batchId,'delivered','delivery'),false);
+ assert.equal(f.coordinator.progress.milestone(two.batchId,'accepted','accepted'),true);
  assert.equal(f.coordinator.progress.milestone(two.batchId,'decision:one','需要用户决定'),true);
  assert.equal(f.coordinator.progress.milestone(two.batchId,'decision:one','需要用户决定'),false);
  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_items WHERE session_id=? AND id LIKE 'coordination-summary:%'",[f.source.sessionId]).n,1);

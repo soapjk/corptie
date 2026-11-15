@@ -902,7 +902,9 @@ struct ConversationView: View {
             VStack(spacing: 0) {
                         switch entry.kind {
                         case .message(let message):
-                            if let progress = message.coordinationProgress {
+                            if let event = message.coordinationEvent {
+                                CoordinationSummaryCard(event: event, text: message.text)
+                            } else if let progress = message.coordinationProgress {
                                 CoordinationProgressCard(progress: progress, api: {
                                     ClientDetailAPI(transport: try await connection.transport(), route: .pairedDevice)
                                 }, openSession: { id in

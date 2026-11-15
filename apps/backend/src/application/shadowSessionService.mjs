@@ -394,7 +394,7 @@ export class ShadowSessionService {
     const { logical: main } = this.owner(row.main_session_id);
     const item = { id: reportId, turnId: reportId, bindingId: main.activeBinding.bindingId,
       type: "agentMessage", presentationRole: "final_answer", text: `**后台汇总**\n\n${body}`, status: "completed", turnStatus: "completed", createdAt,
-      rawMetadataJSON: JSON.stringify({ executionMode: "shadow_report", sourceSessionId: shadowId, sourceTurnId: turnId, decision }) };
+      rawMetadataJSON: JSON.stringify({ executionMode: "shadow_report", sourceSessionId: shadowId, sourceTurnId: turnId, progressBatchId: batchId || null, decision }) };
     this.store.runInTransaction(() => {
       if (old) this.store.db.run("UPDATE coordination_shadow_reports SET body=? WHERE report_id=?", [body, reportId]);
       else this.store.db.run(`INSERT INTO coordination_shadow_reports

@@ -18,3 +18,17 @@
 
 "Super Agent 模式" = "Super Agent mode";
 "开启后由请求影子承接用户指令；子任务始终由汇总影子管理，关闭后仍会交付和回收。" = "When enabled, request shadows handle user instructions. Summary shadows always manage, deliver, and reclaim child tasks, even when this mode is off.";
+
+"本批已交付，整体验收以集成结果为准。" = "Batch delivered; overall acceptance depends on integration results.";
+
+"任务汇总" = "Task summary";
+
+"交付通知" = "Delivery notice";
+
+"重试读取报告" = "Retry report";
+
+"继续读取报告" = "Read more";
+
+"打开子会话" = "Open subtask";
+
+"关闭" = "Close";

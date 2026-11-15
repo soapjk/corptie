@@ -954,3 +954,20 @@ test("paired replies expose only the explicit association and exact bounded navi
     await assert.rejects(api.messages(identity, "session:test", new URLSearchParams({ around: "unknown" })), { code: "ANCHOR_NOT_FOUND" });
   } finally { await f.close(); }
 });
+
+test("paired collaboration cards preserve minimal provenance without exposing raw metadata", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 1, items: [
+        { id: "summary", type: "agentMessage", text: "result", rawMetadataJSON: JSON.stringify({executionMode:"shadow_report", sourceSessionId:"private", progressBatchId:"batch:1"}) },
+        { id: "delivery", type: "agentMessage", text: "delivered", rawMetadataJSON: JSON.stringify({progressBatchId:"batch:1"}) },
+        { id: "ordinary", type: "agentMessage", text: "**后台汇总**\n\nordinary" }
+      ] }) });
+    const {items} = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(items[0].coordinationEvent, {kind:"summary",batchId:"batch:1"});
+    assert.deepEqual(items[1].coordinationEvent, {kind:"delivery",batchId:"batch:1"});
+    assert.equal(items[2].coordinationEvent, undefined);
+    assert.equal(items[0].rawMetadataJSON, undefined);
+  } finally { await f.close(); }
+});

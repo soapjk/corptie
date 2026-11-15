@@ -2,7 +2,7 @@ import SwiftUI
 import CorptieClientCore
 
 /// Shared bounded preview. Reading task/report detail never expands a timeline
-/// row: a sheet owns its pagination, network work and lazy content lifetime.
+/// row: a preview owns its pagination, network work and lazy content lifetime.
 public struct CoordinationProgressCard: View {
     public let progress: ClientCoordinationProgress
     public let openSession: (String) -> Void
@@ -24,8 +24,18 @@ public struct CoordinationProgressCard: View {
             }
             ForEach(progress.items.prefix(3)) { item in
                 Button { selection = item } label: { CoordinationProgressRow(item: item) }
+                    #if os(macOS)
+                    .popover(isPresented: Binding(get: { selection?.id == item.id }, set: { if !$0 { selection = nil } })) {
+                        CoordinationProgressItemDetail(item: item, progress: progress, api: api, openSession: openSession)
+                            .frame(width: 460)
+                    }
+                    #endif
                     .buttonStyle(.plain)
                     .accessibilityHint(Text("查看任务详情", bundle: .module))
+            }
+            if progress.total > 0, progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0] == progress.total {
+                Text("本批已交付，整体验收以集成结果为准。", bundle: .module)
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !progress.focus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text("当前重点：\(progress.focus)", bundle: .module).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
             if !progress.decision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Label { Text("需要你决定：\(progress.decision)", bundle: .module) } icon: { Image(systemName: "questionmark.circle") }.font(.caption).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
@@ -33,10 +43,12 @@ public struct CoordinationProgressCard: View {
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
         .modifier(ConversationSkinSurface(role: .structured, radius: 12, legacyFill: WorkbenchCanvasSurface.defaultColor, legacyBorder: Color.primary.opacity(0.10)))
+        #if os(iOS)
         .sheet(item: $selection) { item in
-            NavigationStack { CoordinationProgressItemDetail(item: item, progress: progress, api: api, openSession: openSession) }
-                .frame(minWidth: 280, minHeight: 280)
+            CoordinationProgressItemDetail(item: item, progress: progress, api: api, openSession: openSession)
+                .presentationDragIndicator(.visible)
         }
+        #endif
         .sheet(isPresented: $showingAll) {
             CoordinationProgressList(progress: progress, api: api, openSession: openSession)
                 .frame(minWidth: 280, minHeight: 360)
@@ -122,19 +134,49 @@ private struct CoordinationProgressItemDetail: View {
     @State private var request: Task<Void, Never>?
     @State private var loading = false
     @State private var error: String?
+    @State private var contentHeight: CGFloat = 180
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                CoordinationProgressRow(item: item)
-                if !item.reason.isEmpty { Text(item.reason).font(.callout).textSelection(.enabled) }
-                if let session = item.sessionId { Button("打开子会话") { dismiss(); openSession(session) } }
-                if item.reportMessageId != nil, nextOffset != nil {
-                    Button(loading ? "正在加载…" : report.isEmpty ? "查看报告" : "继续读取报告") { request = Task { await loadReport() } }.disabled(loading)
+                HStack(alignment: .top, spacing: 12) {
+                    Text(item.title).font(.headline).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Label { Text(LocalizedStringKey(item.statusTitle), bundle: .module) } icon: { Image(systemName: item.statusSymbol) }
+                        .font(.caption).foregroundStyle(.secondary).fixedSize()
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).accessibilityLabel(Text("关闭", bundle: .module))
                 }
-                if let error { Text(error).foregroundStyle(.red) }
+                if !item.previewSummary.isEmpty { Text(item.previewSummary).font(.callout).textSelection(.enabled) }
+                if !item.reason.isEmpty, item.reason != item.previewSummary {
+                    Text(item.reason).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                }
                 if !report.isEmpty { Text(report).font(.callout).textSelection(.enabled) }
-            }.padding().frame(maxWidth: .infinity, alignment: .leading)
-        }.navigationTitle(item.title).toolbar { Button("关闭") { dismiss() } }
+                if loading { ProgressView().controlSize(.small) }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                HStack {
+                    if let session = item.sessionId { Button { dismiss(); openSession(session) } label: { Text("打开子会话", bundle: .module) } }
+                    Spacer(minLength: 0)
+                    if item.reportMessageId != nil, nextOffset != nil, !loading {
+                        Button { request = Task { await loadReport() } } label: {
+                            Text(report.isEmpty ? "重试读取报告" : "继续读取报告", bundle: .module)
+                        }
+                    }
+                }.font(.caption).buttonStyle(.borderless)
+            }
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: CoordinationPreviewHeight.self, value: geometry.size.height)
+            })
+        }
+        .onPreferenceChange(CoordinationPreviewHeight.self) { height in
+            if abs(contentHeight - height) > 1 { contentHeight = height }
+        }
+        #if os(macOS)
+        .frame(height: min(480, max(100, contentHeight)))
+        #else
+        .presentationDetents([.height(min(560, max(160, contentHeight + 24))), .large])
+        #endif
+        .task(id: item.id) { if item.reportMessageId != nil, report.isEmpty { await loadReport() } }
         .onDisappear { request?.cancel(); request = nil }
     }
     private func loadReport() async {
@@ -145,5 +187,32 @@ private struct CoordinationProgressItemDetail: View {
             let page = try await client.coordinationProgressReport(sessionID: progress.parentSessionId, batchID: progress.batchId, assignmentID: item.id, offset: offset)
             try Task.checkCancellation(); report += page.text; nextOffset = page.nextOffset; error = nil
         } catch is CancellationError { } catch { if !Task.isCancelled { self.error = "读取报告失败，请重试" } }
+    }
+}
+
+private struct CoordinationPreviewHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 180
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// Shadow reports and delivery receipts are events, not another parent reply.
+public struct CoordinationSummaryCard: View {
+    public let event: ConversationCoordinationEvent
+    public let text: String
+    public init(event: ConversationCoordinationEvent, text: String) { self.event = event; self.text = text }
+    private var bodyText: String {
+        // Legacy reports carry this generated heading; classification uses metadata only.
+        event.kind == "summary" && text.hasPrefix("**后台汇总**\n\n")
+            ? String(text.dropFirst("**后台汇总**\n\n".count)) : text
+    }
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label { Text(event.kind == "summary" ? "任务汇总" : "交付通知", bundle: .module) }
+                icon: { Image(systemName: event.kind == "summary" ? "text.alignleft" : "checkmark.circle") }
+                .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            Text(bodyText).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(ConversationSkinSurface(role: .structured, radius: 12,
+                legacyFill: WorkbenchCanvasSurface.defaultColor, legacyBorder: Color.primary.opacity(0.10)))
     }
 }
