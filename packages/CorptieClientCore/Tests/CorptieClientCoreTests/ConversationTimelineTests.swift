@@ -3,6 +3,28 @@ import Testing
 @testable import CorptieClientCore
 
 struct ConversationTimelineTests {
+    @Test func withdrawnInputDoesNotInventAnExecutionButKeepsRealHistory() throws {
+        for state in ["cancelled", "queued", "processing"] {
+            let json: [String: Any] = ["id": "withdrawn", "turnId": "turn", "type": "userMessage",
+                "text": "已撤回", "userMessageStatus": state, "turnStatus": "cancelled", "withdrawn": true]
+            let input = try JSONDecoder().decode(ClientMessage.self, from: JSONSerialization.data(withJSONObject: json))
+            #expect(input.timelineIsWithdrawn)
+            for pending in [false, true] {
+                let entries = ConversationTimeline.makeEntries(from: [input], showsPendingInputAsProcessing: pending)
+                #expect(entries.map(\.id) == ["message:withdrawn"])
+                #expect(ConversationReplyProgressProjection.entries(entries).map(\.id) == ["message:withdrawn"])
+                let actualTool = try message("actual-tool", "commandExecution", status: "cancelled")
+                let actualReply = try message("actual-reply", "agentMessage", status: "cancelled")
+                let history = ConversationTimeline.makeEntries(from: [input, actualTool, actualReply],
+                    showsPendingInputAsProcessing: pending)
+                #expect(history.contains { if case .process(_, let steps) = $0.kind { return steps.map(\.id) == ["actual-tool"] }; return false })
+                #expect(history.contains { $0.id == "message:actual-reply" })
+            }
+        }
+        let legacy = try message("ordinary", "userMessage", status: "cancelled")
+        #expect(!legacy.timelineIsWithdrawn)
+    }
+
     @Test func correlatedFailuresShareOneDisclosureWithoutLosingDiagnostics() throws {
         let items = try [message("u", "userMessage", status: "failed"),
                          message("tool", "commandExecution", status: "failed"),

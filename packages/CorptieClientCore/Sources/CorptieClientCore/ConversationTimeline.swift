@@ -18,6 +18,7 @@ public protocol ConversationTimelineItem: Sendable {
     var timelineHasImages: Bool { get }
     var timelineMessageOrigin: String? { get }
     var timelineIsLocalSubmission: Bool { get }
+    var timelineIsWithdrawn: Bool { get }
 }
 
 public extension ConversationTimelineItem {
@@ -27,6 +28,7 @@ public extension ConversationTimelineItem {
     var timelineHasImages: Bool { false }
     var timelineMessageOrigin: String? { nil }
     var timelineIsLocalSubmission: Bool { false }
+    var timelineIsWithdrawn: Bool { false }
 }
 
 public struct ConversationEntry<Item: ConversationTimelineItem>: Identifiable, Sendable {
@@ -430,6 +432,7 @@ public static func entriesForTurn<Item: ConversationTimelineItem>(
     // or creating a persisted message/tool step.
     if lastProcessIndex == nil, !baseTurnId.isEmpty,
        let input = items.last(where: { item in
+           guard !item.timelineIsWithdrawn else { return false }
            let state = UserMessageProcessingState(authoritativeValue: item.userMessageStatus,
                legacyStatus: item.timelineLegacyMessageStatus)
            let kind = ConversationPresentationKind.resolve(type: item.type, presentationRole: item.presentationRole)

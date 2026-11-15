@@ -11,6 +11,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let userMessageStatus: String?
     public let queuePosition: Int?
     public let deletionAvailable: Bool?
+    public var withdrawn: Bool? = nil
     public let queuedMessageTaskId: String?
     public var cancellableQueuedMessageTaskID: String? {
         guard type == "userMessage", userMessageStatus == "queued",
@@ -87,6 +88,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
     public let options: [ClientApprovalOption]?
 
     enum CodingKeys: String, CodingKey {
+        case withdrawn
         case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition, queuedMessageTaskId, deletionAvailable
         case turnStatus, title, presentationRole, presentationText, sourceType, localVisibility, processingError
         case collaborationDirection, collaborationSenderAgentId, collaborationSenderName
@@ -120,6 +122,7 @@ public struct ClientMessage: Codable, Sendable, Identifiable, Equatable {
         userMessageStatus = try container.decodeIfPresent(String.self, forKey: .userMessageStatus)
         queuePosition = try container.decodeIfPresent(Int.self, forKey: .queuePosition)
         deletionAvailable = try container.decodeIfPresent(Bool.self, forKey: .deletionAvailable)
+        withdrawn = try container.decodeIfPresent(Bool.self, forKey: .withdrawn)
         queuedMessageTaskId = try container.decodeIfPresent(String.self, forKey: .queuedMessageTaskId)
         turnStatus = try container.decodeIfPresent(String.self, forKey: .turnStatus)
         title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -273,6 +276,7 @@ public struct ClientMessageImage: Codable, Sendable, Equatable, Identifiable {
 extension ClientMessage: ConversationExecutionItem {
     public var timelineLegacyMessageStatus: String? { status }
     public var timelineIsLocalSubmission: Bool { sourceType == "local_submission" }
+    public var timelineIsWithdrawn: Bool { withdrawn == true }
     public var timelineHasImages: Bool { !images.isEmpty }
     public var timelineMessageOrigin: String? { messageOrigin }
     public var executionTitle: String { title ?? "" }
