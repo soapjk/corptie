@@ -82,24 +82,23 @@ import AppKit
 
     @Test func boundedWindowDoesNotDrainPagesWhileStationary() async throws {
         let fixture = HitPageFixture(lastPage: 9)
-        // Start with a full resident window before mounting the viewport;
-        // manual paging on a mounted card can consume its approach fence.
-        let harness = try HitPagingHarness(fixture: fixture, initialCount: 100)
+        let harness = try HitPagingHarness(fixture: fixture)
         defer { harness.close() }
+        for _ in 0..<4 { await harness.handle.store.loadMore(cardID: "memoryHits", api: harness.api) }
         await harness.settle()
         try harness.scrollToBottom()
         await harness.settle()
         #expect(harness.rowCount == 100)
         #expect(harness.handle.store.orderedCards.first?.windowClipped == true)
         let count = await fixture.cursors.count
-        #expect(count == 1)
+        #expect(count == 5)
         await harness.settle()
         #expect(await fixture.cursors.count == count)
         try harness.scrollToTop()
         await harness.settle()
         try harness.scrollToBottom()
         await harness.settle()
-        #expect(await fixture.cursors.count == 2)
+        #expect(await fixture.cursors.count == 6)
         #expect(harness.rowCount == 100)
     }
 }
@@ -147,11 +146,11 @@ private actor HitPageFixture {
     let api: ClientDetailAPI
     let host: NSHostingView<AnyView>
     let window: NSWindow
-    init(fixture: HitPageFixture, initialCount: Int = 20) throws {
+    init(fixture: HitPageFixture) throws {
         let scope = ClientDetailBusinessScope(serverID: "fixture", ownerID: "window", principalID: "user",
             sessionID: "hits", taskID: nil, workID: nil)
         handle = repository.entry(for: scope)
-        try handle.store.receive(.decode(HitPageFixture.document(count: initialCount)))
+        try handle.store.receive(.decode(HitPageFixture.document()))
         api = ClientDetailAPI(transport: BackendTransport(endpoint: try BackendEndpoint(URL(string: "http://127.0.0.1:49989")!),
             data: { try await fixture.read($0) }, bytes: { _ in throw ClientConnectionError.invalidResponse }), route: .desktop).nativeBusinessPolicy
         let choice = ClientDetailConfiguration.Selection(id: "fixture", title: "Fixture", choices: [], canSelect: false)
