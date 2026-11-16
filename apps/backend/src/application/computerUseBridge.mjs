@@ -1,10 +1,11 @@
 import { createRequire } from "node:module";
 import { readFile, mkdir, writeFile, stat, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { discoverComputerUseRuntime } from "./computerUseRuntime.mjs";
+import { discoverBrowserSurface, computerUseSurfaces } from "./computerUseBrowserCapabilities.mjs";
 
 export const COMPUTER_USE_BRIDGE_PROFILE = "official-computer-use-mcp/v1";
 export const COMPUTER_USE_BRIDGE_VERSION = "0.7.1";
@@ -22,7 +23,7 @@ export async function computerUseBridgeFingerprint(config) {
 }
 
 // The published adapter owns the signed AppServer and native correlation. This
-// module only supplies an explicit, computer-only configuration using OpenAI's
+// module supplies explicit surfaces using OpenAI's
 // installed environment builder. It never changes the account's plugin cache.
 export async function computerUseBridgePreset({ dataDir, discover = discoverComputerUseRuntime,
   packageFile = () => require.resolve("codex-computer-use-mcp/package.json") } = {}) {
@@ -37,34 +38,41 @@ export async function computerUseBridgePreset({ dataDir, discover = discoverComp
     return { runtime: { ...runtime, status: "missing_bridge", errorCode: "COMPUTER_USE_BRIDGE_MISSING",
       message: "请安装此版本 Corptie 配套的 Computer Use MCP 依赖。" }, config: null };
   }
-  const entry = join(dirname(manifestPath), "dist", "mcp-server.js");
+  const entry = fileURLToPath(new URL("../mcp/officialComputerUseMcpServer.mjs", import.meta.url));
   const info = await stat(entry);
   const revision = createHash("sha256").update(JSON.stringify([runtime.runtimeRevision, pkg.version, info.size, info.mtimeMs])).digest("hex");
   const root = join(dataDir, "computer-use", "bridge");
   await mkdir(root, { recursive: true });
+  const browser = await discoverBrowserSurface(runtime.paths?.nodeModuleDirs);
   return { runtime: { ...runtime, runtimeRevision: revision, bridgeVersion: pkg.version,
-    message: "官方依赖与 MCP 已找到；使用原生桌面接口，实际操作及后台行为仍需验证。" },
+    surfaces: computerUseSurfaces("official", browser),
+    message: "官方桌面依赖与 MCP 已找到；浏览器通道按组件兼容性开放，实际连接、授权及后台行为需在 Session 中确认。" },
   config: { name: "Computer Use", transport: "stdio", command: process.execPath, args: [entry], cwd: root,
     env: {}, runtimeProfile: COMPUTER_USE_BRIDGE_PROFILE } };
 }
 
 export async function prepareComputerUseBridge(config, { runtime, discover = discoverComputerUseRuntime,
-  buildEnvironment } = {}) {
+  buildEnvironment, discoverBrowser = discoverBrowserSurface } = {}) {
   runtime ??= await discover();
   if (runtime.status !== "dependencies_available") throw Object.assign(new Error("Official Computer Use runtime unavailable."), { code: runtime.errorCode });
   const root = join(config.cwd, `instance-${randomUUID()}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   try {
   const modules = runtime.paths.nodeModuleDirs;
+  const browser = await discoverBrowser(modules);
+  const surfaces = browser.configured ? "browser,computer" : "computer";
   const builder = buildEnvironment ?? (await import(pathToFileURL(join(modules, "@oai", "cua-repl",
     "dist/lib/js/oai_js_cua_repl/src/environment.js")).href)).create_launch_environment;
   const env = builder({ env: {
-    CUA_REPL_ENABLED_SURFACES: "computer", NODE_REPL_NODE_PATH: runtime.paths.nodePath,
+    CUA_REPL_ENABLED_SURFACES: surfaces, NODE_REPL_NODE_PATH: runtime.paths.nodePath,
     NODE_REPL_NODE_MODULE_DIRS: modules, NODE_REPL_TRUSTED_CODE_PATHS: modules,
     SKY_CUA_SERVICE_PATH: runtime.paths.serviceAppPath, NODE_REPL_DISABLE_ANALYTICS: "1"
   }, instructions_directory: pathToFileURL(join(modules, "@oai", "cua-repl", "instructions") + "/"), platform: "darwin" });
-  if (env.CUA_REPL_ENABLED_SURFACES !== "computer" || JSON.parse(env.NODE_REPL_TRUSTED_SERVICES).browser) {
-    throw Object.assign(new Error("Computer-only runtime configuration was not preserved."), { code: "COMPUTER_USE_SURFACE_UNSUPPORTED" });
+  const services = JSON.parse(env.NODE_REPL_TRUSTED_SERVICES);
+  if (env.CUA_REPL_ENABLED_SURFACES !== surfaces
+    || services.sky !== "@oai/sky/service"
+    || (browser.configured ? services.browser !== "@oai/browser-desktop/service" : Boolean(services.browser))) {
+    throw Object.assign(new Error("Requested Computer Use surfaces or trusted services were not preserved."), { code: "COMPUTER_USE_SURFACE_UNSUPPORTED" });
   }
   const runtimeConfig = join(root, "native-runtime.json");
   await writeFile(runtimeConfig, JSON.stringify({ mcpServers: { cua_repl: {

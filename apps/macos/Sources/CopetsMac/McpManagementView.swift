@@ -174,6 +174,35 @@ struct ComputerUsePresetEnvelope: Decodable {
         let engine: String?
         let message: String?
         let permissions: Permissions?
+        let surfaces: Surfaces?
+
+        struct Surfaces: Decodable {
+            let computer: Surface?
+            let browser: Surface?
+        }
+        struct Surface: Decodable {
+            let supported: Bool?
+            let configured: Bool?
+            let connected: Bool?
+            let ready: Bool?
+            let status: String?
+            let reasonCode: String?
+            let permissionStatus: String?
+
+            var label: String {
+                switch status {
+                case "unsupported": return "当前引擎不支持浏览器专用通道"
+                case "missing_component": return "缺少浏览器组件"
+                case "protocol_incompatible": return "浏览器组件版本尚不兼容"
+                case "not_checked": return "浏览器接口已配置，连接与授权需在 Session 中检测"
+                case "permissions_unknown": return "桌面接口已配置，系统权限待确认"
+                case "connected": return "已连接；网站操作仍需相应授权"
+                case "disconnected": return "未连接浏览器，请检查扩展"
+                case "check_failed": return "浏览器连接检测失败"
+                default: return status ?? "尚未检测"
+                }
+            }
+        }
 
         enum Permissions: Decodable {
             case state(String)
@@ -1005,10 +1034,18 @@ private struct ComputerUseStatusView: View {
                         }
                         Text("系统权限：\(runtime.permissions?.label ?? "尚未确认")")
                         Text(runtime.permissionGuidance)
+                        if let surfaces = runtime.surfaces {
+                            Text("桌面操作：\(surfaces.computer?.label ?? "尚未检测")")
+                            Text("浏览器操作：\(surfaces.browser?.label ?? "尚未检测")")
+                            if surfaces.browser?.supported == true {
+                                Text("在已启用工具的 Session 中请求检测浏览器连接；该检测沿用会话授权，不会打开网页。连接 Chrome 需要在所用 Profile 安装官方扩展并完成授权。")
+                                Link("查看官方浏览器连接说明", destination: URL(string: "https://learn.chatgpt.com/docs/chrome-extension")!)
+                            }
+                        }
                     } else if !model.isDetectingComputerUse {
                         Text("尚未检测运行环境和系统权限。")
                     }
-                    Text("依赖存在或工具列表可见不代表已能操作电脑；检测不会授予系统权限。")
+                    Text("此处检测本机组件；不会连接浏览器或授予权限。工具列表可见不代表浏览器已连接。")
                 }.padding(.top, 8)
             }
             .task(id: expanded) {
