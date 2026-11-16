@@ -1014,7 +1014,11 @@
 "Collapse Work" = "Collapse Work";
 "Expanded group" = "Expanded";
 "Collapsed group" = "Collapsed";
-"Open Work Chat" = "Open Work Chat";
+"Work Chat" = "Project Discussion";
+"Start Work Chat" = "Start Project Discussion";
+"Open Work Chat" = "Open Project Discussion";
+"请至少选择一个 Contributor 角色；创建 Work 时会由其中一个角色建立 Work Chat。" = "Select at least one Contributor role to start the project's discussion.";
+"Work Chat 必须绑定一个 Work。" = "Project Discussion must be linked to a project.";
 "引用内容" = "References";
 "已安装 Skill" = "Installed Skills";
 "添加 Skill" = "Add Skill";
@@ -1129,7 +1133,7 @@
 "Creating Task, copying workspace, and forking history…" = "Creating Task, copying workspace, and forking history…";
 "Creating Chat and forking history…" = "Creating Chat and forking history…";
 "Create a branch from this turn" = "Create a branch from this turn";
-"Work Chat does not support conversation branching." = "Work Chat does not support conversation branching.";
+"Work Chat does not support conversation branching." = "Project Discussion does not support conversation branching.";
 "The current Provider does not support native conversation branching." = "The current Provider does not support native conversation branching.";
 "Wait for the current turn to finish before creating a branch." = "Wait for the current turn to finish before creating a branch.";
 "Copy Message" = "Copy Message";

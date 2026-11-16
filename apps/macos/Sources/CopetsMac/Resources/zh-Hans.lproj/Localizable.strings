@@ -1401,7 +1401,11 @@
 "Collapse Work" = "折叠 Work";
 "Expanded group" = "已展开";
 "Collapsed group" = "已折叠";
-"Open Work Chat" = "打开 Work Chat";
+"Work Chat" = "项目讨论";
+"Start Work Chat" = "开始项目讨论";
+"Open Work Chat" = "打开项目讨论";
+"请至少选择一个 Contributor 角色；创建 Work 时会由其中一个角色建立 Work Chat。" = "请至少选择一个 Contributor 角色；创建项目时会由其中一个角色建立项目讨论。";
+"Work Chat 必须绑定一个 Work。" = "项目讨论必须绑定一个项目。";
 "引用内容" = "引用内容";
 "已安装 Skill" = "已安装 Skill";
 "添加 Skill" = "添加 Skill";
@@ -1516,7 +1520,7 @@
 "Creating Task, copying workspace, and forking history…" = "正在创建 Task、复制工作区并分叉历史…";
 "Creating Chat and forking history…" = "正在创建 Chat 并分叉历史…";
 "Create a branch from this turn" = "从这一轮创建分支";
-"Work Chat does not support conversation branching." = "Work Chat 不支持消息轮次分叉。";
+"Work Chat does not support conversation branching." = "项目讨论不支持消息轮次分叉。";
 "The current Provider does not support native conversation branching." = "当前 Provider 不支持原生消息轮次分叉。";
 "Wait for the current turn to finish before creating a branch." = "请等待当前轮次结束后再创建分支。";
 "Copy Message" = "复制消息";

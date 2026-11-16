@@ -288,8 +288,8 @@ final class ConsoleWorkOutlineDisclosureTests: XCTestCase {
         }
         settle(0.05)
         XCTAssertEqual(opens, 1)
-        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: "Project A"), "Project A · Work Chat")
-        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: nil), "Work Chat")
+        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: "Project A"), "Project A · \(L10n("Work Chat"))")
+        XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: nil), L10n("Work Chat"))
         session.sessionKind = .worker
         XCTAssertEqual(SessionConversationHeaderSurface.displayTitle(session: session, workName: "Project A"), session.title)
     }
