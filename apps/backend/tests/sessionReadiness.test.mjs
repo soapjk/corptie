@@ -153,3 +153,12 @@ test("an unverified post-restart binding blocks sending independently from Provi
   assert.equal(session.notReadyReason.code, "BINDING_RUNTIME_VERIFYING");
   assert.equal(session.actions.send.available, false);
 });
+
+test("recovering bindings admit durable messages while explaining the execution wait", () => {
+  const value = withSessionReadiness(sendable, {
+    logicalSession: { transitionState: "sessionRecovery", activeBinding: { bindingId: "b" } }
+  });
+  assert.equal(value.readiness, "ready");
+  assert.equal(value.actions.send.available, true);
+  assert.match(value.activityStatus, /历史上下文/);
+});

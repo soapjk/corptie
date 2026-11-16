@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { realpath } from "node:fs/promises";
+import { isAbsolute, basename } from "node:path";
 import { promisify } from "node:util";
 import { contractError, evidenceHash } from "./receiptContracts.mjs";
 const execFile = promisify(execFileCallback);
@@ -39,14 +40,26 @@ export class ProcessSupervisor {
 }
 
 async function observeProcess(pid){
+  let observedPID = false;
   try{
-    const {stdout}=await execFile("/bin/ps",["-p",String(pid),"-o","lstart=","-o","state=","-o","comm="]);
+    const {stdout}=await execFile("/bin/ps",["-p",String(pid),"-o","lstart=","-o","state=","-o","comm="], { timeout: 3000 });
+    observedPID = true;
     const row=stdout.trim();if(row.length<27)throw new Error("incomplete process identity");
     const kernelStartTime=row.slice(0,24).trim();const remainder=row.slice(24).trim();const separator=remainder.search(/\s/u);if(separator<1)throw new Error("incomplete process state");
     const state=remainder.slice(0,separator);const command=remainder.slice(separator).trim();if(state.startsWith("Z"))return null;if(!kernelStartTime||!command)throw new Error("incomplete process identity");
-    const executableRealpath=await realpath(command); return {kernelStartTime,executableRealpath};
+    let executable = command;
+    if (!isAbsolute(executable)) {
+      // ps may expose a mutable process title ("node") instead of its path.
+      // Resolve the loaded executable, never a same-named file in our cwd/PATH.
+      const { stdout: mappings } = await execFile("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"],
+        { timeout: 3000, maxBuffer: 1024 * 1024 });
+      executable = mappings.split("\n").filter(line => line.startsWith("n")).map(line => line.slice(1))
+        .find(path => isAbsolute(path) && basename(path) === basename(command));
+      if (!executable) throw new Error("executable mapping unavailable");
+    }
+    const executableRealpath=await realpath(executable); return {kernelStartTime,executableRealpath};
   }catch(error){
-    if(error?.code===1||error?.code==="ESRCH")return null;
+    if((error?.code===1 && !observedPID)||error?.code==="ESRCH")return null;
     if(error?.code==="ENOENT"){try{process.kill(pid,0)}catch(probe){if(probe?.code==="ESRCH")return null}}
     throw contractError("RUN_PROCESS_IDENTITY_INDETERMINATE","Process identity cannot be observed.");
   }

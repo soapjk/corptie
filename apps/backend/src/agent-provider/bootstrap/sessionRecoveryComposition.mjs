@@ -51,6 +51,8 @@ export function createSessionRecoveryComposition({
         const created = await sessionApplicationService.createSessionForRouteTransition(attempt.providerId, {
           title: storedSession?.title ?? "Recovered Session",
           cwd: attempt.boundCwd,
+          model: storedSession?.external?.currentModel ?? undefined,
+          reasoningLevel: storedSession?.external?.currentReasoningLevel ?? undefined,
           runtimeWorkspaceRoots: [attempt.boundCwd],
           sessionKind: storedSession?.sessionKind ?? "legacy",
           sandbox: attempt.permissionSnapshot?.sandbox,

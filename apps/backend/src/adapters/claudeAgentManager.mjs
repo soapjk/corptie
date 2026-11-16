@@ -706,7 +706,7 @@ export class ClaudeAgentManager {
         cwd: stored.external?.cwd, logicalSessionId: logical?.logicalSessionId
       });
       if (!agentSessionId) throw Object.assign(new Error("Claude Session identity could not be verified; refusing to start a new conversation."), {
-        code: "PROVIDER_SESSION_UNAVAILABLE"
+        code: "PROVIDER_SESSION_UNAVAILABLE", safeToRetry: true
       });
     }
     const session = {
@@ -786,6 +786,7 @@ export class ClaudeAgentManager {
     if (!session) {
       const error = new Error("Claude Provider Session was not found.");
       error.code = "PROVIDER_SESSION_UNAVAILABLE";
+      error.safeToRetry = true;
       throw error;
     }
     // Starting the SDK query is Claude's concrete resume/readiness boundary.

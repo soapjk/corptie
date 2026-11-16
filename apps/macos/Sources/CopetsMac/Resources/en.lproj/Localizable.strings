@@ -2334,3 +2334,5 @@
 
 "Verification budgets" = "Verification budgets";
 "验证预算耗尽" = "Verification budget exhausted";
+
+"停止后台进程并删除" = "Stop Background Processes and Delete";

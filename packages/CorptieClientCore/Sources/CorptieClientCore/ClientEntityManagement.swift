@@ -53,8 +53,7 @@ public struct ClientTaskManagement: Decodable, Sendable {
     }
 }
 
-/// Desktop deletion plan without host paths (§10.1): branch name, dirtiness and
-/// counts are enough for the same confirmation the macOS dialog shows.
+/// Deletion confirmation includes process paths needed for an informed stop decision.
 public struct ClientTaskDeletionPlan: Decodable, Sendable {
     public var recoveryAvailable: Bool? = nil
     public let parentTaskId: String?
@@ -69,6 +68,7 @@ public struct ClientTaskDeletionPlan: Decodable, Sendable {
         public let aheadOfMain: Int
     }
     public struct Risk: Decodable, Sendable, Equatable {
+        public var processes: [ClientDeletionProcess]? = nil
         public let code: String
         public let message: String
         public let files: [String]?
@@ -280,4 +280,22 @@ public enum ClientWorkCommand: String, Sendable {
     case update, delete
     case repairLocalState = "repair-local-state"
     public var kind: String { "work_\(rawValue)" }
+}
+
+/// A point-in-time system observation, not an assertion of the process's purpose.
+public struct ClientDeletionProcess: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int { pid }
+    public let pid: Int
+    public let processName: String?
+    public let applicationName: String?
+    public let applicationPath: String?
+    public let executablePath: String?
+    public let workingDirectory: String?
+    public let parentPid: Int?
+    public let elapsed: String?
+    public let state: String?
+    public let orphaned: Bool?
+    public let purpose: String?
+    public let detailError: String?
+    public let canStop: Bool?
 }

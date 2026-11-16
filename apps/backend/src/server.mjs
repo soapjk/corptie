@@ -78,6 +78,7 @@ import { createSessionApplicationComposition } from "./application/sessionApplic
 import { createSessionForkOperations } from "./application/sessionForkOperations.mjs";
 import { createForkWorktree } from "./runtime/forkWorktree.mjs";
 import { createSessionReadinessProjection } from "./application/sessionReadinessProjection.mjs";
+import { createAutomaticSessionRecovery } from "./application/automaticSessionRecovery.mjs";
 import { SessionBindingReadinessProbe } from "./application/sessionBindingReadinessProbe.mjs";
 import { createSessionMessageOperation } from "./application/sessionMessageOperation.mjs";
 import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
@@ -1636,6 +1637,14 @@ sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
       readinessRuntimeEpoch: agentProviderRegistry.get(reference.providerId).readinessEpoch?.(reference) ?? null };
   },
   probe: (sessionId, context) => sessionApplicationService.probeBindingReadiness(sessionId, context),
+  recoverMissing: createAutomaticSessionRecovery({
+    recover: async input => {
+      const result = await sessionRecoveryCoordinator.recover(input);
+      if (result.state === "committed") scheduleAgentWorkDrain(result.sessionId);
+      return result;
+    },
+    resolveReference: id => sessionApplicationService.referenceFor(id)
+  }),
   onChanged: (sessionId) => store.touchSessionProjectionDependency(sessionId)
 });
 

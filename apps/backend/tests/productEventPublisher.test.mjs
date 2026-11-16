@@ -152,3 +152,11 @@ test("dispatch blocked and ready events update the durable original user-message
     assert.ok(f.calls.some(call=>call[0]==='timeline' && call[2].id==='m'));
   }
 });
+
+test("recovery commit projects a visible notice without invoking a model", () => {
+  const f = fixture();
+  createProductEventPublisher(f.options).emitEvent("SessionRecoveryCommitted", { attempt: { attemptId: "a", sessionId: "session:1" } }, { sessionId: "session:1" });
+  const row = f.calls.find(call => call[0] === "timeline");
+  assert.ok(row);
+  assert.match(JSON.stringify(row), /历史上下文/);
+});

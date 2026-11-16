@@ -105,7 +105,7 @@ export function clientTaskManagement(api, identity, taskId) {
     priorities: [...TASK_PRIORITIES], actions: taskActions(api, task) };
 }
 
-/** Desktop deletion plan without host paths; relative file names stay because the user decides on them. */
+/** Deletion confirmation: process paths are explicitly disclosed for an informed stop decision. */
 export async function clientTaskDeletionPlan(api, identity, taskId) {
   const commands = requireSupport(api);
   const task = requireTask(api, taskId);
@@ -117,6 +117,9 @@ export async function clientTaskDeletionPlan(api, identity, taskId) {
   }
   const risk = row => ({ code: String(row.code), message: typeof row.message === "string" ? row.message.slice(0, 512) : "",
     ...(Array.isArray(row.files) ? { files: row.files.filter(file => typeof file === "string").slice(0, 8).map(file => file.slice(0, 256)) } : {}),
+    ...(Array.isArray(row.processes) ? { processes: row.processes.map(process => Object.fromEntries(
+      ["pid", "workingDirectory", "parentPid", "state", "elapsed", "processName", "orphaned", "executablePath", "applicationPath", "applicationName", "detailError", "canStop", "purpose"]
+        .filter(key => process[key] !== undefined).map(key => [key, process[key]]))) } : {}),
     ...(Number.isFinite(row.commitCount) ? { commitCount: row.commitCount } : {}),
     ...(row.jobId ? { jobId: row.jobId, status: row.status, phase: row.phase, canResolve: row.canResolve === true, action: row.action } : {}) });
   return { schemaVersion: 1, taskId: task.id, parentTaskId: plan?.parentTaskId ?? null,

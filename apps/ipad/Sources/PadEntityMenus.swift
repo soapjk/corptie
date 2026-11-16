@@ -602,6 +602,12 @@ struct PadDeleteTaskSheet: View {
             }
         }
 
+        let processes = plan.blockers.flatMap { $0.processes ?? [] }
+        if !processes.isEmpty {
+            Section("使用工作区的进程") {
+                TaskDeletionProcessDetails(processes: processes)
+            }
+        }
         if !blockers.isEmpty {
             Section("阻止删除的原因") {
                 ForEach(blockers, id: \.code) { blocker in
@@ -652,6 +658,12 @@ struct PadDeleteTaskSheet: View {
         }
 
         Section {
+            if plan.blockers.contains(where: { $0.code == "TASK_BACKGROUND_WORK_RUNNING" }) {
+                Button("停止后台进程并删除", role: .destructive) {
+                    executeDeletion(plan: plan, force: true, stopBackground: true)
+                }
+                .disabled(submitting || commands.isBusy || blockers.contains { !["SESSION_BUSY", "TASK_BACKGROUND_WORK_RUNNING"].contains($0.code) })
+            }
             Button(plan.recoveryAvailable == true ? "继续清理" : "删除 Task", role: .destructive) { executeDeletion(plan: plan, force: true) }
                 .disabled(submitting || commands.isBusy || !blockers.isEmpty)
         }
@@ -707,7 +719,7 @@ struct PadDeleteTaskSheet: View {
         }
     }
 
-    private func executeDeletion(plan: ClientTaskDeletionPlan, force: Bool) {
+    private func executeDeletion(plan: ClientTaskDeletionPlan, force: Bool, stopBackground: Bool = false) {
         submitting = true
         deleteNotice = nil
         Task {
@@ -716,7 +728,7 @@ struct PadDeleteTaskSheet: View {
                 request.mode = force ? "force" : "safe"
                 request.deleteWorktree = deleteWorktree
                 request.artifactDisposition = artifactDisposition
-                request.stopRunning = deletionOptions.stopRunning
+                request.stopRunning = stopBackground || deletionOptions.stopRunning
                 request.cancelStartup = deletionOptions.cancelStartup
                 request.deleteAssociatedTasks = deletionOptions.deleteAssociatedTasks
                 request.cancelIntegration = deletionOptions.cancelIntegration

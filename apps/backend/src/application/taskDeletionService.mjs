@@ -262,8 +262,8 @@ export class TaskDeletionService {
     if (this.backgroundWork && inspection?.worktree?.path) {
       try {
         const background = await this.backgroundWork.inspect(taskId, inspection.worktree.path);
-        if (background.processes.length) blockers.push({ code: background.canStop ? "TASK_BACKGROUND_WORK_RUNNING" : "TASK_BACKGROUND_IDENTITY_UNPROVEN",
-          message: `后台进程 ${background.processes.map(p => p.pid).join("、")} 仍使用工作区，${background.canStop ? "可选择停止后删除。" : "请等待退出后继续清理。"}`,
+        if (background.processes.length) blockers.push({ processes: background.processDetails ?? [], code: background.canStop ? "TASK_BACKGROUND_WORK_RUNNING" : "TASK_BACKGROUND_IDENTITY_UNPROVEN",
+          message: `后台进程 ${background.processes.map(p => p.pid).join("、")} 仍使用工作区，${background.canStop ? "可选择停止后删除。" : "无法安全核验部分进程，请查看进程详情后重试。"}`,
           ...(background.canStop ? { action: "stopRunning", canResolve: true } : { canResolve: false }) });
       } catch (error) { blockers.push({ code: error.code ?? "TASK_BACKGROUND_INSPECTION_FAILED", message: error.message }); }
     }
