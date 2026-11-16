@@ -3,8 +3,9 @@ import { lstat, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { repositoryPrivateRoot, migrateRepositoryGitState, readRepositoryPrivateState, publishRepositoryPrivateState, WARNING_STATE_PATH } from "./repositoryPrivateState.mjs";
+
 const execFileAsync = promisify(execFile);
-const WARNING_CONFIG_KEY = "corptie.privateFilesWarning";
 const MANAGED_HEADER = "# Corptie local Agent configuration";
 
 export class GitCommitProtection {
@@ -65,7 +66,8 @@ export class GitCommitProtection {
       await appendGitignore(inspection.repositoryRoot, inspection.suggestedIgnorePatterns);
     }
     if (input.neverRemind === true) {
-      await this.runGit(inspection.repositoryRoot, ["config", "--local", WARNING_CONFIG_KEY, "false"]);
+      const root = await repositoryPrivateRoot(inspection.repositoryRoot, (cwd, args) => this.gitOutput(cwd, args));
+      await publishRepositoryPrivateState(root, WARNING_STATE_PATH, { disabled: true });
     }
     return {
       ...inspection,
@@ -75,8 +77,12 @@ export class GitCommitProtection {
   }
 
   async warningEnabled(root) {
-    const value = await this.optionalGitOutput(root, ["config", "--local", "--bool", "--get", WARNING_CONFIG_KEY]);
-    return value?.trim() !== "false";
+    const main = await repositoryPrivateRoot(root, (cwd, args) => this.gitOutput(cwd, args));
+    // Unsafe local-state links must still be shown by commit protection.
+    // They cannot be used to read or persist a suppressed-warning preference.
+    if (await isSymbolicLink(join(main, ".corptie"))) return true;
+    await migrateRepositoryGitState(main, (cwd, args) => this.gitOutput(cwd, args));
+    return (await readRepositoryPrivateState(main, WARNING_STATE_PATH))?.disabled !== true;
   }
 
   async loadRules() {

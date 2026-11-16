@@ -87,6 +87,7 @@ export async function resumeTaskDeletionCleanup(manager, operation, recovery) {
   if (await manager.gitOptionalOutput(recovery.mainPath, ['rev-parse', '--verify', `refs/heads/${cleanup.sourceBranch}`])) {
     await manager.runGit(recovery.mainPath, ['update-ref', '-d', `refs/heads/${cleanup.sourceBranch}`, cleanup.sourceHead]);
   }
+  await manager.releaseRetiredWorktreeSnapshots?.(recovery.mainPath, target.worktreeId, target.repositoryId);
   manager.store.upsertGitWorkspaceSnapshot(await manager.operationSnapshot(recovery.mainPath, { repositoryId: target.repositoryId }));
   return { ...removed, removed: true, branchDeleted: true };
 }

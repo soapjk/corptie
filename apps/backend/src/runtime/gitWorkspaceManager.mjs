@@ -9,8 +9,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot, createScopedGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import {
-  DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS,
-  linkSharedAgentConfiguration
+  DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS
 } from "./sharedAgentConfiguration.mjs";
 import { stageValidatedIntegrationTree } from "./integrationStagedTreeValidator.mjs";
 import { redactInlineSecrets } from "../utils/providerRawMetadata.mjs";
@@ -19,6 +18,7 @@ import { withWorktreeOperationLock } from "./worktreeOperationLock.mjs";
 import { mergeWorkspaceSnapshot, synchronizeWorkspaceSnapshot, prepareSnapshotConflictWorkspace, snapshotBaseForWorktree } from "./workspaceSnapshotIntegration.mjs";
 import { measureStartup } from "../utils/startupTiming.mjs";
 import { ProjectWorkspaceSnapshotService } from "../application/projectWorkspaceSnapshotService.mjs";
+import { migrateRepositoryGitState, ownerStatePath, readRepositoryPrivateState, publishRepositoryPrivateState } from "./repositoryPrivateState.mjs";
 import { TaskWorktreeHierarchyService } from "../application/taskWorktreeHierarchyService.mjs";
 import { staleRegistrationAction } from "./staleWorktreeRegistration.mjs";
 import { classifyIntegrationRollback } from "../domain/integrationRollbackPlan.mjs";
@@ -161,16 +161,7 @@ export class GitWorkspaceManager {
       throw new Error("Git created the worktree, but Corptie could not validate its repository identity.");
     }
     await ensureProjectLocalState(created.canonicalPath || created.path, { scope: "worktreeLocal" });
-    const main = snapshotAfter.worktrees.find((worktree) => {
-      return worktree.isMain && worktree.availability === "available";
-    });
-    const sharedAgentConfiguration = main
-      ? await linkSharedAgentConfiguration({
-          mainPath: main.canonicalPath || main.path,
-          targetPath: created.canonicalPath || created.path,
-          commonGitDir: snapshotAfter.repository.commonGitDirCanonicalPath
-        })
-      : null;
+    const sharedAgentConfiguration = null;
     let transition = null;
     if (input.switchAfterCreate !== false) {
       transition = await this.transitions.switchWorkspace({
@@ -1785,11 +1776,7 @@ export class GitWorkspaceManager {
   }
 
   async #presentIntegrationWorkspace(snapshot, main, workspace, retryCount, reused) {
-    const sharedAgentConfiguration = await linkSharedAgentConfiguration({
-      mainPath: main.canonicalPath || main.path,
-      targetPath: workspace.canonicalPath || workspace.path,
-      commonGitDir: snapshot.repository.commonGitDirCanonicalPath
-    });
+    const sharedAgentConfiguration = null;
     return {
       worktreeId: workspace.worktreeId,
       path: workspace.path,
@@ -1829,8 +1816,7 @@ export class GitWorkspaceManager {
     this.store.upsertGitWorkspaceSnapshot({ partial: true, repository: { id: binding.repository_id,
       commonGitDirCanonicalPath: repository.commonGitDirCanonicalPath },
       worktrees: [created], inventoryVersion: created.worktreeId, observedAt: new Date().toISOString() });
-    const sharedAgentConfiguration = await linkSharedAgentConfiguration({ mainPath: parentPath,
-      targetPath, commonGitDir: repository.commonGitDirCanonicalPath });
+    const sharedAgentConfiguration = null;
     return { ...await presentEnsuredTaskWorkspace(created, false, sharedAgentConfiguration),
       sourceTreeOid, inventoryVersion: created.worktreeId,
       baseContext: { version: 1, kind: "parent", rootTaskId: task.parent_task_id, parentTaskId: task.parent_task_id,
@@ -1897,17 +1883,7 @@ export class GitWorkspaceManager {
       return presentEnsuredTaskWorkspace(existing, true, null);
     }
 
-    if (existing) {
-      await measureStartup(timing, "git.prune-stale-worktree", () => this.runGit(main.path, ["worktree", "prune"]));
-      snapshot = await measureStartup(timing, "git.inventory.after-prune", () => this.operationSnapshot(main.path, input));
-      this.store.upsertGitWorkspaceSnapshot(snapshot);
-      main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
-      if (!main) throw new Error("The repository's main worktree is unavailable.");
-      existing = resolveExisting(snapshot.worktrees);
-      if (existing?.availability === "available") {
-        return presentEnsuredTaskWorkspace(existing, true, null);
-      }
-    }
+    if (existing) await this.removeMissingWorktreeRegistration(main.path, existing);
 
     await mkdir(worktreesRoot, { recursive: true });
     await assertPathMissing(targetPath);
@@ -1934,18 +1910,14 @@ export class GitWorkspaceManager {
     if (!created || created.availability !== "available") {
       throw new Error("The Task Worktree was created but could not be inventoried.");
     }
-    if (identity.compact) {
-      await this.runGit(main.path, ["config", taskWorkspaceOwnerKey(suffix), taskId]);
-    }
-    const sharedAgentConfiguration = await measureStartup(timing, "git.link-agent-config", () => linkSharedAgentConfiguration({
-      mainPath: main.canonicalPath || main.path,
-      targetPath: created.canonicalPath || created.path,
-      commonGitDir: updated.repository.commonGitDirCanonicalPath
-    }));
+    if (identity.compact) await publishRepositoryPrivateState(main.canonicalPath || main.path,
+      ownerStatePath(suffix), { taskId });
+    const sharedAgentConfiguration = null;
     return presentEnsuredTaskWorkspace(created, false, sharedAgentConfiguration);
   }
 
   async allocateTaskWorkspaceIdentity({ taskId, mainPath, worktreesRoot, worktrees }) {
+    await migrateRepositoryGitState(mainPath, (cwd, args) => this.runGit(cwd, args).then(result => String(result.stdout ?? "")));
     const legacySuffix = taskWorkspaceSuffix(taskId);
     const legacyBranch = `task/${legacySuffix}`;
     const legacyPath = resolve(worktreesRoot, legacySuffix);
@@ -1965,9 +1937,8 @@ export class GitWorkspaceManager {
       const byPath = worktrees.find((worktree) => resolve(worktree.path) === targetPath);
       if (byBranch && byPath && byBranch.worktreeId !== byPath.worktreeId) continue;
       const existing = byBranch ?? byPath;
-      const configuredOwner = await this.gitOptionalOutput(mainPath, [
-        "config", "--get", taskWorkspaceOwnerKey(suffix)
-      ]);
+      const configuredOwner = (await readRepositoryPrivateState(mainPath, ownerStatePath(suffix)))?.taskId;
+      if (configuredOwner && configuredOwner !== taskId) continue;
       if (existing) {
         if (configuredOwner === taskId) {
           return { suffix, branchName, targetPath, compact: true };
@@ -2517,16 +2488,8 @@ export class GitWorkspaceManager {
       await this.runGit(main.path, ["branch", target ? "-D" : merged ? "-d" : "-D", currentSource.branchName]);
       branchDeleted = true;
     }
-    if (branchDeleted && this.store.selectAll) {
-      const operations=this.store.selectAll("SELECT startup_operation_id,worktree_base_context_json FROM work_session_startup_operations WHERE worktree_id=?",[sourceWorktreeId]);
-      for (const startup of operations) {
-        const base=startup.worktree_base_context_json && JSON.parse(startup.worktree_base_context_json);
-        const expectedRef=`refs/corptie/workspace-snapshots/${Buffer.from(startup.startup_operation_id).toString("hex")}`;
-        if(base?.snapshotRef===expectedRef && await this.gitOptionalOutput(main.path,["rev-parse","--verify",expectedRef])) {
-          await this.runGit(main.path,["update-ref","-d",expectedRef,base.baseCommitOid]);
-        }
-      }
-    }
+    if (branchDeleted) await this.releaseRetiredWorktreeSnapshots(main.path, sourceWorktreeId, snapshot.repository.id);
+
     const updated = await this.operationSnapshot(main.path, input);
     this.store.upsertGitWorkspaceSnapshot(updated);
     return {
@@ -2538,6 +2501,36 @@ export class GitWorkspaceManager {
       sourcePath: currentSource.path,
       sourceBranch: currentSource.branchName
     };
+  }
+
+  async releaseRetiredWorktreeSnapshots(mainPath, sourceWorktreeId, repositoryId) {
+    if (!this.store.selectAll) return;
+    const operations = this.store.selectAll("SELECT startup_operation_id,worktree_base_context_json FROM work_session_startup_operations WHERE worktree_id=?", [sourceWorktreeId]);
+    for (const startup of operations) {
+      const base = startup.worktree_base_context_json && JSON.parse(startup.worktree_base_context_json);
+      await new ProjectWorkspaceSnapshotService().releaseParentWorkspaceSnapshot({
+        path: mainPath, operationId: startup.startup_operation_id, base,
+        isReferenced: async oid => {
+          const deliveries = this.store.selectAll("SELECT task_id FROM task_delivery_worktrees WHERE base_commit_oid=? AND worktree_id<>?", [oid,sourceWorktreeId]);
+          if (deliveries.length) return true;
+          const startups = this.store.selectAll("SELECT startup_operation_id,worktree_base_context_json FROM work_session_startup_operations WHERE startup_operation_id<>? AND (worktree_id IS NULL OR worktree_id<>?)", [startup.startup_operation_id,sourceWorktreeId]);
+          if (startups.some(row => row.worktree_base_context_json && JSON.parse(row.worktree_base_context_json).baseCommitOid === oid)) return true;
+          const jobs = this.store.selectAll("SELECT details_json FROM worktree_integration_jobs WHERE repository_id=? AND status IN ('queued','running','paused','cancellation_requested','replanning')", [repositoryId]);
+          return jobs.some(row => row.details_json?.includes(oid));
+        }
+      });
+    }
+  }
+
+  async removeMissingWorktreeRegistration(mainPath, target) {
+    if (target.isMain || target.isLocked || !target.path || !target.branchName)
+      throw integrationGitError("WORKTREE_RESTORE_UNSAFE", "The missing Worktree registration is protected.");
+    await lstat(target.path).then(() => {
+      throw integrationGitError("WORKTREE_RESTORE_UNSAFE", "The target path now exists.");
+    }, error => { if (error.code !== "ENOENT") throw error; });
+    // Git removes only this exact missing registration; sibling Worktrees,
+    // including unavailable removable-media checkouts, are never pruned.
+    await this.runGit(mainPath, ["worktree", "remove", target.path]);
   }
 
   async restoreMissingWorktree(input) {
@@ -2564,7 +2557,7 @@ export class GitWorkspaceManager {
     if (!branchExists) {
       throw new Error(`The original branch ${source.branchName} no longer exists.`);
     }
-    await this.runGit(knownMain.path, ["worktree", "prune"]);
+    await this.removeMissingWorktreeRegistration(knownMain.path, source);
     await mkdir(dirname(source.path), { recursive: true });
     try {
       await this.runGit(knownMain.path, ["worktree", "add", source.path, source.branchName]);
@@ -2577,15 +2570,7 @@ export class GitWorkspaceManager {
     if (!restored || restored.availability !== "available") {
       throw new Error("Git rebuilt the worktree, but Corptie could not validate it.");
     }
-    const main = updated.worktrees.find((worktree) => worktree.isMain);
-    const sharedAgentConfiguration = main
-      ? await linkSharedAgentConfiguration({
-          mainPath: main.canonicalPath || main.path,
-          targetPath: restored.canonicalPath || restored.path,
-          commonGitDir: updated.repository.commonGitDirCanonicalPath,
-          execFile: this.execFile
-        })
-      : null;
+    const sharedAgentConfiguration = null;
     return { restored, sharedAgentConfiguration };
   }
 
@@ -2756,7 +2741,7 @@ export class GitWorkspaceManager {
 
   async runGitLocked(cwd, arguments_) {
     if (["commit", "merge", "cherry-pick", "rebase", "am"].includes(arguments_?.[0])) {
-      await this.ensureCommitGate?.(cwd);
+      await this.ensureCommitGate?.(cwd, arguments_);
     }
     const repositoryId = gitArgumentsMutateWorkspace(arguments_)
       ? this.#repositoryIdForPath(cwd)
@@ -2852,10 +2837,6 @@ function compactTaskWorkspaceSuffixes(taskId) {
   }
   const compact = identifier.replace(/-/gu, "").toLowerCase();
   return Array.from({ length: compact.length - 3 }, (_, index) => compact.slice(0, index + 4));
-}
-
-function taskWorkspaceOwnerKey(suffix) {
-  return `corptie-task-worktree.${suffix}.task-id`;
 }
 
 async function presentEnsuredTaskWorkspace(

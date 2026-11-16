@@ -11,6 +11,11 @@ const failure = code => Object.assign(new Error(code), { code, statusCode:409, r
 const identity = { GIT_AUTHOR_NAME:"Corptie", GIT_AUTHOR_EMAIL:"snapshot@corptie.local",
   GIT_COMMITTER_NAME:"Corptie", GIT_COMMITTER_EMAIL:"snapshot@corptie.local" };
 
+export function workspaceSnapshotRef(operationId) {
+  if (typeof operationId !== "string" || !operationId) throw failure("SNAPSHOT_OPERATION_REQUIRED");
+  return `refs/corptie/workspace-snapshots/${Buffer.from(operationId).toString("hex").match(/.{1,200}/g).join("/")}`;
+}
+
 export class ProjectWorkspaceSnapshotService {
   constructor({ git = null } = {}) { this.execGit = git; }
   async git(path, args, env = {}) {
@@ -18,13 +23,28 @@ export class ProjectWorkspaceSnapshotService {
     return (await execFile("git",["-C",path,...args],{encoding:"utf8",maxBuffer:16*1024*1024,
       timeout:120000,env:{...process.env,GIT_OPTIONAL_LOCKS:"0",...env}})).stdout;
   }
+  // Called only after explicit resource retirement. Never age-based GC: live
+  // delivery baselines and interrupted integrations retain their pinned refs.
+  async releaseParentWorkspaceSnapshot({ path, operationId, base, isReferenced = async () => true }) {
+    const ref = workspaceSnapshotRef(operationId);
+    if (base?.kind !== "parent_workspace_snapshot" || base.snapshotRef !== ref) return { released: false };
+    return withWorktreeOperationLock(path, async () => {
+      if (await isReferenced(base.baseCommitOid)) return { released: false, retained: "referenced" };
+      const current = (await this.git(path, ["rev-parse", "--verify", "--quiet", ref]).catch(error => {
+        if ([1,128].includes(error.code)) return ""; throw error;
+      })).trim();
+      if (!current) return { released: false };
+      if (current !== base.baseCommitOid) throw failure("SNAPSHOT_REF_CHANGED");
+      const message = (await this.git(path, ["show", "-s", "--format=%B", current])).trim();
+      if (!message.startsWith("Corptie parent workspace snapshot\n")) throw failure("SNAPSHOT_REF_CHANGED");
+      await this.git(path, ["update-ref", "-d", ref, current]);
+      return { released: true };
+    });
+  }
   async captureParentWorkspace({path, operationId, bindingContext = null, startupTiming = null, validate = async()=>{}}) {
     return measureStartup(startupTiming,"snapshot.wait-and-capture",()=>withWorktreeOperationLock(path, async()=>{
       await validate();
-      const encoded=Buffer.from(operationId).toString("hex");
-      // Lossless encoding, no extra digest. Keep each ref path component below
-      // filesystem NAME_MAX when an operation includes an exact source path.
-      const ref = `refs/corptie/workspace-snapshots/${encoded.match(/.{1,200}/g).join("/")}`;
+      const ref = workspaceSnapshotRef(operationId);
       const existing = await this.git(path,["rev-parse","--verify","--quiet",ref]).catch(error=>{
         if ([1,128].includes(error.code)) return "";
         throw error;

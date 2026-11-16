@@ -168,3 +168,20 @@ test('released stale integration plan does not reserve the parent while live/unv
  assert.equal(integrationBlocksWorkspaceCapture({...job,details:{...details,dispatchSafety:{...details.dispatchSafety,blockedWorktreeIds:['parent']}}},'parent'),true);
  assert.equal(integrationBlocksWorkspaceCapture({...job,details:{...details,dispatchSafety:{...details.dispatchSafety,safeWorktrees:[]}}},'parent'),true);
 });
+
+test('snapshot refs retire only after exact ownership and live-reference checks, including long operation IDs',async t=>{
+ const f=await fixture(t);await writeFile(join(f.path,'tracked.txt'),'snapshot\n');
+ const operationId='startup:'+('long-owned-operation'.repeat(20));
+ const base=await f.capture(operationId);
+ assert.ok(base.snapshotRef.split('/').every(part=>part.length<=200));
+ assert.equal((await f.service.releaseParentWorkspaceSnapshot({path:f.path,operationId,base})).retained,'referenced');
+ assert.equal(await oid(f.path,base.snapshotRef),base.baseCommitOid);
+ assert.equal((await f.service.releaseParentWorkspaceSnapshot({path:f.path,operationId:'different',base,isReferenced:async()=>false})).released,false);
+ await git(f.path,['update-ref',base.snapshotRef,f.initial,base.baseCommitOid]);
+ await assert.rejects(f.service.releaseParentWorkspaceSnapshot({path:f.path,operationId,base,isReferenced:async()=>false}),{code:'SNAPSHOT_REF_CHANGED'});
+ assert.equal(await oid(f.path,base.snapshotRef),f.initial);
+ await git(f.path,['update-ref',base.snapshotRef,base.baseCommitOid,f.initial]);
+ assert.equal((await f.service.releaseParentWorkspaceSnapshot({path:f.path,operationId,base,isReferenced:async()=>false})).released,true);
+ assert.equal((await f.service.releaseParentWorkspaceSnapshot({path:f.path,operationId,base,isReferenced:async()=>false})).released,false);
+ assert.equal(await oid(f.path),f.initial);
+});

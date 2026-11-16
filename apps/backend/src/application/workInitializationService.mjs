@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createScopedGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
-import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
+import { cleanupArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 import { EntityCreationConflictError, workCreationMatches } from "./workApplicationService.mjs";
 import { ensureProjectLocalState, inspectProjectLocalState, verifyProjectLocalState, rollbackProjectLocalState } from "../runtime/projectLocalStateDirectory.mjs";
 
@@ -178,7 +178,7 @@ export class WorkInitializationService {
         if (!existingRepository) this.store.upsertGitWorkspaceSnapshot(inventory);
         workspaceId = this.store.getGitRepository(repositoryId).workspaceId;
         if (ownedDirectory) this.store.db.run("UPDATE workspaces SET kind='managedLocal', ownership='corptieManaged' WHERE workspace_id=?", [workspaceId]);
-        if (ownedDirectory && this.store.dbPath) await ensureArtifactCommitHook(root, { dbPath: this.store.dbPath });
+        if (ownedDirectory) await cleanupArtifactCommitHook(root);
       } else {
         if (registeredWorkspace && this.store.getGitRepositoryForWorkspace(workspaceId)) throw fail("WORK_REPOSITORY_CHANGED", "Workspace's registered repository is unavailable.");
         if (!registeredWorkspace) {
