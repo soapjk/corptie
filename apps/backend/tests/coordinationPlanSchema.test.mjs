@@ -19,7 +19,7 @@ test("coordination output satisfies strict required-fields contract at every obj
 
 test("strict coordination output permits unused fields without inventing evidence", () => {
   const validate = new Ajv({ strict: false }).compile(COORDINATION_PLAN_SCHEMA);
-  const base = { decisionRequest:null,continuationPlans:[],verificationRequired:false,kind: "discussion", reply: "回答", decisionReportId: null, requestRelation: null, progressUpdates: [], focus: "", decision: "", items: [], queries: [] };
+  const base = { decisionRequest:null,continuationPlans:[],verificationRequired:false,kind: "discussion", reply: "回答", decisionReportId: null, requestRelation: null, progressUpdates: [], focus: "", items: [], queries: [] };
   assert.ok(validate(base), JSON.stringify(validate.errors));
   const query = { tool: "list_children", taskId: null, sessionId: null, query: null, cursor: null,
     messageId: null, offset: 0, limit: 6, targetType: null, targetId: null, section: null };
@@ -36,3 +36,8 @@ test("strict coordination output permits unused fields without inventing evidenc
   assert.equal(validate({ ...base, items: [{ ...item, evidence: 123 }] }), false);
   assert.equal(validate({ ...base, items: [{ ...item, deletion: { stopRunning: true } }] }), false);
 });
+
+ test('routine output no longer requires or accepts a repeated decision prose field',()=>{
+ assert.equal(Object.hasOwn(COORDINATION_PLAN_SCHEMA.properties,'decision'),false);
+ assert.equal(COORDINATION_PLAN_SCHEMA.required.includes('decision'),false);
+ });

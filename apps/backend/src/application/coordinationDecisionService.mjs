@@ -1,8 +1,9 @@
+import { decisionIdentity, meaningfulDecisionQuestion } from '../domain/coordinationDecisionIdentity.mjs';
 import { randomUUID } from 'node:crypto';
 import { validateInteractionAnswers } from './interactionInput.mjs';
 
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code,statusCode:409});};
-const meaningful=text=>typeof text==='string'&&text.trim().length>4&&!/^\/?(?:not[-_ ]?used|none|null|n\/?a|无|无需|不需要)[.!。\s]*$/iu.test(text.trim());
+const meaningful=meaningfulDecisionQuestion;
 export class CoordinationDecisionService {
   constructor({store,shadow,mailbox,continuations=null,emitEvent=()=>{}}){Object.assign(this,{store,shadow,mailbox,continuations,emitEvent});}
   get(id){const row=this.store.selectOne('SELECT * FROM coordination_decisions WHERE decision_id=?',[id]);return row?{...JSON.parse(row.body_json),id:row.decision_id,status:row.status,revision:row.revision}:null;}
@@ -14,9 +15,10 @@ export class CoordinationDecisionService {
     const delegation=this.shadow.assertDelegate(shadowId,'publish_reports');
     if(delegation.main_session_id!==mainId)fail('SHADOW_DECISION_SCOPE_INVALID','问题不属于当前汇总会话。');
     if(planId&&!this.store.selectOne('SELECT plan_id FROM execution_checklist_plans WHERE plan_id=? AND task_id=?',[planId,delegation.parent_task_id]))fail('SHADOW_DECISION_SCOPE_INVALID','问题不属于当前执行计划。');
+    this.repairExisting(mainId);
     let old=candidate.existingDecisionId&&this.get(candidate.existingDecisionId);
-    if(old&&!this.store.selectOne("SELECT 1 FROM coordination_decisions WHERE decision_id=? AND main_session_id=? AND status='pending'",[old.id,mainId]))old=null;
-    let topicKey=JSON.stringify([planId??delegation.parent_task_id,(candidate.topicKey?.trim()||candidate.question).trim().replace(/^(?:仍需|请)\s*/u,'').replace(/\s+/gu,' ')]);
+    if(old&&!this.store.selectOne("SELECT 1 FROM coordination_decisions WHERE decision_id=? AND main_session_id=? AND status='pending' AND plan_id IS ?",[old.id,mainId,planId]))old=null;
+    let topicKey=decisionIdentity(planId??delegation.parent_task_id,candidate);
     old??=this.get(this.store.selectOne('SELECT decision_id FROM coordination_decisions WHERE main_session_id=? AND topic_key=?',[mainId,topicKey])?.decision_id);
     if(old?.status==='answered')return old;
     if(old)topicKey=old.topicKey;
@@ -26,7 +28,7 @@ export class CoordinationDecisionService {
     if(options.some(o=>o.label.length>200)||new Set(options.map(o=>o.label)).size!==options.length)fail('SHADOW_DECISION_INVALID','问题选项需要简短且不重复。');
     const decision={id:old?.id??`coordination-decision:${randomUUID()}`,planId,mainId,shadowId,revision:(old?.revision??0)+1,status:'pending',
       question:candidate.question.trim(),recommendation:candidate.recommendation??null,impact:candidate.impact??null,options,
-      allowsText:candidate.allowsText!==false||!options.length,answer:null,stepIds:candidate.stepIds??[],topicKey,createdAt:old?.createdAt??now,
+      allowsText:candidate.allowsText!==false||!options.length,answer:null,stepIds:[...new Set([...(old?.stepIds??[]),...(candidate.stepIds??[])])],topicKey,identityTopic:candidate.topicKey??candidate.question,createdAt:old?.createdAt??now,
       questionRevision:(old?.questionRevision??0)+1};
     if(old&&JSON.stringify({...old,revision:0,questionRevision:0})===JSON.stringify({...decision,revision:0,questionRevision:0}))return old;
     this.store.db.run(`INSERT INTO coordination_decisions VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(decision_id) DO UPDATE SET
@@ -52,12 +54,14 @@ export class CoordinationDecisionService {
     if(!decision||main?.legacySessionId!==sessionId)fail('SHADOW_DECISION_NOT_FOUND','待回答的问题不存在。');
     if(!['desktop','remote-client','user','local_user'].includes(source?.type))fail('SHADOW_DECISION_USER_REQUIRED','只有用户可以回答此问题。');
     if(decision.status==='answered')return {messageId:decision.answerMessageId,reused:true};
+    if(decision.status!=='pending'||!meaningful(decision.question))fail('USER_INPUT_NOT_PENDING','这个问题已失效，请使用当前问题卡片。');
     const item=this.store.getSessionItem(sessionId,id);
     if(!validateInteractionAnswers(item?.userInput,answers))fail('INVALID_USER_INPUT_ANSWER','请回答卡片中的问题。');
     const target=await this.shadow.readyRecipient(decision.mainId),answer=answers[item.userInput.questions[0].id][0];
     const now=new Date().toISOString();let message;
       this.store.runInTransaction(()=>{
         const live=this.get(id);if(live.status==='answered'){decision.answerMessageId=live.answerMessageId;return;}
+        if(live.status!=='pending')fail('USER_INPUT_NOT_PENDING','这个问题已失效。');
         if(live.questionRevision!==decision.questionRevision)fail('SHADOW_DECISION_CHANGED','问题已更新，请回答最新卡片。');
         message=this.mailbox.receiveEvent({recipientSessionId:target.sessionId,sourceType:'background',sourceId:id,intent:'response_required',priority:50,idempotencyKey:`decision-answer:${id}`,
           body:`用户已回答当前问题。继续受影响事项，不发送收件确认。\n问题：${decision.question}\n答复：${answer}`,
@@ -78,7 +82,50 @@ export class CoordinationDecisionService {
       this.publish(updated);this.continuations?.onDependencyChanged('decision',updated.id);
     }
   }
+  repairExisting(mainId=null){
+    const rows=this.store.selectAll(`SELECT * FROM coordination_decisions WHERE status IN ('pending','answered') ${mainId?'AND main_session_id=?':''} ORDER BY CASE status WHEN 'answered' THEN 0 ELSE 1 END,created_at,decision_id`,mainId?[mainId]:[]);
+    const groups=new Map(),affected=new Set();
+    this.store.runInTransaction(()=>{
+      for(const row of rows){
+        const value=this.get(row.decision_id),main=this.store.getLogicalSession(row.main_session_id);
+        if(!meaningful(value.question)){
+          if(value.status==='pending'){this.retire(value,null,'invalid_question');affected.add(value.id);}continue;
+        }
+        const taskId=main&&this.store.getSession(main.legacySessionId)?.taskId;
+        if(!taskId)continue;
+        let oldKey;try{oldKey=JSON.parse(row.topic_key);}catch{continue;}
+        const candidate={...value,topicKey:oldKey.length===2?oldKey[1]:value.identityTopic??value.question};
+        const key=decisionIdentity(value.planId??taskId,candidate),group=JSON.stringify([row.main_session_id,key]);
+        const entries=groups.get(group)??[];entries.push({row,value,key,candidate});groups.set(group,entries);
+      }
+      for(const entries of groups.values()){
+        const canonical=entries.find(e=>e.value.status==='answered'&&e.row.topic_key===e.key)
+          ??entries.find(e=>e.value.status==='answered')??entries.find(e=>e.row.topic_key===e.key)??entries[0];
+        for(const entry of entries)if(entry!==canonical&&entry.value.status==='pending'){
+          this.retire(entry.value,canonical.value.id,'duplicate_question');affected.add(entry.value.id);affected.add(canonical.value.id);
+        }
+        if(canonical.key!==canonical.row.topic_key){
+          const updated={...canonical.value,topicKey:canonical.key,identityTopic:canonical.candidate.topicKey};
+          this.store.db.run('UPDATE coordination_decisions SET topic_key=?,body_json=? WHERE decision_id=?',[canonical.key,JSON.stringify(updated),updated.id]);
+        }
+      }
+    });
+    if(affected.size)this.store.scheduleSave();
+    for(const id of affected)this.continuations?.onDependencyChanged('decision',id);
+    return {retired:affected.size};
+  }
+  retire(value,canonicalId,reason){
+    const retired={...value,status:'superseded',revision:value.revision+1,topicKey:JSON.stringify(['retired',value.id]),supersededByDecisionId:canonicalId,retirementReason:reason};
+    this.store.db.run("UPDATE coordination_decisions SET status='superseded',topic_key=?,revision=?,body_json=?,updated_at=? WHERE decision_id=?",[retired.topicKey,retired.revision,JSON.stringify(retired),new Date().toISOString(),value.id]);
+    if(canonicalId)this.store.db.run("UPDATE execution_checklist_waits SET resource_id=?,body_json=json_set(body_json,'$.resourceId',?) WHERE kind='decision' AND resource_id=?",[canonicalId,canonicalId,value.id]);
+    else this.store.db.run("DELETE FROM execution_checklist_waits WHERE kind='decision' AND resource_id=?",[value.id]);
+    const main=this.store.getLogicalSession(value.mainId);
+    if(main)this.store.removeItem(main.legacySessionId,value.id);
+    // Timeline deletion is authoritative; do not leave a disabled duplicate card.
+    if(main)this.emitEvent('TaskChanged',{taskId:this.store.getSession(main.legacySessionId)?.taskId,action:'decision-repair'},{sessionId:main.legacySessionId});
+  }
   async recoverLegacy(mainId=null){
+    this.repairExisting(mainId);
     let after='';
     while(this.store.db){
       const rows=this.store.selectAll(`SELECT * FROM coordination_shadow_reports WHERE report_id>? AND decision_json IS NOT NULL

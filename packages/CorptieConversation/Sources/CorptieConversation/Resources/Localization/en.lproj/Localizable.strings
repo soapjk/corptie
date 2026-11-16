@@ -173,3 +173,13 @@
 "继续" = "Resume";
 
 "展开全文" = "Show full text";
+
+"限制本条验证次数" = "Limit verification for this instruction";
+
+"新指令默认限制验证次数" = "Limit verification for new instructions by default";
+
+"新指令默认设置" = "Defaults for new instructions";
+
+"当前页面为只读，无法修改预算" = "This view is read-only; budget changes are unavailable";
+
+"开启后还可验证 %lld 次，保留已有记录" = "Allow %lld more rounds when enabled; retain existing records";

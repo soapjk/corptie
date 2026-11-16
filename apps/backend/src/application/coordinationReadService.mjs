@@ -32,7 +32,7 @@ export class CoordinationReadService {
       if(input.tool==='read_decisions'){
         const owner=coordinationDelegation(this.store,route.logicalSessionId)?.mainSessionId??route.logicalSessionId;
         const rows=this.store.selectAll("SELECT body_json FROM coordination_decisions WHERE main_session_id=? AND status='pending' ORDER BY created_at LIMIT ?",[owner,input.limit??6]);
-        return {tool:input.tool,referenceOnly:true,items:rows.map(row=>JSON.parse(row.body_json))};
+        return {tool:input.tool,referenceOnly:true,items:rows.map(row=>({...JSON.parse(row.body_json),alreadyPresented:true,waitResource:{kind:'decision',id:JSON.parse(row.body_json).id}}))};
       }
       return {tool:input.tool,referenceOnly:true,plan:plan?this.checklists.display(plan):null,
         runtime:plan?this.checklists.repository.runtime(plan.planId):null,waits:plan?this.checklists.repository.waits(plan.planId):[]};

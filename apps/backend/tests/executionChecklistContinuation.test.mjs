@@ -232,3 +232,47 @@ test('legacy question duplicates become one visible decision while placeholders 
   const rows=f.store.selectAll("SELECT decision_json FROM coordination_shadow_reports WHERE report_id IN ('legacy:a','legacy:b')");
   assert.equal(JSON.parse(rows[0].decision_json).legacyMigration,JSON.parse(rows[1].decision_json).legacyMigration);
 });
+
+test('null scaffolding and punctuation never become actionable user questions',async t=>{
+ const f=await fixture(t),d=decisionService(f),scope={mainId:f.logicalId,shadowId:'shadow'};
+ for(const question of [':null','： null','**null**','null.','{"question":null}','undefined','/not-used','---','???'])assert.equal(d.propose(scope,{question}),null,question);
+ assert.equal(d.pending(f.logicalId).length,0);assert.equal(f.store.getItems(f.sessionId).length,0);
+});
+
+test('configuration questions reuse their subject and parameter identity despite wording and order',async t=>{
+ const f=await fixture(t),d=decisionService(f),scope={mainId:f.logicalId,shadowId:'shadow'};
+ const variants=[
+ '自动快照仍需批准 commits、deltaBytes、maxAgeMs、maxCipherBytes、retryMs 的值，或提供已授权配置位置；批准前保持未配置。',
+ '自动快照仍缺 commits、deltaBytes、maxAgeMs、maxCipherBytes、retryMs 的批准值或已授权配置位置，批准前保持未配置；未经批准的完整校验回退不启用。',
+ '自动快照的 retryMs、commits、maxAgeMs、deltaBytes、maxCipherBytes 仍需批准值或已授权配置位置；批准前保持未配置。'];
+ const first=d.propose(scope,{question:variants[0]});
+ for(const q of variants.slice(1))assert.equal(d.propose(scope,{question:q}).id,first.id);
+ assert.equal(d.pending(f.logicalId).length,1);assert.equal(f.store.getItems(f.sessionId).filter(i=>i.type==='userInput').length,1);
+ const item=f.store.getSessionItem(f.sessionId,first.id);await d.answer(f.sessionId,first.id,{[item.userInput.questions[0].id]:['Use existing authorized configuration']},{type:'desktop'});
+ assert.equal(d.propose(scope,{question:variants[0]}).status,'answered');assert.equal(f.store.listAgentTasksForSession(f.sessionId).length,1);
+ for(const q of ['日志快照仍需批准 commits、deltaBytes、maxAgeMs、maxCipherBytes、retryMs 的值。','删除自动快照 commits、deltaBytes、maxAgeMs、maxCipherBytes、retryMs 的配置？','自动快照仍需批准 commits、deltaBytes 的值。','自动快照仍需批准 commits、deltaBytes、maxAgeMs、maxCipherBytes、retryMs 的值，最长等待 300 秒。'])assert.notEqual(d.propose(scope,{question:q}).id,first.id);
+});
+
+test('repair removes invalid and duplicate existing cards, rewires waits, and rejects old card answers',async t=>{
+ const f=await fixture(t),plan=f.create(),d=decisionService(f);
+ const questions=['自动快照仍需批准 commits、deltaBytes 的值。','自动快照的 commits、deltaBytes 仍缺批准值。',':null'];
+ for(let i=0;i<questions.length;i++){
+  const id=`old:${i}`,topicKey=JSON.stringify([plan.planId,questions[i]]),value={id,mainId:f.logicalId,shadowId:'shadow',planId:plan.planId,status:'pending',revision:1,questionRevision:1,question:questions[i],topicKey,options:[],allowsText:true,stepIds:[plan.steps[0].stepId],createdAt:`2026-11-01T00:00:0${i}Z`};
+  f.store.db.run('INSERT INTO coordination_decisions VALUES(?,?,?,?,?,?,?,?,?)',[id,f.logicalId,plan.planId,topicKey,'pending',1,JSON.stringify(value),value.createdAt,value.createdAt]);d.publish(value);
+ }
+ f.repository.wait(plan.planId,{stepId:plan.steps[0].stepId,kind:'decision',resourceId:'old:1'});
+ d.repairExisting();d.repairExisting();
+ assert.equal(d.pending(f.logicalId).length,1);assert.equal(f.store.getItems(f.sessionId).filter(i=>i.type==='userInput').length,1);
+ assert.equal(f.repository.waits(plan.planId)[0].resourceId,'old:0');
+ await assert.rejects(d.answer(f.sessionId,'old:1',{}, {type:'desktop'}),{code:'USER_INPUT_NOT_PENDING'});
+ assert.equal(f.store.listAgentTasksForSession(f.sessionId).length,0);
+});
+
+test('answer choices and plan scope prevent unrelated decisions from merging',async t=>{
+ const f=await fixture(t),firstPlan=f.create(),d=decisionService(f),scope={mainId:f.logicalId,shadowId:'shadow',planId:firstPlan.planId};
+ const first=d.propose(scope,question);
+ const changed=d.propose(scope,{...question,options:[{id:'other',label:'Different policy'}]});assert.notEqual(changed.id,first.id);
+ const secondPlan=f.create([{text:'Second request'}],{instructionId:'second',turnId:'second'});
+ const second=d.propose({...scope,planId:secondPlan.planId},{...question,existingDecisionId:first.id});assert.notEqual(second.id,first.id);
+ d.repairExisting();assert.equal(d.pending(f.logicalId).length,3);
+});
