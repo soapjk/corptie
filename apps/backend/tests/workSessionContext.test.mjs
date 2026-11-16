@@ -19,7 +19,9 @@ test("checklist policy is required Worker context and the default startup uses t
   assert.ok(merged.prompt.includes("Optional recall".repeat(1)) || merged.prompt.includes("m"));
   assert.match(merged.prompt, /user does not need to explicitly request a checklist/);
   assert.match(merged.prompt, /simple one-step read-only requests may be answered directly/);
-  assert.match(merged.prompt, /It does not schedule turns, impose a time or turn budget, or pause execution/);
+  assert.match(merged.prompt, /host-managed continuation/);
+  assert.match(merged.prompt, /legacy progress-only plans do not automatically activate/);
+  assert.match(merged.prompt, /user pause\/stop and verification-budget pauses take priority/);
   assert.match(merged.prompt, /a dispatch receipt does not prove implementation completed/);
 });
 

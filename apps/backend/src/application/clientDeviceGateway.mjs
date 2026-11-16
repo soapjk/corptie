@@ -64,8 +64,9 @@ function streamFile(response, { path, contentType, size, etag }) {
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
 export class ClientDeviceGateway {
   constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null,
-    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true, automationNotifications = null, verificationBudgetService = null } = {}) {
+    detailActionService = null, detailWritesAllowed = false, resourceWritesAllowed = true, automationNotifications = null, userDecisionNotices = null, verificationBudgetService = null,executionChecklistService=null } = {}) {
     this.verificationBudgetService = verificationBudgetService;
+    this.executionChecklists=executionChecklistService;
     if (typeof detailWritesAllowed !== "boolean") throw deviceError("DETAIL_GATE_INVALID", 500);
     this.authority = authority;
     this.readAPI = readAPI;
@@ -81,6 +82,7 @@ export class ClientDeviceGateway {
     this.inspectorEvents = new ClientInspectorStream({ snapshot: (identity, id) => this.sessionAPI.inspector.snapshot(identity, id) });
     this.events = new ClientEventStream({
       automationNotifications, operationNotices:()=>verificationBudgetService?.pendingNotices() ?? [],
+      userDecisionNotices,
       stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
       controlSnapshot: async () => this.controlAPI?.realtimeSnapshot?.() ?? null,
       timeline: async (identity, sessionId, after, options) =>
@@ -160,9 +162,11 @@ export class ClientDeviceGateway {
       const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|message-deliveries|quick-messages|user-message-navigation|stop|capabilities|composer|conversation-commands|tasks|task-startup|read-receipt|images|resources|usage|approval|user-input|collaboration-confirmation)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
+      const checklistRead=/^\/client\/v1\/tasks\/[^/]+\/execution-checklist$/.test(path)&&request.method==='GET';
+      if(checklistRead&&[...url.searchParams.keys()].some(key=>key!=='planId'))throw deviceError('REQUEST_NOT_ALLOWED',403);
       const progressRead = /^\/client\/v1\/sessions\/[^/]+\/coordination-progress\/[^/]+$/.test(path) && request.method === "GET";
       if(progressRead && [...url.searchParams.keys()].some(key=>!["offset","assignment"].includes(key))) throw deviceError("REQUEST_NOT_ALLOWED",403);
-      if (url.search && !progressRead && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
+      if (url.search && !checklistRead && !progressRead && !resource && !search && !inventory && !taskHierarchy && !control && !eventV2 && !worktreeRepository
           && !/^\/client\/v1\/tasks\/[^/]+\/child-deliveries$/.test(path)
           && !(path === "/client/v1/provider-settings/task-creation" && request.method === "GET")
           && !(["messages", "tasks", "task-startup", "images", "resources", "usage"].includes(conversation?.[2]) && request.method === "GET")) {
@@ -264,6 +268,15 @@ export class ClientDeviceGateway {
         handleDetailActionHttp({ request, response, url, service: this.detailActions, authenticate, sendJson: reply,
           route: "pairedDevice", writesAllowed: this.detailWritesAllowed });
         return;
+      }
+      const checklist=/^\/client\/v1\/tasks\/([^/]+)\/execution-checklist$/.exec(path);
+      if(checklist&&this.executionChecklists){
+        const taskId=decode(checklist[1],'INVALID_TASK_ID');this.sessionAPI.taskManagement(identity,taskId);
+        if(request.method==='GET')return reply(response,200,{checklist:this.executionChecklists.display(this.executionChecklists.read(taskId,url.searchParams.has('planId')?{planId:url.searchParams.get('planId')}:{})),writesAllowed:this.resourceWritesAllowed});
+        if(request.method!=='POST'||!this.resourceWritesAllowed)throw deviceError('CAPABILITY_UNAVAILABLE',403);
+        const input=await body(request);if(this.authenticateRequest(request).deviceId!==identity.deviceId)throw deviceError('DEVICE_AUTH_CHANGED',403);
+        const result=['pause','resume'].includes(input.action)?this.executionChecklists.control(taskId,input,{authenticated:true}):this.executionChecklists.mutate(taskId,input);
+        return reply(response,200,{...result,checklist:this.executionChecklists.display(result.checklist)});
       }
       const progress=/^\/client\/v1\/sessions\/([^/]+)\/coordination-progress\/([^/]+)$/.exec(path);
       if(progress&&request.method==='GET'&&this.sessionAPI?.inspector){

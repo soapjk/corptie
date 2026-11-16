@@ -1,3 +1,4 @@
+import { createTaskExecutionComposition } from "../src/application/taskExecutionComposition.mjs";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 import { BackgroundAgentService } from "../src/application/backgroundAgentService.mjs";
 import { createCodexSessionCreator } from "../src/adapters/codexSessionCreator.mjs";
@@ -8,6 +9,7 @@ import { createSessionToolBindingProjection } from "../src/application/sessionTo
 import { coordinationCreationPolicy, coordinationExecutionPolicy } from "../src/domain/coordinationDelegation.mjs";
 import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import test from "node:test";
+import { ExecutionChecklistContinuationService } from "../src/application/executionChecklistContinuationService.mjs";
 import { ExecutionChecklistService } from "../src/application/executionChecklistService.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -23,7 +25,6 @@ import { TaskCoordinationService } from "../src/application/taskCoordinationServ
 import { CoordinationRequestService } from "../src/application/coordinationRequestService.mjs";
 import { ShadowSessionService } from "../src/application/shadowSessionService.mjs";
 import { ChildTaskReclamationService } from "../src/application/childTaskReclamationService.mjs";
-import { createTaskExecutionComposition } from "../src/application/taskExecutionComposition.mjs";
 import { buildTaskCoordinationContext } from "../src/application/workSessionContext.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "../src/collaboration/collaborationDynamicTools.mjs";
 import { handleCollaborationHttpRequest } from "../src/collaboration/collaborationHttpApi.mjs";
@@ -44,6 +45,7 @@ import { eventHasAgentMessage } from "../src/store/sessionEventSemantics.mjs";
 import { createProductEventPublisher } from "../src/application/productEventPublisher.mjs";
 import { createCollaborationTimelinePresentation } from "../src/collaboration/collaborationTimelinePresentation.mjs";
 import { CoordinationReadService } from "../src/application/coordinationReadService.mjs";
+import { repairDuplicateCoordinationSummaries } from "../src/application/coordinationSummaryRepair.mjs";
 
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 // Seed historical reports to keep receipt migration/deduplication covered after
@@ -659,71 +661,40 @@ test("failed batches retain independent dispatch outcomes and only safe preparat
   assert.equal(f.starts.length, 1);
 });
 
-test("child deletion selects Artifact disposal without confirmation and preserves exact parent scope", async t => {
+test("Session capabilities and service expose no direct child deletion", async t => {
   const f = await fixture(t);
-  const child = f.child("Unused_child");
-  const calls = [];
-  f.coordinator.deletion = { inspect: async (_id, actor) => { calls.push(actor); return { artifacts: [] }; },
-    request: async (id, input, actor) => ({ accepted: true, id, input, actor }) };
-  const result = await f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "delete-one" });
-  assert.equal(result.actor.type, "parent_session");
-  assert.equal(result.actor.id, "logical:parent");
-  assert.equal(result.input.mode, "force");
-  assert.equal(result.input.artifactDisposition, "retain");
-  assert.equal(Object.hasOwn(result.input, "acknowledgeDataLoss"), false);
-  f.coordinator.deletion.inspect = async () => ({ artifacts: [{ artifactId: "artifact:unpreserved" }] });
-  const discarded = await f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "delete-two", artifactDisposition: "delete", stopRunning: true });
-  assert.equal(discarded.input.artifactDisposition, "delete");
-  assert.equal(discarded.input.stopRunning, true);
-  await assert.rejects(f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: f.parent.id, idempotencyKey: "bad-delete" }), { code: "TASK_PARENT_OUTSIDE_SCOPE" });
-  assert.equal(calls.length, 0);
+  const capabilities = f.collaboration.capabilities(f.source, f.role.agentId);
+  assert.ok(capabilities.actions.includes("tasks.dispatch"));
+  assert.equal(capabilities.actions.some(action => action.includes("delete")), false);
+  assert.deepEqual(capabilities.destructiveActions, []);
+  assert.equal(typeof f.collaboration.deleteChildTask, "undefined");
+  assert.doesNotMatch(buildTaskCoordinationContext(f.parent, null), /corptie_collaboration_tasks_delete_child/);
 });
 
-test("production deletion composition authorizes only the real parent Session and retains original provenance", async t => {
+test("retired deletion HTTP endpoint stages a user decision without deleting", async t => {
   const f = await fixture(t);
-  const child = f.child("Disposable");
+  const child = f.child("Preserved_child");
   const composition = createTaskExecutionComposition({ store: f.store, workService: f.workService,
     inspectTaskWorktree: async () => ({ status: "none", worktree: null }), removeTaskDeletionWorktree: async () => ({}),
-    sessionApplicationService: { deleteSessionForTaskDeletion: async () => ({ providerDeleted: true }) }, artifactService: {}, emitEvent() {},
+    sessionApplicationService: { deleteSessionForTaskDeletion: async () => { assert.fail("must wait for user"); } }, artifactService: {}, emitEvent() {},
     ensureTaskWorkspace: async () => ({}) });
   f.coordinator.deletion = composition.taskDeletionService;
-  const result = await f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "actual-delete" });
-  assert.equal(result.accepted, true);
-  await composition.taskDeletionService.inFlight.get(result.operation.operationId);
-  const operation = composition.taskDeletionService.getOperation(result.operation.operationId);
-  assert.equal(operation.state, "succeeded");
-  assert.equal(operation.input.actor.type, "parent_session");
-  assert.equal(operation.input.target.taskId, child.id);
-  assert.equal(operation.input.target.parentTaskId, f.parent.id);
-  const repeated = await f.collaboration.deleteChildTask(f.source, f.role.agentId, { childTaskId: child.id, idempotencyKey: "actual-delete" });
-  assert.equal(repeated.operation.operationId, operation.operationId);
-});
-
-test("parent deletion resumes failed receipt through the authorized deletion service", async t => {
-  const f = await fixture(t);
-  const child = f.child("Retry_disposable");
-  const composition = createTaskExecutionComposition({ store: f.store, workService: f.workService,
-    inspectTaskWorktree: async () => ({ status: "none", worktree: null }), removeTaskDeletionWorktree: async () => ({}),
-    sessionApplicationService: { deleteSessionForTaskDeletion: async () => ({ providerDeleted: true }) }, artifactService: {}, emitEvent() {},
-    ensureTaskWorkspace: async () => ({}) });
-  const deletion = composition.taskDeletionService;
-  f.coordinator.deletion = deletion;
-  let attempts = 0;
-  deletion.handleArtifacts = async () => {
-    if (++attempts === 1) throw Object.assign(new Error("transient"), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
-    return { artifactIds: [] };
-  };
-  const input = { childTaskId: child.id, idempotencyKey: "parent-retry", artifactDisposition: "work" };
-  const first = await f.collaboration.deleteChildTask(f.source, f.role.agentId, input);
-  await deletion.inFlight.get(first.operation.operationId);
-  assert.equal(deletion.getOperation(first.operation.operationId).state, "failed");
-  await f.collaboration.deleteChildTask(f.source, f.role.agentId, { ...input, inspectOnly: true });
-  assert.equal(attempts, 1);
-  const retry = await f.collaboration.deleteChildTask(f.source, f.role.agentId, input);
-  assert.equal(retry.operation.operationId, first.operation.operationId);
-  await deletion.inFlight.get(retry.operation.operationId);
-  assert.equal(deletion.getOperation(retry.operation.operationId).state, "succeeded");
-  assert.equal(attempts, 2);
+  const inspectDiscard = composition.taskDeletionService.inspect.bind(composition.taskDeletionService);
+  composition.taskDeletionService.inspect = async (...args) => ({ ...await inspectDiscard(...args), risks: [{ code: "NOT_DELIVERED_TO_PARENT" }] });
+  let status, payload;
+  const request = Readable.from([Buffer.from(JSON.stringify({ childTaskId: child.id, idempotencyKey: "old-delete" }))]);
+  request.method = "POST";
+  request.headers = { "x-corptie-agent-id": f.role.agentId, "x-corptie-session-id": f.source.sessionId };
+  await new Promise(resolve => {
+    const response = { writeHead(code) { status = code; }, end(body) { payload = JSON.parse(body); resolve(); } };
+    handleCollaborationHttpRequest({ request, response, url: new URL("http://local/internal/collaboration/tasks/delete-child"),
+      core: f.core, sessionCollaborationService: f.collaboration });
+  });
+  assert.equal(status, 202, JSON.stringify(payload));
+  assert.equal(payload.requiresUserConfirmation, true);
+  assert.equal(payload.accepted, false);
+  assert.equal(f.store.getTask(child.id).deletion_status, null);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM task_deletion_operations").n, 0);
 });
 
 test("MCP schemas and HTTP dispatch share authenticated Session context", async t => {
@@ -1059,20 +1030,25 @@ test("host tool policy denies before catalog, skill gateway or discovery can exe
   }
 });
 
-test("cleanup decision reuses parent Session deletion authority and disposal options", async t => {
-  const f = await restrictedFixture(t);
-  const child = f.child("已交付子任务");
-  let inspected = 0;
-  f.coordinator.deletion = { inspect: async (id, actor) => {
-    assert.equal(id, child.id); assert.equal(actor.type, "parent_session"); inspected++; return { artifacts: [] };
-  }, request: async (id, input, actor) => {
-    assert.equal(id, child.id); assert.equal(input.mode, "force"); assert.equal(input.artifactDisposition, "retain");
-    assert.equal(actor.id, "logical:parent"); return { accepted: true, operation: { operationId: "cleanup-one" } };
-  } };
-  f.output({ kind: "cleanup", reply: "not an acceptance", items: [{ action: "delete", taskId: child.id, title: "", text: "", agentId: "" }] });
-  await f.application.sendMessage(f.source.sessionId, "清理已交付子任务", { idempotencyKey: "cleanup" });
-  assert.equal(inspected, 0);
+for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) test(`stale cleanup decisions cannot bypass delivery (${provider})`, async t => {
+  const f = await restrictedFixture(t, provider);
+  const child = f.child("Undelivered_child");
+  const composition = createTaskExecutionComposition({ store: f.store, workService: f.workService,
+    inspectTaskWorktree: async () => ({ status: "none", worktree: null }), removeTaskDeletionWorktree: async () => ({}),
+    sessionApplicationService: { deleteSessionForTaskDeletion: async () => { assert.fail("must wait for user"); } }, artifactService: {}, emitEvent() {},
+    ensureTaskWorkspace: async () => ({}) });
+  f.coordinator.deletion = composition.taskDeletionService;
+  const inspectDiscard = composition.taskDeletionService.inspect.bind(composition.taskDeletionService);
+  composition.taskDeletionService.inspect = async (...args) => ({ ...await inspectDiscard(...args), risks: [{ code: "NOT_DELIVERED_TO_PARENT" }] });
+  f.output({ kind: "cleanup", reply: "preserve then reclaim", items: [{ action: "delete", taskId: child.id,
+    title: "", text: "先保全源码并合入然后回收", agentId: "", deletion: { stopRunning: true } }] });
+  const receipt = await f.application.sendMessage(f.source.sessionId, "先保全合入再回收", { idempotencyKey: "old-cleanup" });
+  const turn = f.store.getSessionTurn(f.source.sessionId, f.source.providerBindingId, receipt.turnId);
   assert.equal(f.terminals[0].status, "completed");
+  assert.equal(turn.execution_status, "completed");
+  assert.equal(composition.childTaskDiscardService.pendingNotices().length, 1);
+  assert.equal(f.store.getTask(child.id).deletion_status, null);
+  assert.equal(f.store.selectOne("SELECT COUNT(*) n FROM task_deletion_operations").n, 0);
 });
 
 test("mailbox source can trigger authorized follow-up; completed coordination replies advance unread semantics", async t => {
@@ -1490,6 +1466,8 @@ test('separate batches keep their own execution receipt and scope amendments to 
  assert.equal(f.coordinator.progress.milestone(two.batchId,'decision:one','需要用户决定'),true);
  assert.equal(f.coordinator.progress.milestone(two.batchId,'decision:one','需要用户决定'),false);
  assert.equal(f.store.selectOne("SELECT COUNT(*) AS n FROM session_items WHERE session_id=? AND id LIKE 'coordination-summary:%'",[f.source.sessionId]).n,1);
+ const milestone=f.store.getItems(f.source.sessionId).find(item=>item.id.startsWith('coordination-summary:'));
+ assert.equal(JSON.parse(milestone.rawMetadataJSON).coordinationEvent.kind,'decision');
 });
 
 test('progress report reading is bounded and cannot read an unrelated child message',async t=>{
@@ -2572,6 +2550,51 @@ test("batch summaries update one visible report without starting main work", asy
   assert.equal(f.store.listQueuedAgentTasksForSession(f.source.sessionId, 20).length, 0);
 });
 
+test("shadow decisions publish a single summary instead of a duplicate milestone on every Provider", async t => {
+  for (const provider of ["codex-app-server", "claude-sdk", "openclacky"]) await t.test(provider, async t => {
+    const f = await recoveryFixture(t, provider), dispatchId = await f.finish("single_summary");
+    const route = f.store.getLogicalSession(f.shadow.forMain("logical:parent").shadow_session_id);
+    const reference = { sessionId:route.legacySessionId,logicalSessionId:route.logicalSessionId,
+      bindingId:route.activeBinding.bindingId,routingVersion:route.routingVersion,providerId:provider };
+    const turns = new CoordinationTurnService({store:f.store,dispatch:f.coordinator,resolveReference:()=>reference,
+      registry:{supports:()=>true,get:()=>({descriptor:{metadata:{backgroundExecutionPolicies:["no-tools"]}}})},
+      planner:{run:async()=>({text:JSON.stringify({kind:"clarification",reply:"实现已保全，需要选择发布方式。",decision:"选择A还是B",items:[]})})}});
+    await turns.send(reference,"检查结果",{idempotencyKey:"one-report",source:{type:"mailbox_event",coordinationPurpose:"shadow_report",coordinationDispatchId:dispatchId}});
+    assert.equal(f.store.getSessionTurn(reference.sessionId,reference.bindingId,"coordination:one-report").execution_status,"completed");
+    const messages = f.store.getItems(f.source.sessionId).filter(item=>item.type==="agentMessage");
+    assert.equal(messages.length,1);assert.ok(messages[0].id.startsWith("shadow-report:"));
+    assert.equal(messages[0].text,"实现已保全，需要选择发布方式。");
+    assert.equal(JSON.parse(messages[0].rawMetadataJSON).coordinationEvent.kind,"decision");
+  });
+});
+
+test("legacy duplicate repair preserves the canonical report, other batches and ordinary messages", async t => {
+  const f = await recoveryFixture(t);
+  const accepted = f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item("legacy_duplicates")]});
+  const batchId = accepted.batchId, body = "保全50个文件，尚未验证。";
+  f.coordinator.progress.milestone(batchId,"blocker:one",body);
+  f.coordinator.progress.milestone(batchId,"decision:different","另一项独立决定");
+  const duplicate = f.store.selectOne("SELECT id FROM session_items WHERE session_id=? AND text=?",[f.source.sessionId,body]).id;
+  const report = f.shadow.publish({shadowId:f.shadow.forMain("logical:parent").shadow_session_id,
+    turnId:"historical-shadow",revision:0,batchId,body});
+  const row = f.store.getSessionItem(f.source.sessionId,report.report_id);
+  f.store.upsertTimelineItemProjection(f.source.sessionId,{...row,text:`**后台汇总**\n\n${body}`,
+    rawMetadataJSON:JSON.stringify({progressBatchId:batchId,rawMetadataJSON:JSON.stringify({executionMode:"shadow_report",progressBatchId:batchId})})});
+  historyItem(f,f.source.sessionId,"ordinary-result",body);
+  f.store.upsertTimelineItemProjection(f.source.sessionId,{id:"ordinary-user",type:"userMessage",text:body,status:"completed"});
+  const second = f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[f.item("other_batch")]},{sourceTurnId:"other-batch"});
+  f.coordinator.progress.milestone(second.batchId,"blocker:two",body);
+  const revision = f.store.sessionTimelineRevision(f.source.sessionId);
+  assert.deepEqual(await repairDuplicateCoordinationSummaries(f.store),{removed:1});
+  assert.equal(f.store.getSessionItem(f.source.sessionId,duplicate),null);
+  const canonical = f.store.getSessionItem(f.source.sessionId,report.report_id);
+  assert.equal(canonical.text,body);assert.equal(canonical.coordinationEvent.kind,"summary");
+  assert.ok(f.store.getSessionItem(f.source.sessionId,"ordinary-result"));assert.ok(f.store.getSessionItem(f.source.sessionId,"ordinary-user"));
+  assert.equal(f.store.selectOne("SELECT count(*) n FROM session_items WHERE session_id=? AND id GLOB 'coordination-summary:*'",[f.source.sessionId]).n,2);
+  assert.ok(f.store.sessionTimelineChangesAfter(f.source.sessionId,revision).changes.some(change=>change.itemId===duplicate&&change.operation==="delete"));
+  assert.deepEqual(await repairDuplicateCoordinationSummaries(f.store),{removed:0});
+});
+
 test("automation ownership follows summary recovery and never claims unrelated parent jobs", async t => {
   const f = await recoveryFixture(t), shadowId = f.shadow.forMain("logical:parent").shadow_session_id;
   assert.equal(f.shadow.captureAutomationOwner("logical:parent", { type: "agent" }), null);
@@ -2742,6 +2765,28 @@ test("read evidence above former aggregate cap remains available across model ro
  await f.application.sendMessage(f.source.sessionId,'调查',{idempotencyKey:'large-evidence'});assert.equal(f.terminals.at(-1).status,'completed');
 });
 
+test("coordination awaits Artifact body reads and returns their actual errors without dispatch",async t=>{
+ for(const provider of ['codex-app-server','claude-sdk','openclacky'])await t.test(provider,async t=>{
+  const f=await restrictedFixture(t,provider);let calls=0;
+  f.turns.readOnly.artifacts={readDocument:async(context,target)=>{
+   await nextTick();assert.ok(context.turnExecutionId);assert.equal(context.sessionId,f.source.sessionId);
+   if(target==='artifact:bad')throw Object.assign(new Error('Artifact Reference is revoked; choose an active locator.'),{code:'ARTIFACT_NOT_FOUND_OR_FORBIDDEN'});
+   return {artifactId:target,content:'完整文档正文',complete:true,version:2,contentHash:'a'.repeat(64)};
+  }};
+  f.run(async input=>{
+   const payload=JSON.parse(input.prompt);
+   if(++calls===1)return {text:JSON.stringify({kind:'read',reply:'',items:[],queries:['artifact:good','artifact:bad'].map(targetId=>readQuery('read_resource',{targetType:'artifact',targetId,section:'body'}))})};
+   assert.equal(payload.readResults[0].result.content,'完整文档正文');
+   assert.match(payload.readResults[1].result.message,/revoked; choose an active locator/);
+   assert.equal(payload.readResults[1].result.targetId,'artifact:bad');
+   assert.match(input.developerInstructions,/do not dispatch a child, request a pasted copy/);
+   return {text:JSON.stringify({kind:'discussion',reply:'已读取原文并直接汇报',items:[]})};
+  });
+  await f.application.sendMessage(f.source.sessionId,'读文档并汇报',{idempotencyKey:'artifact-body'});
+  assert.equal(f.terminals.at(-1).status,'completed');assert.equal(f.coordinator.listForParent(f.parent.id).length,0);
+ });
+});
+
 test("unchanged queries are reused while changed target facts invalidate the cache",async t=>{
  const f=await restrictedFixture(t);let calls=0,executions=0;
  const child=f.child('Cached_read');f.open('cached_read',child.id);
@@ -2869,4 +2914,82 @@ test('a current child approval wait is observed without completing or approving 
  assert.equal(f.store.getAgentTask(operation.taskId).status,'running');
  const message=f.store.selectOne('SELECT * FROM session_mailbox_messages WHERE message_id=?',[current.report_message_id]);
  assert.match(message.body,/execution_waiting_input/);assert.notEqual(message.recipient_session_id,'logical:parent');
+});
+
+
+test("legacy cleanup of an empty child admits deletion without inventing a pending approval", async t => {
+  const f = await restrictedFixture(t), child = f.child("Empty_child");
+  const composition = createTaskExecutionComposition({ store: f.store, workService: f.workService,
+    inspectTaskWorktree: async () => ({ status: "none", worktree: null }), removeTaskDeletionWorktree: async () => ({}),
+    sessionApplicationService: { deleteSessionForTaskDeletion: async () => ({ providerDeleted: true }) }, artifactService: {}, emitEvent() {},
+    ensureTaskWorkspace: async () => ({}) });
+  f.coordinator.deletion = composition.taskDeletionService;
+  f.output({ kind: "cleanup", reply: "", items: [{ action: "delete", taskId: child.id, title: "", text: "", agentId: "" }] });
+  await f.application.sendMessage(f.source.sessionId, "回收空子任务", { idempotencyKey: "empty-cleanup" });
+  assert.equal(f.terminals[0].status, "completed");
+  const operation = f.store.selectOne("SELECT operation_id FROM task_deletion_operations WHERE task_id=?", [child.id]);
+  assert.ok(operation);
+  await composition.taskDeletionService.inFlight.get(operation.operation_id);
+  assert.equal(composition.taskDeletionService.getOperation(operation.operation_id).state, "succeeded");
+  assert.equal(composition.childTaskDiscardService.pendingNotices().length, 0);
+});
+
+for(const provider of ['codex-app-server','claude-sdk','openclacky'])test(`${provider}: dispatch admission creates one instruction plan and binds later verification to its own phase`,async t=>{
+  const f=await restrictedFixture(t,provider);
+  const checklists=new ExecutionChecklistService({store:f.store});
+  f.turns.checklists=checklists;f.turns.readOnly.checklists=checklists;f.coordinator.progress.checklists=checklists;
+  f.store.db.run('UPDATE tasks SET current_session_id=? WHERE id=?',[f.source.sessionId,f.parent.id]);
+  const reference=f.reference(),output={...f.instruction(),verificationRequired:true};
+  const plan=f.turns.ensureDispatchPlan(f.store.getTask(f.parent.id),reference,'logical:parent',{},null,'dispatch:implementation',output);
+  assert.deepEqual(plan.steps.map(s=>s.phase),['implementation','verification']);
+  f.output(output);
+  await f.application.sendMessage(f.source.sessionId,{text:'Implement',images:[]},{source:{type:'desktop'},idempotencyKey:'plan-implementation'});
+  const saved=checklists.read(f.parent.id),batches=f.store.selectAll('SELECT * FROM execution_plan_batches WHERE plan_id=?',[saved.planId]);
+  assert.equal(batches.length,1);assert.ok(saved.steps[0].assignment.dispatchId);assert.equal(saved.steps[1].assignment,undefined);
+  const implementationDispatch=f.coordinator.get(saved.steps[0].assignment.dispatchId);await f.coordinator.runDispatch(implementationDispatch.dispatch_id);
+  const childId=f.coordinator.get(implementationDispatch.dispatch_id).target_task_id;
+  checklists.mutate(f.parent.id,{action:'status',planId:saved.planId,operationId:'mark:impl',expectedRevision:saved.revision,itemId:saved.steps[0].stepId,status:'completed'},{logicalSessionId:'logical:parent'});
+  const childOp=f.coordinator.get(implementationDispatch.dispatch_id).operation_id;
+  f.store.updateAgentTask(childOp,{status:'completed'});
+  f.store.db.run("UPDATE task_coordination_dispatches SET status='completed' WHERE dispatch_id=?",[implementationDispatch.dispatch_id]);
+  const current=checklists.read(f.parent.id);checklists.repository.saveRuntime(current.planId,{...checklists.repository.runtime(current.planId),nextStepIds:[current.steps[1].stepId]});
+  f.output({kind:'dispatch',reply:'Verify',items:[{action:'send',taskId:childId,title:'',text:'Run final integrated checks',agentId:f.role.agentId}],verificationRequired:true});
+  await f.application.sendMessage(f.source.sessionId,{text:'Final verification',images:[]},{source:{type:'desktop',executionPlanId:saved.planId},idempotencyKey:'plan-verify'});
+  const final=checklists.read(f.parent.id,{planId:saved.planId});
+  assert.ok(final.steps[1].assignment?.dispatchId);assert.notEqual(final.steps[1].assignment.dispatchId,final.steps[0].assignment.dispatchId);
+  assert.equal(f.store.getItems(f.source.sessionId).filter(i=>i.type==='coordinationProgress').length,1);
+});
+
+test('plan reports update in place instead of appending a summary for each stop',async t=>{
+  const f=await recoveryFixture(t),checklists=new ExecutionChecklistService({store:f.store});
+  f.shadow.checklists=checklists;f.shadow.progress=f.coordinator.progress;f.coordinator.progress.checklists=checklists;
+  const main=f.store.getLogicalSession('logical:parent'),shadowId=f.shadow.forMain('logical:parent').shadow_session_id;
+  const plan=checklists.mutate(f.parent.id,{action:'create',operationId:'group:plan',expectedRevision:0,steps:[{text:'Implement'}]},
+    {model:true,logicalSessionId:main.logicalSessionId,turnId:'group:turn',bindingId:main.activeBinding.bindingId}).checklist;
+  const child=f.child('Grouped_child');checklists.mutate(f.parent.id,{action:'assign',planId:plan.planId,operationId:'group:assign',expectedRevision:plan.revision,itemId:plan.steps[0].stepId,taskId:child.id},{logicalSessionId:'logical:parent'});
+  const first=f.shadow.publish({shadowId,turnId:'first-report',revision:0,planId:plan.planId,body:'Implementation in progress'});
+  const second=f.shadow.publish({shadowId,turnId:'next-report',revision:0,planId:plan.planId,body:'Implementation finished; final checks remain'});
+  assert.equal(first.report_id,second.report_id);assert.match(second.body,/final checks/);
+  assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM coordination_shadow_reports WHERE source_turn_id=?',[`summary-plan:${plan.planId}`]).n,1);
+  const cards=f.store.getItems(f.source.sessionId).filter(i=>i.type==='coordinationProgress');assert.equal(cards.length,1);
+  assert.match(cards[0].coordinationProgress.summary,/final checks/);
+  assert.ok(!f.store.getSessionItem(f.source.sessionId,first.report_id));
+});
+
+test('summary recovery moves the exact unstarted checklist operation and updates its responsible Session',async t=>{
+  const f=await recoveryFixture(t),checklists=new ExecutionChecklistService({store:f.store});
+  const continuation=new ExecutionChecklistContinuationService({store:f.store,checklists,mailbox:f.mailbox,coordinator:f.coordinator});
+  f.shadow.continuations=continuation;
+  const main=f.store.getLogicalSession('logical:parent');
+  const plan=checklists.mutate(f.parent.id,{action:'create',operationId:'recover:plan',expectedRevision:0,steps:[{text:'Implement'}]},
+    {model:true,logicalSessionId:main.logicalSessionId,turnId:'recover:turn',bindingId:main.activeBinding.bindingId}).checklist;
+  await continuation.reconcile(plan.planId);
+  const before=checklists.repository.runtime(plan.planId),op=f.store.getAgentTask(before.operationId);
+  assert.equal(op.sessionId,f.store.getLogicalSession(f.original.shadow_session_id).legacySessionId);
+  f.remove();await f.shadow.requestRecovery('logical:parent');
+  const target=f.shadow.resolveRecipient('logical:parent');f.shadow.reconcileMailbox(f.mailbox,'logical:parent');
+  assert.notEqual(target.sessionId,f.original.shadow_session_id);
+  assert.equal(checklists.repository.runtime(plan.planId).operationId,before.operationId);
+  assert.equal(checklists.repository.runtime(plan.planId).responsibleSessionId,target.sessionId);
+  assert.equal(f.store.getAgentTask(before.operationId).sessionId,f.store.getLogicalSession(target.sessionId).legacySessionId);
 });

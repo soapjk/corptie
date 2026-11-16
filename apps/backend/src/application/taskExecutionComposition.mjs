@@ -1,3 +1,4 @@
+import { ChildTaskDiscardConfirmationService } from "./childTaskDiscardConfirmationService.mjs";
 import { createTaskDeletionBackgroundWork } from "./taskDeletionBackgroundWork.mjs";
 import { TaskDeletionService } from "./taskDeletionService.mjs";
 import { TaskExecutionOrchestrator } from "./taskExecutionOrchestrator.mjs";
@@ -61,6 +62,9 @@ export function createTaskExecutionComposition({
     onChanged: (type, payload) => emitEvent(type, payload)
   });
 
+  const childTaskDiscardService = new ChildTaskDiscardConfirmationService({ store, deletion: taskDeletionService, emitEvent });
+  workService.childTaskDiscardService = childTaskDiscardService;
+
   function restartTaskForEntityRoutes(taskId, context) {
     const task = workService.getTask(taskId);
     if (!task.current_session_id) {
@@ -107,7 +111,7 @@ export function createTaskExecutionComposition({
     onChanged: (type, payload) => emitEvent(type, payload)
   });
   return {
-    taskDeletionService, taskExecutionOrchestrator,
+    taskDeletionService, taskExecutionOrchestrator, childTaskDiscardService,
     restartTaskForEntityRoutes, setTaskArchivedForEntityRoutes
   };
 }

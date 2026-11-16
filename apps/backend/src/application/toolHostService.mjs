@@ -19,6 +19,7 @@ export class ToolHostService {
     this.materializationPort = options.materializationPort ?? null;
     this.skillMcpGateway = options.skillMcpGateway ?? null;
     this.recordRuntimeEvent = options.recordRuntimeEvent ?? null;
+    this.requestRetiredChildDiscard = options.requestRetiredChildDiscard ?? null;
     if (!this.registry) throw new TypeError("ToolHostService requires an Agent Provider Registry.");
     if (!this.catalog) throw new TypeError("ToolHostService requires a Host Tool Catalog.");
   }
@@ -182,6 +183,11 @@ export class ToolHostService {
     const entry = canonical ? this.catalog.entry(canonical) : null;
     const discovery = input.tool === TOOL_CATALOG_SEARCH || input.tool === TOOL_DOMAIN_LOAD;
     await this.assertExecutionAllowed?.({ ...input, executionEffect: discovery ? "read" : entry?.executionEffect ?? "write" });
+    if (canonical === "corptie_collaboration_tasks_delete_child" && this.requestRetiredChildDiscard) {
+      const scope = exactScope(input);
+      return this.requestRetiredChildDiscard({ ...input, scope,
+        arguments: input.tool === TOOL_RESTRICTED_GATEWAY ? input.arguments?.arguments ?? {} : input.arguments ?? {} });
+    }
     if (input.tool === TOOL_CATALOG_SEARCH) {
       const scope = exactScope(input);
       const searchInput = {

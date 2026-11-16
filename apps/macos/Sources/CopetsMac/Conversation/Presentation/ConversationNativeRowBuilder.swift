@@ -533,6 +533,7 @@ struct ConversationNativeRowBuilder {
                 // progress changes. Invalidate that one row so the compact
                 // current-step summary does not remain on the old revision.
                 hasher.combine(last.executionPlan?.revision)
+                hasher.combine(last.executionPlan?.continuation)
             }
             if expanded {
                 items.forEach { hasher.combine(itemSignature($0)) }
@@ -573,6 +574,8 @@ struct ConversationNativeRowBuilder {
         signatureParts.append(item.queuePosition.map(String.init) ?? "")
         signatureParts.append(item.turnStatus)
         signatureParts.append(item.executionPlan.map { "plan:\($0.revision)" } ?? "")
+        signatureParts.append(item.executionPlan?.continuation.map { "continuation:\($0.state):\($0.generation):\($0.reason ?? "")" } ?? "")
+        signatureParts.append(item.coordinationProgress.map { "coordination:\($0.revision)" } ?? "")
         signatureParts.append(item.toolExecution.map { "tool:\($0.hashValue)" } ?? "")
         signatureParts.append(item.changeSet.map { "changes:\($0.hashValue)" } ?? "")
         signatureParts.append(item.userInput.map { "input:\($0.hashValue)" } ?? "")

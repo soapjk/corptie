@@ -62,7 +62,7 @@ export class SessionCollaborationService {
       workId: scope.session.workId,
       taskId: scope.session.taskId,
       actions: ["sessions.discover", "sessions.get", "channels.open", "channels.list", "channels.get",
-        "channels.message_send", "channels.revoke", ...(managesChildren ? ["tasks.dispatch", "tasks.delete_child"] : []), ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
+        "channels.message_send", "channels.revoke", ...(managesChildren ? ["tasks.dispatch"] : []), ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate && !requestDenial
         ? ["tasks.create", ...(!childReason ? ["tasks.create_child", "tasks.create_batch"] : []), "tasks.relate", "tasks.share_artifact"]
         : [])],
       denials: { ...(requestDenial ? { "tasks.create": requestDenial } : {}),
@@ -78,7 +78,7 @@ export class SessionCollaborationService {
         activeChannel: "endpoint_members_only",
         createsTaskImplicitly: false
       },
-      destructiveActions: managesChildren ? ["tasks.delete_child_safe"] : [],
+      destructiveActions: [],
       arbitraryUpdate: false
     };
   }
@@ -584,29 +584,17 @@ export class SessionCollaborationService {
     return { request, runtime: resolveTaskCreationDefaults({ providerId: request.creation?.providerId }, this.store.settings?.().newSessionDefaults ?? {}, this.defaultProviderId) };
   }
 
-  async deleteChildTask(metadata, actorId, input = {}) {
+  async requestChildDiscard(metadata, actorId, input = {}) {
     assertKnown(input, ["childTaskId", "idempotencyKey", "artifactDisposition", "stopRunning", "cancelStartup", "deleteAssociatedTasks", "cancelIntegration", "inspectOnly"]);
     const scope = this.coordinationScope(metadata, actorId);
-    const key = `parent:${scope.logicalSessionId}:${required(input.idempotencyKey, "idempotencyKey")}`;
-    const replay = this.store.getTaskDeletionOperationByKey(required(input.childTaskId, "childTaskId"), key);
-    if (replay) {
-      if (replay.input?.actor?.type !== "parent_session" || replay.input.actor.id !== scope.logicalSessionId
-        || replay.input.target?.parentTaskId !== scope.parent.id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Deletion receipt does not belong to this parent Session.", 403);
-      if (input.inspectOnly !== true && (replay.state !== "failed" || !replay.retryable)) {
-        return { accepted: true, operation: replay, idempotentReplay: true };
-      }
-    }
     const child = this.store.getTask(required(input.childTaskId, "childTaskId"));
-    // Deletion retries may revisit a child whose deletion is already queued.
-    if (!child || child.parent_task_id !== scope.parent.id || child.work_id !== scope.parent.work_id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "Only this Session's direct child may be deleted.", 403);
-    const service = this.taskCoordinationService?.deletion;
-    if (!service) throw coded("CAPABILITY_UNAVAILABLE", "Task deletion is unavailable.", 503);
+    if (!child || child.parent_task_id !== scope.parent.id || child.work_id !== scope.parent.work_id) throw coded("TASK_PARENT_OUTSIDE_SCOPE", "只能请求删除当前会话的直接子任务。", 403);
+    const deletion = this.taskCoordinationService?.deletion;
+    if (!deletion) throw coded("CAPABILITY_UNAVAILABLE", "删除确认暂不可用。", 503);
     const actor = { type: "parent_session", id: scope.logicalSessionId };
-    if (input.inspectOnly === true) return { deletion: await service.inspect(child.id, actor) };
-    return service.request(child.id, { mode: "force", deleteWorktree: true,
-      artifactDisposition: input.artifactDisposition ?? "retain", stopRunning: input.stopRunning === true,
-      cancelStartup: input.cancelStartup === true, deleteAssociatedTasks: input.deleteAssociatedTasks === true,
-      cancelIntegration: input.cancelIntegration === true, idempotencyKey: key }, actor);
+    if (input.inspectOnly === true) return { deletion: await deletion.inspect(child.id, actor) };
+    return deletion.request(child.id, { ...input, deleteWorktree: true,
+      idempotencyKey: `parent:${scope.logicalSessionId}:${required(input.idempotencyKey, "idempotencyKey")}` }, actor);
   }
 
   #presentTask(item, hierarchy = undefined, referencesAvailable = true) {

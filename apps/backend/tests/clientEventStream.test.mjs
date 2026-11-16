@@ -511,3 +511,19 @@ test("verification pause notices use opt-in operation events with bounded recove
     assert.equal(current.frames.filter(f=>f.includes('event: operation-notice')).length,2);
   }finally{hub.close();}
 });
+
+
+test("user decisions recover as opt-in notifications and never execute an approval", async () => {
+  const notice = { id: "child-discard:one", sessionId: "session:main", title: "Confirm deletion", body: "Not merged", occurredAt: "2026-11-15T00:00:00Z" };
+  const hub = new ClientEventStream({ userDecisionNotices: () => [notice] });
+  const old = new Response(), current = new Response();
+  try {
+    hub.attachV2(old, () => identity);
+    hub.attachV2(current, () => ({ deviceId: "two" }), { operationNotifications: true });
+    await Promise.all([...hub.clients].map(c => c.tail));
+    assert.equal(old.frames.some(f => f.includes("event: user-decision-notice")), false);
+    assert.deepEqual(data(current.frames.find(f => f.includes("event: user-decision-notice"))), notice);
+    hub.publishUserDecisionNotice({ ...notice, id: "child-discard:two" });
+    assert.equal(current.frames.filter(f => f.includes("event: user-decision-notice")).length, 2);
+  } finally { hub.close(); }
+});

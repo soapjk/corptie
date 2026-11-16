@@ -36,4 +36,14 @@ final class CoordinationEventTests: XCTestCase {
         XCTAssertNil(ConversationCoordinationEvent(rawMetadataJSON: #"{"payload":{"coordinationEvent":{"kind":"summary"}}}"#))
     }
 
+    func testNestedSummaryOverridesOuterLegacyDeliveryFallback() throws {
+        for metadata in [#"{"executionMode":"shadow_report","progressBatchId":"b"}"#,
+                         #"{"coordinationEvent":{"kind":"decision","batchId":"b"}}"#] {
+            let raw = String(decoding: try JSONSerialization.data(withJSONObject: ["progressBatchId": "b", "rawMetadataJSON": metadata]), as: UTF8.self)
+            let event = try XCTUnwrap(ConversationCoordinationEvent(rawMetadataJSON: raw))
+            XCTAssertEqual(event.kind, metadata.contains("decision") ? "decision" : "summary")
+            XCTAssertEqual(event.batchId, "b")
+        }
+    }
+
 }

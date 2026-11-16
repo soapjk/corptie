@@ -111,6 +111,7 @@ public struct ClientEvents: Sendable {
                             switch event.name {
                             case "stream-ready": update = .ready(try JSONDecoder().decode(ClientRealtimeReady.self, from: data))
                             case "state-snapshot": update = .state(try JSONDecoder().decode(ClientStateSnapshot.self, from: data))
+                            case "user-decision-notice": update = .userDecisionNotice(try JSONDecoder().decode(ClientUserDecisionNotice.self, from: data))
                             case "operation-notice": update = .operationNotice(try JSONDecoder().decode(ClientVerificationNotice.self, from: data))
                             case "operation-job": update = .operation(try JSONDecoder().decode(OperationJobSnapshot.self, from: data))
                             case "automation-notifications": update = .automationNotifications(try JSONDecoder().decode(ClientAutomationNotificationBatch.self, from: data).validated())
@@ -209,6 +210,7 @@ public enum ClientRealtimeUpdate: Sendable {
     case state(ClientStateSnapshot)
     case control(ClientControlSnapshot)
     case operation(OperationJobSnapshot)
+    case userDecisionNotice(ClientUserDecisionNotice)
     case operationNotice(ClientVerificationNotice)
     case timelineSnapshot(ClientTimelineSnapshot)
     case timelineDelta(ClientTimelineDelta)

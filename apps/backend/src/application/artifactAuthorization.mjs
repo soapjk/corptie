@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { coordinationDelegation } from "../domain/coordinationDelegation.mjs";
 
 export class SessionAuthorizationResolver {
   constructor({ store } = {}) {
@@ -30,8 +31,12 @@ export class SessionAuthorizationResolver {
     let task = null;
     if (sessionKind === "worker") {
       task = session.taskId ? this.store.getTask(session.taskId) : null;
+      // Only the host's read port opts in. Ordinary Artifact tools and every
+      // write still require the exact current Session; a shadow is not its owner.
+      const delegatedRead = input.allowCoordinationRead === true && logical
+        && coordinationDelegation(this.store, logical.logicalSessionId)?.taskId === task?.id;
       if (!task || task.work_id !== work.id
-        || task.current_session_id !== session.id
+        || task.current_session_id !== session.id && !delegatedRead
         || task.deletion_status === "deleting") {
         throw bindingError("Worker Session no longer owns its exact Task binding.");
       }

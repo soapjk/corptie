@@ -86,8 +86,11 @@ export function handleCollaborationHttpRequest({
         if (!sessionCollaborationService?.taskCoordinationService) throw apiError("CAPABILITY_UNAVAILABLE", "Coordination unavailable.", 503);
         return sendJson(response, 202, sessionCollaborationService.taskCoordinationService.retryDispatch(sessionMetadata, actorAgentId, input.dispatchId));
       }
+      // Retired clients may still attempt this URL. It can only stage a user
+      // decision; no Agent-facing route can execute an unconfirmed deletion.
       if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/delete-child") {
-        return sendJson(response, 202, await sessionCollaborationService.deleteChildTask(sessionMetadata, actorAgentId, await readJson(request)));
+        if (!sessionCollaborationService) throw apiError("CAPABILITY_UNAVAILABLE", "删除确认暂不可用。", 503);
+        return sendJson(response, 202, await sessionCollaborationService.requestChildDiscard(sessionMetadata, actorAgentId, await readJson(request)));
       }
       if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/batch") {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);

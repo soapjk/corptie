@@ -1,5 +1,5 @@
 import { coordinationDelegation } from "../domain/coordinationDelegation.mjs";
-const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_execution","read_mailbox","read_resource","search_resources"];
+const tools=["list_children","read_task","list_sessions","read_messages","read_message","read_dispatches","read_execution","read_mailbox","read_resource","search_resources","read_checklist","read_continuations","read_decisions"];
 export const COORDINATION_READ_QUERY_SCHEMA={type:"object",additionalProperties:false,
   required:["tool","taskId","sessionId","query","cursor","messageId","offset","limit","targetType","targetId","section"],properties:{
     tool:{enum:tools},taskId:{type:["string","null"],maxLength:512},sessionId:{type:["string","null"],maxLength:512},
@@ -23,10 +23,26 @@ const bounded=(value,n=2000)=>String(value??"").slice(0,n);
 // Application-owned read port of the authenticated parent Session. It has no
 // shell, Provider calls, lifecycle mutations, read acknowledgements or polling.
 export class CoordinationReadService {
-  constructor({store,mailbox,contextRead=null}){Object.assign(this,{store,mailbox,contextRead});}
-  execute(reference,rootTaskId,input){
+  constructor({store,mailbox,contextRead=null,artifacts=null,checklists=null}){Object.assign(this,{store,mailbox,contextRead,artifacts,checklists});}
+  execute(reference,rootTaskId,input,{turnExecutionId,signal}={}){
     const {source,route,root}=this.scope(reference,rootTaskId);
     if(!tools.includes(input.tool))fail("COORDINATION_READ_TOOL_UNSUPPORTED");
+    if(['read_checklist','read_continuations','read_decisions'].includes(input.tool)){
+      const task=this.task(root,input.taskId??root.id),plan=this.checklists?.read(task.id,input.targetId?{planId:input.targetId}:{});
+      if(input.tool==='read_decisions'){
+        const owner=coordinationDelegation(this.store,route.logicalSessionId)?.mainSessionId??route.logicalSessionId;
+        const rows=this.store.selectAll("SELECT body_json FROM coordination_decisions WHERE main_session_id=? AND status='pending' ORDER BY created_at LIMIT ?",[owner,input.limit??6]);
+        return {tool:input.tool,referenceOnly:true,items:rows.map(row=>JSON.parse(row.body_json))};
+      }
+      return {tool:input.tool,referenceOnly:true,plan:plan?this.checklists.display(plan):null,
+        runtime:plan?this.checklists.repository.runtime(plan.planId):null,waits:plan?this.checklists.repository.waits(plan.planId):[]};
+    }
+    if(input.tool==="read_resource" && input.targetType==="artifact" && input.section==="body") {
+      if(!this.artifacts)fail("COORDINATION_ARTIFACT_READ_UNAVAILABLE");
+      return this.artifacts.readDocument({sessionId:source.id,logicalSessionId:route.logicalSessionId,
+        providerBindingId:reference.bindingId,turnExecutionId},input.targetId,{cursor:input.cursor,signal})
+        .then(result=>({tool:input.tool,observedAt:new Date().toISOString(),referenceOnly:true,...result}));
+    }
     if(input.tool==="read_resource" || input.tool==="search_resources") {
       if(!this.contextRead)fail("COORDINATION_RESOURCE_READ_UNAVAILABLE");
       return this.contextRead.execute({metadata:{sessionId:source.id,logicalSessionId:route.logicalSessionId},

@@ -39,7 +39,7 @@ export function parseRealtimeResumeQuery(query) {
  */
 export class ClientEventStream {
   constructor({ coalesceMs = 500, heartbeatMs = 10000, stateSnapshot = null,
-    controlSnapshot = null, timeline = null, automationNotifications = null, operationNotices = null, backgroundTimelineLimit = 48,
+    controlSnapshot = null, timeline = null, automationNotifications = null, operationNotices = null, userDecisionNotices = null, backgroundTimelineLimit = 48,
     backgroundTimelineBatchSize = 2, backgroundTimelineBatchDelayMs = 1000,
     backgroundTimelineBytesPerSecond = 128 * 1024 } = {}) {
     this.clients = new Set();
@@ -53,7 +53,7 @@ export class ClientEventStream {
     this.stateSnapshot = stateSnapshot;
     this.controlSnapshot = controlSnapshot;
     this.timeline = timeline;
-    this.automationNotifications = automationNotifications; this.operationNotices=operationNotices;
+    this.automationNotifications = automationNotifications; this.operationNotices=operationNotices; this.userDecisionNotices=userDecisionNotices;
     this.backgroundTimelineLimit = Math.max(0, Math.min(128, Number(backgroundTimelineLimit) || 0));
     this.backgroundTimelineBatchSize = Math.max(1, Math.min(48, Number(backgroundTimelineBatchSize) || 2));
     this.backgroundTimelineBatchDelayMs = Math.max(0, Number(backgroundTimelineBatchDelayMs) || 0);
@@ -65,6 +65,9 @@ export class ClientEventStream {
     for (const client of this.clients) {
       if (client.version === 2 && client.operationNotifications && !client.closed) client.write("operation-job", operation);
     }
+  }
+  publishUserDecisionNotice(notice) {
+    for (const client of this.clients) if (client.version === 2 && client.operationNotifications && !client.closed) client.write("user-decision-notice", notice);
   }
   publishOperationNotice(notice) {
     for(const client of this.clients)if(client.version===2 && client.operationNotifications && !client.closed)client.write('operation-notice',notice);
@@ -194,6 +197,7 @@ export class ClientEventStream {
     this.clients.add(client);
     response.once("close", close);
     if(client.operationNotifications && this.operationNotices)for(const notice of this.operationNotices())client.write('operation-notice',notice);
+    if (client.operationNotifications && this.userDecisionNotices) for (const notice of this.userDecisionNotices()) client.write("user-decision-notice", notice);
     client.write("stream-ready", { schemaVersion: 2, pushPayloads: true,
       ...(this.automationNotifications ? { automationNotifications: true } : {}),
       backgroundTimelines: true, eventRecovery: "server-snapshot" });

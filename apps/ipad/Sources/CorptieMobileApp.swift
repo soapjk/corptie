@@ -936,9 +936,12 @@ struct ConversationView: View {
                                         let revision = workspace.lastTimelineRevision
                                         await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
                                     })
-                            } else if (message.type == "executionPlan" || message.type == "plan"),
+                            } else if (message.type == "executionPlan" || message.type == "plan" || message.type == "executionChecklist"),
                                       let plan = message.executionPlan {
-                                PadExecutionPlanTimelineCard(plan: plan, laneWidth: width)
+                                PadExecutionPlanTimelineCard(plan: plan, laneWidth: width, submit: { command in
+                                    guard let taskID = plan.taskId else { return }
+                                    _ = try await ClientExecutionChecklistAPI(transport: try await connection.transport(), route: .pairedDevice).update(taskID: taskID, command: command)
+                                })
                             } else {
                                 MobileMessageBubble(message: message,
                                     replyQuestion: message.replyAssociation.flatMap { workspace.replyQuestions[$0.replyToMessageId] },
@@ -2372,10 +2375,14 @@ private struct PadUserInputCard: View {
 private struct PadExecutionPlanTimelineCard: View {
     let plan: ConversationExecutionPlan
     let laneWidth: CGFloat
+    var submit: ((ExecutionChecklistCommand) async throws -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if plan.steps.count > 12 {
+            if let submit, plan.taskId != nil {
+                TaskExecutionChecklist(plan: plan, width: laneWidth > 0 ? min(532, laneWidth - 28) : 532,
+                    canEdit: plan.continuation != nil, submit: submit)
+            } else if plan.steps.count > 12 {
                 ScrollView {
                     ExecutionPlanChecklist(plan: plan)
                         .frame(maxWidth: .infinity, alignment: .leading)

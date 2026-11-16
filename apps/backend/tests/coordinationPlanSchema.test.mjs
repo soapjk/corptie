@@ -17,23 +17,22 @@ test("coordination output satisfies strict required-fields contract at every obj
   visit(COORDINATION_PLAN_SCHEMA);
 });
 
-test("strict coordination output permits unused fields without inventing evidence or deletion choices", () => {
+test("strict coordination output permits unused fields without inventing evidence", () => {
   const validate = new Ajv({ strict: false }).compile(COORDINATION_PLAN_SCHEMA);
-  const base = { kind: "discussion", reply: "回答", decisionReportId: null, requestRelation: null, batchId: null,
-    presentation: "message", progressUpdates: [], focus: "", decision: "", items: [], queries: [] };
+  const base = { decisionRequest:null,continuationPlans:[],verificationRequired:false,kind: "discussion", reply: "回答", decisionReportId: null, requestRelation: null, progressUpdates: [], focus: "", decision: "", items: [], queries: [] };
   assert.ok(validate(base), JSON.stringify(validate.errors));
   const query = { tool: "list_children", taskId: null, sessionId: null, query: null, cursor: null,
     messageId: null, offset: 0, limit: 6, targetType: null, targetId: null, section: null };
   assert.ok(validate({ ...base, kind: "read", queries: [query] }), JSON.stringify(validate.errors));
-  const item = { action: "create", taskId: null, title: "测试", text: "执行", agentId: "role:test", evidence: null, deletion: null };
+  const item = { action: "create", taskId: null, title: "测试", text: "执行", agentId: "role:test", evidence: null };
   assert.ok(validate({ ...base, kind: "dispatch", items: [item] }), JSON.stringify(validate.errors));
-  const deletion = { artifactDisposition: null, stopRunning: null, cancelStartup: null, deleteAssociatedTasks: null, cancelIntegration: null };
-  assert.ok(validate({ ...base, kind: "cleanup", items: [{ ...item, action: "delete", taskId: "task:child", deletion }] }), JSON.stringify(validate.errors));
+  assert.equal(validate({ ...base, kind: "cleanup", items: [{ ...item, action: "delete", taskId: "task:child" }] }), false);
+  assert.equal(validate({ ...base, kind: "dispatch", items: [{ ...item, action: "delete", taskId: "task:child" }] }), false);
   assert.ok(validate({ ...base, kind: "deliver", items: [{ ...item, action: "deliver", taskId: "task:child", evidence: ["message:final"] }] }), JSON.stringify(validate.errors));
   assert.ok(validate({ ...base, kind: "shadow_reply", decisionReportId: "report:question" }), JSON.stringify(validate.errors));
   const missing = structuredClone(base);
   delete missing.decisionReportId;
   assert.equal(validate(missing), false);
   assert.equal(validate({ ...base, items: [{ ...item, evidence: 123 }] }), false);
-  assert.equal(validate({ ...base, items: [{ ...item, deletion: { ...deletion, stopRunning: "yes" } }] }), false);
+  assert.equal(validate({ ...base, items: [{ ...item, deletion: { stopRunning: true } }] }), false);
 });

@@ -1,13 +1,17 @@
 // Pure presentation projection. Session/dispatch/acceptance authorities supply
 // facts; this module never changes execution or infers acceptance from a reply.
 export const COORDINATION_PROGRESS_STATES = Object.freeze([
-  'preparing', 'queued', 'running', 'waiting_input', 'blocked', 'needs_review', 'delivered', 'accepted', 'cancelled'
+  'preparing', 'queued', 'running', 'waiting_input', 'blocked', 'needs_review', 'delivered', 'accepted', 'cancelled', 'waiting_dependency', 'continuation_queued', 'paused', 'needs_attention'
 ]);
-const rank = Object.freeze({ waiting_input:0, blocked:1, running:2, preparing:3, queued:4, needs_review:5, delivered:6, accepted:7, cancelled:8 });
+const rank = Object.freeze({ needs_attention:-1, waiting_dependency:1,continuation_queued:4,paused:5,waiting_input:0, blocked:1, running:2, preparing:3, queued:4, needs_review:5, delivered:6, accepted:7, cancelled:8 });
 export function projectCoordinationAssignment(input) {
   let state;
   if (input.acceptanceVerified === true) state = 'accepted';
   else if (input.deliveryVerified === true) state = 'delivered';
+  else if(['paused_user','paused_budget'].includes(input.continuationState))state='paused';
+  else if(input.continuationState==='needs_attention')state='needs_attention';
+  else if(input.continuationState==='waiting_dependency')state='waiting_dependency';
+  else if(input.continuationState==='queued')state='continuation_queued';
   else if (input.deliveryState === 'blocked' || input.reclamationError) state = 'blocked';
   else if (['delivery','reclamation'].includes(input.phase)) state = 'needs_review';
   else if (input.dispatchState === 'cancelled') state = 'cancelled';
@@ -39,8 +43,9 @@ const string={type:'string',maxLength:1000};
 const nullableId={type:['string','null'],maxLength:512};
 export const coordinationProgressSchema={type:'object',additionalProperties:false,
  required:['version','batchId','parentSessionId','revision','updatedAt','counts','total','items','hasMore','focus','decision'],properties:{
+ groupId:nullableId,planId:nullableId,overallState:{type:'string',maxLength:64},nextAction:{type:'string',maxLength:2000},finalized:{type:'boolean'},pendingDecisionIds:{type:'array',maxItems:200,items:nullableId},reportMessageId:nullableId,summary:{type:'string',maxLength:240},
  version:{const:1},batchId:{type:'string',maxLength:512},parentSessionId:{type:'string',maxLength:512},revision:{type:'integer',minimum:0},updatedAt:string,
- counts:{type:'object',additionalProperties:{type:'integer',minimum:0},maxProperties:9},total:{type:'integer',minimum:0,maximum:10000},
+ counts:{type:'object',additionalProperties:{type:'integer',minimum:0},maxProperties:13},total:{type:'integer',minimum:0,maximum:10000},
  items:{type:'array',maxItems:3,items:{type:'object',additionalProperties:false,
  required:['assignmentId','taskId','sessionId','title','state','summary','reason','reportMessageId','updatedAt'],properties:{
  assignmentId:{type:'string',maxLength:512},taskId:nullableId,sessionId:nullableId,title:string,phase:{type:['string','null'],enum:['preparation','dispatch','execution','shadow','delivery','reclamation',null]},previousExecutionStatus:{type:['string','null'],maxLength:64},state:{enum:COORDINATION_PROGRESS_STATES},summary:string,reason:{type:'string',maxLength:2000},reportMessageId:nullableId,updatedAt:string}}},hasMore:{type:'boolean'},focus:string,decision:string}};

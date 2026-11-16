@@ -10,11 +10,14 @@ import { ProviderRuntimeSettings } from "./application/providerRuntimeSettings.m
 import { createProviderCredentialAdapters, selectedCredentialEnvironment } from "./adapters/providerCredentialAdapters.mjs";
 import { conversationWorktreeBlocker, WorkChatReadOnlyTurnService } from "./application/workChatReadOnlyTurnService.mjs";
 import { ExecutionChecklistService } from "./application/executionChecklistService.mjs";
+import { ExecutionChecklistContinuationService } from "./application/executionChecklistContinuationService.mjs";
+import { CoordinationDecisionService } from "./application/coordinationDecisionService.mjs";
 import { VerificationBudgetService } from "./application/verificationBudgetService.mjs";
 let verificationBudgetService = null;
 import { SessionMailboxService } from "./application/sessionMailboxService.mjs";
 import { TaskCoordinationService } from "./application/taskCoordinationService.mjs";
 import { ShadowSessionService } from "./application/shadowSessionService.mjs";
+import { repairDuplicateCoordinationSummaries } from "./application/coordinationSummaryRepair.mjs";
 import { ChildTaskReclamationService } from "./application/childTaskReclamationService.mjs";
 import { CoordinationRequestService } from "./application/coordinationRequestService.mjs";
 import { CoordinationTurnService } from "./application/coordinationTurnService.mjs";
@@ -554,9 +557,12 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
       const budget=id&&verificationBudgetService.read(id);
       const session=operation&&store.getSession(operation.sessionId),task=session?.taskId&&store.getTask(session.taskId);
       if(!budget || !task || !verificationBudgetService.taskCanManage(task.id,budget) || !budget.resumeOperationIds.includes(operation.taskId))throw Object.assign(new Error("验证续作已失效"),{code:"VERIFICATION_RESUME_RETIRED"});
+      const link=operation.source?.checklistContinuation;if(link)checklistContinuationService.validate(row,{...authorization,planId:link.planId,generation:link.generation});
       return;
     }
     if (authorization.purpose === "shadow_decision") return taskCoordinationService.shadow.validateDecision(row, authorization);
+    if(authorization.purpose==='checklist_continuation')return checklistContinuationService.validate(row,authorization);
+    if(authorization.purpose==='checklist_decision_answer')return coordinationDecisionService.validate(row,authorization);
     if (authorization.purpose === "shadow_request") return taskCoordinationService.shadow.validateRequest(row, authorization);
     if (authorization.purpose === "shadow_delivery_blocked") return taskCoordinationService.shadow.validateDeliveryEvent(row, authorization);
     if (authorization.checklistTaskId) {
@@ -587,16 +593,18 @@ const sessionMailbox = new SessionMailboxService({ store, channelService: sessio
   workEvent: (type, work) => {
     scheduledSessionTaskService.handleAgentWorkEvent(type, work);
     taskCoordinationService?.onRuntimeEvent(type, { task: work });
+    checklistContinuationService?.onRuntimeEvent(type,{task:work,sessionId:work.sessionId});
   }
 });
 channelMailbox.sessionMailbox = sessionMailbox;
+let checklistContinuationService=null,coordinationDecisionService=null;
 const executionChecklistService = new ExecutionChecklistService({ store,
-  changed: value => emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision, checklist: executionChecklistService.display(value, false) },
-    { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId })
+  changed: value => {emitEvent("ExecutionChecklistChanged", { taskId: value.taskId, revision: value.revision, checklist: executionChecklistService.display(value, false) },
+    { sessionId: store.getLogicalSession(value.logicalSessionId)?.legacySessionId });checklistContinuationService?.changed(value);}
 });
 verificationBudgetService = new VerificationBudgetService({ store, emitEvent,
   resumeQueued: operation => scheduleAgentWorkDrain(operation.sessionId),
-  resume: ({operationId,session,sourceOperationId,instructionId}) => sessionMailbox.enqueueExternalOperation({ taskId:operationId,sessionId:session.id,agentId:session.agentId,kind:"user",priority:10,localVisibility:"status_only",text:"用户已增加验证预算并要求继续原指令。读取现有结果，从尚未完成的步骤继续；不要重跑已经完成的验证或Git操作。",source:{type:"mailbox_event",verificationContinuation:{instructionId,sourceOperationId}} },{sourceType:"system",authorization:{sourceId:operationId,purpose:"verification_continuation",ownerLogicalSessionId:store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId}}),
+  resume: ({operationId,session,sourceOperationId,instructionId}) => {const result=sessionMailbox.enqueueExternalOperation({ taskId:operationId,sessionId:session.id,agentId:session.agentId,kind:"user",priority:10,localVisibility:"status_only",text:"用户已增加验证预算并要求继续原指令。读取现有结果，从尚未完成的步骤继续；不要重跑已经完成的验证或Git操作。",source:{type:"mailbox_event",verificationContinuation:{instructionId,sourceOperationId}} },{sourceType:"system",authorization:{sourceId:operationId,purpose:"verification_continuation",ownerLogicalSessionId:store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId}});checklistContinuationService?.bindInstructionResume(instructionId,result.task);return result;},
   readOnly: developmentPreview,
   scope: metadata => executionChecklistService.scope(metadata),
   workingDirectory: sessionId => projectWorkingDirectoryForSession(sessionId),
@@ -608,6 +616,7 @@ verificationBudgetService = new VerificationBudgetService({ store, emitEvent,
   }
 });
 sessionMailbox.verificationBudget = verificationBudgetService;
+executionChecklistService.instructionRoot=id=>verificationBudgetService.operationRoot(store.selectOne('SELECT * FROM agent_operations WHERE task_id=?',[id]));
 const {
   dispatchSessionChannelDelivery, inspectCollaborationSession,
   resumeCollaborationSession, startCollaborationTurn
@@ -660,7 +669,7 @@ const handleCommittedProviderTerminalLifecycle = createProviderTerminalLifecycle
   continuePendingWorkspaceTransition: (...args) => continuePendingWorkspaceTransition(...args),
   continuePendingProviderSwitch: (...args) => continuePendingProviderSwitch(...args),
   resumeWorkAfterTransition, scheduleAgentWorkDrain,
-  onTurnSettled: (entry) => settleMcpTurn(entry)
+  onTurnSettled: (entry) => settleMcpTurn(entry),checklistSettled:entry=>checklistContinuationService?.onTurnSettled(entry)
 });
 const assistantService = new AssistantService({
   store,
@@ -1457,7 +1466,14 @@ toolHostService = new ToolHostService({
   coordinator: toolHostMaterializationCoordinator,
   materializationPort: publicToolMaterializationPort,
   skillMcpGateway,
-  recordRuntimeEvent: (event) => store.recordSkillRuntimeEvent(event)
+  recordRuntimeEvent: (event) => store.recordSkillRuntimeEvent(event),
+  requestRetiredChildDiscard: input => sessionCollaborationService.requestChildDiscard({ sessionId: input.scope.logicalSessionId,
+    providerBindingId: input.scope.providerBindingId }, input.actorId, {
+    childTaskId: input.arguments.child_task_id, idempotencyKey: input.arguments.idempotency_key,
+    artifactDisposition: input.arguments.artifact_disposition, stopRunning: input.arguments.stop_running,
+    cancelStartup: input.arguments.cancel_startup, deleteAssociatedTasks: input.arguments.delete_associated_tasks,
+    cancelIntegration: input.arguments.cancel_integration, inspectOnly: input.arguments.inspect_only
+  })
 });
 // Artifact consumes only the approved provider-neutral positional Port. Tool
 // Host keeps binding, generation, receipt, catalog, and Provider state internal.
@@ -1548,8 +1564,9 @@ observeSessionContextEvent = (context) => sessionApplicationService.observeSessi
 const { interruptUnifiedSession, respondUnifiedSessionApproval, respondUnifiedSessionUserInput } = createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
-  mcpInteractions,
+  mcpInteractions, childTaskDiscard: () => workService.childTaskDiscardService,coordinationDecisions:()=>coordinationDecisionService,
   onInterruptRequested: (entry) => {
+    if(entry.reason==='user_interrupt')checklistContinuationService?.pauseTurn(entry.sessionId,entry.turnId);
     verificationBudgetService.cancelSession(entry.sessionId);
     mcpInteractions.cancelSession(entry.logicalSessionId, entry.turnId, { revokeGrants: true });
     skillMcpGateway.cancelSession(entry.logicalSessionId, entry.turnId);
@@ -1870,9 +1887,15 @@ sessionMailbox.reconcileCoordination = operation => {
   const main = task?.current_session_id && store.getLogicalSessionByLegacySessionId(task.current_session_id);
   if (main) shadowSessionService.reconcileMailbox(sessionMailbox, main.logicalSessionId);
 };
+checklistContinuationService=new ExecutionChecklistContinuationService({store,checklists:executionChecklistService,mailbox:sessionMailbox,
+  coordinator:taskCoordinationService,budget:verificationBudgetService,emitEvent,readOnly:developmentPreview});
+coordinationDecisionService=new CoordinationDecisionService({store,shadow:shadowSessionService,mailbox:sessionMailbox,continuations:checklistContinuationService,emitEvent});
+shadowSessionService.decisions=coordinationDecisionService;shadowSessionService.continuations=checklistContinuationService;shadowSessionService.checklists=executionChecklistService;
+shadowSessionService.progress=taskCoordinationService.progress;
+taskCoordinationService.progress.checklists=executionChecklistService;taskCoordinationService.progress.decisions=coordinationDecisionService;
 sessionApplicationService.coordinationTurns = new CoordinationTurnService({
   store, registry: agentProviderRegistry, planner: backgroundAgentService,
-  dispatch: taskCoordinationService, contextRead: contextReadService, emitEvent, resolveReference: requireSessionReference,
+  dispatch: taskCoordinationService, contextRead: contextReadService, artifacts: artifactService,checklists:executionChecklistService,continuations:checklistContinuationService, emitEvent, resolveReference: requireSessionReference,
   onTerminal: ({ reference, turnId, status }) => handleCommittedProviderTerminalLifecycle({
     event: { type: `turn.${status}`, turnId, source: "host-coordination" },
     projection: { session: store.getSession(reference.sessionId), terminalStatus: status },
@@ -1983,7 +2006,7 @@ childTaskDeliveryService.onShadowBlocked = operation => {
   void shadowSessionService.deliveryBlocked(operation, sessionMailbox)
     .catch(error => console.warn(`[shadow-delivery-report] ${error.code ?? error.message}`));
 };
-const childTaskReclamationService = new ChildTaskReclamationService({ store, resources: chatResourceService });
+const childTaskReclamationService = new ChildTaskReclamationService({ store, resources: chatResourceService,beforePurge:taskId=>checklistContinuationService.recordDeliveredChild(taskId) });
 childTaskDeliveryService.reclaimChild = taskId => childTaskReclamationService.schedule(taskId);
 worktreeIntegrationJobService.authorizeShadowDelivery = id => {
   try { return childTaskDeliveryService.assertAuthority(id).actor.type === "shadow_session"; } catch { return false; }
@@ -2149,6 +2172,7 @@ function sessionTitleErrorPayload(error, extra = {}) {
 function emitEvent(type, payload, options = {}) {
   const runtimePayload = options.sessionId ? { ...payload, sessionId: options.sessionId } : payload;
   verificationBudgetService?.onRuntimeEvent(type,runtimePayload);
+  checklistContinuationService?.onRuntimeEvent(type,runtimePayload);
   childTaskDeliveryService?.onRuntimeEvent(type,runtimePayload);
   taskCoordinationService?.onRuntimeEvent(type,runtimePayload);
   productEventPublisher ??= createProductEventPublisher({
@@ -2816,6 +2840,7 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+if (!developmentPreview) await repairDuplicateCoordinationSummaries(store);
 // Resource registration is independent of desktop dependencies and never starts
 // an input service. Read-only Development snapshots retain their existing data.
 if (!developmentPreview && process.platform === "darwin") {
@@ -2896,6 +2921,8 @@ function startBackendRuntime() {
   if (!developmentPreview) verificationBudgetService.recover();
   sessionApplicationService.coordinationTurns.recover(registerRuntimeQueuedWork);
   coordinationRequestService.recover();
+  checklistContinuationService.recover();
+  void coordinationDecisionService.recoverLegacy().catch(error=>console.warn('[legacy-decisions]',error.code??error.message));
   for (const task of store.selectAll("SELECT current_session_id FROM tasks WHERE coordination_enabled=1 AND archived=0 AND current_session_id IS NOT NULL")) {
     const main = store.getLogicalSessionByLegacySessionId(task.current_session_id);
     if (main) coordinationRequestService.migrateQueued(main.logicalSessionId);
@@ -2905,7 +2932,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   worktreeAutoFollowService.start();
   startClientDeviceGateway({
-    verificationBudgetService,
+    verificationBudgetService,executionChecklistService,
     sessionAbilityPreferences,
     workInitializationService,
     detailActionService, detailWritesAllowed: detailMigration.detailWritesAllowed,

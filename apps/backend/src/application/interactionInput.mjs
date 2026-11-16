@@ -52,8 +52,8 @@ export function withSubmittedUserInputAnswers(item, answers) {
 }
 
 export function publicUserInput(userInput) {
-  if (userInput?.kind != null && !["question", "form", "url", "permissions"].includes(userInput.kind)) return null;
-  if (userInput?.responseMode != null && !["message", "request"].includes(userInput.responseMode)) return null;
+  if (userInput?.kind != null && !["question", "form", "url", "permissions", "coordination_decision"].includes(userInput.kind)) return null;
+  if (userInput?.responseMode != null && !["message", "request", "answers"].includes(userInput.responseMode)) return null;
   if (userInput?.schemaVersion !== 1 || !Array.isArray(userInput.questions)
     || userInput.questions.length < 1 || userInput.questions.length > 10) return null;
   const questions = [];

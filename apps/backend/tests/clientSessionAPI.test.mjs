@@ -972,6 +972,18 @@ test("paired collaboration cards preserve minimal provenance without exposing ra
   } finally { await f.close(); }
 });
 
+test("legacy summary envelopes override delivery fallback on paired clients",async()=>{
+ const f=await fixture();try{
+ const nested=JSON.stringify({progressBatchId:"batch:one",rawMetadataJSON:JSON.stringify({executionMode:"shadow_report",progressBatchId:"batch:one"})});
+ const api=new ClientSessionAPI({store:f.store,...callbacks,readWindow:async()=>({revision:1,items:[
+  {id:"shadow-report:old",type:"agentMessage",text:"summary",rawMetadataJSON:nested},
+  {id:"coordination-summary:batch:one:0",type:"agentMessage",text:"phase",rawMetadataJSON:JSON.stringify({progressBatchId:"batch:one"})}
+ ]})});
+ const page=await api.messages(identity,"session:test",new URLSearchParams());
+ assert.deepEqual(page.items.map(item=>item.coordinationEvent.kind),["summary","summary"]);
+ }finally{await f.close();}
+});
+
 
 test("host failure and receipt metadata are public without leaking diagnostics",async()=>{
  const f=await fixture();try{

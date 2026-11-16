@@ -13,6 +13,7 @@ public struct ExecutionChecklistCommand: Encodable, Sendable {
     public var itemIds: [String]?
     public var taskId: String?
     public var dispatchId: String?
+    public var planId: String? = nil
     public init(action: String, revision: Int, itemID: String? = nil, text: String? = nil,
                 condition: String? = nil, status: String? = nil, reason: String? = nil, position: Int? = nil, itemIDs: [String]? = nil, taskID: String? = nil, dispatchID: String? = nil) {
         self.action = action; expectedRevision = revision; operationId = UUID().uuidString
@@ -28,14 +29,16 @@ public struct ClientExecutionChecklistAPI: Sendable {
         public let writesAllowed: Bool?
     }
     private let transport: BackendTransport
-    public init(transport: BackendTransport) { self.transport = transport }
-    public func read(taskID: String) async throws -> Response {
-        let request = try transport.endpoint.request(path: ["tasks", taskID, "execution-checklist"])
+    private let route: ClientDetailAPI.Route
+    public init(transport: BackendTransport, route: ClientDetailAPI.Route = .desktop) { self.transport = transport; self.route = route }
+    private var prefix: [String] { route == .desktop ? [] : ["client", "v1"] }
+    public func read(taskID: String, planID: String? = nil) async throws -> Response {
+        let request = try transport.endpoint.request(path: prefix + ["tasks", taskID, "execution-checklist"], query: planID.map { [URLQueryItem(name: "planId", value: $0)] } ?? [])
         let (data, _) = try await transport.data(for: request)
         return try JSONDecoder().decode(Response.self, from: data)
     }
     public func update(taskID: String, command: ExecutionChecklistCommand) async throws -> Response {
-        var request = try transport.endpoint.request(path: ["tasks", taskID, "execution-checklist"])
+        var request = try transport.endpoint.request(path: prefix + ["tasks", taskID, "execution-checklist"])
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(command)

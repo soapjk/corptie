@@ -13,7 +13,7 @@ import { TaskCreationSettingsService } from "./taskCreationSettingsService.mjs";
 import { readAutomationNotifications } from "../store/automationNotificationFeed.mjs";
 
 export function startClientDeviceGateway({
-  store, verificationBudgetService, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
+  store, verificationBudgetService, executionChecklistService, environmentName, developmentPreview, worktreeIntegrationJobService, projectApplicationService, emitEvent,
   readSessionTimelineWindow, getTimelineReadPool, requireSessionReference, sessionContextReferenceService,
   artifactService, scheduledSessionTaskService, turnObservability, agentProviderRegistry,
   switchSessionProvider, workService, workInitializationService, inspectTaskWorktree, reclaimTaskWorktree, readSessionWorktree, setWorktreeAutoFollow,
@@ -28,7 +28,7 @@ export function startClientDeviceGateway({
 }) {
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
-    verificationBudgetService,
+    verificationBudgetService, executionChecklistService,userDecisionNotices: () => workService.childTaskDiscardService?.pendingNotices() ?? [],
     resourceWritesAllowed: !developmentPreview,
     automationNotifications: (_identity, cursor) => readAutomationNotifications(store, environmentName, cursor),
     detailActionService, detailWritesAllowed: detailWritesAllowed === true && !developmentPreview,

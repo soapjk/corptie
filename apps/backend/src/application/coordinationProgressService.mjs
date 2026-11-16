@@ -14,7 +14,11 @@ export function coordinationProgressFor(store){
 export class CoordinationProgressService {
   constructor(store){this.store=store;this.pending=new Set();}
   batch(id){return this.store.selectOne('SELECT * FROM coordination_progress_batches WHERE batch_id=?',[id]);}
-  latest(parentTaskId){const row=this.store.selectOne('SELECT snapshot_json FROM coordination_progress_batches WHERE parent_task_id=? AND snapshot_json IS NOT NULL ORDER BY created_at DESC,batch_id DESC LIMIT 1',[parentTaskId]);const snapshot=row?JSON.parse(row.snapshot_json):null;return snapshot?.total>0?snapshot:null;}
+  latest(parentTaskId){
+    const current=this.checklists?.read(parentTaskId);
+    const grouped=current&&this.refreshGroup(current.planId,{readOnly:true});
+    if(grouped)return grouped;
+    const row=this.store.selectOne('SELECT snapshot_json FROM coordination_progress_batches WHERE parent_task_id=? AND snapshot_json IS NOT NULL ORDER BY created_at DESC,batch_id DESC LIMIT 1',[parentTaskId]);const snapshot=row?JSON.parse(row.snapshot_json):null;return snapshot?.total>0?snapshot:null;}
   ensure(scope,sourceTurnId,batchId=null){
     if(batchId){const old=this.batch(batchId);if(!old||old.parent_task_id!==scope.parent.id||old.source_session_id!==scope.logicalSessionId)fail();return old;}
     const old=this.store.selectOne('SELECT * FROM coordination_progress_batches WHERE source_session_id=? AND source_turn_id=?',[scope.logicalSessionId,sourceTurnId]);
@@ -89,14 +93,57 @@ export class CoordinationProgressService {
       const text=['子任务进展',...snapshot.items.map(item=>`${item.title} · ${item.state}${item.summary?'：'+item.summary:''}`),snapshot.focus,snapshot.decision].filter(Boolean).join('\n');
       const item={id:`coordination-progress:${batchId}`,turnId:`coordination-progress:${batchId}`,type:'coordinationProgress',title:'子任务进展',text,
         presentationRole:'system_event',status:'completed',turnStatus:'completed',createdAt:batch.created_at,coordinationProgress:snapshot};
-      if(snapshot.total>0)this.store.upsertTimelineItemProjection(session.id,{...item,rawMetadataJSON:JSON.stringify(item)});
+      const planId=this.checklists?.repository.planForBatch(batchId);
+      if(snapshot.total>0&&!planId)this.store.upsertTimelineItemProjection(session.id,{...item,rawMetadataJSON:JSON.stringify(item)});
     });
     const stage=snapshot.total>0&&snapshot.counts.accepted===snapshot.total?'accepted'
       :snapshot.total>0&&snapshot.counts.delivered+snapshot.counts.accepted===snapshot.total?'delivered':null;
     if(stage)this.milestone(batchId,stage,stage==='accepted'?'本批子任务已有验收依据；父任务整体状态以集成验收为准。':'本批子任务已交付，可以安排整体集成验证；交付不代表整体验收通过。');
+    const planId=this.checklists?.repository.planForBatch(batchId);
+    if(planId){this.store.removeItem(session.id,`coordination-progress:${batchId}`);this.refreshGroup(planId);}
     this.store.touchSessionProjectionDependency?.(session.id);this.store.scheduleSave();this.onChanged?.(batch.parent_task_id);return snapshot;
   }
+  refreshGroup(planId,{readOnly=false,all=false}={}){
+    if(!this.checklists)return null;
+    const repository=this.checklists.repository,row=this.store.selectOne('SELECT task_id FROM execution_checklist_plans WHERE plan_id=?',[planId]);
+    const plan=row&&this.checklists.read(row.task_id,{planId});if(!plan)return null;
+    const route=this.store.getLogicalSession(plan.logicalSessionId);if(!route?.legacySessionId)return null;
+    const dispatchIds=[...new Set(plan.steps.map(s=>s.assignment?.dispatchId).filter(Boolean))];
+    const batches=this.store.selectAll(`SELECT b.* FROM coordination_progress_batches b JOIN execution_plan_batches p ON p.batch_id=b.batch_id WHERE p.plan_id=? AND EXISTS(SELECT 1 FROM coordination_progress_assignments a WHERE a.batch_id=b.batch_id AND a.dispatch_id IN (SELECT value FROM json_each(?))) ORDER BY b.created_at,b.rowid`,[planId,JSON.stringify(dispatchIds)]);
+    const latest=new Map();for(const batch of batches)for(const fact of this.facts(batch))latest.set(fact.taskId??fact.assignmentId,fact);
+    const assignments=new Map(),waits=repository.waits(planId);
+    for(const step of plan.steps)if(step.assignment){
+      const resolved=this.checklists.resolveAssignment(plan.taskId,step.assignment);
+      const id=resolved.taskId??step.stepId,fact=latest.get(id);
+      const childRuntime=resolved.taskId&&this.store.selectOne(`SELECT r.* FROM execution_checklist_runtime r JOIN execution_checklist_plans p USING(plan_id)
+        WHERE p.task_id=? AND r.enabled=1 AND r.state NOT IN ('completed','cancelled') ORDER BY r.updated_at DESC LIMIT 1`,[resolved.taskId]);
+      const childOperation=childRuntime?.operation_id&&this.store.getAgentTask(childRuntime.operation_id);
+      const wait=waits.find(w=>w.stepId===step.stepId);
+      const continuationState=childRuntime?.state==='running'&&childOperation?.status==='queued'?'queued':childRuntime?.state??(wait&&wait.kind!=='decision'?'waiting_dependency':null);
+      const fallback={assignmentId:step.stepId,taskId:resolved.taskId,sessionId:resolved.sessionId,title:resolved.title==='关联任务不可用'?step.text:resolved.title,
+        dispatchState:step.status==='completed'?'completed':resolved.status??'queued',summary:step.reason??'',reason:'',updatedAt:plan.updatedAt,
+        deliveryVerified:step.status==='completed',acceptanceVerified:false};
+      assignments.set(id,{...fallback,...fact,...(childOperation&&['queued','running'].includes(childOperation.status)?{dispatchState:childOperation.status,executionState:childOperation.status}:{}),continuationState,assignmentId:assignments.get(id)?.assignmentId??step.stepId,...(step.status==='completed'?{deliveryVerified:true}:{} )});
+    }
+    if(!assignments.size)return null;
+    const runtime=repository.runtime(planId),report=this.store.selectOne("SELECT report_id,body FROM coordination_shadow_reports WHERE main_session_id=? AND source_turn_id=?",[plan.logicalSessionId,`summary-plan:${planId}`]);
+    const id=`coordination-progress:${planId}`,old=this.store.getSessionItem(route.legacySessionId,id)?.coordinationProgress;
+    const nextStep=plan.steps.find(step=>(runtime?.nextStepIds??[]).includes(step.stepId));
+    const snapshot={...projectCoordinationProgress({batchId:planId,parentSessionId:plan.logicalSessionId,revision:old?.revision??0,updatedAt:plan.updatedAt,
+      assignments:[...assignments.values()],focus:nextStep?.text??(runtime?.state==='completed'?'全部事项已完成':'继续推进未完成事项'),decision:''}),
+      groupId:planId,planId,overallState:runtime?.state??'idle',nextAction:nextStep?.text??runtime?.reason??'',finalized:runtime?.finalized===true,
+      reportMessageId:report?.report_id??null,summary:report?.body?.slice(0,240)??'',pendingDecisionIds:this.decisions?.pending(plan.logicalSessionId,planId).map(d=>d.id)??[]};
+    if(readOnly)return all?{...snapshot,items:[...assignments.values()].map(projectCoordinationAssignment),hasMore:false}:snapshot;
+    if(JSON.stringify({...old,updatedAt:null})===JSON.stringify({...snapshot,updatedAt:null}))return old;
+    snapshot.revision=(old?.revision??0)+1;
+    const item={id,turnId:id,type:'coordinationProgress',title:'任务进展',text:`任务进展 ${plan.completedCount}/${plan.steps.length}`,status:'completed',turnStatus:'completed',createdAt:plan.createdAt,
+      presentationRole:'system_event',coordinationProgress:snapshot};
+    this.store.upsertTimelineItemProjection(route.legacySessionId,{...item,rawMetadataJSON:JSON.stringify(item)});
+    this.store.touchSessionProjectionDependency?.(route.legacySessionId);this.store.scheduleSave();this.onChanged?.(plan.taskId);return snapshot;
+  }
   milestone(batchId,key,text){
+    const planId=this.checklists?.repository.planForBatch(batchId);
+    if(planId){this.refreshGroup(planId);return true;}
     const batch=this.batch(batchId),seen=JSON.parse(batch.milestones_json??'[]');if(seen.includes(key))return false;
     const route=this.store.getLogicalSession(batch.source_session_id);if(!route)return false;
     // Delivery is already represented by the batch card counts. Do not append
@@ -109,8 +156,9 @@ export class CoordinationProgressService {
     let item;
     this.store.runInTransaction(()=>{
       item={id:`coordination-summary:${batchId}:${seen.length}`,turnId:`coordination-summary:${batchId}:${seen.length}`,
-        type:'agentMessage',presentationRole:'final_answer',title:'子任务阶段总结',text,status:'completed',turnStatus:'completed',createdAt:new Date().toISOString()};
-      this.store.upsertTimelineItemProjection(route.legacySessionId,{...item,rawMetadataJSON:JSON.stringify({...item,progressBatchId:batchId})});
+        type:'agentMessage',presentationRole:'final_answer',title:'子任务阶段总结',text,status:'completed',turnStatus:'completed',createdAt:new Date().toISOString(),
+        rawMetadataJSON:JSON.stringify({progressBatchId:batchId,coordinationEvent:{kind:key.startsWith('decision:')?'decision':'summary',batchId}})};
+      this.store.upsertTimelineItemProjection(route.legacySessionId,item);
       this.store.db.run('UPDATE coordination_progress_batches SET milestones_json=? WHERE batch_id=?',[JSON.stringify([...new Set([...seen.filter(value=>value==='accepted'||value==='delivered'),...seen.filter(value=>value!=='accepted'&&value!=='delivered').slice(-97),key])]),batchId]);
     });this.publishMilestone?.(route.legacySessionId,item);return true;
   }
@@ -194,6 +242,11 @@ export class CoordinationProgressService {
   }
   report(sessionId,batchId,assignmentId,offset=0){
     this.page(sessionId,batchId,0); // Reuse the exact parent Session scope check.
+    if(this.checklists&&this.store.selectOne('SELECT plan_id FROM execution_checklist_plans WHERE plan_id=?',[batchId])){
+      const route=this.store.getLogicalSession(sessionId)??this.store.getLogicalSessionByLegacySessionId(sessionId);
+      const row=this.store.selectOne('SELECT body FROM coordination_shadow_reports WHERE main_session_id=? AND source_turn_id=?',[route.logicalSessionId,`summary-plan:${batchId}`]);
+      return {text:offset===0?row?.body??'暂无汇总报告':'',nextOffset:null};
+    }
     if(!Number.isInteger(offset)||offset<0||offset>1000000)fail();
     const row=this.store.selectOne(`SELECT a.report_message_id,COALESCE(d.target_task_id,a.task_id) AS task_id
       FROM coordination_progress_assignments a LEFT JOIN task_coordination_dispatches d ON d.dispatch_id=a.dispatch_id
@@ -208,6 +261,11 @@ export class CoordinationProgressService {
   }
   page(sessionId,batchId,offset=0){
     const route=this.store.getLogicalSession(sessionId)??this.store.getLogicalSessionByLegacySessionId(sessionId);
+    const plan=this.checklists&&this.store.selectOne('SELECT owner_session_id FROM execution_checklist_plans WHERE plan_id=?',[batchId]);
+    if(plan){if(plan.owner_session_id!==route?.logicalSessionId||route.archived)fail();
+      if(!Number.isInteger(offset)||offset<0)fail();
+      const snapshot=this.refreshGroup(batchId,{readOnly:true,all:true});const items=snapshot?.items??[];
+      return {items:items.slice(offset,offset+20),nextOffset:offset+20<items.length?offset+20:null};}
     const batch=this.batch(batchId);if(!batch||batch.source_session_id!==route?.logicalSessionId||route.archived)fail();
     const session=this.store.getSession(route.legacySessionId);if(!session||session.archived||session.deletedAt||session.taskId!==batch.parent_task_id)fail();
     if(!Number.isInteger(offset)||offset<0||offset>10000)fail();

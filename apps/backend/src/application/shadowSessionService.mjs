@@ -123,7 +123,7 @@ export class ShadowSessionService {
       AND COALESCE(json_extract(op.source_json,'$.mailboxDispatchAttempted'),0)=0
       AND (op.status='queued' OR (op.status='cancelled' AND s.deleted_at IS NOT NULL AND json_extract(op.execution_evidence_json,'$.cancellation') IS NULL))
       AND json_extract(mm.authorization_json,'$.purpose') IN
-        ('shadow_request','shadow_requirement','shadow_report','parent_report','shadow_decision','shadow_delivery_blocked')
+        ('shadow_request','shadow_requirement','shadow_report','parent_report','shadow_decision','shadow_delivery_blocked','checklist_continuation','checklist_decision_answer','verification_continuation')
       AND mm.recipient_session_id<>? ORDER BY mm.sequence LIMIT 100`, [task.id, target.sessionId ?? ""]);
     if (!rows.length) return;
     if (target.status !== "ready") { if (target.status === "recovering") void this.requestRecovery(mainId); return; }
@@ -131,7 +131,7 @@ export class ShadowSessionService {
     for (const row of rows) {
       const auth = JSON.parse(row.authorization_json);
       if (["shadow_report", "parent_report"].includes(auth.purpose)) auth.purpose = target.role === "parent" ? "parent_report" : "shadow_report";
-      if (mailbox.retargetUnstarted(row.message_id, target.sessionId, auth)) moved++;
+      if (mailbox.retargetUnstarted(row.message_id, target.sessionId, auth)){moved++;this.continuations?.retargetOperation(row.operation_id,target.sessionId);}
     }
     if (rows.length === 100 && moved) setImmediate(() => {
       try { this.reconcileMailbox(mailbox, mainId); }
@@ -168,7 +168,7 @@ export class ShadowSessionService {
     const session = route && this.store.getSession(route.legacySessionId);
     const reports = this.store.selectAll(`SELECT report_id AS id,substr(body,1,1200) AS text,created_at AS createdAt
       FROM coordination_shadow_reports WHERE main_session_id=? ORDER BY created_at DESC,report_id DESC LIMIT 3`, [mainId]);
-    const pendingDecisions = this.store.selectOne(`SELECT COUNT(*) AS count FROM coordination_shadow_reports
+    const pendingDecisions = this.decisions?this.decisions.pending(mainId).length:this.store.selectOne(`SELECT COUNT(*) AS count FROM coordination_shadow_reports
       WHERE main_session_id=? AND decision_json IS NOT NULL AND json_extract(decision_json,'$.answerMessageId') IS NULL`, [mainId]).count;
     const target = this.inspect(mainId);
     const status = this.creating.has(mainId) || this.recovering.has(mainId) ? "recovering"
@@ -197,7 +197,7 @@ export class ShadowSessionService {
   }
   ensure(mainId) {
     if (this.creating.has(mainId)) return this.creating.get(mainId);
-    const flight = this.create(mainId).finally(() => { this.creating.delete(mainId); this.changed(mainId); });
+    const flight = this.create(mainId).then(async row=>{await this.decisions?.recoverLegacy(mainId);return row;}).finally(() => { this.creating.delete(mainId); this.changed(mainId); });
     this.creating.set(mainId, flight);
     return flight;
   }
@@ -381,6 +381,11 @@ export class ShadowSessionService {
     return admitted;
   }
   resolveDecision(mainId, source, candidate) {
+    if(this.decisions){
+      const pending=this.decisions.pending(mainId),explicit=source?.replyToMessageId??source?.messageContent?.replyToMessageId;
+      if(explicit&&pending.some(row=>row.id===explicit))return explicit;
+      return pending.some(row=>row.id===candidate)?candidate:null;
+    }
     const rows=this.store.selectAll(`SELECT report_id FROM coordination_shadow_reports WHERE main_session_id=?
       AND decision_json IS NOT NULL AND json_extract(decision_json,'$.answerMessageId') IS NULL`,[mainId]);
     const explicit=source?.replyToMessageId ?? source?.messageContent?.replyToMessageId;
@@ -389,6 +394,10 @@ export class ShadowSessionService {
     return rows.some(row=>row.report_id===candidate) ? candidate : null;
   }
   async answer(mainId, reportId, body, sourceTurnId, mailbox) {
+    if(this.decisions?.get(reportId)){
+      const route=this.store.getLogicalSession(mainId),item=this.store.getSessionItem(route.legacySessionId,reportId);
+      return this.decisions.answer(route.legacySessionId,reportId,{[item.userInput.questions[0].id]:[body]},{type:'user',turnId:sourceTurnId});
+    }
     this.owner(mainId);
     const report = this.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE report_id=? AND main_session_id=?", [reportId, mainId]);
     const question = report?.decision_json && JSON.parse(report.decision_json);
@@ -428,12 +437,13 @@ export class ShadowSessionService {
     if (!review || row.source_id !== operation.operation_id || JSON.parse(operation.actor_json).id !== review.shadow_session_id) fail("SHADOW_DELIVERY_EVENT_INVALID");
     this.assertRecipient(row, review.main_session_id);
   }
-  publish({ shadowId, turnId, revision, body, decision = null, batchId = null }) {
+  publish({ shadowId, turnId, revision, body, decision = null, batchId = null, planId = null }) {
     const row = this.assertDelegate(shadowId, "publish_reports");
     if (batchId && !this.store.selectOne("SELECT 1 FROM coordination_progress_batches WHERE batch_id=? AND parent_task_id=?", [batchId, row.parent_task_id])) fail("SHADOW_REPORT_BATCH_INVALID");
-    const reportKey = batchId && !decision ? `summary-batch:${batchId}:${revision}` : turnId;
+    if(planId&&!this.checklists?.read(row.parent_task_id,{planId}))fail('SHADOW_REPORT_BATCH_INVALID');
+    const reportKey = planId?`summary-plan:${planId}`:batchId && !decision ? `summary-batch:${batchId}:${revision}` : turnId;
     const old = this.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE main_session_id=? AND source_turn_id=?", [row.main_session_id, reportKey]);
-    if (old && (!batchId || old.body === body)) return old;
+    if (old && ((!batchId && !planId) || old.body === body)) return old;
     // A report derived from an older requirement must never replace current
     // user intent or claim the newer request has been completed.
     if (revision !== row.requirement_revision) fail("SHADOW_REQUIREMENT_CHANGED");
@@ -441,19 +451,20 @@ export class ShadowSessionService {
     const reportId = old?.report_id ?? `shadow-report:${randomUUID()}`, createdAt = old?.created_at ?? new Date().toISOString();
     const { logical: main } = this.owner(row.main_session_id);
     const item = { id: reportId, turnId: reportId, bindingId: main.activeBinding.bindingId,
-      type: "agentMessage", presentationRole: "final_answer", text: `**后台汇总**\n\n${body}`, status: "completed", turnStatus: "completed", createdAt,
+      type: "agentMessage", presentationRole: "final_answer", text: body, status: "completed", turnStatus: "completed", createdAt,
       rawMetadataJSON: JSON.stringify({ executionMode: "shadow_report", sourceSessionId: shadowId, sourceTurnId: turnId, progressBatchId: batchId || null, coordinationEvent:{kind:decision ? "decision" : "summary",batchId}, decision }) };
     this.store.runInTransaction(() => {
       if (old) this.store.db.run("UPDATE coordination_shadow_reports SET body=? WHERE report_id=?", [body, reportId]);
       else this.store.db.run(`INSERT INTO coordination_shadow_reports
         (report_id,main_session_id,shadow_session_id,source_turn_id,requirement_revision,body,decision_json,created_at) VALUES(?,?,?,?,?,?,?,?)`,
         [reportId, row.main_session_id, shadowId, reportKey, revision, body, decision ? JSON.stringify(decision) : null, createdAt]);
-      this.store.upsertTimelineItemProjection(main.legacySessionId, item);
+      if(!planId)this.store.upsertTimelineItemProjection(main.legacySessionId, item);
       this.store.db.run("UPDATE coordination_shadow_sessions SET processed_revision=?,updated_at=? WHERE main_session_id=?", [revision, createdAt, row.main_session_id]);
     });
     this.store.scheduleSave();
     // Projection only: no mailbox event, Provider send, main turn or main status.
-    this.emitEvent("SessionCoordinationMilestone", { turnId: reportId, item, hasAgentMessage: true }, { sessionId: main.legacySessionId });
+    if(planId)this.progress?.refreshGroup(planId);
+    else this.emitEvent("SessionCoordinationMilestone", { turnId: reportId, item, hasAgentMessage: true }, { sessionId: main.legacySessionId });
     return this.store.selectOne("SELECT * FROM coordination_shadow_reports WHERE report_id=?", [reportId]);
   }
 }

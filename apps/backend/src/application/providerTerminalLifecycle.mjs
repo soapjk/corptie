@@ -2,7 +2,7 @@ export function createProviderTerminalLifecycle({
   store, emitEvent, recordWorkSettled, sessionMailbox, settleEntityTaskFromSession,
   collaborationCore,
   continuePendingWorkspaceTransition, continuePendingProviderSwitch,
-  resumeWorkAfterTransition, scheduleAgentWorkDrain, onTurnSettled = () => {}
+  resumeWorkAfterTransition, scheduleAgentWorkDrain, onTurnSettled = () => {}, checklistSettled = () => {}
 }) {
   return function handleCommittedProviderTerminalLifecycle({ event, projection, logicalRoute }) {
     const nextSession = projection?.session;
@@ -35,6 +35,8 @@ export function createProviderTerminalLifecycle({
     // Recovered execution state does not prove the final business result was
     // delivered. Require user review before advancing queued work.
     if (event.payload?.suppressAutomaticContinuation === true) return;
+    try { checklistSettled({event,session:nextSession,logicalRoute}); }
+    catch(error){console.warn('[checklist-terminal]',error.code??error.message);}
     const agent = collaborationCore.getAgentForSession(nextSession.id);
     // A requested Provider switch waits for execution to stop, not to succeed.
     const providerSwitch = continuePendingProviderSwitch(logicalRoute);

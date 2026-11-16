@@ -47,7 +47,7 @@ public struct TaskExecutionChecklist: View {
             if row < 2 { preview += height + (row > 0 ? 4 : 0) }
             row += 1
         }
-        let chrome: CGFloat = 20 + 16 + 12 + (plan.closed != true && plan.steps.count > columns * 2 ? 24 : 0)
+        let chrome: CGFloat = 20 + 16 + 12 + (plan.continuation == nil ? 0 : 32) + (plan.closed != true && plan.steps.count > columns * 2 ? 24 : 0)
         if plan.closed == true { return (20, chrome + max(20, full)) }
         return (chrome + max(20, preview), chrome + max(20, full))
     }
@@ -94,6 +94,11 @@ public struct TaskExecutionChecklist: View {
                     }.font(.system(size: 11))
                 }
                 if !isClosed && canEdit {
+                    if let state = plan.continuation, state.canPause || state.canResume {
+                        Button {
+                            send(.init(action: state.canResume ? "resume" : "pause", revision: plan.revision))
+                        } label: { Text(state.canResume ? "继续" : "暂停", bundle: .module) }.font(.caption).disabled(busy)
+                    }
                     Button { send(.init(action: "close", revision: plan.revision)) } label: {
                         Image(systemName: "xmark").frame(width: 18, height: 20).contentShape(Rectangle())
                     }
@@ -102,6 +107,13 @@ public struct TaskExecutionChecklist: View {
                 }
             }
             .frame(height: 20)
+            if let state = plan.continuation {
+                Group {
+                    if let reason = state.reason { Text(reason) }
+                    else { Text(LocalizedStringKey(state.statusTitle), bundle: .module) }
+                }.font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            }
             if (!isClosed && !isCompact) || expanded {
                 if plan.steps.isEmpty {
                     Text("暂无事项").font(.system(size: 12)).foregroundStyle(.secondary).frame(height: 20)
@@ -235,6 +247,8 @@ public struct TaskExecutionChecklist: View {
         guard !busy else { return }
         busy = true; error = nil
         Task {
+            var command = command
+            command.planId = plan.planId
             do { try await submit(command) } catch { self.error = error.localizedDescription }
             busy = false
         }
