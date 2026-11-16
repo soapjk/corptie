@@ -9,6 +9,7 @@ import { createSessionToolBindingProjection } from "../src/application/sessionTo
 import { coordinationCreationPolicy, coordinationExecutionPolicy } from "../src/domain/coordinationDelegation.mjs";
 import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import test from "node:test";
+import { CoordinationDecisionService } from "../src/application/coordinationDecisionService.mjs";
 import { ExecutionChecklistContinuationService } from "../src/application/executionChecklistContinuationService.mjs";
 import { ExecutionChecklistService } from "../src/application/executionChecklistService.mjs";
 import assert from "node:assert/strict";
@@ -2992,4 +2993,35 @@ test('summary recovery moves the exact unstarted checklist operation and updates
   assert.equal(checklists.repository.runtime(plan.planId).operationId,before.operationId);
   assert.equal(checklists.repository.runtime(plan.planId).responsibleSessionId,target.sessionId);
   assert.equal(f.store.getAgentTask(before.operationId).sessionId,f.store.getLogicalSession(target.sessionId).legacySessionId);
+});
+
+for(const provider of ['codex-app-server','claude-sdk','openclacky'])test(`${provider}: repeated child inspections wait on the already-presented question without generating another request`,async t=>{
+ const f=await recoveryFixture(t,provider),checklists=new ExecutionChecklistService({store:f.store});
+ const continuations=new ExecutionChecklistContinuationService({store:f.store,checklists,mailbox:f.mailbox,coordinator:f.coordinator});
+ const decisions=new CoordinationDecisionService({store:f.store,shadow:f.shadow,mailbox:f.mailbox,continuations});f.shadow.decisions=decisions;
+ const main=f.store.getLogicalSession('logical:parent'),route=f.store.getLogicalSession(f.original.shadow_session_id);
+ const plan=checklists.mutate(f.parent.id,{action:'create',operationId:'source:plan',expectedRevision:0,steps:[{text:'Apply approved configuration'}]},
+ {model:true,logicalSessionId:main.logicalSessionId,instructionId:'source:instruction',turnId:'source:turn',bindingId:main.activeBinding.bindingId}).checklist;
+ const decision=decisions.propose({mainId:main.logicalSessionId,shadowId:route.logicalSessionId,planId:plan.planId},
+ {category:'authorization',question:'Choose the approved configuration values?',topicKey:'snapshot-policy',stepIds:[plan.steps[0].stepId]});
+ let calls=0,proposals=0;const original=decisions.propose.bind(decisions);decisions.propose=(scope,input)=>{if(input)proposals++;return original(scope,input);};
+ const reference={sessionId:route.legacySessionId,logicalSessionId:route.logicalSessionId,bindingId:route.activeBinding.bindingId,routingVersion:route.routingVersion,providerId:provider};
+ const turns=new CoordinationTurnService({store:f.store,dispatch:f.coordinator,checklists,continuations,resolveReference:()=>reference,
+ registry:{supports:()=>true,get:()=>({descriptor:{metadata:{backgroundExecutionPolicies:['no-tools']}}})},
+ planner:{run:async input=>{
+   calls++;const payload=JSON.parse(input.prompt);assert.equal(payload.pendingDecisions[0].id,decision.id);assert.equal(payload.pendingDecisions[0].alreadyPresented,true);
+   assert.equal(payload.decisionProtocol.pendingMeans,'already_presented_waiting_user');assert.equal(input.outputSchema.properties.decision,undefined);
+   return {text:JSON.stringify({kind:'discussion',reply:'',items:[],continuationPlans:[{stepId:plan.steps[0].stepId,action:'wait',resourceKind:'decision',resourceId:decision.id,dependencyPlanId:null,taskId:f.parent.id}]})};
+ }}});
+ for(let i=0;i<2;i++){
+  await turns.send(reference,'Review stopped child result',{idempotencyKey:`source:inspection:${i}`,source:{type:'mailbox_event',coordinationPurpose:'shadow_report',executionPlanId:plan.planId}});
+  assert.equal(f.store.getSessionTurn(reference.sessionId,reference.bindingId,`coordination:source:inspection:${i}`).execution_status,'completed');
+ }
+ assert.equal(calls,2);assert.equal(proposals,0);assert.equal(decisions.pending(main.logicalSessionId).length,1);
+ assert.equal(checklists.repository.waits(plan.planId)[0].resourceId,decision.id);
+ assert.equal(f.store.getItems(f.source.sessionId).filter(i=>i.type==='userInput').length,1);
+ assert.equal(f.store.selectOne('SELECT COUNT(*) n FROM coordination_shadow_reports').n,0);
+ const bad={...decisions.get(decision.id),mainId:'logical:unrelated'};
+ const get=decisions.get.bind(decisions);decisions.get=id=>id===decision.id?bad:get(id);
+ assert.throws(()=>turns.saveContinuationWaits(f.store.getTask(f.parent.id),main.logicalSessionId,plan,[{stepId:plan.steps[0].stepId,action:'wait',resourceKind:'decision',resourceId:decision.id}]),{code:'CHECKLIST_INVALID_DEPENDENCY'});
 });

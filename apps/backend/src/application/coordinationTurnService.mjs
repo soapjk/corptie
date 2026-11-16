@@ -6,12 +6,12 @@ import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 
 const text = { type: "string", maxLength: 16000 };
 export const COORDINATION_PLAN_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["kind", "reply", "items", "queries", "progressUpdates", "focus", "decision", "decisionReportId", "requestRelation", "decisionRequest", "continuationPlans", "verificationRequired"], properties: {
+  type: "object", additionalProperties: false, required: ["kind", "reply", "items", "queries", "progressUpdates", "focus", "decisionReportId", "requestRelation", "decisionRequest", "continuationPlans", "verificationRequired"], properties: {
     kind: { enum: ["discussion", "clarification", "read", "dispatch", "deliver", "shadow_reply"] }, reply: text,
     requestRelation: { type: ["object", "null"], additionalProperties: false, required: ["kind", "requestId"],
       properties: { kind: { enum: ["supplement", "depends_on", "cancel"] }, requestId: { type: "string", maxLength: 512 } } },
     decisionReportId: { type: ["string", "null"], maxLength: 512 },
-    focus:{type:"string",maxLength:500},decision:{type:"string",maxLength:500},
+    focus:{type:"string",maxLength:500},
     verificationRequired:{type:'boolean'},
     decisionRequest:{type:['object','null'],additionalProperties:false,required:['question','category','topicKey','existingDecisionId','stepIds','recommendation','impact','allowsText','options'],properties:{
       question:text,category:{enum:['engineering','business','authorization','external_input']},topicKey:{type:'string',maxLength:500},existingDecisionId:{type:['string','null']},
@@ -44,7 +44,7 @@ Use executionDiagnostics and existing readResults first. Answer when evidence is
 Discussion, explanations and status questions stay here. Dispatch implementation, tests, conflict resolution or deployment with kind=dispatch and 1-10 create/send items. Reuse suitable children and pending receipts; a null target or waiting_workspace does not imply failure. Supply scope, completion conditions and verification ownership once, then return.
 Use supplied child and contributor IDs. For create use taskId=null; for send use an existing child. Titles allow Chinese, letters, digits, hyphen and underscore, but cannot start with a digit.
 The host detects stopped children and schedules shadow inspection. Children need not report completion or find the shadow. Inspect actual results; execution ended is not target completion or acceptance. Process supplied results together and continue authorized follow-up. No acknowledgements, readiness checks or routine state reports.
-reply holds substantive conclusions, progressUpdates [{taskId,summary,outcome}] holds verified progress (outcome is ready, needs_work, needs_input or null; only the summary shadow assesses delivery readiness), focus holds the next step, and decision holds only a genuine unresolved user decision. Never fabricate execution evidence or user approval.
+reply holds substantive conclusions, progressUpdates [{taskId,summary,outcome}] holds verified progress (outcome is ready, needs_work, needs_input or null; only the summary shadow assesses delivery readiness), focus holds the next step, and decisionRequest is only for a newly discovered choice or a material amendment requiring a different answer. Never fabricate execution evidence or user approval.
 For discussion/clarification/read, items=[]; only kind=read has queries. For kind=deliver use one deliver item; the host resolves evidence. Set unused optional fields to null. There is no delete action. Preservation and retirement require source and Artifact delivery first; dispatch the preservation work if necessary. The host reclaims children after successful delivery.
 Read tools: list_children, read_task, list_sessions, read_messages, read_message, read_execution, read_dispatches, read_mailbox, read_resource, search_resources. Query fields follow the schema; use offset=0, limit=6 and null for unused fields. read_execution gives execution facts and gaps; read_messages supports literal search or recent history; read_message and read_mailbox support detail pagination. Resource reads use targetType/targetId/section. Reads never acknowledge messages or authorize mutations.
 For an existing Artifact document use read_resource with targetType=artifact, section=body and targetId from its bodyLocator.artifact_id, immutable artifact: link, or artifact_reference: ID. The host resolves its pin and reads pages automatically; do not invent versions, hashes or offsets. If truncated, only the returned range was read; respect readBlocked and use nextCursor only in a later permitted Turn. Metadata and summaries are not the document body. Read the existing document and report directly: do not dispatch a child, request a pasted copy or start development/acceptance merely to read and summarize it. On failure report the actual error and missing locator/access/format, not a guessed conclusion.
@@ -58,7 +58,7 @@ Use requestRelation only for a real supplement, dependency or cancellation of a 
 
 const shadowInstructions = `You are the summary shadow. The host schedules inspection when children stop, fail, cancel or need input; no child-origin completion message is required. Read current execution, final response and outcomes before judging progress.
 Your primary duty is to advance unfinished authorized work; reporting is a byproduct. Source handoff, editing ownership and interface alignment are internal coordination work: resolve them or dispatch the concrete next action. Reuse work only when executionContext.coverage proves a live matching assignment. A finished old dispatch or prose saying "waiting" is not coverage. For each unfinished step return an actual dispatch, a validated continuationPlans wait, or a genuine decisionRequest affecting that step. Other independent work continues. Never settle merely after describing known gaps. The host may return continuationGaps; repair the disposition before ending.
-Use decisionRequest only for a genuine business choice, authorization boundary or information available only from the user. Include the visible question, a stable topicKey for the same choice, the impacted stepIds, useful options or text input, a recommendation and impact when known; reference an existing decisionId when provided. Ordinary engineering parameters should be resolved from available requirements/configuration within scope. Use null when no user answer is needed; never fill decision fields with placeholders or repeat a previous unresolved question in every report. Engineering decisions do not create user questions. Keep legacy decision empty when decisionRequest is used.
+Use decisionRequest only for a genuine business choice, authorization boundary or information available only from the user. Include the visible question, a stable topicKey for the same choice, the impacted stepIds, useful options or text input, a recommendation and impact when known; reference an existing decisionId when provided. Ordinary engineering parameters should be resolved from available requirements/configuration within scope. Use null when no user answer is needed; never fill decision fields with placeholders or repeat a previous unresolved question in every report. Engineering decisions do not create user questions. There is no per-report decision text field. Pending questions are already presented to the user: do not restate them in reply, request new approval, or dispatch a child merely to ask again. Use continuationPlans action=wait, resourceKind=decision, resourceId=the existing pending id and the impacted stepId. Keep decisionRequest=null while the answer is pending; continue unrelated work. Only an actual change to the required choice/authority justifies amending a question. A stopped/cancelled child is not a user answer or a new approval requirement.
 When development is delegated, set verificationRequired=true when a final integrated verification is part of this request. Do not run verification after every implementation item. Consult the full executionContext plan and originalInstruction, not only recent history.
 Independently handle child questions, review, follow-up dispatch, integration, verification and reclamation. Reuse running work and valid evidence. Do not make the main Session do child management, ask for routine confirmation or send acknowledgements.
 For every inspected child include progressUpdates with outcome=ready only when its assigned business result is complete, needs_work for remaining implementation, or needs_input for an essential question. The host automatically binds execution evidence and admits ready children for delivery and reclamation; a separate deliver call is unnecessary. kind=deliver remains available for explicit delivery. Do not retain delivered children for unrelated siblings or overall verification. There is no direct deletion action. For an interrupted child, arrange preservation and delivery of its existing work without resuming unrelated development, then let the host reclaim it.
@@ -130,6 +130,24 @@ export class CoordinationTurnService {
       gaps.push({stepId:step.stepId,taskId:step.assignment?.taskId??null,reason:'未完成事项没有有效执行、可恢复依赖或真实用户问题。请派发实际后续工作；不要只重复汇报。'});
     }
     return gaps;
+  }
+  saveContinuationWaits(task,ownerId,executionPlan,plans=[]){
+    for(const wait of plans.filter(p=>p.action==='wait'&&p.resourceId)){
+      const current=executionPlan&&this.checklists?.read(task.id,{planId:executionPlan.planId});
+      if(!current?.steps.some(s=>s.stepId===wait.stepId))throw failure('CHECKLIST_INVALID_DEPENDENCY','等待事项不在当前清单中。');
+      if(wait.resourceKind==='operation'){
+        const op=this.store.getAgentTask(wait.resourceId),session=op&&this.store.getSession(op.sessionId);
+        if(!session)throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的执行不存在。');this.readOnly.task(task,session.taskId);
+      }else if(wait.resourceKind==='dispatch'){
+        if(!this.store.selectOne('SELECT 1 FROM task_coordination_dispatches WHERE dispatch_id=? AND parent_task_id=?',[wait.resourceId,task.id]))throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的派发不属于当前任务。');
+      }else if(wait.resourceKind==='step'){
+        if(!this.checklists.read(task.id,{planId:wait.dependencyPlanId})?.steps.some(s=>s.stepId===wait.resourceId))throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的清单事项不存在。');
+      }else if(wait.resourceKind==='decision'){
+        const decision=this.dispatch.shadow?.decisions?.get(wait.resourceId);
+        if(!decision||decision.mainId!==ownerId||decision.status!=='pending'||decision.planId&&decision.planId!==current.planId)throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的问题不属于当前会话或已不再待答复。');
+      }else throw failure('CHECKLIST_INVALID_DEPENDENCY','请选择明确的执行、派发、清单或待答复问题。');
+      this.checklists.repository.wait(current.planId,{stepId:wait.stepId,kind:wait.resourceKind,resourceId:wait.resourceId,taskId:task.id,dependencyPlanId:wait.dependencyPlanId});
+    }
   }
   enabled(reference) {
     return Boolean(this.requests?.forShadow(reference.logicalSessionId)) || Boolean(this.dispatch.shadow?.forShadow(reference.logicalSessionId)) || this.taskFor(reference)?.coordination_enabled === 1;
@@ -397,6 +415,7 @@ export class CoordinationTurnService {
       const work = this.store.getWork(task.work_id);
       const contributors = (work?.contributorAgentIds ?? []).map(id => this.store.getAgent(id)).filter(Boolean)
         .map(role => ({ agentId: role.agentId, name: role.name }));
+      await this.dispatch.shadow?.decisions?.recoverLegacy(ownerId);
       const history = this.store.readContextConversationPage(reference.sessionId, { limit: 12 }).items ?? [];
       const requestContext = request ? { requestId: request.request_id,
         conversation: JSON.parse(request.context_json ?? "[]"), olderCursor: JSON.parse(request.context_cursor ?? "null"),
@@ -431,7 +450,9 @@ export class CoordinationTurnService {
         if(!result.errorCode){const query={tool:"read_execution",taskId:result.taskId};readCache.set(queryKey(query),{revision:this.readOnly.revisionFor(reference,task.id,query),result});}
       }
       console.info("[coordination-performance]",JSON.stringify({turnId,phase:"initial-diagnostics",elapsedMs:this.now()-diagnosticStarted,targetCount:payload.executionDiagnostics.items.length}));
-      let plan;
+      payload.decisionProtocol={pendingMeans:'already_presented_waiting_user',repeatQuestion:false,
+        waitAction:{action:'wait',resourceKind:'decision'},newQuestionRule:'Only a genuinely new choice or material amendment; state changes alone do not renew an approval.'};
+      let plan, legacyDecisionText="";
       while(true){
       checkDeadline();
       while (pendingQueries.length) {
@@ -461,6 +482,7 @@ export class CoordinationTurnService {
       phase = "planning"; planningRound++;
       callBudgetMs = Math.min(this.timing.callMs, deadline - this.now());
       progress("queued", "等待模型执行位");
+      if(this.dispatch.shadow?.decisions)payload.pendingDecisions=this.dispatch.shadow.decisions.pending(ownerId).map(d=>({...d,alreadyPresented:true,waitResource:{kind:'decision',id:d.id}}));
       const render=()=>JSON.stringify({...payload,readTools:COORDINATION_READ_TOOLS,
         readBudget:{remainingMs:Math.max(0,deadline-this.now()),pageCalls:3},readResults:reads});
       const prompt=render();
@@ -511,7 +533,7 @@ export class CoordinationTurnService {
           delete plan.batchId; delete plan.presentation;
           plan.progressUpdates ??=[];
           for (const update of Array.isArray(plan.progressUpdates) ? plan.progressUpdates : []) if (update && typeof update === "object") update.outcome ??= null;
-          plan.focus ??="";plan.decision ??="";
+          plan.focus ??="";legacyDecisionText=typeof plan.decision==='string'?plan.decision:'';delete plan.decision;
           plan.decisionRequest??=null;plan.continuationPlans??=[];plan.verificationRequired??=false;
           plan.decisionReportId ??= null; plan.requestRelation ??= null;
           // Preserve older adapters/checkpoints that predate nullable strict fields.
@@ -535,7 +557,7 @@ export class CoordinationTurnService {
           ...Object.fromEntries(Object.entries(legacy.deletion ?? {}).filter(([, value]) => value !== null)) });
         admissionStarted = true; admissionReceipt = staged.confirmationId ?? staged.operation?.operationId ?? null;
         plan = { ...plan, kind: "discussion", items: [], queries: [], progressUpdates: [],
-          reply: staged.message ?? "子任务没有未合并修改，回收请求已受理；以删除作业实际状态为准。", decision: "" };
+          reply: staged.message ?? "子任务没有未合并修改，回收请求已受理；以删除作业实际状态为准。" };
       }
       if (!validate(plan) || (plan.kind === "dispatch" ? !plan.items.length || plan.items.some(item => !["create", "send"].includes(item.action)
         || (item.action === "create" ? item.taskId !== null : !item.taskId))
@@ -543,6 +565,7 @@ export class CoordinationTurnService {
         : plan.items.length !== 0) || (plan.kind==="read" ? !plan.queries?.length : plan.queries?.length)) {
         throw failure("COORDINATION_PLAN_INVALID", "协调决策不符合执行合同，未派发。");
       }
+      plan.decision=this.dispatch.shadow?.decisions?(plan.decisionRequest?.question??''):legacyDecisionText;
       if (request && plan.requestRelation) {
         const relation = await this.requests.relate(request.request_id, plan.requestRelation.kind, plan.requestRelation.requestId);
         if (relation.waiting) { saveTurn("completed"); return receipt; }
@@ -630,20 +653,8 @@ export class CoordinationTurnService {
       }
       const silent = isProgressReport;
       if (shadow) {
-        if(executionPlan)for(const wait of plan.continuationPlans.filter(p=>p.action==='wait'&&p.resourceId)){
-          const current=this.checklists.read(task.id,{planId:executionPlan.planId});
-          if(!current.steps.some(s=>s.stepId===wait.stepId))throw failure('CHECKLIST_INVALID_DEPENDENCY','等待事项不在当前清单中。');
-          if(wait.resourceKind==='operation'){
-            const op=this.store.getAgentTask(wait.resourceId),session=op&&this.store.getSession(op.sessionId);if(!session)throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的执行不存在。');
-            this.readOnly.task(task,session.taskId);
-          }else if(wait.resourceKind==='dispatch'){
-            if(!this.store.selectOne('SELECT 1 FROM task_coordination_dispatches WHERE dispatch_id=? AND parent_task_id=?',[wait.resourceId,task.id]))throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的派发不属于当前任务。');
-          }else if(wait.resourceKind==='step'){
-            if(!this.checklists.read(task.id,{planId:wait.dependencyPlanId})?.steps.some(s=>s.stepId===wait.resourceId))throw failure('CHECKLIST_INVALID_DEPENDENCY','等待的清单事项不存在。');
-          }else throw failure('CHECKLIST_INVALID_DEPENDENCY','请选择明确的执行、派发或清单依赖。');
-          this.checklists.repository.wait(current.planId,{stepId:wait.stepId,kind:wait.resourceKind,resourceId:wait.resourceId,taskId:task.id,dependencyPlanId:wait.dependencyPlanId});
-        }
-        const decision=this.dispatch.shadow.decisions?.propose({mainId:ownerId,shadowId:reference.logicalSessionId,planId:executionPlan?.planId??null},plan.decisionRequest);
+        this.saveContinuationWaits(task,ownerId,executionPlan,plan.continuationPlans);
+        const decision=plan.decisionRequest?this.dispatch.shadow.decisions?.propose({mainId:ownerId,shadowId:reference.logicalSessionId,planId:executionPlan?.planId??null},plan.decisionRequest):null;
         if(decision?.status==='pending'&&executionPlan)for(const stepId of decision.stepIds)if(executionPlan.steps.some(s=>s.stepId===stepId))this.checklists.repository.wait(executionPlan.planId,{stepId,kind:'decision',resourceId:decision.id});
         const ready = plan.progressUpdates.filter(update => update.outcome === "ready");
         if (plan.reply.trim() || ready.length) {

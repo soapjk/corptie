@@ -100,12 +100,6 @@ struct PadInspectorResources<Primary: View, Secondary: View>: View {
                 }
             }).id("abilities:\(connection.serverID):\(sessionID)")
                 .modifier(ConversationDetailModuleSurface())
-            if let taskID = store.snapshot?.taskId {
-                ConversationVerificationBudgetCard(taskID: taskID,
-                    refreshID: String(describing: workspace.sessionsByID[sessionID]?.executionStatus)) {
-                    ClientVerificationBudgetAPI(transport: try await connection.transport(), paired: true)
-                }.id("verification:\(connection.serverID):\(taskID)")
-            }
             if richPresentation {
                 ConversationDetailResourceMenu(items: resourceItems)
             } else { nativeManagementContent }

@@ -408,3 +408,15 @@ test("a queued continuation takes precedence over creating another continuation 
   await f.service.resumeBudget('instruction:1');
   assert.deepEqual(f.service.read('instruction:1').resumeOperationIds,[]);
 });
+
+test('a user can switch a child shared current budget without changing parent defaults or resetting use',async t=>{
+ const f=await fixture(t);await f.service.execute(f.metadata,f.input('round:before-toggle'));
+ const child=f.store.createTask({workId:f.work.id,title:'Child_budget_switch',mainAgentId:f.agent.agentId,parentTaskId:f.task.id});
+ f.store.createSession({id:'provider:child-budget',agentId:f.agent.agentId,provider:'codex-app-server',workId:f.work.id,taskId:child.id,sessionKind:'worker'});
+ f.store.createLogicalSessionRoute({logicalSessionId:'logical:child-budget',legacySessionId:'provider:child-budget',providerId:'codex-app-server',providerThreadId:'child-budget',providerSessionId:'provider:child-budget',boundCwd:'/tmp',sessionName:'Child'});
+ const before=f.service.snapshot('logical:child-budget');assert.equal(before.policyEditable,false);assert.equal(before.budgets[0].instructionId,'instruction:1');
+ await f.service.control('logical:child-budget',{action:'configure',instructionId:'instruction:1',enabled:true,limit:3},{requestId:'switch:on'});
+ assert.equal(f.service.read('instruction:1').enabled,true);assert.equal(f.service.read('instruction:1').used,1);assert.equal(f.service.policy(f.logical.logicalSessionId).enabled,false);
+ await f.service.control('logical:child-budget',{action:'configure',instructionId:'instruction:1',enabled:false,limit:3},{requestId:'switch:off'});
+ assert.equal(f.service.read('instruction:1').enabled,false);assert.equal(f.service.read('instruction:1').used,1);
+});
