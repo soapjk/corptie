@@ -32,8 +32,7 @@ test("fork worktree is inventoried and gated before its identity is returned", a
     createScopedGitWorkspaceSnapshot: async (path) => ({
       repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
     }),
-    ensureArtifactCommitHook: async (_path, options) => {
-      assert.equal(options.dbPath, "/state/database");
+    cleanupArtifactCommitHook: async () => {
       calls.push("gate");
     }
   });
@@ -62,7 +61,7 @@ test("fork workspace rolls back when post-allocation preparation fails", async (
     createScopedGitWorkspaceSnapshot: async path => ({
       repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
     }),
-    ensureArtifactCommitHook: async () => { throw new Error("gate failed"); }
+    cleanupArtifactCommitHook: async () => { throw new Error("gate failed"); }
   });
 
   await assert.rejects(prepareConversationForkWorkspace({
@@ -88,7 +87,7 @@ test("chat fork removes its allocated worktree when session creation fails", asy
     createScopedGitWorkspaceSnapshot: async path => ({
       repository: { id: "repository:one" }, worktrees: [{ path, worktreeId: "worktree" }]
     }),
-    ensureArtifactCommitHook: async () => calls.push("gate"),
+    cleanupArtifactCommitHook: async () => calls.push("gate"),
     createSessionThroughApplication: async () => {
       calls.push("create-session");
       throw Object.assign(new Error("provider failed"), { code: "PROVIDER_FAILED" });

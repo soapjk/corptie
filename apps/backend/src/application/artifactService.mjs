@@ -10,7 +10,6 @@ import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
 import { ArtifactReadCoordinator, ARTIFACT_READ_DEFAULT_LIMITS } from "./artifactReadCoordinator.mjs";
 import { assertArtifactExportOutsideProjects, materializeArtifactBytes, publishArtifactRepositoryFile } from "./artifactMaterialization.mjs";
 import { authorizeArtifactPromotion } from "./artifactPromotionAuthorization.mjs";
-import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 import { integrationTrackingTargets } from "./worktreeIntegrationGraph.mjs";
 import {
@@ -40,7 +39,6 @@ export class ArtifactService {
     this.store = options.store;
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory ?? randomUUID;
-    this.ensureCommitHook = options.ensureCommitHook ?? ensureArtifactCommitHook;
     this.contentRoot = options.contentRoot ?? null;
     this.namingOperations = new Map();
     this.sessionAuthorizationResolver = options.sessionAuthorizationResolver
@@ -1599,7 +1597,6 @@ export class ArtifactService {
     this.#readableArtifact(current, artifactId);
     const authorization = authorize();
     const session = this.store.getSession(current.sessionId);
-    await this.ensureCommitHook(session?.external?.cwd, { dbPath: this.store.dbPath });
     this.context(contextInput);
     this.#readableArtifact(current, artifactId);
     authorize();
@@ -1674,7 +1671,6 @@ export class ArtifactService {
       || sha256(repositoryContent) !== version.contentHash) {
       throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "The repository file no longer matches the approved Artifact version.", 409);
     }
-    await this.ensureCommitHook(repositoryPath, { dbPath: this.store.dbPath });
     const promotionId = `artifact_promotion:worktree:${sha256(Buffer.from(decisionId, "utf8"))}`;
     const existing = this.store.selectOne(
       "SELECT * FROM artifact_repository_promotions WHERE promotion_id=?",
@@ -1720,7 +1716,7 @@ export class ArtifactService {
       const artifact = this.store.getArtifact(row.artifact_id);
       const version = this.store.getArtifactVersion(row.artifact_id, row.version);
       return artifact?.status === "active" && version?.contentHash === contentHash
-        && Boolean(JSON.parse(row.authorization_json).eventId);
+        && (() => { const evidence = JSON.parse(row.authorization_json); return Boolean(evidence.eventId && evidence.sessionId && evidence.turnId && evidence.path === path); })();
     });
   }
 

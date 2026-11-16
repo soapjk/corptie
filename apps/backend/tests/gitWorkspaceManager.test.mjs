@@ -223,21 +223,18 @@ test("createWorktree uses parameterized Git arguments, validates identity, and s
     assert.equal(switches.length, 1);
     assert.equal(switches[0].targetWorktreeId, result.worktree.worktreeId);
     assert.equal(switches[0].activeTurnId, "turn-active");
-    assert.deepEqual(result.sharedAgentConfiguration.linked.sort(), [".agents"]);
+    assert.equal(result.sharedAgentConfiguration, null);
     assert.equal((await lstat(join(target, ".corptie"))).isSymbolicLink(), false);
     assert.equal(await readFile(join(target, ".corptie/.gitignore"), "utf8"), "*\n");
     await assert.rejects(readFile(join(target, ".corptie/private.json")), { code: "ENOENT" });
-    assert.equal(
-      await readlink(join(target, ".agents")),
-      join(await realpath(fixture.repository), ".agents")
-    );
+    await assert.rejects(lstat(join(target, ".agents")), { code: "ENOENT" });
     assert.equal((await lstat(join(target, "AGENTS.md"))).isSymbolicLink(), false);
     assert.equal((await gitOutput(["status", "--short"], target)).trim(), "");
     const commonGitDir = (await gitOutput([
       "rev-parse", "--path-format=absolute", "--git-common-dir"
     ], target)).trim();
     const excludes = await readFile(join(commonGitDir, "info", "exclude"), "utf8");
-    assert.match(excludes, /^\/\.agents$/mu);
+    assert.doesNotMatch(excludes, /^\/\.agents$/mu);
     assert.doesNotMatch(excludes, /^\/\.corptie$/mu);
     const identity = await inspectGitWorkspace(target);
     assert.equal(identity.repositoryId, result.repositoryId);
@@ -1713,10 +1710,14 @@ test("a manually deleted worktree can be rebuilt from its surviving branch", asy
     await writeFile(join(fixture.activeWorktree, "preserved.txt"), "preserved by branch\n");
     await git(["add", "preserved.txt"], fixture.activeWorktree);
     await git(["commit", "-m", "Preserve branch content"], fixture.activeWorktree);
+    const sibling = join(fixture.directory, "external-missing");
+    await git(["worktree", "add", "-b", "external-missing", sibling, "HEAD"], fixture.repository);
+    await rm(sibling, { recursive: true, force: true });
     await rm(fixture.activeWorktree, { recursive: true, force: true });
 
     const restored = await manager.restoreMissingWorktree({ logicalSessionId: "logical:one" });
     assert.equal(restored.restored.branchName, "feature/session-worktree");
+    assert.ok((await gitOutput(["worktree", "list", "--porcelain"], fixture.repository)).includes(sibling));
     assert.equal(await readFile(join(fixture.activeWorktree, "preserved.txt"), "utf8"), "preserved by branch\n");
     const identity = await inspectGitWorkspace(fixture.activeWorktree);
     assert.equal(identity.worktreeId, restored.restored.worktreeId);

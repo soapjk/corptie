@@ -8,7 +8,7 @@ import {CorptieStore} from "../src/store/corptieStore.mjs";
 import {ArtifactService} from "../src/application/artifactService.mjs";
 import {MarkdownCommitPolicyService,validateDecisions} from "../src/application/markdownCommitPolicyService.mjs";
 import {GitWorkspaceManager} from "../src/runtime/gitWorkspaceManager.mjs";
-import {ensureArtifactCommitHook} from "../src/runtime/artifactCommitHook.mjs";
+import {assertManagedArtifactGitOperation} from "../src/runtime/artifactManagedGitGate.mjs";
 import {createGitWorkspaceSnapshot} from "../src/utils/gitWorktreeInventory.mjs";
 
 async function fixture(t,{owner=true}={}) {
@@ -26,17 +26,16 @@ async function fixture(t,{owner=true}={}) {
     const agent=store.createAgent({name:"Fixture",role:"independentContributor"});
     store.createWork({name:"Fixture",workspaceId:repository.workspaceId,contributorAgentIds:[agent.agentId]});
   }
-  const artifactService=new ArtifactService({store,contentRoot:join(directory,"artifacts"),
-    ensureCommitHook:path=>ensureArtifactCommitHook(path,{dbPath:store.dbPath})});
-  await artifactService.initialize();await ensureArtifactCommitHook(root,{dbPath:store.dbPath});
-  const manager=new GitWorkspaceManager({store}),service=new MarkdownCommitPolicyService({store,gitWorkspaces:manager,artifactService});
+  const artifactService=new ArtifactService({store,contentRoot:join(directory,"artifacts")});
+  await artifactService.initialize();
+  const manager=new GitWorkspaceManager({store,ensureCommitGate:(path,args)=>assertManagedArtifactGitOperation(path,args,{verifyPromotion:fixed=>artifactService.verifyRepositoryPromotion(fixed)})}),service=new MarkdownCommitPolicyService({store,gitWorkspaces:manager,artifactService});
   const context={project:{id:repository.id,mainPath:root},workspace};
   const prepare=()=>service.inspectCommitPolicy(context);
   const commit=(reviewId,decisions,extra={})=>service.commit(context,{reviewId,commitMessage:"User supplied message",decisions,...extra},async()=>null);
   return {directory,root,git,store,manager,service,artifactService,context,prepare,commit};
 }
 
-test("one main commit applies four different Markdown decisions, with a real hook and exact receipts",async t=>{
+test("one main commit applies four different Markdown decisions, with the managed Git gate and exact receipts",async t=>{
   const f=await fixture(t);
   for(const name of ["track.md","ignore.md","delete.md","artifact.md"]) await writeFile(join(f.root,name),`${name}\n`);
   await writeFile(join(f.root,"code.js"),"export const answer=42;\n");

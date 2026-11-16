@@ -255,7 +255,8 @@ import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTra
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
-import { ensureArtifactCommitHook } from "./runtime/artifactCommitHook.mjs";
+import { assertManagedArtifactGitOperation } from "./runtime/artifactManagedGitGate.mjs";
+import { cleanupArtifactCommitHook } from "./runtime/artifactCommitHook.mjs";
 import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { handleSessionGitHttpRequest } from "./application/sessionGitHttpApi.mjs";
 import { handleSessionToolsetHttpRequest } from "./application/sessionToolsetHttpApi.mjs";
@@ -514,12 +515,11 @@ const {
   store, collaborationCore, workService, taskCompletionService,
   presentTaskForClient: (task) => presentTaskForClient(task)
 });
-const ensureRepositoryArtifactCommitHook = (path, options = {}) => ensureArtifactCommitHook(path, {
-  ...options,
-  dbPath: store.dbPath,
-  diagnosticOnly: developmentPreview
+const cleanupRepositoryArtifactCommitHook = path => cleanupArtifactCommitHook(path);
+const artifactService = new ArtifactService({ store });
+const assertRepositoryArtifactCommit = (path, args) => assertManagedArtifactGitOperation(path, args, {
+  verifyPromotion: fixed => artifactService.verifyRepositoryPromotion(fixed)
 });
-const artifactService = new ArtifactService({ store, ensureCommitHook: ensureRepositoryArtifactCommitHook });
 const contextReadService = new ContextReadService({ store });
 const chatResourceService = new ChatResourceService({ store, artifacts: artifactService });
 const sceneService = new SceneApplicationService({ store });
@@ -1201,7 +1201,7 @@ const { clearCodexAppServerSession } = createCodexConversationClear({
 const gitWorkspaces = new GitWorkspaceManager({
   store,
   transitions: workspaceTransitionManager,
-  ensureCommitGate: ensureRepositoryArtifactCommitHook,
+  ensureCommitGate: assertRepositoryArtifactCommit,
   taskWorktreesRoot: ({ repositoryId }) => resolve(
     store.layout.worktreesDirectory,
     repositoryId.split(":").at(-1)
@@ -1217,7 +1217,7 @@ const projectToolsets = new ProjectToolsetManager({
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({
   commitProtection: gitCommitProtection,
-  ensureCommitGate: ensureRepositoryArtifactCommitHook
+  ensureCommitGate: assertRepositoryArtifactCommit
 });
 const agentProviderRegistry = createProviderRuntimeRegistryComposition({
   codexCommand: codexAppServerCommand,
@@ -1963,7 +1963,7 @@ const { sessionForkService, prepareConversationForkWorkspace } = createSessionFo
   workSessionStartApplicationService, chatResourceService, collaborationCore,
   createSessionThroughApplication: (...args) => createSessionThroughApplication(...args),
   emitEvent, createForkWorktree,
-  ensureArtifactCommitHook: ensureRepositoryArtifactCommitHook
+  cleanupArtifactCommitHook: cleanupRepositoryArtifactCommitHook
 });
 const { projectWorktreeIntegrationService, worktreeIntegrationJobService } = createWorktreeIntegrationServices({
   onDispatchReleased: worktreeIds => {
@@ -2890,7 +2890,7 @@ detailServiceFor(store, detailMigration).configureBusinessActionRegistry(detailA
 await initializeBackendStoreReadiness({
   store, benchmarkControlPlane, runIsolationCoordinator, runIsolationDataRoot,
   developmentPreview, dataRootMigrationCoordinator, turnObservability,
-  artifactService, ensureArtifactCommitHook: ensureRepositoryArtifactCommitHook, chatResourceService,
+  artifactService, cleanupArtifactCommitHook: cleanupRepositoryArtifactCommitHook, chatResourceService,
   collaborationCore, controlPlaneSnapshot, readControlPlaneEntity,
   runtimeActivity, scheduleStateSyncPublish, scheduleTimelineChangePublish,
   activateStoredBackendLogging,

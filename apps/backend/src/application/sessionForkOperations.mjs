@@ -10,7 +10,7 @@ export function createSessionForkOperations({
   store, agentProviderRegistry, sessionApplicationService, workService,
   workSessionStartApplicationService, chatResourceService, collaborationCore,
   createSessionThroughApplication, emitEvent, createForkWorktree,
-  ensureArtifactCommitHook, createScopedGitWorkspaceSnapshot = readScopedWorkspace
+  cleanupArtifactCommitHook, createScopedGitWorkspaceSnapshot = readScopedWorkspace
 }) {
 const sessionForkService = new SessionForkService({
   store, registry: agentProviderRegistry, sessionService: sessionApplicationService, workService,
@@ -58,7 +58,7 @@ async function prepareConversationForkWorkspace(source, targetId) {
     store.upsertGitWorkspaceSnapshot(snapshot);
     const worktree = snapshot.worktrees.find(row => resolve(row.canonicalPath || row.path) === targetPath);
     if (!worktree) throw new Error("Fork Worktree was not inventoried.");
-    await ensureArtifactCommitHook(targetPath, { dbPath: store.dbPath });
+    await cleanupArtifactCommitHook(targetPath);
     return { ...created, worktreeId: worktree.worktreeId, reused: false };
   } catch (error) {
     if (typeof created.rollback === "function") {

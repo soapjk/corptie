@@ -1,3 +1,6 @@
+import { migrateRepositoryGitState, repositoryPrivateRoot } from "../runtime/repositoryPrivateState.mjs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdir } from "node:fs/promises";
 import { StateSyncService } from "./stateSyncService.mjs";
 import { CodexResetForecastMonitor } from "../runtime/codexResetForecastMonitor.mjs";
@@ -5,7 +8,7 @@ import { CodexResetForecastMonitor } from "../runtime/codexResetForecastMonitor.
 export async function initializeBackendStoreReadiness({
   store, benchmarkControlPlane, runIsolationCoordinator, runIsolationDataRoot,
   developmentPreview, dataRootMigrationCoordinator, turnObservability,
-  artifactService, ensureArtifactCommitHook, chatResourceService,
+  artifactService, cleanupArtifactCommitHook, chatResourceService,
   collaborationCore, controlPlaneSnapshot, readControlPlaneEntity,
   runtimeActivity, scheduleStateSyncPublish, scheduleTimelineChangePublish,
   activateStoredBackendLogging, onStateSyncReady,
@@ -24,13 +27,18 @@ export async function initializeBackendStoreReadiness({
   // orphan audits, FTS rebuilds and usage reconciliation are maintenance.
   await artifactService.initialize({ performMaintenance: false });
   // Development Preview is diagnostic-only: it must never race production to
-  // rewrite repository-local Git configuration. Production installs once per
+  // rewrite repository-local Git configuration. Production retires old installations once per
   // repository common directory rather than once per linked Worktree.
   if (!developmentPreview) void Promise.allSettled(store.listGitRepositories().map((repository) => {
     return (async () => {
-      try { await ensureArtifactCommitHook(repository.path, { dbPath: store.dbPath }); }
+      try {
+        await cleanupArtifactCommitHook(repository.path);
+        const run = promisify(execFile);
+        const output = (cwd, args) => run("git", ["-C",cwd,...args], {encoding:"utf8",timeout:10000}).then(result=>result.stdout);
+        await migrateRepositoryGitState(await repositoryPrivateRoot(repository.path,output),output);
+      }
       catch (error) {
-        console.error(`[artifact-commit-gate] installation failed repository=${repository.id} path=${repository.path} code=${error.code ?? "ERROR"} message=${error.message}`);
+        console.error(`[artifact-commit-gate] cleanup failed repository=${repository.id} path=${repository.path} code=${error.code ?? "ERROR"} message=${error.message}`);
       }
     })();
   }));

@@ -123,10 +123,13 @@ test("do not remind preference is stored per repository", async () => {
   const protection = new GitCommitProtection({ rules });
   try {
     await mkdir(join(fixture.path, ".corptie"));
+    await writeFile(join(fixture.path, ".corptie", ".gitignore"), "*\n");
     await writeFile(join(fixture.path, ".corptie", "local.json"), "{}\n");
     await protection.resolve(fixture.path, { decision: "include", neverRemind: true });
     const inspection = await protection.inspect(fixture.path);
     assert.equal(inspection.warningEnabled, false);
+    await assert.rejects(execFileAsync("git", ["-C", fixture.path, "config", "--local", "--get", "corptie.privateFilesWarning"]));
+    assert.equal(JSON.parse(await readFile(join(fixture.path, ".corptie/git/private-files-warning-disabled.json"), "utf8")).disabled, true);
     assert.equal(inspection.requiresDecision, false);
     assert.deepEqual(inspection.protectedPaths, []);
   } finally {
