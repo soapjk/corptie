@@ -133,7 +133,7 @@ export class ArtifactService {
     return { verifiedArtifacts: integrity.length };
   }
 
-  context(input = {}) {
+  context(input = {}, { allowCoordinationRead = false } = {}) {
     if (input.kind === "child_delivery") {
       if (typeof input.revalidateUser !== "function") throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Delivery authority is required.", 403);
       const operation = input.revalidateUser();
@@ -170,6 +170,7 @@ export class ArtifactService {
       sessionId: input.sessionId,
       authenticatedLogicalSessionId: input.logicalSessionId,
       providerBindingId: input.providerBindingId,
+      allowCoordinationRead,
       expectedSessionKind: input.expectedSessionKind
     });
     const actorId = resolved.agentId;
@@ -287,6 +288,13 @@ export class ArtifactService {
     }
     if (offset > authorized.version.byteLength) throw artifactError("ARTIFACT_RANGE_INVALID", "Artifact offset exceeds total bytes.", 416);
     const turnExecutionId = requiredText(options.turnExecutionId ?? contextInput.turnExecutionId, "turnExecutionId");
+    const priorPage = contextInput.coordinationRead === true && options.continuationReceiptId
+      ? this.store.getArtifactReadReceipt(options.continuationReceiptId) : null;
+    const authorizedContinuation = priorPage && priorPage.logicalSessionId === context.logicalSessionId
+      && priorPage.providerBindingId === context.providerBindingId && priorPage.artifactId === artifactId
+      && priorPage.version === requestedVersion && priorPage.contentHash === requestedHash
+      && priorPage.referenceId === authorized.reference.referenceId && priorPage.format === "text"
+      && priorPage.byteOffset + priorPage.byteLength === offset;
     if (format === "text" && !this.store.hasArtifactTextReadBoundary({
       logicalSessionId: context.logicalSessionId,
       providerBindingId: context.providerBindingId,
@@ -297,7 +305,7 @@ export class ArtifactService {
       referenceId: authorized.reference.referenceId,
       authorizationRevision: authorized.authorizationRevision,
       offset
-    })) throw artifactError("ARTIFACT_RANGE_INVALID", "Text offset must continue an authorized page from this exact Turn and Reference.", 416);
+    }) && !authorizedContinuation) throw artifactError("ARTIFACT_RANGE_INVALID", "Text offset must continue an authorized page from this exact Turn and Reference.", 416);
     const anticipatedBytes = Math.min(limit, Math.max(0, authorized.version.byteLength - offset));
     const reauthorize = async () => {
       const currentContext = this.#pinnedReadContext(contextInput);
@@ -355,6 +363,67 @@ export class ArtifactService {
       deduplicated: page.deduplicated,
       turnBudget: page.turnBudget
     });
+  }
+
+  // Host-mediated document reading shares the ordinary immutable-page reader,
+  // authorization, receipts and Turn budget. It never uses the evidence reader
+  // (which intentionally has different limits) or impersonates the main Session.
+  async readDocument(contextInput, target, { cursor = null, signal } = {}) {
+    const input = { ...contextInput, coordinationRead: true, signal };
+    const context = this.context(input, { allowCoordinationRead: true });
+    const raw = requiredText(target, "targetId");
+    const [identity, query = ""] = raw.split("?");
+    const params = new URLSearchParams(query);
+    const reference = identity.startsWith("artifact_reference:") ? this.store.getArtifactReference(identity) : null;
+    if (identity.startsWith("artifact_reference:") && (!reference || reference.revokedAt)) {
+      throw artifactError("ARTIFACT_NOT_FOUND_OR_FORBIDDEN", "Artifact Reference is missing or revoked; search for an active Artifact locator.", 404);
+    }
+    const artifactId = reference?.artifactId ?? (identity.startsWith("artifact:") ? identity : `artifact:${identity}`);
+    const artifact = this.#readableArtifact(context, artifactId);
+    let pin;
+    if (cursor) {
+      try { pin = JSON.parse(cursor); } catch { /* validated below */ }
+      if (!pin || pin.artifactId !== artifactId || !Number.isSafeInteger(pin.offset) || pin.offset < 0
+        || !Number.isSafeInteger(pin.version) || pin.version < 1 || !/^[a-f0-9]{64}$/.test(pin.contentHash ?? "")
+        || typeof pin.continuationReceiptId !== "string"
+        || pin.referenceId !== (reference?.referenceId ?? null)) {
+        throw artifactError("ARTIFACT_RANGE_INVALID", "Use the document's returned nextCursor with the same targetId.", 400);
+      }
+    } else {
+      const requestedVersion = params.has("version") ? Number(params.get("version")) : reference?.pinnedVersion;
+      const selected = this.#selectedVersion(context, artifact, requestedVersion);
+      if (!selected) throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Requested Artifact version does not exist.", 409);
+      pin = { artifactId, version: selected.version,
+        contentHash: params.get("hash") ?? reference?.pinnedHash ?? selected.contentHash,
+        referenceId: reference?.referenceId ?? null, offset: 0 };
+    }
+    // A caller cannot change an explicitly supplied link/Reference pin by
+    // forging a continuation. Page authorization still revalidates every read.
+    if (params.has("version") && Number(params.get("version")) !== pin.version
+      || params.has("hash") && params.get("hash") !== pin.contentHash
+      || reference && (reference.pinnedVersion !== pin.version || reference.pinnedHash !== pin.contentHash)) {
+      throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Document continuation does not match its immutable locator.", 409);
+    }
+    const chunks = [], receipts = [], startOffset = pin.offset;
+    let page, limit = MAX_READ_BYTES;
+    do {
+      signal?.throwIfAborted();
+      page = await this.get(input, artifactId, { ...pin, limit, format: "text", signal });
+      chunks.push(page.content); receipts.push(page.readReceiptId);
+      pin.offset = page.range.nextOffset;
+      pin.continuationReceiptId = page.readReceiptId;
+      if (page.complete) break;
+      const remaining = page.turnBudget.uniqueBytesLimit - page.turnBudget.uniqueBytesUsed;
+      if (remaining < 4 || page.turnBudget.uniquePagesUsed >= page.turnBudget.uniquePagesLimit) break;
+      limit = Math.min(MAX_READ_BYTES, remaining);
+    } while (true);
+    return { artifactId, title: artifact.title, version: pin.version, contentHash: pin.contentHash,
+      mimeType: page.mimeType, content: chunks.join(""), encoding: "utf-8", totalBytes: page.totalBytes,
+      range: { offset: startOffset, byteLength: chunks.reduce((n, c) => n + Buffer.byteLength(c), 0), nextOffset: pin.offset },
+      complete: page.complete, truncated: !page.complete, nextCursor: page.complete ? null : JSON.stringify(pin),
+      readReceiptIds: receipts, pendingUpdate: page.pendingUpdate, turnBudget: page.turnBudget,
+      ...(!page.complete ? { readBlocked: { code: "ARTIFACT_TURN_READ_BUDGET_EXCEEDED",
+        message: "Only this range was read. The existing Artifact Turn read budget is exhausted; do not retry in this Turn or claim the whole document was read." } } : {}) };
   }
 
   async readPinnedEvidence(contextInput, artifactId, options = {}) {
@@ -2412,7 +2481,7 @@ export class ArtifactService {
   }
 
   #pinnedReadContext(contextInput) {
-    const context = this.context(contextInput);
+    const context = this.context(contextInput, { allowCoordinationRead: contextInput.coordinationRead === true });
     if (!["local_user", "platform_admin"].includes(context.kind)) return context;
     const logicalSessionId = contextInput.logicalSessionId ?? `${context.kind}:${context.actorId}`;
     return {

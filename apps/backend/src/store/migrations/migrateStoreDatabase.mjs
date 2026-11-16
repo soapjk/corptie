@@ -318,5 +318,6 @@ export function migrateStoreDatabase({ db, selectAll, selectOne, ensureColumn, r
     migrateTaskCoordination({ db, ensureColumn });
     migrateDispatchReadIndexes(db);
     migrateAgentClaimReceipts(db);
+    db.run("CREATE INDEX IF NOT EXISTS idx_child_discard_approvals ON session_items(status,created_at DESC,session_id,id) WHERE type='choice' AND id GLOB 'child-discard:*'");
 
 }

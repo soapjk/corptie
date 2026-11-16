@@ -13,6 +13,14 @@ public struct ClientCoordinationProgress: Codable, Equatable, Sendable {
     public let hasMore: Bool
     public let focus: String
     public let decision: String
+    public var groupId: String? = nil
+    public var planId: String? = nil
+    public var overallState: String? = nil
+    public var nextAction: String? = nil
+    public var finalized: Bool? = nil
+    public var pendingDecisionIds: [String]? = nil
+    public var reportMessageId: String? = nil
+    public var summary: String? = nil
 }
 
 public struct ClientCoordinationProgressItem: Codable, Equatable, Identifiable, Sendable {
@@ -60,6 +68,10 @@ extension ClientCoordinationProgressItem {
         case "queued": "排队中"
         case "running": "执行中"
         case "waiting_input": "等待补充"
+        case "waiting_dependency": "等待关联事项"
+        case "continuation_queued": "续作已排队"
+        case "paused": "已暂停"
+        case "needs_attention": "需要处理"
         case "blocked": "受阻"
         case "needs_review": "待审查"
         case "delivered": "已交付"
@@ -71,7 +83,8 @@ extension ClientCoordinationProgressItem {
     public var statusSymbol: String {
         switch state {
         case "running": "play.circle"
-        case "blocked", "waiting_input": "exclamationmark.circle"
+        case "paused": "pause.circle"
+        case "blocked", "waiting_input", "needs_attention": "exclamationmark.circle"
         case "needs_review": "doc.text.magnifyingglass"
         case "delivered", "accepted": "checkmark.circle"
         case "cancelled": "xmark.circle"
@@ -106,6 +119,7 @@ public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
     public var instructionId: String? = nil
     public init?(rawMetadataJSON: String?) {
         var encoded = rawMetadataJSON
+        var legacy: [String: Any]?
         // Historical product events wrapped the complete item around its raw
         // metadata. Follow only this explicit envelope, never message prose.
         while let data = encoded?.data(using: .utf8),
@@ -119,9 +133,17 @@ public struct ConversationCoordinationEvent: Codable, Equatable, Sendable {
                 retryable = event["retryable"] as? Bool; instructionId = event["instructionId"] as? String; return
             }
             if raw["executionMode"] as? String == "shadow_report" { kind = "summary" }
-            else if raw["progressBatchId"] is String { kind = "delivery" }
+            else if raw["progressBatchId"] is String {
+                if legacy == nil { legacy = raw }
+                encoded = raw["rawMetadataJSON"] as? String
+                continue
+            }
             else { encoded = raw["rawMetadataJSON"] as? String; continue }
             batchId = raw["progressBatchId"] as? String
+            return
+        }
+        if let legacy {
+            kind = "delivery"; batchId = legacy["progressBatchId"] as? String
             return
         }
         return nil

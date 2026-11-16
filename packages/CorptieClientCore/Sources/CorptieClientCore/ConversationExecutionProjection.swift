@@ -18,6 +18,8 @@ public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
         public let condition: String?
         public let reason: String?
         public let assignment: Assignment?
+        public var phase: String? = nil
+        public var dependsOnStepIds: [String]? = nil
         public var id: String { stepId }
 
         public var marker: String {
@@ -36,6 +38,7 @@ public struct ConversationExecutionPlan: Codable, Sendable, Hashable {
     public var stopReason: String? = nil
     public var completedCount: Int? = nil
     public var executionAvailable: Bool? = nil
+    public var continuation: ClientChecklistContinuation? = nil
     public let schemaVersion: Int
     public let planId: String
     public let revision: Int

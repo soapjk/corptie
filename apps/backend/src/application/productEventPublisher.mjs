@@ -100,6 +100,7 @@ export function createProductEventPublisher({
         logger.warn(`[events] client write failed type=${type}: ${error.message}`);
       }
     }
+    if (type === "ChildTaskDiscardConfirmationRequested" && payload?.notice) clientDeviceGateway?.events.publishUserDecisionNotice?.(payload.notice);
     if(type === "VerificationBudgetChanged")clientDeviceGateway?.events.invalidate({inventory:true});
     if (type === "VerificationBudgetChanged" && payload?.notice) clientDeviceGateway?.events.publishOperationNotice?.(payload.notice);
     if (type === "WorktreeIntegrationJobChanged" && payload?.job?.notification) {
@@ -154,7 +155,7 @@ export function createProductEventPublisher({
     const items = automationTimelineItems([sessionEvent], {
       resolveRun: id => store.getScheduledSessionRun?.(id)
     });
-    if (["SessionCommandCompleted", "SessionCoordinationCompleted", "SessionCoordinationMilestone", "SessionToolPreparationWarning"].includes(type) && payload?.item) {
+    if (["SessionCommandCompleted", "SessionCoordinationCompleted", "SessionCoordinationMilestone", "SessionToolPreparationWarning", "ChildTaskDiscardConfirmationRequested", "ChildTaskDiscardConfirmationResolved"].includes(type) && payload?.item) {
       items.push(payload.item);
     }
     if (["AgentWorkQueued", "AgentWorkPreparing", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed", "AgentWorkDispatchBlocked", "AgentWorkDispatchReady"].includes(type)) {

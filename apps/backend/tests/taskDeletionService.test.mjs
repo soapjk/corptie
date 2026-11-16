@@ -294,14 +294,11 @@ test("retaining a Worktree bypasses Worktree-only risks and cleanup", async () =
 });
 
 
-test("parent deletion may discard Artifacts and stale code snapshots without another confirmation", async () => {
+test("an unconfirmed parent cannot discard Artifacts or child code through the raw service", async () => {
   const f = fixture({ task: { parent_task_id: "task:parent" }, associations: { artifacts: [{artifactId:"a"}] },
     inspection: { status:"available",worktree:{worktreeId:"w",path:"/new",branchName:"task/new",headOid:"new",mergedIntoMain:false,statusSummary:"?? unsaved"} } });
-  await f.service.delete("task:one", {artifactDisposition:"delete",target:{taskId:"task:one",path:"/old",headOid:"old",sessionIds:[],artifactIds:[]}}, {type:"parent_session",id:"logical:parent"});
-  assert.deepEqual(f.calls.find(([name])=>name==="artifacts"),["artifacts","delete"]);
-  const removal=f.calls.find(([name])=>name==="remove")[1];
-  assert.equal(removal.force,true);
-  assert.equal(removal.target.path,"/new");
+  await assert.rejects(f.service.delete("task:one", {artifactDisposition:"delete"}, {type:"parent_session",id:"logical:parent"}), {code:"TASK_DELETE_USER_CONFIRMATION_REQUIRED"});
+  assert.equal(f.calls.length, 0);
 });
 
 test("explicit stop permission must settle a busy Session before Worktree removal", async () => {

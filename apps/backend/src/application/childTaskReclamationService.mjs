@@ -1,7 +1,7 @@
 // Reclaim payloads after the existing delivery/deletion services have released
 // runtime and Git ownership. Referential tombstones contain no chat archive.
 export class ChildTaskReclamationService {
-  constructor({ store, resources }) { Object.assign(this, { store, resources }); this.running = new Map(); this.retries = new Map(); }
+  constructor({ store, resources, beforePurge = () => {} }) { Object.assign(this, { store, resources, beforePurge }); this.running = new Map(); this.retries = new Map(); }
   schedule(taskId) {
     if (this.running.has(taskId)) return this.running.get(taskId);
     if (this.retries.has(taskId)) return Promise.resolve();
@@ -24,6 +24,7 @@ export class ChildTaskReclamationService {
       throw Object.assign(new Error("Child deletion is not complete."), { code: "CHILD_RECLAMATION_NOT_READY" });
     }
     await this.resources.reclaimDeletedTask(taskId);
+    this.beforePurge(taskId);
     const sessions = this.store.selectAll("SELECT id FROM sessions WHERE task_id=?", [taskId]);
     this.store.runInTransaction(() => {
       for (const { id } of sessions) {
@@ -48,6 +49,8 @@ export class ChildTaskReclamationService {
         }
         this.store.db.run("UPDATE sessions SET title='',summary='',raw_json='{}',active_choice_json=NULL WHERE id=?", [id]);
       }
+      this.store.db.run("DELETE FROM coordination_decisions WHERE plan_id IN (SELECT plan_id FROM execution_checklist_plans WHERE task_id=?)",[taskId]);
+      this.store.db.run("DELETE FROM execution_checklist_plans WHERE task_id=?",[taskId]);
       this.store.db.run("DELETE FROM execution_checklists WHERE task_id=?", [taskId]);
       this.store.db.run("UPDATE tasks SET title='' WHERE id=?", [taskId]);
       this.store.db.run("UPDATE task_coordination_dispatches SET request_json='{}',runtime_json='{}',error_message=NULL WHERE target_task_id=? OR parent_task_id=?", [taskId, taskId]);

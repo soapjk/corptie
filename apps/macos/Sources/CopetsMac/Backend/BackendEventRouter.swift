@@ -2,6 +2,8 @@ import Foundation
 import CorptieClientCore
 import UserNotifications
 
+private struct UserDecisionNoticeEnvelope: Decodable { let payload: Payload; struct Payload: Decodable { let notice: ClientUserDecisionNotice? } }
+
 private struct VerificationNoticeEnvelope: Decodable { let payload: Payload; struct Payload: Decodable { let notice: ClientVerificationNotice? } }
 
 private struct AutomationClientActionEnvelope: Decodable {
@@ -157,6 +159,11 @@ final class BackendEventRouter {
             // Background activation must never mutate foreground navigation.
             // The queued message wakes the Session; only an explicit user
             // action (for example clicking its notification) may open it.
+            return
+        }
+        if eventName == "ChildTaskDiscardConfirmationRequested" {
+            if let bytes = data.data(using: .utf8), let value = try? JSONDecoder().decode(UserDecisionNoticeEnvelope.self, from: bytes),
+               let event = value.payload.notice?.notification { OperationNotificationManager.shared.complete(event) }
             return
         }
         if eventName == "VerificationBudgetChanged" {

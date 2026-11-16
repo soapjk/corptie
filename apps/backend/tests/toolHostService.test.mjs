@@ -972,3 +972,21 @@ test('catalog change signal exposes pending desired generation rather than hidin
     logicalSessionId: 'logical:one', providerBindingId: 'binding:one'
   } }), 'new:none');
 });
+
+
+test("retired deletion calls stage user confirmation through the fixed gateway without catalog exposure", async () => {
+  const calls = [];
+  const host = new ToolHostService({ registry: {}, catalog: { entry: () => null, execute() { assert.fail("must not execute retired tool"); } },
+    requestRetiredChildDiscard: async input => { calls.push(input); return { accepted: false, requiresUserConfirmation: true }; } });
+  const metadata = { logicalSessionId: "logical:parent", providerBindingId: "binding:parent" };
+  for (const input of [
+    { tool: "corptie_collaboration_tasks_delete_child", arguments: { child_task_id: "task:child" } },
+    { tool: "corptie_tool_call", arguments: { tool: "corptie_collaboration_tasks_delete_child", arguments: { child_task_id: "task:child" } } }
+  ]) {
+    const result = await host.execute({ ...input, actorId: "agent:parent", metadata });
+    assert.equal(result.requiresUserConfirmation, true);
+  }
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].arguments.child_task_id, "task:child");
+  assert.equal(calls[1].scope.providerBindingId, "binding:parent");
+});

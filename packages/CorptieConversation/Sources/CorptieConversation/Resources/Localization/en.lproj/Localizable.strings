@@ -141,3 +141,35 @@
 "展开汇总" = "Expand summary";
 "已展开" = "Expanded";
 "已收起" = "Collapsed";
+
+"任务进展" = "Task progress";
+
+"等待关联事项" = "Waiting for related work";
+
+"续作已排队" = "Continuation queued";
+
+"已暂停" = "Paused";
+
+"需要处理" = "Action required";
+
+"继续执行已排队" = "Continuation queued";
+
+"持续推进中" = "Continuing work";
+
+"等待你的答复" = "Waiting for your answer";
+
+"验证预算已用尽" = "Verification budget exhausted";
+
+"执行需要处理" = "Execution needs attention";
+
+"清单已完成" = "Checklist completed";
+
+"准备继续执行" = "Preparing to continue";
+
+"仅记录进度" = "Progress only";
+
+"暂停" = "Pause";
+
+"继续" = "Resume";
+
+"展开全文" = "Show full text";

@@ -106,12 +106,6 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_task_dispatch_retry", "Retry failed child preparation with the original dispatch identity and frozen runtime settings. Existing mailbox/Provider receipts are reconciled first; an accepted or uncertain instruction is never blindly resent.", {
     dispatch_id: { type: "string", minLength: 1 }
   }, ["dispatch_id"]),
-  tool("corptie_collaboration_tasks_delete_child", "Inspect or autonomously delete a direct child Task and cascade descendants without user confirmation. Choose Artifact delete/work/retain; content loss needs no extra confirmation. stop_running stops execution; cancel_startup interrupts startup; delete_associated_tasks includes authorized Tasks sharing its Worktree; cancel_integration requests cancellation of the reported occupying job. Main Worktrees remain user-only. Busy execution and active integration remain blocked until stopping is verified. Receipt is asynchronous; never poll.", {
-    child_task_id: taskIdSchema, idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
-    inspect_only: { type: "boolean" }, artifact_disposition: { type: "string", enum: ["delete", "work", "retain"] },
-    stop_running: { type: "boolean" }, cancel_startup: { type: "boolean" },
-    delete_associated_tasks: { type: "boolean" }, cancel_integration: { type: "boolean" }
-  }, ["child_task_id", "idempotency_key"]),
   tool("corptie_collaboration_tasks_create", "Create a Task and its companion Worker Session. Child creation is autonomous: the authenticated parent Session decides when and how many children to create, without explicit user creation requests, message evidence, confirmation or a total creation quota. Specify parent_task_id; no parent version is needed; Worker may target only its bound root Task, Work Chat a root in its Work. Prefer create_batch for 1-10 children per call. Independent Tasks (parent omitted/null) still require an explicit current direct-user request and authoritative turn evidence. Never use platform administration as a fallback.", {
     title: { type: "string", minLength: 1 },
 
@@ -214,6 +208,12 @@ export const collaborationDynamicTools = Object.freeze([
 ]);
 
 export async function callCollaborationDynamicTool(client, name, input = {}) {
+  // Compatibility trap only: deliberately absent from discovery and catalog.
+  if (name === "corptie_collaboration_tasks_delete_child") return client.post("/internal/collaboration/tasks/delete-child", {
+    childTaskId: input.child_task_id, idempotencyKey: input.idempotency_key, inspectOnly: input.inspect_only,
+    artifactDisposition: input.artifact_disposition, stopRunning: input.stop_running, cancelStartup: input.cancel_startup,
+    deleteAssociatedTasks: input.delete_associated_tasks, cancelIntegration: input.cancel_integration
+  });
   const handlers = {
     corptie_collaboration_capabilities: () => client.get("/internal/collaboration/session-capabilities"),
     corptie_sessions_discover: () => client.get("/internal/collaboration/sessions", {
@@ -228,7 +228,6 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       creation: item.creation ? taskCreationBody(item.creation) : undefined
     })) }),
     corptie_task_dispatch_retry: () => client.post("/internal/collaboration/tasks/dispatch/retry", { dispatchId: input.dispatch_id }),
-    corptie_collaboration_tasks_delete_child: () => client.post("/internal/collaboration/tasks/delete-child", { childTaskId: input.child_task_id, idempotencyKey: input.idempotency_key, inspectOnly: input.inspect_only, artifactDisposition: input.artifact_disposition, stopRunning: input.stop_running, cancelStartup: input.cancel_startup, deleteAssociatedTasks: input.delete_associated_tasks, cancelIntegration: input.cancel_integration }),
     corptie_collaboration_tasks_create: () => client.post("/internal/collaboration/tasks", taskCreationBody(input)),
     corptie_collaboration_tasks_create_batch: () => client.post("/internal/collaboration/tasks/batch", compact({
       parentTaskId: input.parent_task_id, expectedParentResourceVersion: input.expected_parent_resource_version,

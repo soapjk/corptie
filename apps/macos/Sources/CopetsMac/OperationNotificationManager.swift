@@ -127,7 +127,8 @@ final class OperationNotificationManager {
 
     func handleResponse(_ info: [AnyHashable: Any]) {
         NSApp.activate(ignoringOtherApps: true)
-        if info["category"] as? String == OperationNotificationCategory.verification.rawValue,
+        if info["category"] as? String == OperationNotificationCategory.verification.rawValue
+            || (info["operationEventId"] as? String)?.hasPrefix("child-discard:") == true,
            let session = info["sessionId"] as? String {
             NotificationCenter.default.post(name: .openSessionConversation, object: nil, userInfo: ["sessionId": session])
             return

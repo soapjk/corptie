@@ -3,6 +3,7 @@ import { parseJson } from "./storedJson.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
 import { agentWorkExecutionBlock } from "../utils/agentWorkQueue.mjs";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
+import { coordinationEventForMessage, coordinationSummaryBody } from "../utils/coordinationMessageMetadata.mjs";
 
 export function isAgentNoise(text = "") {
   return /^现$|^your config\.toml:?$|^Started codex resume |You have \d+ usage limit resets available|10;\?11;\?.*>_ OpenAI Codex|^(?:10;\?11;\?|\[[0-9;?]*[a-zA-Z])$|^>_ OpenAI Codex|^model:\s|^directory:\s|features?.*web[_\s-]?search[_\s-]?request.*deprecated|web[_\s-]?search[_\s-]?request.*deprecated|set [`'"]?web[_\s-]?search[`'"]?.*(live|true|enabled)|falling back from web ?sockets? to https|websocket.*fallback|under a profile\) in config\.toml|Tip: Try the Codex App|HooksLifecycle hooks|EventInstalledActiveReviewDescription|MCP startup incomplete|MCP client .* timed out|Starting MCP servers|startup_timeout_sec|\[mcp_servers\.|0;[⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸]/i.test(text);
@@ -17,6 +18,14 @@ export function normalizeStoredItem(item, provider, readOperation = null) {
   let restored = metadata && typeof metadata === "object" && !Array.isArray(metadata)
     ? { ...metadata, ...item }
     : item;
+  const productSummary = restored.type === "agentMessage"
+    && (restored.id?.startsWith("shadow-report:") || restored.id?.startsWith("coordination-summary:"));
+  const event = productSummary ? coordinationEventForMessage(restored) : null;
+  if (event) {
+    restored = { ...restored, coordinationEvent:event,
+      rawMetadataJSON:JSON.stringify({...metadata,coordinationEvent:event}),
+      ...(["summary","decision"].includes(event.kind) ? {text:coordinationSummaryBody(restored.text)} : {}) };
+  }
   if(restored.type==='userMessage' && ['failed','cancelled'].includes(item.status)) {
     const stale=['queued','preparing','processing','paused','inProgress'].includes(restored.userMessageStatus ?? restored.turnStatus);
     const operation=stale&&readOperation?readOperation(restored.taskId ?? restored.id):null;

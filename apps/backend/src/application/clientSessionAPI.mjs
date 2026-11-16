@@ -1,5 +1,5 @@
 import { imageVariant, deliverImageVariant } from "./messageImagePreview.mjs";
-import { coordinationMessageMetadata } from "../utils/coordinationMessageMetadata.mjs";
+import { coordinationMessageMetadata, coordinationEventForMessage } from "../utils/coordinationMessageMetadata.mjs";
 import { unifiedSearch } from "../store/unifiedSearch.mjs";
 import { projectTaskDeletionNotification } from "./worktreeIntegrationJobService.mjs";
 import { boundedUnicodeText } from "../utils/unicodeText.mjs";
@@ -59,11 +59,15 @@ function publicExecutionPlan(value) {
     lifecycle: typeof value.lifecycle === "string" ? value.lifecycle : "unknown",
     explanation: typeof value.explanation === "string" ? boundedUnicodeText(value.explanation, 2_000) : null,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
+    ...(value.continuation ? {continuation:{enabled:value.continuation.enabled===true,state:value.continuation.state,generation:value.continuation.generation,
+      pauseReason:value.continuation.pauseReason??null,reason:value.continuation.reason??null,nextStepIds:value.continuation.nextStepIds??[],
+      canPause:value.continuation.canPause===true,canResume:value.continuation.canResume===true}}:{}),
     steps: value.steps.map((step, ordinal) => ({
       stepId: boundedUnicodeText(step?.stepId ?? "", 200),
       ordinal,
       text: boundedUnicodeText(step?.text ?? "", 2_000),
       status: typeof step?.status === "string" ? step.status : "unknown",
+      ...(step.phase?{phase:step.phase}:{}),...(Array.isArray(step.dependsOnStepIds)?{dependsOnStepIds:step.dependsOnStepIds}:{}),
       ...(typeof value.taskId === "string" ? {
         condition: typeof step?.condition === "string" ? boundedUnicodeText(step.condition, 2000) : null,
         reason: typeof step?.reason === "string" ? boundedUnicodeText(step.reason, 2000) : null,
@@ -106,12 +110,11 @@ function publicClientMessage(item) {
   let replyAssociation, coordinationEvent;
   try {
     const metadata = coordinationMessageMetadata(item.rawMetadataJSON);
-    if (["summary","delivery","receipt","failure","decision","verification_budget"].includes(metadata?.coordinationEvent?.kind))
-      coordinationEvent = {kind:metadata.coordinationEvent.kind,batchId:typeof metadata.coordinationEvent.batchId === "string" ? metadata.coordinationEvent.batchId.slice(0,512) : null,
-        ...Object.fromEntries(["requestId","sessionId","phase","errorCode","instructionId"].filter(key=>typeof metadata.coordinationEvent[key]==="string").map(key=>[key,metadata.coordinationEvent[key].slice(0,512)])),
-        ...(metadata.coordinationEvent.retryable===true?{retryable:true}:{})};
-    else if (metadata?.executionMode === "shadow_report") coordinationEvent = { kind: "summary", batchId: metadata.progressBatchId ?? null };
-    else if (typeof metadata?.progressBatchId === "string") coordinationEvent = { kind: "delivery", batchId: metadata.progressBatchId };
+    const event = coordinationEventForMessage(item, metadata);
+    if (["summary","delivery","receipt","failure","decision","verification_budget"].includes(event?.kind))
+      coordinationEvent = {kind:event.kind,batchId:typeof event.batchId === "string" ? event.batchId.slice(0,512) : null,
+        ...Object.fromEntries(["requestId","sessionId","phase","errorCode","instructionId"].filter(key=>typeof event[key]==="string").map(key=>[key,event[key].slice(0,512)])),
+        ...(event.retryable===true?{retryable:true}:{})};
     if (typeof metadata?.replyToMessageId === "string" && metadata.replyToMessageId.trim()) {
       replyAssociation = { replyToMessageId: metadata.replyToMessageId.slice(0, 1024),
         requestId: typeof metadata.requestId === "string" ? metadata.requestId.slice(0, 512) : null,
@@ -398,10 +401,11 @@ export class ClientSessionAPI {
     if (item.status === "submitted" && previousSubmission?.optionId === input.optionId) {
       return { schemaVersion: 1, sessionId, itemId: item.id, status: "submitted" };
     }
-    if (item.status === "dispatching" || item.status === "unknown") {
+    const hostDiscardRetry = item.id.startsWith("child-discard:") && previousSubmission?.optionId === input.optionId;
+    if ((item.status === "dispatching" || item.status === "unknown") && !hostDiscardRetry) {
       throw deviceError("APPROVAL_OUTCOME_UNCERTAIN", 409);
     }
-    if (item.status !== "pending") throw deviceError("APPROVAL_NOT_PENDING", 409);
+    if (item.status !== "pending" && !hostDiscardRetry) throw deviceError("APPROVAL_NOT_PENDING", 409);
     const option = item.options?.find(candidate => candidate.id === input.optionId);
     if (!option) throw deviceError("INVALID_APPROVAL_OPTION", 400);
     if (!this.respondToApproval) throw deviceError("CAPABILITY_UNSUPPORTED", 409);

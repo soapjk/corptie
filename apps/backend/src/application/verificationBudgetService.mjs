@@ -44,6 +44,10 @@ export class VerificationBudgetService {
     if (!operation || seen.has(operation.task_id)) return null;
     seen.add(operation.task_id);
     let source = {}; try { source = JSON.parse(operation.source_json ?? "{}"); } catch {}
+    if(source.checklistContinuation?.sourceOperationId){
+      const original=this.store.selectOne('SELECT * FROM agent_operations WHERE task_id=?',[source.checklistContinuation.sourceOperationId]);
+      const root=this.operationRoot(original,seen);if(root)return root;
+    }
     if (source.verificationContinuation?.instructionId) {
       const budget = this.read(source.verificationContinuation.instructionId);
       if (budget) return { instructionId:budget.instructionId,taskId:budget.taskId,sessionId:budget.sessionId };

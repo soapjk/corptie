@@ -262,6 +262,7 @@ struct PadAppShell: View {
         if let scope = userInfo["operationScope"] as? String,
            scope != "\(connection.serverID)|\(connection.address)" { return }
         if userInfo["destination"] as? String == "operation", let id = userInfo["operationEventId"] as? String,
+           !id.hasPrefix("child-discard:"),
            let event = PadOperationNotifications.shared.result(id) { sheet = .operation(event) }
         if userInfo["destination"] as? String == "operation", let id = userInfo["repositoryId"] as? String {
             controls.selections[.repositories] = id

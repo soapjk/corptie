@@ -6,7 +6,7 @@ import { validateInteractionAnswers, withSubmittedUserInputAnswers } from "./int
 export function createSessionInteractionCommands({
   store, requireSessionReference, sessionApplicationService, providerEventIngestion,
   handleCommittedProviderTerminalLifecycle, sendUnifiedSessionMessage, emitEvent, now,
-  interruptTimeoutMs = 15_000, onInterruptRequested = () => {}, mcpInteractions = null
+  interruptTimeoutMs = 15_000, onInterruptRequested = () => {}, mcpInteractions = null, childTaskDiscard = () => null, coordinationDecisions = () => null
 }) {
   async function interruptUnifiedSession(sessionId, source = { type: "desktop" }, options = {}) {
     const reference = requireSessionReference(sessionId);
@@ -97,6 +97,9 @@ export function createSessionInteractionCommands({
   async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
     const reference = requireSessionReference(sessionId);
     const summary = reference.metadata.session;
+    const discard = childTaskDiscard();
+    const hostItemId = input.itemId ?? input.choiceId;
+    if (discard?.owns(hostItemId)) return discard.respond(reference, { ...input, itemId: hostItemId }, source);
     if (typeof input.itemId === "string" && input.itemId) {
       const item = store.getSessionItem(reference.sessionId, input.itemId);
       if (!approvalRequestIsCurrent(item, reference.bindingId, input, source)) {
@@ -144,7 +147,9 @@ export function createSessionInteractionCommands({
     store.upsertTimelineItemProjection(reference.sessionId, { ...item, status: "dispatching" });
     try {
       let result;
-      if (mcpInteractions?.owns(input.itemId)) {
+      if(item.userInput?.kind==='coordination_decision'){
+        result=await coordinationDecisions().answer(reference.sessionId,item.id,input.answers,source);
+      } else if (mcpInteractions?.owns(input.itemId)) {
         result = mcpInteractions.respond(reference, input);
       } else if (String(input.itemId).startsWith("mcp-input:")) {
         throw Object.assign(new Error("MCP approval expired or the runtime was restarted."), { code: "USER_INPUT_NOT_PENDING" });

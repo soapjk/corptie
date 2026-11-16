@@ -180,7 +180,9 @@ test("assignment supports many items per child, reassignment and removal without
   assert.deepEqual(shown.steps.slice(0, 2).map(s => s.assignment.title), ["API", "API"]);
   assert.equal(shown.completedCount, 0);
   const stored = JSON.parse(f.store.selectOne("SELECT body_json FROM execution_checklists WHERE task_id=?", [f.task.id]).body_json);
-  assert.deepEqual(stored.steps[0].assignment, { taskId: child.id });
+  assert.equal(stored.steps[0].assignment.taskId, child.id);
+  assert.equal(stored.steps[0].assignment.executionRevision, 0);
+  assert.ok(stored.steps[0].assignment.assignedAt);
   f.update({ action: "edit", itemId: ids[0], text: "Changed definition" });
   assert.equal(f.service.read(f.task.id).steps[0].assignment.taskId, child.id);
   f.update({ action: "assign", itemId: ids[0], taskId: other.id });
@@ -250,4 +252,26 @@ test("manual close and closed batch history survive a SQLite reopen", async t =>
   const history = reopened.getItems(f.logical.legacySessionId).filter(i => i.type === "executionChecklist");
   assert.equal(history.length, 2);
   assert.equal(history.find(i => i.id === first).executionPlan.closed, true);
+});
+
+test('paired devices can read an exact plan, pause it idempotently, and cannot inject query parameters',async t=>{
+  const f=await fixture(t);f.create();
+  const {ClientDeviceAuthority}=await import('../src/application/clientDeviceAuthority.mjs');
+  const {ClientDeviceGateway}=await import('../src/application/clientDeviceGateway.mjs');
+  const dir=await mkdtemp(join(tmpdir(),'checklist-device-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const authority=new ClientDeviceAuthority(dir);await authority.initialize();
+  const invite=authority.invite(),claim=authority.claim({...invite,name:'PlanPhone'});authority.approve(invite.pairingId,true);
+  const credentials=await authority.exchange(claim);
+  const gateway=new ClientDeviceGateway(authority,{executionChecklistService:f.service,sessionAPI:{taskManagement:(_identity,id)=>{assert.equal(id,f.task.id);}}});
+  const server=createServer((req,res)=>gateway.handle(req,res));await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  t.after(()=>new Promise(r=>{server.closeAllConnections();server.close(r);}));
+  const url=`http://127.0.0.1:${server.address().port}/client/v1/tasks/${encodeURIComponent(f.task.id)}/execution-checklist`;
+  const headers={authorization:`Bearer ${credentials.accessToken}`,'content-type':'application/json'};
+  assert.equal((await fetch(url)).status,401);
+  const plan=f.service.read(f.task.id),read=await fetch(`${url}?planId=${encodeURIComponent(plan.planId)}`,{headers});
+  assert.equal(read.status,200);assert.equal((await read.json()).checklist.planId,plan.planId);
+  assert.equal((await fetch(`${url}?unknown=true`,{headers})).status,403);
+  const input={action:'pause',planId:plan.planId,expectedRevision:plan.revision,operationId:'phone:pause'};
+  for(let i=0;i<2;i++)assert.equal((await fetch(url,{headers,method:'POST',body:JSON.stringify(input)})).status,200);
+  assert.equal(f.service.repository.runtime(plan.planId).generation,1);
 });

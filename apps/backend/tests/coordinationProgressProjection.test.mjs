@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {projectCoordinationAssignment,projectCoordinationProgress} from '../src/application/coordinationProgressProjection.mjs';
+import Ajv from 'ajv';
+import {coordinationProgressSchema,projectCoordinationAssignment,projectCoordinationProgress} from '../src/application/coordinationProgressProjection.mjs';
 const row=(id,dispatchState,extra={})=>({assignmentId:id,title:id,dispatchState,updatedAt:'2026-11-04T00:00:00Z',...extra});
 const batch=assignments=>projectCoordinationProgress({batchId:'batch:one',parentSessionId:'logical:parent',revision:1,
  updatedAt:'2026-11-04T00:00:00Z',assignments});
@@ -37,4 +38,10 @@ test('delivery and cleanup phases preserve truthful progress rather than stale d
  assert.equal(blocked.state,'blocked');assert.equal(blocked.phase,'reclamation');
  const shadow=projectCoordinationAssignment(row('followup','blocked',{phase:'shadow',previousExecutionStatus:'completed'}));
  assert.equal(shadow.previousExecutionStatus,'completed');assert.equal(shadow.state,'blocked');
+});
+test('continuation states are distinct from user questions and included in counts/schema',()=>{
+ for(const [continuationState,state] of [['paused_user','paused'],['paused_budget','paused'],['queued','continuation_queued'],['waiting_dependency','waiting_dependency'],['needs_attention','needs_attention']]){
+  const result=batch([row('a','completed',{continuationState})]);assert.equal(result.items[0].state,state);assert.equal(result.counts[state],1);
+  assert.ok(new Ajv({strict:false}).compile(coordinationProgressSchema)(result));
+ }
 });

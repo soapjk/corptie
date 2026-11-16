@@ -494,7 +494,8 @@ struct SessionConversationSurface: View {
     private func receiveChecklistChange(_ event: Notification) {
         guard acceptsPresentationUpdates, event.object as? String == selectedSession?.taskId,
               let next = event.userInfo?["checklist"] as? ConversationExecutionPlan else { return }
-        if next.taskId != checklistEventPlan?.taskId || next.revision > (checklistEventPlan?.revision ?? -1) {
+        if next.planId != checklistEventPlan?.planId || next.revision > (checklistEventPlan?.revision ?? -1)
+            || (next.revision >= (checklistEventPlan?.revision ?? -1) && next.continuation != checklistEventPlan?.continuation) {
             checklistEventPlan = next
         }
     }

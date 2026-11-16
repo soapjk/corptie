@@ -14,7 +14,7 @@ const directUserEvidence = {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 21);
+  assert.equal(names.length, 20);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
   assert.ok(names.includes("corptie_collaboration_channel_open"));
@@ -27,8 +27,7 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.equal(names.includes("corptie_collaboration_tasks_cancel"), false);
   assert.ok(names.includes("corptie_task_dispatch"));
   assert.ok(names.includes("corptie_task_dispatch_retry"));
-  assert.ok(names.includes("corptie_collaboration_tasks_delete_child"));
-  assert.equal(names.filter(name => name !== "corptie_collaboration_tasks_delete_child").some((name) => name.includes("tasks_delete") || name.includes("tasks_update")), false);
+  assert.equal(names.some((name) => name.includes("tasks_delete") || name.includes("tasks_update")), false);
   for (const entry of collaborationDynamicTools) {
     assert.equal(entry.type, "function");
     assert.equal(entry.deferLoading, false);
@@ -292,4 +291,17 @@ test('a host-collected child report is a successful no-op rather than an empty r
   'corptie_collaboration_channel_open',{recipient_session_id:'session:parent',body:'完成',idempotency_key:'quiet-result'});
  assert.equal(result.coordination.delivery,'collected_by_host');assert.equal(result.coordination.requiresUserAction,false);
  assert.match(result.coordination.note,/No message was created/);
+});
+
+
+test("stale direct deletion calls are trapped by the user confirmation boundary, not advertised", async () => {
+  assert.equal(collaborationDynamicTools.some(tool => tool.name === "corptie_collaboration_tasks_delete_child"), false);
+  const calls = [];
+  const result = await callCollaborationDynamicTool({ post: async (path, input) => {
+    calls.push({ path, input }); return { accepted: false, requiresUserConfirmation: true };
+  } }, "corptie_collaboration_tasks_delete_child", { child_task_id: "task:child", idempotency_key: "old-delete", stop_running: true });
+  assert.equal(result.accepted, false);
+  assert.equal(result.requiresUserConfirmation, true);
+  assert.equal(calls[0].path, "/internal/collaboration/tasks/delete-child");
+  assert.equal(calls[0].input.childTaskId, "task:child");
 });

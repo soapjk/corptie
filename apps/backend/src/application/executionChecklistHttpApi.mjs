@@ -8,10 +8,11 @@ export function handleExecutionChecklistHttp({ request, response, url, service, 
     }
     const taskId = decodeURIComponent(match[1]);
     if (!service.store.getTask(taskId)) throw Object.assign(new Error("TASK_NOT_FOUND"), { statusCode: 404 });
-    if (request.method === "GET") return sendJson(response, 200, { checklist: service.display(service.read(taskId)), writesAllowed: !preview });
+    if (request.method === "GET") return sendJson(response, 200, { checklist: service.display(service.read(taskId,url.searchParams.has('planId')?{planId:url.searchParams.get('planId')}:{})), writesAllowed: !preview });
     if (preview) throw Object.assign(new Error("DEVELOPMENT_PREVIEW_READ_ONLY"), { statusCode: 403 });
     if (request.method !== "POST") return sendJson(response, 405, { code: "METHOD_NOT_ALLOWED" });
-    const result = service.mutate(taskId, await readJson(request));
+    const input=await readJson(request);
+    const result = ['pause','resume'].includes(input.action)?service.control(taskId,input,{authenticated:true}):service.mutate(taskId,input);
     return sendJson(response, 200, { ...result, checklist: service.display(result.checklist) });
   }).catch(error => sendJson(response, error.statusCode ?? 400, { code: error.code ?? error.message, error: error.message }));
   return true;

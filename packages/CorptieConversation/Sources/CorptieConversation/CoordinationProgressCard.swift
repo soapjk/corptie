@@ -16,11 +16,14 @@ public struct CoordinationProgressCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("子任务进展", bundle: .module).font(.headline)
+                Text(progress.groupId == nil ? "子任务进展" : "任务进展", bundle: .module).font(.headline)
                 Spacer(minLength: 8)
                 Text("已交付 \(progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0])/\(progress.total)", bundle: .module)
                     .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                     .accessibilityLabel(Text("已交付或验收 \(progress.counts["delivered", default: 0] + progress.counts["accepted", default: 0]) 项，共 \(progress.total) 项", bundle: .module))
+            }
+            if let summary = progress.summary, !summary.isEmpty {
+                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }
             ForEach(progress.items.prefix(3)) { item in
                 Button { selection = item } label: { CoordinationProgressRow(item: item) }
@@ -161,7 +164,7 @@ private struct CoordinationProgressItemDetail: View {
                 HStack {
                     if let session = item.sessionId { Button { dismiss(); openSession(session) } label: { Text("打开子会话", bundle: .module) } }
                     Spacer(minLength: 0)
-                    if item.reportMessageId != nil, nextOffset != nil, !loading {
+                    if item.reportMessageId != nil || progress.reportMessageId != nil, nextOffset != nil, !loading {
                         Button { request = Task { await loadReport() } } label: {
                             Text(report.isEmpty ? "重试读取报告" : "继续读取报告", bundle: .module)
                         }
@@ -181,7 +184,7 @@ private struct CoordinationProgressItemDetail: View {
         #else
         .presentationDetents([.height(min(560, max(160, contentHeight + 24))), .large])
         #endif
-        .task(id: item.id) { if item.reportMessageId != nil, report.isEmpty { await loadReport() } }
+        .task(id: item.id) { if (item.reportMessageId != nil || progress.reportMessageId != nil), report.isEmpty { await loadReport() } }
         .onDisappear { request?.cancel(); request = nil }
     }
     private func loadReport() async {
@@ -264,9 +267,19 @@ public struct CoordinationSummaryCard: View {
                 .lineLimit(content.canExpand && !expanded ? CoordinationSummaryContent.previewLines : nil)
                 .truncationMode(.tail).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            if content.canExpand && expanded {
-                Button(action: toggleBody) { Label { Text("收起汇总", bundle: .module) } icon: { Image(systemName: "chevron.up") } }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            if content.canExpand {
+                Button(action: toggleBody) {
+                    HStack(spacing: 4) {
+                        Text(expanded ? "收起汇总" : "展开全文", bundle: .module)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    }
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("coordination-summary.disclosure")
+                .accessibilityValue(Text(expanded ? "已展开" : "已收起", bundle: .module))
             }
             if event.kind == "verification_budget", event.sessionId != nil, event.instructionId != nil, api != nil {
                 if !retryAccepted { Button { retryTask = Task { await retry() } } label: {

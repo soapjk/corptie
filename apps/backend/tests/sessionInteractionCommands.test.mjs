@@ -145,3 +145,15 @@ test("failed stop cannot submit or queue an async answer", async () => {
   assert.equal(sent, false);
   assert.notEqual(f.getItem().status, "submitted");
 });
+
+
+test("desktop and paired child discard decisions bypass Provider approval and preserve user source", async () => {
+  const calls = [];
+  const f = fixture({ childTaskDiscard: () => ({ owns: id => id === "child-discard:one",
+    respond: async (reference, input, source) => { calls.push({ reference, input, source }); return { id: "stored" }; } }) });
+  f.service.respondToApproval = () => assert.fail("host choice must not reach Provider");
+  await f.commands.respondUnifiedSessionApproval("public", { choiceId: "child-discard:one", optionId: "reject", approved: true }, { type: "desktop" });
+  await f.commands.respondUnifiedSessionApproval("public", { itemId: "child-discard:one", optionId: "approve", approved: true }, { type: "remote-client", deviceId: "phone" });
+  assert.equal(calls[0].input.itemId, "child-discard:one");
+  assert.equal(calls[1].source.deviceId, "phone");
+});

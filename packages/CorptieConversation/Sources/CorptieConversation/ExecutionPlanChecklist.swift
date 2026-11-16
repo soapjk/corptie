@@ -26,6 +26,9 @@ public struct ExecutionPlanChecklist: View {
             .font(.system(size: titleSize, weight: .semibold))
             .foregroundStyle(.secondary)
 
+            if let state = plan.continuation {
+                Text(LocalizedStringKey(state.reason ?? state.statusTitle), bundle: .module).font(.caption2).foregroundStyle(.secondary)
+            }
             if let explanation = plan.explanation, !explanation.isEmpty {
                 Text(explanation)
                     .font(.system(size: explanationSize))

@@ -19,6 +19,7 @@ export class TaskDeletionService {
     this.cancelIntegration = options.cancelIntegration;
     this.cleanupExecutionSpaces = options.cleanupExecutionSpaces;
     this.prepareChildDelivery = options.prepareChildDelivery;
+    this.requestUserConfirmation = options.requestUserConfirmation;
     this.backgroundWork = options.backgroundWork;
     this.inFlight = new Map();
     this.waitingOn = new Map();
@@ -49,6 +50,33 @@ export class TaskDeletionService {
   }
 
   async request(taskId, input = {}, actor = null) {
+    if (actor?.type === "parent_session") {
+      if (!this.requestUserConfirmation) throw coded("TASK_DELETE_USER_CONFIRMATION_REQUIRED", "直接删除必须先由用户点击确认。", 409);
+      return this.requestUserConfirmation(taskId, input, actor);
+    }
+    return this.#admit(taskId, input, actor);
+  }
+
+  async inspectParentDiscard(taskId, input, actor) {
+    const plans = [], seen = new Set(), pending = [taskId];
+    while (pending.length) {
+      const id = pending.shift();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const plan = await this.inspect(id, actor);
+      plans.push(plan);
+      pending.push(...(plan.childTaskIds ?? []), ...(input.deleteAssociatedTasks ? plan.associatedTaskIds ?? [] : []));
+    }
+    return { plan: plans[0], requiresConfirmation: plans.some(parentDiscardRisk) };
+  }
+
+  async requestDeliveredChild(taskId, input, actor) {
+    if (actor?.type !== "parent_session") throw coded("TASK_DELETE_FORBIDDEN", "需要父会话的清理权限。", 403);
+    if ((await this.inspectParentDiscard(taskId, input, actor)).requiresConfirmation) return this.request(taskId, input, actor);
+    return this.#admit(taskId, input, actor);
+  }
+
+  async #admit(taskId, input, actor) {
     let requestedKey = String(input.idempotencyKey ?? "").trim();
     const failedRow = this.store.selectOne?.("SELECT operation_id FROM task_deletion_operations WHERE task_id=? AND state='failed' ORDER BY rowid DESC LIMIT 1", [taskId]);
     const failed = failedRow && this.store.getTaskDeletionOperation(failedRow.operation_id);
@@ -161,12 +189,18 @@ export class TaskDeletionService {
       if (this.store.getTask(operation.taskId)) this.store.markTaskDeletion(operation.taskId, "delete_failed", actionableFailure(error));
       operation = this.store.updateTaskDeletionOperation(operationId, {
         state: "failed",
-        stage: error?.stage ?? this.getOperation(operationId).stage ?? "cleanup",
+        stage: error?.code === "TASK_DELETE_USER_CONFIRMATION_REQUIRED" ? "awaiting_user_confirmation" : error?.stage ?? this.getOperation(operationId).stage ?? "cleanup",
         errorCode: error?.code ?? "TASK_DELETE_FAILED",
         errorMessage: actionableFailure(error),
         retryable: true,
         completedAt: new Date().toISOString()
       });
+    }
+    if (operation.errorCode === "TASK_DELETE_USER_CONFIRMATION_REQUIRED" && operation.input.actor?.type === "parent_session") {
+      // Do not await a retry of this same in-flight operation if another
+      // writer finishes delivery while the confirmation is being prepared.
+      void this.request(operation.taskId, { ...operation.input, idempotencyKey: operation.idempotencyKey }, operation.input.actor)
+        .catch(error => console.warn("[task-deletion-confirmation]", error.code ?? error.message));
     }
     this.onChanged("TaskChanged", {
       action: operation.state === "succeeded" ? "deleted" : "deletion-failed",
@@ -279,6 +313,7 @@ export class TaskDeletionService {
 
   async delete(taskId, input = {}, actor = null, operationId = null) {
     let plan = await this.inspect(taskId, actor, operationId);
+    if (actor?.type === "parent_session" && (await this.inspectParentDiscard(taskId, input, actor)).requiresConfirmation) throw coded("TASK_DELETE_USER_CONFIRMATION_REQUIRED", "子任务有未合并修改，需要用户确认丢弃。", 409);
     this.#assertDeletionAllowed(plan, input, true);
     // Freeze scheduling before asking a Provider/startup operation to stop.
     this.store.markTaskDeletion(taskId, "deleting", null);
@@ -311,6 +346,7 @@ export class TaskDeletionService {
             (route.taskId ?? this.store.getSession(route.legacySessionId)?.taskId) === id);
       const accepted = await this.request(id, { ...input, deleteWorktree: shared ? false : input.deleteWorktree,
         deleteAssociatedTasks: false, idempotencyKey: `${operationId ?? taskId}:cascade:${id}` }, actor);
+      if (!accepted.operation) throw coded("TASK_DELETE_USER_CONFIRMATION_REQUIRED", "关联子任务出现未合并修改，正在等待用户确认。", 409);
       const nextId = accepted.operation.operationId;
       if (operationId) {
         const seen = new Set([operationId]);
@@ -327,6 +363,7 @@ export class TaskDeletionService {
       if (result.state !== "succeeded") throw coded(result.errorCode ?? "TASK_DELETE_FAILED", result.errorMessage, 409);
     }
     plan = await this.inspect(taskId, actor, operationId);
+    if (actor?.type === "parent_session" && parentDiscardRisk(plan)) throw coded("TASK_DELETE_USER_CONFIRMATION_REQUIRED", "清理前发现新的未合并修改，需要用户确认丢弃。", 409);
     this.#assertDeletionAllowed(plan, input);
     // Resolve the same Task's live resource binding; code/version changes do
     // not require a second confirmation. Never accept a caller-provided path.
@@ -401,6 +438,10 @@ export class TaskDeletionService {
     if (blockers.length) throw coded(blockers[0].code, blockers[0].message, 409, { deletion: { ...plan, blockers } });
   }
 
+}
+
+function parentDiscardRisk(plan) {
+  return plan.worktree?.dirty === true || plan.risks.some(risk => FORCEABLE_RISKS.has(risk.code));
 }
 
 function deletionPlan(item, inspection, risks, blockers, associatedSessionCount, artifacts = []) {
