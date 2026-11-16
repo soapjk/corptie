@@ -29,20 +29,26 @@ struct RoleDetailView: View {
     @StateObject private var draft: RoleEditDraft
     private let embedded: Bool
     private let onClose: (() -> Void)?
+    private let canStartSession: Bool
+    private let onStartSession: (() -> Void)?
     @State private var showsAvatarPicker = false
     @State private var showSkillPicker = false
     @State private var showMcpManager = false
+    @State private var showMemoryManager = false
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
     @State private var showSessionCreation = false
     @State private var assistRoleId: String?
 
-    init(agent: Role, draft: RoleEditDraft? = nil, embedded: Bool = false, onClose: (() -> Void)? = nil) {
+    init(agent: Role, draft: RoleEditDraft? = nil, embedded: Bool = false, onClose: (() -> Void)? = nil,
+         canStartSession: Bool = true, onStartSession: (() -> Void)? = nil) {
         self.agent = agent
         _draft = StateObject(wrappedValue: draft ?? RoleEditDraft(agent: agent))
         self.embedded = embedded
         self.onClose = onClose
+        self.canStartSession = canStartSession
+        self.onStartSession = onStartSession
     }
 
     private func close() {
@@ -89,6 +95,19 @@ struct RoleDetailView: View {
         .sheet(isPresented: $showMcpManager) {
             McpManagementView(roles: [agent], initialRoleId: agent.roleId)
         }
+        .sheet(isPresented: $showMemoryManager) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(L10n("Role Long-term Memory")).font(.headline)
+                    Spacer()
+                    Button(L10n("Close")) { showMemoryManager = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                MemoryManagementView(scope: .owner(type: "agent", id: agent.roleId))
+            }
+            .padding(20)
+            .frame(width: 640, height: 560)
+        }
         .task {
             guard !embedded else { return }
             await client.refreshSkills()
@@ -111,66 +130,91 @@ struct RoleDetailView: View {
             actions
             deleteButton
             Divider()
-            MemoryManagementView(scope: .owner(type: "agent", id: agent.roleId),
-                                 embedsListInParentScrollView: true)
+            if embedded {
+                // The registry toolbar belongs in its own viewport. Keep the
+                // narrow profile bounded and defer Memory loading until opened.
+                Button(L10n("Role Long-term Memory")) { showMemoryManager = true }
+                    .accessibilityIdentifier("role-memory-\(agent.roleId)")
+            } else {
+                MemoryManagementView(scope: .owner(type: "agent", id: agent.roleId),
+                                     embedsListInParentScrollView: true)
+            }
         }
     }
 
     // MARK: - 头部
 
     private var header: some View {
-        HStack(spacing: 14) {
-            agentAvatar
-                .frame(width: 56, height: 56)
-                .overlay(alignment: .bottomTrailing) {
-                    Button {
-                        showsAvatarPicker = true
-                    } label: {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(4)
-                            .background(Circle().fill(Color.black.opacity(0.55)))
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n("设置头像"))
-                    .accessibilityIdentifier("role-edit-avatar-picker")
-                    .popover(isPresented: $showsAvatarPicker) {
-                        RoleAvatarPicker(selectedPath: currentRole.resolvedAvatarPath) { path in
-                            Task {
-                                if await client.setRoleAvatar(roleId: agent.roleId, sourcePath: path) != nil {
-                                    showsAvatarPicker = false
-                                } else { saveError = client.errorMessage }
-                            }
-                        } upload: {
-                            showsAvatarPicker = false
-                            chooseAvatar()
-                        }
-                    }
+        Group {
+            if embedded {
+                VStack(spacing: 10) {
+                    profileAvatar
+                    identity
                 }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(agent.name)
-                    .font(.title3.bold())
-                HStack(spacing: 8) {
-                    Text(kindLabel)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(kindColor.opacity(0.15)))
-                        .foregroundStyle(kindColor)
-                    Text(statusLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if agent.status == "unavailable", let reason = agent.statusReason, !reason.isEmpty {
-                    Text(reason)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
+                .frame(maxWidth: .infinity)
+            } else {
+                HStack(spacing: 14) {
+                    profileAvatar
+                    identity
+                    Spacer()
                 }
             }
-            Spacer()
+        }
+    }
+
+    private var profileAvatar: some View {
+        agentAvatar
+            .frame(width: embedded ? 72 : 56, height: embedded ? 72 : 56)
+            .overlay(alignment: .bottomTrailing) {
+                Button {
+                    showsAvatarPicker = true
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(4)
+                        .background(Circle().fill(Color.black.opacity(0.55)))
+                }
+                .buttonStyle(.plain)
+                .help(L10n("设置头像"))
+                .accessibilityIdentifier("role-edit-avatar-picker")
+                .popover(isPresented: $showsAvatarPicker) {
+                    RoleAvatarPicker(selectedPath: currentRole.resolvedAvatarPath) { path in
+                        Task {
+                            if await client.setRoleAvatar(roleId: agent.roleId, sourcePath: path) != nil {
+                                showsAvatarPicker = false
+                            } else { saveError = client.errorMessage }
+                        }
+                    } upload: {
+                        showsAvatarPicker = false
+                        chooseAvatar()
+                    }
+                }
+            }
+    }
+
+    private var identity: some View {
+        VStack(alignment: embedded ? .center : .leading, spacing: 4) {
+            Text(embedded ? draft.name : agent.name)
+                .multilineTextAlignment(embedded ? .center : .leading)
+                .font(.title3.bold())
+            HStack(spacing: 8) {
+                Text(kindLabel)
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(kindColor.opacity(0.15)))
+                    .foregroundStyle(kindColor)
+                Text(statusLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if agent.status == "unavailable", let reason = agent.statusReason, !reason.isEmpty {
+                Text(reason)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
         }
     }
 
@@ -201,7 +245,9 @@ struct RoleDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 field(L10n("描述")) {
-                    TextField(L10n("描述"), text: $draft.detail).accessibilityIdentifier("role-editor-description")
+                    TextField(L10n("描述"), text: $draft.detail, axis: .vertical)
+                        .lineLimit(2...5)
+                        .accessibilityIdentifier("role-editor-description")
                 } trailing: {
                     AgentAssistButton(fieldLabel: "描述", text: $draft.detail, selectedRoleId: $assistRoleId, context: "角色 名称：\(draft.name)")
                 }
@@ -243,15 +289,19 @@ struct RoleDetailView: View {
     // MARK: - 操作
 
     private var actions: some View {
-        HStack(spacing: 12) {
+        let layout = embedded
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+            : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
             Button {
-                showSessionCreation = true
+                if let onStartSession { onStartSession() } else { showSessionCreation = true }
             } label: {
                 Label(L10n("开始新会话"), systemImage: "bubble.left.and.bubble.right")
             }
             .buttonStyle(.bordered)
+            .disabled(!canStartSession || agent.status == "unavailable")
 
-            Spacer()
+            if !embedded { Spacer() }
 
             if let path = currentRole.avatarPath, !path.isEmpty, BuiltinRoleAvatarCatalog.id(from: path) == nil {
                 Button(L10n("清除头像")) {

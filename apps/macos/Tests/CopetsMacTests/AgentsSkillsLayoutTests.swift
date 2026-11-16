@@ -182,7 +182,7 @@ struct RolePageColumnsTests {
                 let host = NSHostingView(rootView: RoleCardCanvasLayout() {
                     RoleColumnLayoutProbe(name: "first").frame(width: 136, height: 136)
                     RoleColumnLayoutProbe(name: "selected")
-                        .frame(width: expanded ? min(600, width) : 136, height: expanded ? 340 : 136)
+                        .frame(width: expanded ? RoleCardCanvasLayout.expandedWidth : 136, height: expanded ? 560 : 136)
                         .layoutValue(key: RoleCardExpandedKey.self, value: expanded)
                     RoleColumnLayoutProbe(name: "last").frame(width: 136, height: 136)
                 }.frame(width: width, height: 1000, alignment: .topLeading))
@@ -215,17 +215,17 @@ struct RolePageColumnsTests {
         #expect(size.width >= 136 && size.height >= 136)
     }
 
-    @Test("Canvas preserves both coordinates of the selected card across viewport widths")
+    @Test("Expanded cards keep their anchor and push same-row neighbors right without wrapping")
     func selectedCanvasOriginIsStable() throws {
         _ = NSApplication.shared
         for width in [568.0, 735.0, 1080.0] {
             let columns = RoleCardCanvasLayout.columns
-            for selected in [columns - 1, columns * 2 - 1] {
+            for selected in 0..<(columns * 2) {
                 let host = NSHostingView(rootView: RoleCardCanvasLayout {
                     ForEach(0..<(columns * 3), id: \.self) { index in
                         RoleColumnLayoutProbe(name: "card-\(index)")
-                            .frame(width: index == selected ? min(600, width) : 136,
-                                   height: index == selected ? 340 : 136)
+                            .frame(width: index == selected ? RoleCardCanvasLayout.expandedWidth : 136,
+                                   height: index == selected ? 560 : 136)
                             .layoutValue(key: RoleCardExpandedKey.self, value: index == selected)
                     }
                 }.frame(width: width, height: 2000, alignment: .topLeading))
@@ -238,9 +238,47 @@ struct RolePageColumnsTests {
                 }
                 #expect(abs(topDistance(cards[selected], in: host) - CGFloat(selected / columns) * 148) <= 1)
                 #expect(abs(cards[selected].minX - CGFloat(selected % columns) * 148) <= 1)
+                for index in cards.indices where index != selected {
+                    let row = index / columns
+                    let sameRowToRight = row == selected / columns && index > selected
+                    let expectedX = CGFloat(index % columns) * 148 + (sameRowToRight ? 204 : 0)
+                    let expectedY = CGFloat(row) * 148 + (row > selected / columns ? 424 : 0)
+                    #expect(abs(cards[index].minX - expectedX) <= 1)
+                    #expect(abs(topDistance(cards[index], in: host) - expectedY) <= 1)
+                }
                 for i in cards.indices {
                     for j in cards.indices where j > i { #expect(!cards[i].intersects(cards[j])) }
                 }
+            }
+        }
+    }
+
+    @Test("Collapsing restores every card's original row and column")
+    func collapseRestoresCanvas() throws {
+        _ = NSApplication.shared
+        func surface(expanded: Bool) -> some View {
+            RoleCardCanvasLayout {
+                ForEach(0..<8, id: \.self) { index in
+                    RoleColumnLayoutProbe(name: "restore-\(index)")
+                        .frame(width: index == 1 && expanded ? 340 : 136,
+                               height: index == 1 && expanded ? 560 : 136)
+                        .layoutValue(key: RoleCardExpandedKey.self, value: index == 1 && expanded)
+                }
+            }.frame(width: 568, height: 1500, alignment: .topLeading)
+        }
+        let host = NSHostingView(rootView: surface(expanded: false))
+        host.sizingOptions = []
+        host.frame = CGRect(x: 0, y: 0, width: 568, height: 1500)
+        for expanded in [false, true, false, true, false] {
+            host.rootView = surface(expanded: expanded)
+            host.layoutSubtreeIfNeeded()
+            for index in 0..<8 {
+                let view = try #require(probe("restore-\(index)", in: host))
+                let frame = view.convert(view.bounds, to: host)
+                let x = CGFloat(index % 4) * 148 + (expanded && index > 1 && index < 4 ? 204 : 0)
+                let y = CGFloat(index / 4) * 148 + (expanded && index >= 4 ? 424 : 0)
+                #expect(abs(frame.minX - x) <= 1)
+                #expect(abs(topDistance(frame, in: host) - y) <= 1)
             }
         }
     }
@@ -254,31 +292,48 @@ struct RolePageColumnsTests {
         #expect(host.fittingSize == CGSize(width: 136, height: 136))
     }
 
-    @Test("Expanded role width is independent of text; short roles stay natural and long roles are bounded")
+    @Test("Expanded profile stays portrait sized for short and long roles at every viewport width")
     func expandedCardBounds() throws {
         _ = NSApplication.shared
-        for width in [360.0, 600.0] {
-            var heights: [CGFloat] = []
+        for width in [280.0, 600.0, 1080.0] {
             for description in ["Short description", String(repeating: "Long description wraps onto another line. ", count: 200)] {
                 let role = Role(roleId: "role:bounds", name: "Role", description: description,
                     status: "available", systemPrompt: "", capabilities: [], createdAt: "", updatedAt: "")
-                let host = NSHostingView(rootView: ExpandedRoleCardProbe(role: role, width: width))
+                let host = NSHostingView(rootView: ExpandedRoleCardProbe(role: role))
                 // Exercise the real canvas's unconstrained-height proposal,
                 // not a standalone fixed-height facsimile of the card.
                 host.frame = CGRect(x: 0, y: 0, width: width, height: 1000)
                 host.layoutSubtreeIfNeeded()
                 let size = host.fittingSize
-                #expect(abs(size.width - width) <= 1)
-                #expect(size.height <= 560)
-                heights.append(size.height)
+                #expect(abs(size.width - 340) <= 1)
+                #expect(abs(size.height - 560) <= 1)
+                #expect(size.height > size.width)
             }
-            #expect(heights[0] < 560)
-            #expect(abs(heights[1] - 560) <= 1)
         }
     }
 
     private func topDistance(_ rect: CGRect, in host: NSView) -> CGFloat {
         host.isFlipped ? rect.minY : host.bounds.height - rect.maxY
+    }
+
+    @Test("Opening a profile immediately exposes editable fields bound to its retained draft")
+    func expandedProfileIsDirectlyEditable() throws {
+        _ = NSApplication.shared
+        let role = Role(roleId: "role:editable", name: "Editable profile", description: "Description",
+                        status: "available", systemPrompt: "Prompt", capabilities: [],
+                        createdAt: "", updatedAt: "")
+        let draft = RoleEditDraft(agent: role)
+        let host = NSHostingView(rootView: ExpandedRoleCardProbe(role: role, draft: draft))
+        host.frame = CGRect(x: 0, y: 0, width: 340, height: 560)
+        host.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let views = descendants(host)
+        let name = try #require(views.compactMap { $0 as? NSTextField }
+            .first { $0.stringValue == role.name && $0.isEditable })
+        name.stringValue = "Edited in profile"
+        name.delegate?.controlTextDidChange?(.init(name: NSControl.textDidChangeNotification, object: name))
+        #expect(draft.name == "Edited in profile")
+        #expect(role.name == "Editable profile")
     }
 
     private func probe(_ name: String, in view: NSView) -> NSView? {
@@ -307,12 +362,12 @@ private struct CompactRoleCardProbe: View {
 
 private struct ExpandedRoleCardProbe: View {
     let role: Role
-    let width: CGFloat
+    var draft: RoleEditDraft? = nil
     @FocusState private var focused: String?
     var body: some View {
         RoleCardCanvasLayout {
-            RoleCard(agent: role, expanded: true, expandedWidth: width, focusedRoleID: $focused,
+            RoleCard(agent: role, expanded: true, draft: draft, focusedRoleID: $focused,
                      onOpenDetail: {}, onStartSession: {})
-        }.frame(width: width)
+        }.environmentObject(AppTabRouter.shared)
     }
 }

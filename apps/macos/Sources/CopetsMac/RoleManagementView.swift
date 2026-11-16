@@ -229,7 +229,7 @@ struct RoleManagementView: View {
                 } else {
                     ScrollView([.horizontal, .vertical]) {
                         RoleCardCanvasLayout() {
-                            ForEach(matches) { role in roleCard(role, availableWidth: width - 32) }
+                            ForEach(matches) { role in roleCard(role) }
                         }
                         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: expandedRoleID)
                         .padding(16)
@@ -508,11 +508,12 @@ struct RoleManagementView: View {
             )
     }
 
-    private func roleCard(_ role: Role, availableWidth: CGFloat) -> some View {
+    private func roleCard(_ role: Role) -> some View {
         RoleCard(
             agent: role, expanded: expandedRoleID == role.id,
-            expandedWidth: min(600, max(136, availableWidth)),
-            draft: editDrafts[role.id], onCollapse: { expandedRoleID = nil },
+            draft: editDrafts[role.id], onCollapse: {
+                if expandedRoleID == role.id { expandedRoleID = nil }
+            },
             canStartSession: registry.isReachable, focusedRoleID: $focusedRoleID,
             onOpenDetail: {
                 returnRoleID = role.id
@@ -603,10 +604,11 @@ struct RoleCardExpandedKey: LayoutValueKey {
 }
 
 /// A fixed four-column starting canvas. Viewport resizing never rearranges
-/// its coordinates. Only the open card is measured; local vertical clearance
-/// resolves collisions without a packing pass or a geometry/state feedback loop.
+/// its coordinates. Only the open card is measured: its row grows horizontally
+/// and later rows move down, without wrapping or a geometry/state feedback loop.
 struct RoleCardCanvasLayout: Layout {
     static let columns = 4
+    static let expandedWidth: CGFloat = 340
     private let side: CGFloat = 136
     private let spacing: CGFloat = 12
 
@@ -627,20 +629,21 @@ struct RoleCardCanvasLayout: Layout {
         let selected = subviews.indices.first(where: { subviews[$0][RoleCardExpandedKey.self] })
         let expanded = selected.map { index in
             CGRect(origin: origin(index), size: subviews[index].sizeThatFits(
-                ProposedViewSize(width: 600, height: nil)))
+                ProposedViewSize(width: Self.expandedWidth, height: nil)))
         }
-        var nextY = Array(repeating: CGFloat.zero, count: Self.columns)
         let frames = subviews.indices.map { index -> CGRect in
             if index == selected, let expanded { return expanded }
-            let column = index % Self.columns
             var point = origin(index)
-            point.y = max(point.y, nextY[column])
-            var frame = CGRect(origin: point, size: CGSize(width: side, height: side))
-            if let expanded, frame.intersects(expanded.insetBy(dx: -spacing, dy: -spacing)) {
-                frame.origin.y = expanded.maxY + spacing
+            if let selected, let expanded {
+                let row = index / Self.columns
+                let selectedRow = selected / Self.columns
+                if row == selectedRow, index > selected {
+                    point.x += max(0, expanded.width - side)
+                } else if row > selectedRow {
+                    point.y += max(0, expanded.height - side)
+                }
             }
-            nextY[column] = frame.maxY + spacing
-            return frame
+            return CGRect(origin: point, size: CGSize(width: side, height: side))
         }
         cache.frames = frames
         cache.size = CGSize(width: frames.map(\.maxX).max() ?? 0,
@@ -685,20 +688,19 @@ struct RoleExpandedCardViewport<Content: View>: View {
 struct RoleCard: View {
     let agent: Role
     var expanded = false
-    var expandedWidth: CGFloat = 600
+    var expandedWidth: CGFloat = RoleCardCanvasLayout.expandedWidth
     var draft: RoleEditDraft?
     var onCollapse: () -> Void = {}
     var canStartSession = true
     @FocusState.Binding var focusedRoleID: String?
     let onOpenDetail: () -> Void
     let onStartSession: () -> Void
-    @State private var isEditing = false
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if expanded {
-                RoleExpandedCardViewport(allowsNaturalHeight: !isEditing) {
+                RoleExpandedCardViewport(allowsNaturalHeight: false) {
                     expandedContent
                 }
             } else {
@@ -736,34 +738,14 @@ struct RoleCard: View {
         .layoutValue(key: RoleCardExpandedKey.self, value: expanded)
     }
     private var expandedContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                RoleCardAvatar(role: agent)
-                Text(agent.name).font(WorkbenchTypography.font(for: .cardTitle))
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
                 Spacer(minLength: 0)
                 Button(L10n("完成"), action: onCollapse)
                     .accessibilityIdentifier("role-collapse-\(agent.id)")
             }
-            Text(agent.description).font(WorkbenchTypography.font(for: .help))
-                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if !agent.capabilities.isEmpty { FlowTags(tags: agent.capabilities) }
-            if agent.status == "unavailable" {
-                Text(agent.statusReason ?? L10n("Unavailable")).font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Button(L10n("编辑")) { isEditing.toggle() }
-                    .accessibilityIdentifier("role-edit-\(agent.id)")
-                Spacer(minLength: 0)
-                Button(L10n("开始新会话"), action: onStartSession)
-                    .disabled(agent.status == "unavailable" || !canStartSession)
-                    .accessibilityIdentifier("role-start-\(agent.id)")
-            }
-            if isEditing, let draft {
-                Divider()
-                RoleDetailView(agent: agent, draft: draft, embedded: true, onClose: { isEditing = false })
-            }
+            RoleDetailView(agent: agent, draft: draft, embedded: true, onClose: onCollapse,
+                           canStartSession: canStartSession, onStartSession: onStartSession)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
