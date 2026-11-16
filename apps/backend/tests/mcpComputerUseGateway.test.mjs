@@ -7,6 +7,24 @@ const desktopConfig = { type: "stdio", command: "/official/bin/node_repl",
 const textResult = text => ({ content: [{ type: "text", text }] });
 const tool = { name: "js", inputSchema: { type: "object", properties: { code: { type: "string" } } } };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { resolve, promise }; };
+
+test("desktop execution context reaches the shared facade for both supported Providers", async () => {
+  for (const providerId of ["codex-app-server", "claude-sdk"]) {
+    let received;
+    const gateway = new SkillMcpGateway({ resolveServers: async () => ({ desktop: desktopConfig }),
+      computerUseSupport: () => true,
+      connectServer: async () => client({ callTool: async (_request, _schema, options) => {
+        received = options.executionContext; return textResult("done");
+      } }) });
+    try {
+      const input = { ...scope(), providerId };
+      await gateway.execute(input);
+      assert.equal(received.logicalSessionId, input.metadata.logicalSessionId);
+      assert.equal(received.providerBindingId, input.metadata.providerBindingId);
+      assert.equal(received.turnId, input.metadata.turnId);
+    } finally { await gateway.close(); }
+  }
+});
 function scope(session = "one", binding = "binding:one") {
   return { actorId: "agent:shared", providerId: "provider:test", tool: "js", arguments: { code: "inspect only" },
     metadata: { logicalSessionId: `logical:${session}`, sessionId: `session:${session}`,

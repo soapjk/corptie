@@ -9,6 +9,7 @@ import { discoverComputerUseRuntime } from "./computerUseRuntime.mjs";
 import { computerUseBridgePreset, prepareComputerUseBridge } from "./computerUseBridge.mjs";
 import { independentComputerUsePreset } from "./independentComputerUseRuntime.mjs";
 import { BUILTIN_COMPUTER_USE_PROFILE } from "./computerUseProfiles.mjs";
+import { computerUseSurfaces } from "./computerUseBrowserCapabilities.mjs";
 
 const exec = promisify(execFile);
 const entry = fileURLToPath(new URL("../mcp/builtinComputerUseMcpServer.mjs", import.meta.url));
@@ -71,7 +72,8 @@ export async function computerUseEnginePreset({ dataDir, platform = process.plat
         : `已安装官方 App，运行组件尚未就绪（${result.runtime.status}）。请先完成官方组件设置；不会自动切换到独立引擎。` } };
   }
   const result = await independentPreset({ dataDir });
-  return { ...result, runtime: { ...result.runtime, engine: "independent", officialAppInstalled: false } };
+  return { ...result, runtime: { ...result.runtime, engine: "independent", officialAppInstalled: false,
+    surfaces: computerUseSurfaces("independent") } };
 }
 
 export async function prepareBuiltinComputerUse(config, { preset = computerUseEnginePreset,
@@ -109,7 +111,9 @@ export async function computerUseEngineFingerprint(config, { findOfficial = find
     join(presence.appPath, "Contents/Resources/codex"),
     join(homedir(), ".codex/computer-use/Codex Computer Use.app/Contents/Info.plist"),
     fileURLToPath(new URL("./computerUseBridge.mjs", import.meta.url))] : [];
-  const files = [entry, ...officialFiles, ...(selected?.config?.args ?? []), ...Object.values(selected?.config?.env ?? {})]
+  const adapterFiles = ["../mcp/officialComputerUseMcpServer.mjs", "./browserAccessHost.mjs", "./officialComputerUseAdapter.mjs",
+    "./computerUseBrowserCapabilities.mjs"].map(path => fileURLToPath(new URL(path, import.meta.url)));
+  const files = [entry, ...adapterFiles, ...officialFiles, ...(selected?.config?.args ?? []), ...Object.values(selected?.config?.env ?? {})]
     .filter(v => typeof v === "string" && v.startsWith("/"));
   const stamps = await Promise.all(files.map(async file => {
     try { const s = await stat(file); return [file, s.ino, s.size, s.mtimeMs]; }

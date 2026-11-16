@@ -8,6 +8,7 @@ import { computerUseBridgePreset, prepareComputerUseBridge, COMPUTER_USE_BRIDGE_
 import { connectDesktopMcp, DesktopStdioTransport } from "../src/mcp/desktopMcpClient.mjs";
 import { SkillMcpGateway } from "../src/application/skillMcpGateway.mjs";
 import { isComputerUseMcpConfig } from "../src/application/computerUseGatewayPolicy.mjs";
+import { BROWSER_CONTEXT_META } from "../src/application/browserAccessHost.mjs";
 
 test("bridge remains unavailable when the official component or optional package is absent", async () => {
   const r = await computerUseBridgePreset({ discover: async () => ({ status: "missing_app" }) });
@@ -34,12 +35,25 @@ test("a private runtime uses the installed environment builder and enables only 
   assert.equal(isComputerUseMcpConfig({ type: "http", runtimeProfile: COMPUTER_USE_BRIDGE_PROFILE }), false);
 });
 
-test("a builder that enables browsers is rejected before the MCP starts", async t => {
+test("a builder that enables an unrequested browser service is rejected before the MCP starts", async t => {
   const root = await mkdtemp(join(tmpdir(), "bridge-surfaces-")); t.after(() => rm(root, { recursive: true, force: true }));
   await assert.rejects(prepareComputerUseBridge({ cwd: root }, {
     runtime: { status: "dependencies_available", paths: { nodeModuleDirs: "/signed/modules" } },
     buildEnvironment: () => ({ CUA_REPL_ENABLED_SURFACES: "browser,computer", NODE_REPL_TRUSTED_SERVICES: '{"browser":"other"}' })
   }), { code: "COMPUTER_USE_SURFACE_UNSUPPORTED" });
+});
+
+test("a compatible browser surface is explicitly enabled with the official services", async t => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-browser-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const result = await prepareComputerUseBridge({ cwd: root }, {
+    runtime: { status: "dependencies_available", paths: { nodeModuleDirs: "/signed/modules", nodeReplPath: "/signed/node_repl" } },
+    discoverBrowser: async () => ({ configured: true }),
+    buildEnvironment: ({ env }) => ({ ...env, NODE_REPL_TRUSTED_SERVICES: JSON.stringify({ sky: "@oai/sky/service", browser: "@oai/browser-desktop/service" }) })
+  });
+  const native = JSON.parse(await readFile(join(result.cwd, "native-runtime.json"), "utf8"));
+  assert.equal(native.mcpServers.cua_repl.env.CUA_REPL_ENABLED_SURFACES, "browser,computer");
+  // The MCP host supplies its own signed browser access parameters at startup.
+  assert.equal(native.mcpServers.cua_repl.env.BROWSER_USE_ACCESS_EXECUTOR_ID, undefined);
 });
 
 test("standard MCP bridge preserves approvals/images and reopens only desktop state at Turn end", async t => {
@@ -68,7 +82,10 @@ test("standard MCP bridge preserves approvals/images and reopens only desktop st
   const result = await gateway.execute({ ...input, metadata: { ...input.metadata,
     requestMetadata: { "x-codex-turn-metadata": { thread_id: "origin" } } } });
   assert.equal(result.content[1].type, "image");
-  const first = JSON.parse(result.content[0].text); assert.equal(first.meta, null);
+  const first = JSON.parse(result.content[0].text);
+  assert.deepEqual(first.meta, { [BROWSER_CONTEXT_META]: {
+    logicalSessionId: "logical:one", providerBindingId: "binding:one", turnId: "turn:one"
+  } });
   assert.match((await gateway.definitions(input)).find(x => x.name === "js").description, /computer-only cua/);
   await gateway.endTurn("logical:one", "turn:one");
   assert.equal(ordinaryCloses, 0);

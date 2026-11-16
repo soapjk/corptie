@@ -87,6 +87,22 @@ struct ComputerUseWireCompatibilityTests {
         #expect(builtin.id == legacy.id)
     }
 
+    @Test func configuredBrowserDoesNotClaimConnectionOrPermission() throws {
+        let preset = try decode(#"{"runtime":{"status":"dependencies_available","engine":"official","surfaces":{"computer":{"configured":true,"status":"permissions_unknown"},"browser":{"supported":true,"configured":true,"connected":null,"ready":false,"status":"not_checked","permissionStatus":"unknown"}}}}"#)
+        #expect(preset.runtime.surfaces?.browser?.configured == true)
+        #expect(preset.runtime.surfaces?.browser?.connected == nil)
+        #expect(preset.runtime.surfaces?.browser?.ready == false)
+        #expect(preset.runtime.surfaces?.browser?.label.contains("Session 中检测") == true)
+        #expect(preset.runtime.surfaces?.computer?.label.contains("权限待确认") == true)
+    }
+
+    @Test func independentAndIncompatibleBrowserReasonsRemainVisible() throws {
+        let independent = try decode(#"{"runtime":{"status":"dependencies_available","engine":"independent","surfaces":{"browser":{"supported":false,"status":"unsupported"}}}}"#)
+        #expect(independent.runtime.surfaces?.browser?.label.contains("不支持") == true)
+        let incompatible = try decode(#"{"runtime":{"status":"dependencies_available","engine":"official","surfaces":{"browser":{"supported":true,"configured":false,"status":"protocol_incompatible"}}}}"#)
+        #expect(incompatible.runtime.surfaces?.browser?.label.contains("不兼容") == true)
+    }
+
     private func decode(_ json: String) throws -> ComputerUsePresetEnvelope {
         try JSONDecoder().decode(ComputerUsePresetEnvelope.self, from: Data(json.utf8))
     }

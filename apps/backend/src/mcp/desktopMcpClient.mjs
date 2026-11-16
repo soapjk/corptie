@@ -7,6 +7,7 @@ import { rm } from "node:fs/promises";
 import { prepareComputerUseBridge, computerUseBridgeFingerprint } from "../application/computerUseBridge.mjs";
 import { prepareBuiltinComputerUse, computerUseEngineFingerprint } from "../application/computerUseEngine.mjs";
 import { isBuiltinComputerUseConfig } from "../application/computerUseGatewayPolicy.mjs";
+import { BROWSER_CONTEXT_META } from "../application/browserAccessHost.mjs";
 
 const exec = promisify(execFile);
 async function waitForExit(exited, ms) {
@@ -96,7 +97,11 @@ export async function connectDesktopMcp(config, onElicitation, { prepare = isBui
       const active = await ensure();
       // Origin correlation remains in Corptie's invocation/audit context. The
       // published adapter manages its own native transport metadata.
-      return active.client.callTool({ name: request.name, arguments: request.arguments }, schema, options);
+      const context = options?.executionContext;
+      return active.client.callTool({ name: request.name, arguments: request.arguments,
+        ...(context ? { _meta: { [BROWSER_CONTEXT_META]: {
+          logicalSessionId: context.logicalSessionId, providerBindingId: context.providerBindingId, turnId: context.turnId
+        } } } : {}) }, schema, options);
     },
     async close() {
       if (closing) return closing;

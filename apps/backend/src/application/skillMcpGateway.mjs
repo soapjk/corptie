@@ -179,7 +179,7 @@ export class SkillMcpGateway {
       const result = await Promise.race([
         target.client.callTool({ name: target.remoteName, arguments: input.arguments ?? {},
           ...(context.requestMetadata ? { _meta: context.requestMetadata } : {}) }, undefined,
-          { signal: controller.signal, timeout: timeoutMs }),
+          { signal: controller.signal, timeout: timeoutMs, ...(desktop ? { executionContext: context } : {}) }),
         new Promise((_, reject) => {
           controller.signal.addEventListener("abort", () => reject(controller.signal.reason
             ?? gatewayError("MCP_CALL_CANCELLED", "MCP request cancelled.", 409)), { once: true });
