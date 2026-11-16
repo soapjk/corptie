@@ -3,7 +3,12 @@ const NOT_READY = "not_ready";
 
 export function withSessionReadiness(session, context = {}) {
   if (!session || typeof session !== "object") return session;
-  const readiness = resolveSessionReadiness(session, context);
+  let readiness = resolveSessionReadiness(session, context);
+  const recovering = readiness.reason?.code === "BINDING_RECOVERING";
+  // Product readiness admits durable messages, not Provider execution. The
+  // recovery transition continues to block the dispatch queue independently.
+  if (recovering) readiness = { state: READY, reason: null };
+
   const send = session.actions?.send ?? null;
   const actions = session.actions
     ? {
@@ -19,6 +24,7 @@ export function withSessionReadiness(session, context = {}) {
     : session.actions;
   return {
     ...session,
+    ...(recovering ? { activityStatus: "正在根据历史上下文恢复会话；新消息将保存并等待恢复完成。" } : {}),
     readiness: readiness.state,
     notReadyReason: readiness.reason,
     canSend: readiness.state === READY,

@@ -72,7 +72,7 @@ test("ordinary text verifies readiness before admission to the existing queue", 
     accepted: true, queued: false, queuePosition: 0, sessionId: "session", task: { taskId: "task" }
   });
   assert.deepEqual(calls.map(([name]) => name), ["verify", "persist", "register", "outbox", "event", "drain"]);
-  assert.deepEqual(calls[0].slice(1), ["session", { reuseReady: true }]);
+  assert.deepEqual(calls[0].slice(1), ["session", { reuseReady: true, triggerDeliveryId: null }]);
   assert.equal(calls[1][1].text, "hello");
 });
 
@@ -349,4 +349,36 @@ test("unsupported coordination fails without falling back to native execution", 
   const {operation}=fixture({sessionApplicationService:{coordinationTurns:{enabled:()=>true,supported:()=>false}},
     sessionBindingReadinessProbe:{verify:()=>assert.fail("no fallback")}});
   await assert.rejects(operation.sendUnifiedSessionMessage("session","instruction"),{code:"PROVIDER_CAPABILITY_UNSUPPORTED"});
+});
+
+test("reliable admission persists during recovery without probing or dispatching", async () => {
+  const calls = [];
+  const { operation } = fixture({ store: {
+    getLogicalSession: () => ({ transitionState: "sessionRecovery", activeBinding: { bindingId: "b", state: "active" } }),
+    getLogicalSessionByLegacySessionId: () => ({ transitionState: "sessionRecovery", activeBinding: { bindingId: "b", state: "active" } }),
+    getRunningAgentTaskForSession: () => null,
+    createUserMessageDelivery: input => { calls.push(input); return { task: { taskId: "task" }, outbox: {} }; }
+  }, agentProviderRegistry: { supports: () => true } });
+  const result = await operation.admitReliableMessage("session", { text: "next" }, { type: "remote-client" });
+  assert.equal(result.accepted, true);
+  assert.equal(calls.length, 1);
+});
+
+test("a proven missing thread at dispatch retries once; uncertain sends never replay", async () => {
+  for (const disposition of ["not_sent", "unknown"]) {
+    let sends = 0, probes = 0;
+    let delivery = { status: "queued", attemptCount: 0 };
+    const { operation } = fixture({
+      store: { getLogicalSession: () => ({}), listUnsettledSessionTurns: () => [],
+        getMessageDelivery: () => delivery,
+        updateMessageDelivery: (_id, patch) => { delivery = { ...delivery, ...patch }; } },
+      sessionBindingReadinessProbe: { verify: async () => { probes += 1; return { ready: true }; }, invalidateBinding() {} },
+      sessionApplicationService: { sendMessage: async () => { sends += 1; throw Object.assign(new Error("missing"), {
+        code: "PROVIDER_SESSION_UNAVAILABLE", safeToRetry: true, dispatchState: disposition }); } }
+    });
+    await assert.rejects(operation.sendUnifiedSessionMessage("session", "hello", { type: "desktop", deliveryId: "d" },
+      { fromAgentWorkQueue: true }), { code: "PROVIDER_SESSION_UNAVAILABLE" });
+    assert.equal(sends, disposition === "not_sent" ? 2 : 1);
+    assert.equal(probes, sends);
+  }
 });

@@ -25,6 +25,8 @@ struct CorptieTaskDeletionConfirmationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
             Label(
                 L10n("删除 CorptieTask"),
                 systemImage: "exclamationmark.triangle.fill"
@@ -78,6 +80,10 @@ struct CorptieTaskDeletionConfirmationView: View {
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
             }
 
+            let processes = plan.blockers.flatMap { $0.processes ?? [] }
+            if !processes.isEmpty {
+                TaskDeletionProcessDetails(processes: processes)
+            }
             if !effectiveBlockers.isEmpty {
                 riskList(title: L10n("当前无法安全删除"), risks: effectiveBlockers, color: .red)
             }
@@ -101,9 +107,21 @@ struct CorptieTaskDeletionConfirmationView: View {
             if !(plan.childTaskIds ?? []).isEmpty {
                 Text(L10nFormat("将级联删除 %d 个子任务。", plan.childTaskIds?.count ?? 0)).font(.callout).foregroundStyle(.secondary)
             }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 600)
             HStack {
                 Spacer()
                 Button(L10n("取消"), role: .cancel, action: onCancel)
+                if plan.blockers.contains(where: { $0.code == "TASK_BACKGROUND_WORK_RUNNING" }) {
+                    Button(L10n("停止后台进程并删除"), role: .destructive) {
+                        var stoppingOptions = options
+                        stoppingOptions.stopRunning = true
+                        onDelete(true, deleteWorktree, artifactDisposition, stoppingOptions)
+                    }
+                    .disabled(effectiveBlockers.contains { !["SESSION_BUSY", "TASK_BACKGROUND_WORK_RUNNING"].contains($0.code) })
+                }
                 Button(L10n(plan.recoveryAvailable == true ? "继续清理" : "删除"), role: .destructive) {
                     onDelete(true, deleteWorktree, artifactDisposition, options)
                 }.disabled(!effectiveBlockers.isEmpty)

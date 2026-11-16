@@ -1,5 +1,6 @@
 import { SessionPreparationCoordinator } from "./sessionPreparationCoordinator.mjs";
 import { sessionReadinessStamp } from "./sessionReadinessStamp.mjs";
+import { isMissingProviderSession } from "./automaticSessionRecovery.mjs";
 
 const VERIFYING = Object.freeze({
   state: "not_ready",
@@ -12,6 +13,7 @@ export class SessionBindingReadinessProbe {
   constructor(options = {}) {
     this.resolveReference = options.resolveReference;
     this.probe = options.probe;
+    this.recoverMissing = options.recoverMissing;
     this.onChanged = options.onChanged ?? (() => {});
     this.states = new Map();
     this.inFlight = new Map();
@@ -139,6 +141,19 @@ export class SessionBindingReadinessProbe {
       return Object.freeze({ ready: true, readiness: null, outcome: outcome ?? null });
     } catch (error) {
       if (attempt.cancelled) return supersededVerification();
+      if (!options.recoveryAttempted && this.recoverMissing && isMissingProviderSession(error)) {
+        this.#set(reference, bindingId, unavailable("BINDING_RECOVERING", "原执行线程已丢失，正在根据历史上下文自动恢复。"));
+        try {
+          await this.recoverMissing({ reference, error, triggerDeliveryId: options.triggerDeliveryId ?? null });
+          const current = await this.resolveReference(reference.sessionId);
+          const nextBindingId = current.bindingId ?? current.providerBindingId ?? current.providerSessionId;
+          if (nextBindingId === bindingId) throw Object.assign(new Error("恢复未产生新的会话绑定。"), { code: "SESSION_RECOVERY_INCOMPLETE" });
+          const result = await this.verify(reference.sessionId, { ...options, recoveryAttempted: true, reconcileOnly: false });
+          return Object.freeze({ ...result, recoveredBindingId: nextBindingId });
+        } catch (cause) {
+          error = cause;
+        }
+      }
       const readiness = unavailable(
         error?.code ?? "PROVIDER_SESSION_UNAVAILABLE",
         providerUnavailableMessage(error)

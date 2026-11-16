@@ -1,3 +1,4 @@
+import { isMissingProviderSession } from "./automaticSessionRecovery.mjs";
 import { randomUUID } from "node:crypto";
 import { normalizeConversationMessage } from "./conversationMessage.mjs";
 import { AGENT_PROVIDER_CAPABILITIES, validateConversationSendReceipt } from "../agent-provider/contracts.mjs";
@@ -23,7 +24,7 @@ export function createSessionMessageOperation({
 async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
   const message = normalizeConversationMessage(input);
   const value = message.text;
-  const reference = requireSessionReference(sessionId);
+  let reference = requireSessionReference(sessionId);
   assertSessionRecoveryMessageBoundary(reference);
   if (message.images.length > 0 && !agentProviderRegistry.supports(
     reference.providerId,
@@ -37,7 +38,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
   if (options.agentTask) assertAgentWorkSessionReference(options.agentTask, reference);
   const routedSessionId = reference.sessionId;
   const publicSessionId = reference.logicalSessionId ?? routedSessionId;
-  const before = reference.metadata.session;
+  let before = reference.metadata.session;
   const latencyTrace = normalizeSessionMessageLatencyTrace(
     options.latencyTrace ?? source.latencyTrace ?? {},
     { sessionId: publicSessionId }
@@ -86,7 +87,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     });
   }
   const bindingVerification = hostExecution ? { ready: true }
-    : await sessionBindingReadinessProbe.verify(routedSessionId, { reuseReady: true });
+    : await sessionBindingReadinessProbe.verify(routedSessionId, { reuseReady: true, triggerDeliveryId: source.deliveryId ?? options.agentTask?.source?.deliveryId ?? null });
   logSessionMessageLatency(latencyTrace, "binding_verification_completed", { durationMs: Date.now() - bindingStartedAt });
   if (bindingVerification.ready !== true) {
     const error = new Error(
@@ -101,6 +102,14 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
       error.deliveryStatus = "failed";
     }
     throw error;
+  }
+
+  if (bindingVerification.recoveredBindingId) {
+    reference = requireSessionReference(sessionId);
+    before = reference.metadata.session;
+    if (options.agentTask) assertAgentWorkSessionReference(options.agentTask, reference);
+    const recoveredDeliveryId = source.deliveryId ?? options.agentTask?.source?.deliveryId;
+    if (recoveredDeliveryId) store.rerouteUnsentMessageDelivery(recoveredDeliveryId, reference);
   }
 
   const slashCommand = parseSlashCommand(value);
@@ -224,6 +233,13 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     if (!["context_assembly", "context_delivery", "attachment_resolution"].includes(error.stage)) {
       sessionBindingReadinessProbe.invalidateBinding(reference);
     }
+    if (!options.missingThreadRetry && error.dispatchState === "not_sent" && isMissingProviderSession(error)) {
+      const current = deliveryId ? store.getMessageDelivery(deliveryId) : null;
+      if (!current?.providerTurnId && !current?.providerAcknowledgedAt) {
+        if (current) store.updateMessageDelivery(deliveryId, { status: "queued", lastError: null });
+        return sendUnifiedSessionMessage(sessionId, input, source, { ...options, missingThreadRetry: true });
+      }
+    }
     if (delivery) {
       const status = providerDeliveryFailureStatus(error);
       const currentDelivery = store.getMessageDelivery(deliveryId) ?? delivery;
@@ -334,7 +350,6 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
 // chat text as a command or an authorization response.
 function admitReliableMessage(sessionId, input, source) {
   const reference = requireSessionReference(sessionId);
-  assertSessionRecoveryMessageBoundary(reference);
   const message = normalizeConversationMessage(input);
   if (parseSlashCommand(message.text)) throw Object.assign(new Error("Use the explicit command endpoint"), {
     code: "INVALID_MESSAGE", statusCode: 400
@@ -343,7 +358,7 @@ function admitReliableMessage(sessionId, input, source) {
   if (logical?.archived || !logical?.activeBinding || logical.activeBinding.state !== "active") {
     throw Object.assign(new Error("Session is not available"), { code: "SESSION_NOT_AVAILABLE", statusCode: 409 });
   }
-  if (workspaceTransitionBlocksWork(logical)) throw Object.assign(new Error("Session is transitioning"), {
+  if (logical?.transitionState !== "sessionRecovery" && workspaceTransitionBlocksWork(logical)) throw Object.assign(new Error("Session is transitioning"), {
     code: "SESSION_BUSY", statusCode: 503
   });
   for (const capability of [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,

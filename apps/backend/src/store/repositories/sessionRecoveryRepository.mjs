@@ -606,6 +606,13 @@ export class SessionRecoveryRepository {
         error.code = "RECOVERY_CAS_CONFLICT";
         throw error;
       }
+      // Queued user messages remain durable while the physical binding changes.
+      // Never reroute a delivery that has already been acknowledged or dispatched.
+      this.db.run(`UPDATE message_deliveries SET binding_id=?,routing_version=?,provider_id=?,provider_session_id=?,updated_at=?
+        WHERE session_id=? AND binding_id=? AND status='queued'
+          AND provider_turn_id IS NULL AND provider_acknowledged_at IS NULL`,
+        [bindingId, attempt.sourceRoutingVersion + 1, attempt.providerId, providerSessionId,
+          timestamp, attempt.sessionId, attempt.sourceBindingId]);
       const storedSessionRow = this.selectOne("SELECT raw_json FROM sessions WHERE id=?", [attempt.sessionId]);
       const storedRaw = parseJson(storedSessionRow?.raw_json, {});
       this.db.run(

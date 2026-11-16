@@ -262,3 +262,18 @@ test("revalidation catches a changed device identity before dispatch and concurr
     assert.deepEqual(api.receipt(tasks, "req_race_1").entityResult, { taskId: f.task.id, title: "Raced" });
   } finally { await f.close(); }
 });
+
+test("deletion confirmation discloses only reviewed process fields to the paired client", async () => {
+  const f = await fixture();
+  try {
+    const api = f.make({ entityCommands: { inspectTaskDeletion: async () => ({
+      status: "blocked", blockers: [{ code: "TASK_BACKGROUND_WORK_RUNNING", message: "running",
+        processes: [{ pid: 123, executablePath: "/opt/node", workingDirectory: "/work/backend",
+          state: "waiting", parentPid: 1, orphaned: true, canStop: true, environment: "secret", arguments: "secret" }] }]
+    }) } });
+    const plan = await api.taskDeletionPlan(tasks, f.task.id);
+    assert.deepEqual(plan.blockers[0].processes, [{ pid: 123, workingDirectory: "/work/backend", parentPid: 1,
+      state: "waiting", orphaned: true, executablePath: "/opt/node", canStop: true }]);
+    assert.equal(JSON.stringify(plan).includes("secret"), false);
+  } finally { await f.close(); }
+});

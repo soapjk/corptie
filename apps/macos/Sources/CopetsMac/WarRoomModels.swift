@@ -303,6 +303,7 @@ struct CorptieTaskWorktreeStatus: Decodable, Equatable {
 }
 
 struct CorptieTaskDeletionRisk: Codable, Equatable, Identifiable {
+    var processes: [ClientDeletionProcess]? = nil
     var id: String { code }
     let code: String
     let message: String

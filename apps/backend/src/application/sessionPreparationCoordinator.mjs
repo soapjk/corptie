@@ -333,7 +333,9 @@ export class SessionPreparationCoordinator {
       const latest = await this.resolveReference(record.reference.sessionId);
       if (TERMINAL.has(record.state)) return;
       const proved = { ...current, readinessRuntimeEpoch: result.outcome?.runtimeEpoch ?? current.readinessRuntimeEpoch };
-      if (identity(latest) !== record.key || sessionReadinessStamp(latest) !== sessionReadinessStamp(proved)) {
+      if (result.ready && result.recoveredBindingId === (latest.bindingId ?? latest.providerBindingId ?? latest.providerSessionId)) {
+        this.#finish(record, "ready", null, "settled");
+      } else if (identity(latest) !== record.key || sessionReadinessStamp(latest) !== sessionReadinessStamp(proved)) {
         this.#finish(record, "superseded", "SESSION_BINDING_CHANGED", "unknown");
       } else {
         record.stamp = sessionReadinessStamp(latest);

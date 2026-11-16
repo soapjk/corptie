@@ -3,6 +3,16 @@ import Testing
 @testable import CorptieClientCore
 
 struct TaskHierarchyTests {
+    @Test func deletionProcessDetailsDecodeWithoutConfusingOrphanAndZombie() throws {
+        let data = Data(#"{"code":"TASK_BACKGROUND_WORK_RUNNING","message":"running","processes":[{"pid":123,"state":"waiting","orphaned":true,"processName":"node","executablePath":"/opt/node","workingDirectory":"/work","canStop":true}]}"#.utf8)
+        let risk = try JSONDecoder().decode(ClientTaskDeletionPlan.Risk.self, from: data)
+        #expect(risk.processes?.first?.state == "waiting")
+        #expect(risk.processes?.first?.orphaned == true)
+        #expect(risk.processes?.first?.executablePath == "/opt/node")
+        let legacy = try JSONDecoder().decode(ClientTaskDeletionPlan.Risk.self, from: Data(#"{"code":"SESSION_BUSY","message":"busy"}"#.utf8))
+        #expect(legacy.processes == nil)
+    }
+
     @Test func backgroundDeletionOnlyResolvesProvenOwnership() {
         var options = ClientTaskDeletionOptions()
         #expect(!options.resolves("TASK_BACKGROUND_WORK_RUNNING"))

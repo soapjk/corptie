@@ -155,6 +155,11 @@ export function createProductEventPublisher({
     const items = automationTimelineItems([sessionEvent], {
       resolveRun: id => store.getScheduledSessionRun?.(id)
     });
+    if (type === "SessionRecoveryCommitted" && payload?.attempt?.attemptId) {
+      items.push({ id: `recovery-notice:${payload.attempt.attemptId}`, type: "system",
+        title: "会话已恢复", text: "已根据历史上下文恢复会话，原有聊天记录已保留。", status: "completed",
+        turnStatus: "completed", presentationRole: "system_event", createdAt: sessionEvent.createdAt });
+    }
     if (["SessionCommandCompleted", "SessionCoordinationCompleted", "SessionCoordinationMilestone", "SessionToolPreparationWarning", "ChildTaskDiscardConfirmationRequested", "ChildTaskDiscardConfirmationResolved"].includes(type) && payload?.item) {
       items.push(payload.item);
     }
