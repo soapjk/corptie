@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { computerUseBridgePreset, prepareComputerUseBridge, COMPUTER_USE_BRIDGE_PROFILE } from "../src/application/computerUseBridge.mjs";
-import { connectDesktopMcp, DesktopStdioTransport } from "../src/mcp/desktopMcpClient.mjs";
+import { connectDesktopMcp, DesktopStdioTransport, readDesktopProcesses } from "../src/mcp/desktopMcpClient.mjs";
 import { SkillMcpGateway } from "../src/application/skillMcpGateway.mjs";
 import { isComputerUseMcpConfig } from "../src/application/computerUseGatewayPolicy.mjs";
 import { BROWSER_CONTEXT_META } from "../src/application/browserAccessHost.mjs";
@@ -132,4 +132,74 @@ test("stopping while approval is pending aborts and reaps the private MCP proces
   await client.close();
   assert.ok(transport.process.exitCode !== null || transport.process.signalCode !== null);
   assert.throws(() => process.kill(transport.process.pid, 0), { code: "ESRCH" });
+});
+
+test("process enumeration retries transient failures and rejects empty or persistently failed snapshots", async () => {
+  const complete = "    1     0 Thu Nov 12 18:50:47 2026 /sbin/launchd\n  500     1 Thu Nov 12 18:50:48 2026 /private/test\n";
+  let attempts = 0;
+  const delays = [];
+  const table = await readDesktopProcesses({ run: async () => {
+    if (++attempts < 3) throw Object.assign(Error("ps failed"), { code: 1 });
+    return { stdout: complete };
+  }, delay: async ms => delays.push(ms) });
+  assert.equal(table.get(500).ppid, 1);
+  assert.equal(table.get(500).identity, "Thu Nov 12 18:50:48 2026:/private/test");
+  assert.equal(attempts, 3); assert.deepEqual(delays, [50, 100]);
+  for (const output of ["", "partial invalid output", complete.replace(/^.*\n/, "")]) {
+    let count = 0;
+    await assert.rejects(readDesktopProcesses({ run: async () => { count++; return { stdout: output }; }, delay: async () => {} }),
+      { code: "COMPUTER_USE_PROCESS_SNAPSHOT_FAILED" });
+    assert.equal(count, 3);
+  }
+});
+
+test("failed transport cleanup retains process ownership and resumes verification after the MCP exits", async t => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-cleanup-retry-"));
+  let transport, fail = false, snapshot = 0, generation = 0, stateRoot;
+  const client = await connectDesktopMcp({ cwd: root, command: process.execPath,
+    args: [fileURLToPath(new URL("./fixtures/desktopBridgeMcp.mjs", import.meta.url))] }, async () => ({ action: "accept" }), {
+    prepare: async c => {
+      stateRoot = join(root, `instance-${++generation}`); await mkdir(stateRoot);
+      return { ...c, stateRoot, env: { PATH: process.env.PATH } };
+    }, fingerprint: async () => "stable",
+    transportFactory: c => transport = new DesktopStdioTransport(c, { graceMs: 100,
+      readProcesses: async () => {
+        snapshot++;
+        if (fail && snapshot >= 2) throw Object.assign(Error("ps transient failure"), { code: "COMPUTER_USE_PROCESS_SNAPSHOT_FAILED" });
+        return readDesktopProcesses();
+      } })
+  });
+  t.after(async () => { fail = false; await client.close(); await rm(root, { recursive: true, force: true }); });
+  const first = JSON.parse((await client.callTool({ name: "js", arguments: { code: "inspect" } })).content[0].text);
+  fail = true;
+  await assert.rejects(client.close(), { code: "COMPUTER_USE_CLEANUP_FAILED" });
+  assert.equal(transport.owned.has(first.pid), true);
+  await stat(stateRoot); // Retain the private state until cleanup is verified.
+  assert.equal(generation, 1);
+  fail = false;
+  await client.close();
+  await assert.rejects(stat(stateRoot), { code: "ENOENT" });
+  const next = JSON.parse((await client.callTool({ name: "js", arguments: { code: "inspect again" } })).content[0].text);
+  assert.notEqual(first.pid, next.pid);
+  assert.equal(generation, 2);
+});
+
+test("snapshot failure before shutdown cannot be cached forever or cause an unsafe restart", async t => {
+  const root = await mkdtemp(join(tmpdir(), "bridge-snapshot-retry-"));
+  let fail = true, transport;
+  const config = { cwd: root, command: process.execPath,
+    args: [fileURLToPath(new URL("./fixtures/desktopBridgeMcp.mjs", import.meta.url))], env: { PATH: process.env.PATH } };
+  transport = new DesktopStdioTransport(config, { graceMs: 100, readProcesses: async () => {
+    if (fail) throw Error("ps unavailable"); return readDesktopProcesses();
+  } });
+  transport.onmessage = () => {};
+  t.after(async () => { fail = false; await transport.close(); await rm(root, { recursive: true, force: true }); });
+  await transport.start();
+  const pid = transport.process.pid;
+  await assert.rejects(transport.close(), { code: "COMPUTER_USE_CLEANUP_FAILED" });
+  assert.doesNotThrow(() => process.kill(pid, 0));
+  assert.equal(transport.owned, undefined);
+  fail = false;
+  await transport.close();
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
 });

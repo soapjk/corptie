@@ -145,6 +145,72 @@ test("MCP deadline actively aborts the request, closes its host and never retrie
   } finally { await gateway.close(); }
 });
 
+test("failed Turn cleanup remains a barrier until verified, then the next call recovers without replay", async () => {
+  for (const providerId of ["codex-app-server", "claude-sdk"]) {
+    let fail = true, calls = 0;
+    const gateway = new SkillMcpGateway({ resolveServers: async () => ({ desktop: desktopConfig,
+      ordinary: { command: "/ordinary" } }), computerUseSupport: () => true,
+      connectServer: async name => name === "ordinary"
+        ? { listTools: async () => ({ tools: [{ name: "ordinary_read", inputSchema: { type: "object" } }] }),
+          callTool: async () => textResult("ordinary-ok"), close: async () => {} }
+        : client({ callTool: async request => { if (request.name === "js") calls++; return textResult("desktop-ok"); },
+          close: async () => { if (fail) throw Error("ps failed"); } }) });
+    const input = { ...scope(), providerId };
+    try {
+      await gateway.execute(input);
+      await assert.rejects(gateway.endTurn(input.metadata.logicalSessionId, input.metadata.turnId), { code: "COMPUTER_USE_CLEANUP_FAILED" });
+      const next = { ...input, metadata: { ...input.metadata, turnId: "turn:next" } };
+      await assert.rejects(gateway.execute(next), { code: "COMPUTER_USE_CLEANUP_FAILED" });
+      assert.equal(calls, 1);
+      assert.equal(gateway.desktopCleanupPending.size, 1);
+      assert.equal((await gateway.execute({ ...next, tool: "ordinary_read" })).content[0].text, "ordinary-ok");
+      fail = false;
+      assert.equal((await gateway.execute(next)).content[0].text, "desktop-ok");
+      assert.equal(calls, 2);
+      assert.equal(gateway.desktopCleanupPending.size, 0);
+      assert.equal(gateway.desktopCleanupError, null);
+    } finally { fail = false; await gateway.close(); }
+  }
+});
+
+test("cleanup recovery rechecks Session authorization before dispatch", async () => {
+  let fail = true, enabled = true, calls = 0;
+  const gateway = new SkillMcpGateway({ resolveServers: async () => ({ desktop: desktopConfig }),
+    computerUseSupport: () => true,
+    assertSessionEnabled: () => { if (!enabled) throw Object.assign(Error("disabled"), { code: "SESSION_ABILITY_DISABLED" }); },
+    connectServer: async () => client({ callTool: async request => { if (request.name === "js") calls++; return textResult("done"); }, close: async () => {
+      if (fail) throw Error("ps failed"); enabled = false;
+    } }) });
+  const input = scope();
+  try {
+    await gateway.execute(input);
+    await assert.rejects(gateway.endTurn(input.metadata.logicalSessionId, input.metadata.turnId), { code: "COMPUTER_USE_CLEANUP_FAILED" });
+    fail = false;
+    await assert.rejects(gateway.execute({ ...input, metadata: { ...input.metadata, turnId: "turn:new" } }), { code: "SESSION_ABILITY_DISABLED" });
+    assert.equal(calls, 1);
+  } finally { fail = false; await gateway.close(); }
+});
+
+test("cancellation cleanup failure can recover for a new Turn and cannot replay the cancelled action", async () => {
+  const started = deferred();
+  let fail = true, calls = 0;
+  const gateway = new SkillMcpGateway({ resolveServers: async () => ({ desktop: desktopConfig }), computerUseSupport: () => true,
+    connectServer: async () => client({ callTool: async () => {
+      calls++; if (calls === 1) { started.resolve(); return new Promise(() => {}); } return textResult("fresh");
+    }, close: async () => { if (fail) throw Error("ps unavailable"); } }) });
+  const input = scope(), controller = new AbortController();
+  const pending = gateway.execute({ ...input, signal: controller.signal });
+  const rejection = assert.rejects(pending, { code: "COMPUTER_USE_CLEANUP_FAILED" });
+  try {
+    await started.promise; controller.abort(); await rejection;
+    assert.equal(gateway.desktopCleanupPending.size, 1);
+    fail = false;
+    await gateway.execute({ ...input, metadata: { ...input.metadata, turnId: "turn:after-cancel" } });
+    assert.equal(calls, 2);
+    assert.equal(gateway.desktopCleanupError, null);
+  } finally { fail = false; controller.abort(); await rejection; await gateway.close(); }
+});
+
 test("model arguments and raw metadata cannot overwrite transport identity metadata", async () => {
   const observed = [];
   const resolved = { logicalSessionId: "logical:authoritative", providerBindingId: "binding:authoritative", turnId: "turn:real" };
