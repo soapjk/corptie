@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { CHILD_TASK_RESULT_NOTICE_PREFIX } from "../utils/sessionEventPresentation.mjs";
 import { sessionHasActiveRun } from "../utils/sessionPresentation.mjs";
 import { createStartupTiming } from "../utils/startupTiming.mjs";
+import { parseJson } from "../store/storedJson.mjs";
 
 const terminal = new Set(["completed", "failed", "cancelled", "unknown"]);
 const inspectable = new Set([...terminal, "blocked", "waiting_input"]);
@@ -333,9 +334,15 @@ export class TaskCoordinationService {
     const managementMessage = row.mailbox_message_id && !row.operation_id
       ? this.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?", [row.mailbox_message_id]) : null;
     const managementWork = managementMessage?.operation_id && this.store.getAgentTask(managementMessage.operation_id);
-    if (managementMessage?.disposition === "pending" && managementWork?.status === "failed"
-      && managementWork.source?.dispatchBlock?.kind === "rejected") {
-      this.store.updateAgentTask(managementWork.taskId, {status:"queued",lastError:null});
+    const managementAuthorization = parseJson(managementMessage?.authorization_json);
+    const awaitingSummary = managementAuthorization?.purpose === "shadow_requirement"
+      && managementAuthorization?.coordinationDispatchId === row.dispatch_id
+      && ["waiting_dispatch", "blocked", "failed"].includes(row.status);
+    const managementSettled = managementWork && ["failed", "cancelled"].includes(managementWork.status)
+      && ["rejected", "settled"].includes(managementWork.source?.dispatchBlock?.kind);
+    if (managementMessage?.disposition === "pending" && awaitingSummary && managementSettled) {
+      this.store.updateAgentTask(managementWork.taskId, { status: "queued", lastError: null,
+        source: { ...managementWork.source, dispatchBlock: null } });
       this.update(id,{status:"waiting_dispatch",error_code:"SHADOW_REVIEW_PENDING",error_message:"正在恢复汇总处理，子任务尚未收到指令。"});
       this.mailbox.wake(managementWork.sessionId,managementWork.taskId);
       return {...this.receipt(this.get(id)),reused:true,retryAction:"resume_summary_management"};
