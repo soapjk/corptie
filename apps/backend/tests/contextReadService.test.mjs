@@ -48,7 +48,7 @@ async function fixture() {
   store.updateArtifact("artifact:relay", { currentVersion: 1, approvedVersion: 1 });
   const service = new ContextReadService({ store, now: () => "2026-10-02T00:00:00Z" });
   const catalog = createHostToolCatalog({ contextReadService: service,
-    getProjectCodeApplicationService: () => ({}), validateProjectCodeHostRoute: () => ({}) });
+    getProjectCodeApplicationService: () => ({}) });
   return { directory, store, service, catalog };
 }
 

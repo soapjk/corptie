@@ -74,10 +74,7 @@ export function createProjectCodeHostNamespace(options = {}) {
       && Boolean(metadata?.logicalSessionId)
       && Boolean(metadata?.taskId)
       && Boolean(metadata?.workId),
-    execute: async (input) => {
-      await options.validateRoute?.(input);
-      return callProjectCodeDynamicTool(options.getService(), input);
-    }
+    execute: (input) => callProjectCodeDynamicTool(options.getService(), input)
   });
 }
 

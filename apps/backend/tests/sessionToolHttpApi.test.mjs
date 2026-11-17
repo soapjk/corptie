@@ -1,21 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { createSessionToolContextResolver } from "../src/application/sessionToolScope.mjs";
 import { handleSessionToolHttpRequest } from "../src/application/sessionToolHttpApi.mjs";
 
 function fixture() {
   const calls = [];
   const session = { id: "session", agentId: "agent", sessionKind: "workChat", workId: "work" };
-  const metadata = { logicalSessionId: "logical", providerBindingId: "binding" };
+  const evidence = { kind: "session-binding", sessionId: "session", providerBindingId: "binding" };
+  const resolve = createSessionToolContextResolver({
+    store: {
+      getSession: id => id === session.id ? session : null,
+      getLogicalSessionByLegacySessionId: id => id === session.id ? {
+        logicalSessionId: "logical", legacySessionId: session.id, activeBinding: { bindingId: "binding" }
+      } : null
+    },
+    collaborationCore: { getAgentForSession: () => ({ agentId: "agent" }) },
+    resolveToolHostBinding: () => ({ providerBindingId: "binding", state: "active", isCurrent: true })
+  });
+  const record = input => { resolve(input); calls.push(input); };
   const dependencies = {
     store: { getSession: (id) => id === session.id ? session : null, listSessionsByAgent: () => [session] },
     collaborationCore: { getAgentForSession: () => ({ agentId: "agent" }) },
     toolHostService: {
-      execute: async (input) => { calls.push(input); return { ok: true }; },
-      catalogRevision: (input) => { calls.push(input); return "revision"; },
-      observeGeneratedMcpToolsList: async (input) => { calls.push(input); return { tools: [] }; }
+      execute: async (input) => { record(input); return { ok: true }; },
+      catalogRevision: (input) => { record(input); return "revision"; },
+      observeGeneratedMcpToolsList: async (input) => { record(input); return { tools: [] }; }
     },
-    sessionToolMetadata: () => metadata,
     readJson: async (request) => {
       if (request.bodyError) throw request.bodyError;
       return request.body ?? {};
@@ -36,7 +47,7 @@ function fixture() {
     });
     return { handled, result };
   }
-  return { calls, session, metadata, dependencies, dispatch };
+  return { calls, session, evidence, dependencies, dispatch };
 }
 
 test("Session tool dispatch keeps trimmed credentials and metadata", async () => {
@@ -44,7 +55,7 @@ test("Session tool dispatch keeps trimmed credentials and metadata", async () =>
   const response = f.dispatch("/internal/session/tool", { body: { tool: "test.tool" } });
   assert.equal(response.handled, true);
   assert.deepEqual(await response.result, { status: 200, body: { ok: true } });
-  assert.deepEqual(f.calls, [{ actorId: "agent", tool: "test.tool", arguments: {}, metadata: f.metadata }]);
+  assert.deepEqual(f.calls, [{ actorId: "agent", tool: "test.tool", arguments: {}, evidence: f.evidence }]);
 });
 
 test("Session tool requests reject stale bindings and untrusted header shapes before execution", async () => {
@@ -70,7 +81,7 @@ test("catalog revision and generated list preserve distinct response contracts",
     { status: 200, body: { revision: "revision" } });
   assert.deepEqual(await f.dispatch("/internal/session/tool/catalog?desiredVersion=v2&observationId=probe", { method: "GET" }).result,
     { status: 200, body: { tools: [] } });
-  assert.deepEqual(f.calls[1], { actorId: "agent", metadata: f.metadata, desiredVersion: "v2", observationId: "probe" });
+  assert.deepEqual(f.calls[1], { actorId: "agent", evidence: f.evidence, desiredVersion: "v2", observationId: "probe" });
 });
 
 test("tool body and execution failures preserve status and fallback error codes", async () => {
@@ -87,7 +98,7 @@ test("tool body and execution failures preserve status and fallback error codes"
   assert.equal((await f.dispatch("/internal/session/tool/catalog/revision", { method: "GET" }).result).body.code, "SESSION_TOOL_CATALOG_FAILED");
 });
 
-test("Work Chat fallback resolves only a matching work and actor", async () => {
+test("Work Chat uses exact binding and checks matching work and actor", async () => {
   const f = fixture();
   assert.equal((await f.dispatch("/internal/work-chat/tool", { body: { workId: "work", tool: "test.tool" } }).result).status, 200);
   assert.equal(f.calls.length, 1);
@@ -97,7 +108,7 @@ test("Work Chat fallback resolves only a matching work and actor", async () => {
   ]) {
     const result = await f.dispatch("/internal/work-chat/tool", input).result;
     assert.equal(result.status, 403);
-    assert.equal(result.body.code, "WORK_CHAT_SCOPE_REQUIRED");
+    assert.equal(result.body.code, "SESSION_TOOL_SCOPE_REQUIRED");
   }
   assert.equal(f.calls.length, 1);
 });

@@ -37,6 +37,7 @@ import { createStartupRecoveryOperations } from "./application/startupRecoveryOp
 import {
   createSessionToolBindingProjection, desiredToolDomainIds
 } from "./application/sessionToolBindingProjection.mjs";
+import { createSessionToolContextResolver } from "./application/sessionToolScope.mjs";
 import { createCodexNotificationReceiver } from "./adapters/codexNotificationReceiver.mjs";
 import { createClaudeNotificationReceiver } from "./adapters/claudeNotificationReceiver.mjs";
 import { createRuntimeAgentWorkQueue } from "./runtime/runtimeAgentWorkQueue.mjs";
@@ -402,7 +403,7 @@ const store = new CorptieStore();
 const detailMigration = detailMigrationConfiguration({ developmentPreview,
   webCardIDs: parseDetailWebCards(process.env.CORPTIE_DETAIL_WEB_CARDS) });
 const {
-  sessionToolMetadata, resolveDynamicToolCallMetadata, resolveToolHostBinding,
+  sessionToolMetadata, resolveToolHostBinding,
   prospectiveToolHostBinding, prepareDesiredWorkspaceToolMaterialization
 } = createSessionToolBindingProjection({
   store,
@@ -480,7 +481,7 @@ const { reserveSessionTitle } = sessionTitleReservations;
 const collaborationCore = new CollaborationCore(store);
 const {
   workspaceInventory, requireAgentLogicalSession,
-  callWorkspaceDynamicTool, validateProjectCodeHostRoute
+  callWorkspaceDynamicTool
 } = createWorkspaceSessionToolAuthority({
   store, collaborationCore,
   getSessionWorkspaceOperations: () => sessionWorkspaceOperations
@@ -607,7 +608,7 @@ verificationBudgetService = new VerificationBudgetService({ store, emitEvent,
   resumeQueued: operation => scheduleAgentWorkDrain(operation.sessionId),
   resume: ({operationId,session,sourceOperationId,instructionId}) => {const result=sessionMailbox.enqueueExternalOperation({ taskId:operationId,sessionId:session.id,agentId:session.agentId,kind:"user",priority:10,localVisibility:"status_only",text:"用户已增加验证预算并要求继续原指令。读取现有结果，从尚未完成的步骤继续；不要重跑已经完成的验证或Git操作。",source:{type:"mailbox_event",verificationContinuation:{instructionId,sourceOperationId}} },{sourceType:"system",authorization:{sourceId:operationId,purpose:"verification_continuation",ownerLogicalSessionId:store.getLogicalSessionByLegacySessionId(session.id)?.logicalSessionId}});checklistContinuationService?.bindInstructionResume(instructionId,result.task);return result;},
   readOnly: developmentPreview,
-  scope: metadata => executionChecklistService.scope(metadata),
+  scope: context => executionChecklistService.scope(context),
   workingDirectory: sessionId => projectWorkingDirectoryForSession(sessionId),
   interrupt: sessionId => interruptUnifiedSession(sessionId, { type: "verification_budget" }, { reason: "verification_budget_exhausted" }),
   changed: budget => {
@@ -754,17 +755,8 @@ const skillMcpGateway = new SkillMcpGateway({
   computerUseSupport: (input) => agentProviderRegistry.get(input.providerId ?? input.metadata?.providerId)
     .descriptor.metadata.computerUse?.supported === true,
   executionContext: (input) => {
-    const metadata = input.metadata ?? {};
-    if (!metadata.logicalSessionId) return metadata;
-    const logical = store.getLogicalSession(metadata.logicalSessionId);
-    const binding = logical?.activeBinding;
-    const session = logical?.legacySessionId && store.getSession(logical.legacySessionId);
-    if (!session || binding?.state !== "active" || binding.bindingId !== metadata.providerBindingId) {
-      throw Object.assign(new Error("MCP Session binding changed."), { code: "MCP_INTERACTION_STALE" });
-    }
-    const turnId = session.external?.activeTurnId ?? session.rawStatus?.activeTurnId
-      ?? store.listUnsettledSessionTurns(session.id).at(-1)?.turn_id;
-    const providerSessionId = binding.providerSessionId ?? logical.activeThreadId;
+    const metadata = input.context.revalidate().metadata;
+    const { turnId, providerSessionId } = metadata;
     const native = input.providerRequestMeta?.["x-codex-turn-metadata"];
     if (native && (native.thread_id !== providerSessionId || native.turn_id !== turnId)) {
       throw Object.assign(new Error("MCP native call correlation is stale."), { code: "MCP_INTERACTION_STALE" });
@@ -905,7 +897,6 @@ const hostToolCatalog = createHostToolCatalog({
   executionChecklistService, verificationBudgetService,
   mcpRegistryService, onIntegrationChanged: (type, payload) => emitEvent(type, payload),
   memoryOperationService, artifactService, callWorkspaceDynamicTool,
-  validateProjectCodeHostRoute,
   getProjectCodeApplicationService: () => projectCodeApplicationService,
   sessionCollaborationV2Enabled, port, skillRegistryService,
   scheduledSessionTaskService, getBoundTaskForAgent,
@@ -996,7 +987,7 @@ const codexRuntime = createCodexEnvironmentRuntime({
   onDynamicToolCall: (params) => toolHostService.execute({
     ...params,
     actorId: params.agentId,
-    metadata: resolveDynamicToolCallMetadata(params)
+    evidence: { kind: "provider-thread", providerId: "codex-app-server", threadId: params.threadId }
   })
 });
 const codexEnvironmentSetup = createCodexEnvironmentSetup({
@@ -1462,6 +1453,7 @@ const publicToolMaterializationPort = new ToolMaterializationPort({
   }
 });
 toolHostService = new ToolHostService({
+  resolveInvocation: createSessionToolContextResolver({ store, collaborationCore, resolveToolHostBinding }),
   registry: agentProviderRegistry,
   catalog: hostToolCatalog,
   coordinator: toolHostMaterializationCoordinator,

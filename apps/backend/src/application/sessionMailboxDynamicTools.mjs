@@ -13,8 +13,8 @@ export const sessionMailboxDynamicTools = [
     messageIds: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string", minLength: 1 } }
   }, ["messageIds"])
 ];
-export function callSessionMailboxTool(service, { actorId, metadata, tool, arguments: args }) {
-  const id = service.authorizeActor(actorId, metadata);
+export function callSessionMailboxTool(service, { context, tool, arguments: args }) {
+  const id = context.metadata.logicalSessionId;
   if (tool === "corptie_mailbox_list") return service.rows(id, args);
   if (tool === "corptie_mailbox_get") return service.get(id, args.messageId);
   if (tool === "corptie_mailbox_adopt") return service.adopt(id, args.messageIds);

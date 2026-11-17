@@ -1,3 +1,4 @@
+import { sessionToolTestAuthority } from "./helpers/sessionToolTestAuthority.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -138,6 +139,7 @@ async function fixture() {
     coordinator, resolveCurrentBinding: async (logicalSessionId) => currentBinding(logicalSessionId)
   });
   const toolHost = new ToolHostService({
+    resolveInvocation: sessionToolTestAuthority(store),
     registry, catalog, coordinator, materializationPort: publicPort
   });
   return {
@@ -199,11 +201,13 @@ test("Work Chat search/load applies on demand and gateway dispatch reasserts the
     };
     const search = await value.toolHost.execute({
       tool: TOOL_CATALOG_SEARCH, actorId: value.agent.agentId, metadata,
+      evidence: { kind: "session-binding", sessionId: binding.sessionId, providerBindingId: binding.providerBindingId },
       arguments: { intent: "artifact", domain_hint: "artifacts" }
     });
     assert.deepEqual(search.domains.map((domain) => domain.domainId), ["artifacts"]);
     const loaded = await value.toolHost.execute({
       tool: TOOL_DOMAIN_LOAD, actorId: value.agent.agentId, metadata,
+      evidence: { kind: "session-binding", sessionId: binding.sessionId, providerBindingId: binding.providerBindingId },
       arguments: { domain_id: "artifacts", expected_catalog_version: search.catalogVersion }
     });
     assert.equal(loaded.status, "applied");
@@ -218,6 +222,7 @@ test("Work Chat search/load applies on demand and gateway dispatch reasserts the
     };
     const result = await value.toolHost.execute({
       tool: TOOL_RESTRICTED_GATEWAY, actorId: value.agent.agentId, metadata,
+      evidence: { kind: "session-binding", sessionId: binding.sessionId, providerBindingId: binding.providerBindingId },
       arguments: {
         tool: "corptie_artifact_list", expected_catalog_version: search.catalogVersion,
         arguments: {}

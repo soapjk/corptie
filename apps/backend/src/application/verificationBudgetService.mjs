@@ -87,8 +87,8 @@ export class VerificationBudgetService {
     return session?.taskId ? { instructionId: operation.task_id, taskId: session.taskId,
       sessionId: this.store.getLogicalSessionByLegacySessionId(operation.session_id)?.logicalSessionId ?? operation.session_id } : null;
   }
-  current(metadata) {
-    const { task, logical, session } = this.scope(metadata);
+  current(context) {
+    const { task, logical, session } = this.scope(context);
     const operation = this.store.selectOne("SELECT * FROM agent_operations WHERE session_id=? AND status='running' LIMIT 1", [session.id]);
     const root = this.operationRoot(operation);
     if (!root) fail("VERIFICATION_INSTRUCTION_UNAVAILABLE");
@@ -185,7 +185,7 @@ export class VerificationBudgetService {
       relatedBudgets,executionReceipt,enforcement:'entry_only',
       instruction:'budget:null 表示当前指令尚未建立验证账本，不表示没有额度或未收到增额。当前可用额度以 currentState 为准；原指令增额见 relatedBudgets 或 executionReceipt。关联记录仅供查询，不能改变 run 的计费指令；不要沿用历史3/3冻结判断，保留用户明确停止及其他开发约束。'};
   }
-  inspect(metadata,input={}) { return this.inspectScope(this.current(metadata),input); }
+  inspect(context,input={}) { return this.inspectScope(this.current(context),input); }
   contextForSession(sessionId) {
     const logical=this.store.getLogicalSession(sessionId) ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
     const session=logical && this.store.getSession(logical.legacySessionId);
@@ -416,9 +416,9 @@ export class VerificationBudgetService {
     const row=this.store.selectOne('SELECT created_at FROM session_items WHERE session_id=? AND id=?',[session,`verification-budget:${budget.instructionId}:${budget.pauseGeneration}`]);
     return {id:`verification-paused:${budget.instructionId}:${budget.pauseGeneration}`,sessionId:budget.sessionId,instructionId:budget.instructionId,title:'验证预算耗尽',body:`${budget.instruction}：已用 ${budget.used}/${budget.limit}，后续验证已暂停。`,occurredAt:row?.created_at ?? new Date().toISOString()};
   }
-  async execute(metadata, input) {
+  async execute(context, input) {
     this.writable();
-    const scope = this.current(metadata);
+    const scope = this.current(context);
     if (input.developmentComplete !== true) fail("DEVELOPMENT_NOT_FINISHED");
     const commands = input.commands;
     const timeoutSeconds = input.timeoutSeconds ?? 120;
@@ -429,7 +429,7 @@ export class VerificationBudgetService {
         || command.args.some(arg => typeof arg !== "string" || arg.length > 16000)) fail("VERIFICATION_COMMANDS_INVALID", 400);
     }
     const cwd = await this.workingDirectory(scope.executorSessionId);
-    const current = this.current(metadata);
+    const current = this.current(context.revalidate());
     if (current.operationId !== scope.operationId || current.executorSessionId !== scope.executorSessionId) fail("VERIFICATION_EXECUTION_CHANGED");
     const executionId = identity(input.executionId);
     let receipt;

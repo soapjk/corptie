@@ -28,14 +28,6 @@ export class SessionMailboxService {
     return logical;
   }
 
-  authorizeActor(actorId, metadata) {
-    const logical = this.logical(metadata?.sessionId);
-    const session = this.store.getSession(logical.legacySessionId);
-    if (!actorId || (session?.agentId ?? this.resolveActor?.(logical.legacySessionId)) !== actorId || metadata.providerBindingId !== logical.activeBinding?.bindingId
-      || logical.activeBinding?.state !== "active") fail("MAILBOX_SCOPE_REQUIRED", 403);
-    return logical.logicalSessionId;
-  }
-
   settings(sessionId) {
     const id = this.logical(sessionId).logicalSessionId;
     return { paused: Boolean(this.store.selectOne("SELECT paused FROM session_mailbox_settings WHERE recipient_session_id=?", [id])?.paused) };

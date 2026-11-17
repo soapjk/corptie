@@ -28,7 +28,7 @@ export const executionChecklistDynamicTools = Object.freeze([{
   description: "Maintain the finite execution checklist for this Session's bound Task. First get, then create a checklist of authorized actions with completion conditions. After each item use status completed; undo with pending. Use close to hide the current batch without stopping work. Use create for a new instruction; unrelated active plans remain independent. Supports add/edit/remove/move at any time; assign/unassign links itemIds to an existing child taskId or dispatchId from corptie_task_dispatch. Assigning does not dispatch work or complete items; edits do not expand execution authority. Updates return remaining items. Do not rebuild after every item: keep final verification as an item. Completion is a progress claim, not Task acceptance. New execution plans continue unfinished authorized work through the host. Legacy progress-only plans stay inactive. Closing hides only; user stop/pause and verification budgets take priority. Set phase=verification for checks after all development. There is no additional continuation turn quota."
 }]);
 export function callExecutionChecklistTool(service, input) {
-  const { task, logical, session, ownerLogicalSessionId,instructionId,planId } = service.scope(input.metadata);
+  const { task, logical, session, ownerLogicalSessionId,instructionId,planId } = service.scope(input.context);
   const args = input.arguments ?? {};
   const compact = result => {
     const value = result.checklist;

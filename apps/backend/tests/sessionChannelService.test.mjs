@@ -1,3 +1,4 @@
+import { sessionToolTestAuthority } from "./helpers/sessionToolTestAuthority.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -882,12 +883,13 @@ test("mailbox tools revalidate exact Session actor and active Provider binding",
   try {
     const { callSessionMailboxTool } = await import("../src/application/sessionMailboxDynamicTools.mjs");
     const binding = f.store.getLogicalSession("session:b").activeBinding.bindingId;
-    const input = { actorId: "agent:b", metadata: { sessionId: "provider:b", providerBindingId: binding },
+    const resolve = sessionToolTestAuthority(f.store);
+    const input = { actorId: "agent:b", evidence: { kind: "session-binding", sessionId: "provider:b", providerBindingId: binding },
       tool: "corptie_mailbox_list", arguments: {} };
-    assert.equal(callSessionMailboxTool(f.unified, input).pendingCount, 1);
-    assert.throws(() => callSessionMailboxTool(f.unified, { ...input, actorId: "agent:a" }), { code: "MAILBOX_SCOPE_REQUIRED" });
-    assert.throws(() => callSessionMailboxTool(f.unified, { ...input, metadata: { ...input.metadata, providerBindingId: "stale" } }), { code: "MAILBOX_SCOPE_REQUIRED" });
-    assert.throws(() => callSessionMailboxTool(f.unified, { ...input, tool: "corptie_mailbox_get", arguments: { messageId: "missing" } }), { code: "MAILBOX_MESSAGE_NOT_FOUND" });
+    assert.equal(callSessionMailboxTool(f.unified, resolve(input)).pendingCount, 1);
+    assert.throws(() => resolve({ ...input, actorId: "agent:a" }), { code: "SESSION_TOOL_SCOPE_REQUIRED" });
+    assert.throws(() => resolve({ ...input, evidence: { ...input.evidence, providerBindingId: "stale" } }), { code: "SESSION_TOOL_SCOPE_REQUIRED" });
+    assert.throws(() => callSessionMailboxTool(f.unified, resolve({ ...input, tool: "corptie_mailbox_get", arguments: { messageId: "missing" } })), { code: "MAILBOX_MESSAGE_NOT_FOUND" });
   } finally { await f.close(); }
 });
 

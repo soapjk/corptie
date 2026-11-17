@@ -1023,7 +1023,7 @@ test("native admission lease prevents an enable racing the ordinary send boundar
 });
 
 test("host tool policy denies before catalog, skill gateway or discovery can execute", async () => {
-  const host = new ToolHostService({ registry: {}, catalog: { entry: () => null, execute() { assert.fail("must not execute"); } },
+  const host = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: { entry: () => null, execute() { assert.fail("must not execute"); } },
     skillMcpGateway: { execute() { assert.fail("must not execute MCP"); } } });
   host.assertExecutionAllowed = () => { throw Object.assign(new Error("blocked"), { code: "COORDINATION_NATIVE_TOOL_DENIED" }); };
   for (const tool of ["corptie_tool_catalog_search", "corptie_tool_call", "arbitrary-shell", "corptie_task_dispatch"]) {

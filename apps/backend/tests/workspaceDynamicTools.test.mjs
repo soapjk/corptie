@@ -39,6 +39,8 @@ test("mutating workspace tools require an explicit direct-user request", () => {
 });
 
 test("Session runtime instructions default to the programmatically bound Workspace", () => {
-  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Stay in it; create or switch Worktrees only when the direct user explicitly requests it/u);
-  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Ordinary development is not authorization/u);
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Stay in it; manually create or switch Worktrees only when the direct user explicitly requests it/u);
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Scoped child Task tools may automatically allocate child Worktrees during autonomous decomposition, without a separate user creation request/u);
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /This does not authorize manual Worktree changes/u);
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /shell cd or command workdir never changes the logical Workspace/u);
 });

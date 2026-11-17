@@ -91,7 +91,7 @@ for (const providerId of ["codex-app-server", "claude-code", "openclacky"]) {
     let revision = "assigned:1";
     const service = createSessionApplicationComposition({
       store: { selectAll: () => [], getSession: () => session }, agentProviderRegistry: {},
-      toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
+      toolHostService: new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: new HostToolCatalog([
         { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
       ]) }),
       sessionBindingRepository: { resolve: () => reference },
@@ -220,7 +220,7 @@ test("Worker message context injects bounded selected references after authorita
       getSessionToolCatalogMaterialization: () => null
     },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
-    toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
+    toolHostService: new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: new HostToolCatalog([
       { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
     ]) }),
     artifactService: { indexForSession: () => assert.fail("ordinary messages must not build Artifact directories") },
@@ -299,7 +299,7 @@ test("Work Chat records selected Memory only when it enters the provider-neutral
   const service = createSessionApplicationComposition({
     store: { selectAll: () => [], getSession: () => session },
     agentProviderRegistry: {}, sessionBindingRepository: { resolve: () => reference },
-    toolHostService: new ToolHostService({ registry: {}, catalog: new HostToolCatalog([
+    toolHostService: new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: new HostToolCatalog([
       { id: "collaboration", tools: collaborationDynamicTools, execute: () => null }
     ]) }),
     workChatContextService: { build: () => ({ prompt: "Work context" }) },

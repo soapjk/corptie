@@ -8,7 +8,8 @@ export class SessionAuthorizationResolver {
   }
 
   resolve(input = {}) {
-    const claimedLogicalSessionId = normalized(input.authenticatedLogicalSessionId ?? input.logicalSessionId);
+    const invocation = input.invocationContext?.revalidate();
+    const claimedLogicalSessionId = normalized(invocation?.metadata.logicalSessionId ?? input.authenticatedLogicalSessionId ?? input.logicalSessionId);
     const claimedProductSessionId = normalized(input.sessionId);
     const logical = claimedLogicalSessionId
       ? this.store.getLogicalSession(claimedLogicalSessionId)
@@ -22,7 +23,7 @@ export class SessionAuthorizationResolver {
     if (!session) throw bindingError("Artifact access requires an authenticated active Session.");
     const agent = session.agentId ? this.store.getAgent(session.agentId) : null;
     if (!agent) throw bindingError("Session Agent binding is invalid.");
-    if (input.actorId && input.actorId !== session.agentId) throw bindingError("Authenticated Agent does not match the Session binding.");
+    if (!invocation && input.actorId && input.actorId !== session.agentId) throw bindingError("Authenticated Agent does not match the Session binding.");
     const sessionKind = session.sessionKind;
     if (!["worker", "workChat", "assistantChat"].includes(sessionKind)) throw bindingError("Session kind is invalid.");
     if (input.expectedSessionKind && input.expectedSessionKind !== sessionKind) throw bindingError("Session kind changed.");
@@ -44,7 +45,7 @@ export class SessionAuthorizationResolver {
     const logicalSessionId = logical?.logicalSessionId ?? session.external?.logicalSessionId ?? session.id;
     const claimedProviderBindingId = normalized(input.providerBindingId);
     const activeProviderBindingId = logical?.activeBinding?.bindingId ?? null;
-    if (claimedProviderBindingId && activeProviderBindingId
+    if (!invocation && claimedProviderBindingId && activeProviderBindingId
       && claimedProviderBindingId !== activeProviderBindingId) {
       throw bindingError("Provider binding is not the logical Session's active route.");
     }

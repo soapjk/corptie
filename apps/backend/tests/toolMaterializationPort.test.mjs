@@ -259,7 +259,7 @@ test("Claude startup reaches the strict domain gate after an authenticated MCP o
   const registry = new AgentProviderRegistry([provider]);
   const service = new SessionApplicationService({
     registry,
-    toolHostService: new ToolHostService({
+    toolHostService: new ToolHostService({ resolveInvocation: input => input,
       registry, catalog: value.coordinator.catalog, coordinator: value.coordinator,
       recordRuntimeEvent: (event) => value.store.recordSkillRuntimeEvent(event)
     }),
@@ -396,7 +396,7 @@ test("ToolHostService exposes the approved positional Port without signature tra
     ensureDomainsApplied(...args) { calls.push(["ensure", ...args]); return { status: "Applied" }; },
     assertCanonicalToolApplied(...args) { calls.push(["assert", ...args]); return true; }
   };
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: {}, catalog: {}, materializationPort
   });
   const boundary = { turnExecutionId: "turn:service" };

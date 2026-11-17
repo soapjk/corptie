@@ -30,14 +30,7 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
   const indexStore = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
   let application = applicationFor({ store, fixture, builder, indexStore });
   const catalog = new HostToolCatalog([createProjectCodeHostNamespace({
-    getService: () => application,
-    validateRoute: ({ metadata: routed }) => {
-      if (routed?.logicalSessionId !== fixture.sessionContext.logicalSessionId) {
-        const error = new Error("stale project-code route");
-        error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
-        throw error;
-      }
-    }
+    getService: () => application
   })]);
   const metadata = {
     logicalSessionId: fixture.sessionContext.logicalSessionId,
@@ -48,13 +41,7 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
   try {
     const snap = await catalog.execute({ tool: "corptie_project_code_snapshot", metadata });
     assert.equal(receipts.get(snap.receipt.receiptId).receiptType, "RepositorySourceSnapshotReceipt");
-    await assert.rejects(
-      () => catalog.execute({
-        tool: "corptie_project_code_snapshot",
-        metadata: { ...metadata, logicalSessionId: "logical:stale" }
-      }),
-      (error) => error.code === "PROJECT_CODE_SESSION_ROUTE_STALE"
-    );
+
 
     const l0 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,

@@ -19,14 +19,6 @@ export function createSessionToolBindingProjection({ store, prepareDesiredReplac
     };
   }
 
-  function resolveDynamicToolCallMetadata(params = {}) {
-    const logical = params.threadId
-      ? store.getLogicalSessionByProviderThreadId(params.threadId)
-      : null;
-    const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-    return session ? sessionToolMetadata(session) : (params.metadata ?? null);
-  }
-
   function resolveToolHostBinding(logicalSessionId, providerBindingId) {
     const logical = store.getLogicalSession(logicalSessionId);
     const active = logical?.activeBinding ?? null;
@@ -130,7 +122,6 @@ export function createSessionToolBindingProjection({ store, prepareDesiredReplac
 
   return {
     sessionToolMetadata,
-    resolveDynamicToolCallMetadata,
     resolveToolHostBinding,
     prospectiveToolHostBinding,
     prepareDesiredWorkspaceToolMaterialization

@@ -14,7 +14,7 @@ export function routeBackendHttpRequest(request, response, ports) {
     agentProviderRegistry, backgroundAgentService, taskSummaryService, readJson, rejectUnavailableStoreRequest,
     dataRootMigrationCoordinator, handleSceneHttpRequest, sceneService, handleBackendRestartHttpRequest, shutdown,
     handlePlatformConfirmationHttpRequest, platformConfirmationService, errorStatus, handleSessionToolHttpRequest, collaborationCore,
-    toolHostService, sessionToolMetadata, handleCollaborationRoutes, handleArtifactHttpRequest, artifactService,
+    toolHostService, handleCollaborationRoutes, handleArtifactHttpRequest, artifactService,
     handleBenchmarkHttpRequest, benchmarkControlPlane, handleCodeTaskObservabilityHttpRequest, turnObservability, handleSshWorkspaceHttpRequest,
     getSshWorkspaceServices, handleMcpRegistryHttpRequest, mcpRegistryService, mcpSessionAvailabilityService, sessionAbilityPreferences, computerUsePreset, emitEvent,
     handleEntityRoutes, handleDshHttpRequest, sessionApplicationService, listGatewaySessions, readStoredSessionConversation,
@@ -125,8 +125,7 @@ export function routeBackendHttpRequest(request, response, ports) {
   if (handlePlatformConfirmationHttpRequest({ request, response, url, platformConfirmationService, readJson, sendJson, errorStatus })) return;
 
   if (handleSessionToolHttpRequest({
-    request, response, url, store, collaborationCore, toolHostService,
-    sessionToolMetadata, readJson, sendJson, errorStatus
+    request, response, url, toolHostService, readJson, sendJson, errorStatus
   })) return;
 
   if (handleCollaborationRoutes({ request, response, url })) return;

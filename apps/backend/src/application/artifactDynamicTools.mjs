@@ -108,6 +108,7 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
     await options.toolMaterializationPort.assertCanonicalToolApplied(logicalSessionId, input.tool);
   }
   const context = {
+    ...(input.context ? { invocationContext: input.context } : {}),
     actorId: input.actorId,
     sessionId: input.metadata?.sessionId,
     logicalSessionId: input.metadata?.logicalSessionId,
