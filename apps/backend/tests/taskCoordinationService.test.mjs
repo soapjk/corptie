@@ -2679,8 +2679,36 @@ test("failed summary delivery updates original dispatch and retries only origina
   assert.equal(f.coordinator.get(id).error_code,"SESSION_NOT_READY");
   assert.equal(f.coordinator.get(id).operation_id,null);
   const result=f.coordinator.retryDispatch(f.source,f.role.agentId,id);
+  assert.equal(failed.source.dispatchBlock.kind,"settled");
   assert.equal(result.retryAction,"resume_summary_management");
   assert.equal(f.coordinator.get(id).mailbox_message_id,message.message_id);
+  const resumed=f.store.getAgentTask(work.taskId);
+  assert.equal(resumed.status,"queued");
+  assert.equal(resumed.lastError,null);
+  assert.equal(resumed.source.dispatchBlock,null);
+  assert.equal(f.coordinator.get(id).operation_id,null);
+});
+
+test("summary retry does not revive unrelated or consumed management work", async t => {
+  for (const invalid of ["purpose", "dispatch", "adopted", "completed_dispatch"]) await t.test(invalid, async t => {
+    const f=await recoveryFixture(t),child=f.child(`Retry_boundary_${invalid}`);f.open(`retry_boundary_${invalid}`,child.id);
+    const receipt=f.coordinator.acceptDispatch(f.source,f.role.agentId,{items:[{action:"send",taskId:child.id,text:"work",idempotencyKey:`boundary:${invalid}`}]});
+    const id=receipt.dispatches[0].dispatchId;await f.coordinator.runDispatch(id);
+    const row=f.coordinator.get(id);
+    const message=f.store.selectOne("SELECT * FROM session_mailbox_messages WHERE message_id=?",[row.mailbox_message_id]);
+    const work=f.store.getAgentTask(message.operation_id);
+    f.store.updateAgentTask(work.taskId,{status:"failed",source:{...work.source,dispatchBlock:{kind:"rejected"}}});
+    f.coordinator.update(id,{status:invalid==="completed_dispatch"?"completed":"blocked",error_code:"TEST_REJECTION"});
+    if(invalid==="adopted")f.store.db.run("UPDATE session_mailbox_messages SET disposition='adopted' WHERE message_id=?",[message.message_id]);
+    if(invalid==="purpose" || invalid==="dispatch") {
+      const authorization=JSON.parse(message.authorization_json);
+      if(invalid==="purpose")authorization.purpose="parent_report";
+      else authorization.coordinationDispatchId="unrelated";
+      f.store.db.run("UPDATE session_mailbox_messages SET authorization_json=? WHERE message_id=?",[JSON.stringify(authorization),message.message_id]);
+    }
+    assert.throws(()=>f.coordinator.retryDispatch(f.source,f.role.agentId,id),{code:"DISPATCH_RECEIPT_NOT_FOUND"});
+    assert.equal(f.store.getAgentTask(work.taskId).status,"failed");
+  });
 });
 
 test("host owns batch and receipt even if legacy planner returns an arbitrary batch", async t => {
