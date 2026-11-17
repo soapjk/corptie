@@ -616,7 +616,9 @@ export class OpenClackyManager {
       }
       const result = await this.onToolCall({
         actorId: context.actorId,
-        metadata: context.metadata,
+        evidence: {
+          kind: "provider-session", providerId: "openclacky", providerSessionId: sessionId
+        },
         tool,
         arguments: event.arguments ?? {}
       });

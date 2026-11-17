@@ -33,13 +33,6 @@ export function createWorkspaceSessionToolAuthority({
   }
 
   async function callWorkspaceDynamicTool(params) {
-    const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
-    if (!logical || logical.activeThreadId !== params.threadId) {
-      const error = new Error("Workspace operations are only available from the active logical Session thread.");
-      error.code = "WORKSPACE_SESSION_ROUTE_STALE";
-      error.stage = "route_validation";
-      throw error;
-    }
     const metadata = params.metadata ?? {};
     const operations = getSessionWorkspaceOperations();
     if (params.tool === "corptie_list_workspaces") {
@@ -54,19 +47,5 @@ export function createWorkspaceSessionToolAuthority({
     throw new Error(`Unsupported workspace tool: ${params.tool}`);
   }
 
-  function validateProjectCodeHostRoute(params) {
-    const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
-    if (!logical || logical.activeThreadId !== params.threadId
-      || logical.logicalSessionId !== params.metadata?.logicalSessionId) {
-      const error = new Error("Project-code search is only available from the active authoritative Worker Session thread.");
-      error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
-      error.stage = "route_validation";
-      throw error;
-    }
-  }
-
-  return {
-    workspaceInventory, requireAgentLogicalSession,
-    callWorkspaceDynamicTool, validateProjectCodeHostRoute
-  };
+  return { workspaceInventory, requireAgentLogicalSession, callWorkspaceDynamicTool };
 }

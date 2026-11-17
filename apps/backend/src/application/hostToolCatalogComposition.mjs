@@ -20,7 +20,7 @@ import { integrationRegistryDynamicTools, callIntegrationRegistryDynamicTool } f
 
 export function createHostToolCatalog({
   executionChecklistService, verificationBudgetService, memoryOperationService, artifactService, callWorkspaceDynamicTool,
-  validateProjectCodeHostRoute, getProjectCodeApplicationService,
+  getProjectCodeApplicationService,
   sessionCollaborationV2Enabled, port, skillRegistryService,
   scheduledSessionTaskService, getBoundTaskForAgent,
   reportTaskAcceptanceForAgent, completeTaskForSession, captureTaskIntegrationForAgent,
@@ -65,8 +65,7 @@ export function createHostToolCatalog({
       execute: (input) => callWorkspaceDynamicTool(input)
     },
     createProjectCodeHostNamespace({
-      getService: getProjectCodeApplicationService,
-      validateRoute: validateProjectCodeHostRoute
+      getService: getProjectCodeApplicationService
     }),
     {
       id: "collaboration",
@@ -83,6 +82,7 @@ export function createHostToolCatalog({
           baseUrl: `http://127.0.0.1:${port}`,
           sessionScope: {
             sessionId: input.metadata?.sessionId,
+            providerBindingId: input.metadata?.providerBindingId,
             workId: input.metadata?.workId,
             taskId: input.metadata?.taskId
           }
@@ -98,17 +98,8 @@ export function createHostToolCatalog({
     {
       id: "scheduled-tasks",
       tools: scheduledSessionTaskDynamicTools,
-      // A Provider may advertise tools before a resumed thread has refreshed
-      // its authoritative Session binding. Execution still fails closed.
       authorize: ({ actorId }) => Boolean(actorId),
-      execute: (input) => {
-        if (!input.metadata?.sessionId || !input.metadata?.logicalSessionId) {
-          const error = new Error("Automation tools require an authenticated logical Session binding.");
-          error.code = "SESSION_AUTHENTICATION_REQUIRED";
-          throw error;
-        }
-        return callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input);
-      }
+      execute: (input) => callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input)
     },
     {
       id: "task-acceptance",

@@ -1,3 +1,4 @@
+import { sessionToolTestContext } from "./helpers/sessionToolTestAuthority.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -54,15 +55,15 @@ test("CRUD, undo, stable IDs, stale revisions and idempotency never overwrite co
 
 test("Session scope and model tool schema cannot target another Task or create without current scope", async t => {
   const f = await fixture(t);
-  const metadata = { sessionId: f.logical.logicalSessionId, providerBindingId: f.context.bindingId, taskId: f.task.id };
+  const metadata = sessionToolTestContext(f.store, { sessionId: f.logical.logicalSessionId, providerBindingId: f.context.bindingId });
   assert.equal(f.service.scope(metadata).task.id, f.task.id);
-  assert.throws(() => f.service.scope({ ...metadata, providerBindingId: "stale" }), /SCOPE/);
-  assert.throws(() => f.service.scope({ ...metadata, taskId: "other" }), /SCOPE/);
+  assert.throws(() => f.service.scope({ ...metadata, binding: null }), /SCOPE/);
+  assert.throws(() => f.service.scope({ ...metadata, metadata: { ...metadata.metadata, taskId: "other" } }), /SCOPE/);
   const validate = new Ajv({ strict: false }).compile(executionChecklistDynamicTools[0].inputSchema);
   assert.equal(validate({ action: "get" }), true);
   assert.equal(validate({ action: "status", itemId: "item" }), false);
   assert.equal(validate({ action: "get", taskId: "other" }), false);
-  assert.equal(callExecutionChecklistTool(f.service, { metadata, arguments: { action: "get" } }).checklist.revision, 0);
+  assert.equal(callExecutionChecklistTool(f.service, { context: metadata, arguments: { action: "get" } }).checklist.revision, 0);
 });
 
 test("SQLite reopen retains progress and dedup receipts without any continuation", async t => {
@@ -109,12 +110,12 @@ test("desktop HTTP mutations require local user authority and preview remains re
 
 test("model tool creates through authenticated binding and returns bounded remaining pages", async t => {
   const f = await fixture(t);
-  const metadata = { sessionId: f.logical.logicalSessionId, providerBindingId: f.context.bindingId, taskId: f.task.id };
-  const response = callExecutionChecklistTool(f.service, { metadata, arguments: { action: "create", expectedRevision: 0,
+  const metadata = sessionToolTestContext(f.store, { sessionId: f.logical.logicalSessionId, providerBindingId: f.context.bindingId });
+  const response = callExecutionChecklistTool(f.service, { context: metadata, arguments: { action: "create", expectedRevision: 0,
     operationId: "tool-create", steps: Array.from({ length: 100 }, (_, index) => ({ text: `Work ${index}` })) } });
   assert.equal(response.totalSteps, 100); assert.equal(response.checklist.steps.length, 8);
   assert.equal(response.remaining.length, 8); assert.equal(response.checklist.authorizationRef, undefined);
-  const page = callExecutionChecklistTool(f.service, { metadata, arguments: { action: "get", offset: 20, limit: 10 } });
+  const page = callExecutionChecklistTool(f.service, { context: metadata, arguments: { action: "get", offset: 20, limit: 10 } });
   assert.equal(page.checklist.steps[0].text, "Work 20"); assert.equal(page.nextOffset, 30);
 
 });

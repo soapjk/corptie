@@ -1,3 +1,4 @@
+import { sessionToolTestContext } from "./helpers/sessionToolTestAuthority.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -32,7 +33,7 @@ async function fixture(t, { provider = "codex-app-server", dbPath = ":memory:", 
     text: "Implement", source: { type: "desktop", messageId: "instruction:1" } });
   store.claimAgentTask("instruction:1");
   store.db.run("UPDATE agent_operations SET target_turn_id='turn:1' WHERE task_id='instruction:1'");
-  const metadata = { sessionId: logical.logicalSessionId, providerBindingId: logical.activeBinding.bindingId, taskId: task.id };
+  const metadata = sessionToolTestContext(store, { sessionId, providerBindingId: logical.activeBinding.bindingId });
   const calls = [], interrupts = [];
   const service = new VerificationBudgetService({ store, scope: value => new ExecutionChecklistService({ store }).scope(value),
     workingDirectory: () => "/tmp", run: run ?? (async (...args) => { calls.push(args); return { stdout: "passed", stderr: "" }; }),
@@ -84,7 +85,7 @@ test("simultaneous calls cannot consume the last slot twice", async t => {
 
 test("invalid scope, incomplete development, and invalid commands spend nothing", async t => {
   const f = await fixture(t);
-  await assert.rejects(f.service.execute({ ...f.metadata, providerBindingId: "stale" }, f.input("r")));
+  await assert.rejects(f.service.execute({ ...f.metadata, binding: null }, f.input("r")));
   await assert.rejects(f.service.execute(f.metadata, { ...f.input("r"), developmentComplete: false }), { code: "DEVELOPMENT_NOT_FINISHED" });
   await assert.rejects(f.service.execute(f.metadata, { ...f.input("r"), commands: [] }), { code: "VERIFICATION_COMMANDS_INVALID" });
   assert.equal(f.service.list(f.task.id).length, 0);
@@ -114,7 +115,7 @@ test("SQLite reopen preserves charges and existing limits despite changed defaul
 test("Codex, Claude, and OpenClacky share the exact entry contract", async t => {
   for (const provider of ["codex-app-server", "claude-agent-sdk", "openclacky"]) {
     const f = await fixture(t, { provider });
-    const result = await callVerificationBudgetTool(f.service, { metadata: f.metadata, arguments: { action: "run", ...f.input("r") } });
+    const result = await callVerificationBudgetTool(f.service, { context: f.metadata, arguments: { action: "run", ...f.input("r") } });
     assert.equal(result.budget.used, 1); assert.match(result.budget.limitation, /绕过/);
   }
   const validate = new Ajv({ strict: false }).compile(verificationBudgetDynamicTools[0].inputSchema);
@@ -338,7 +339,7 @@ test("follow-up budget lookup exposes the extended original instead of treating 
   f.store.updateAgentTask('instruction:1',{status:'completed'});
   f.store.enqueueAgentTask({taskId:'question:budget',sessionId:f.sessionId,agentId:f.agent.agentId,kind:'user',priority:0,text:'我已经追加了预算，看起来你感知不到',source:{type:'desktop'}});
   f.store.claimAgentTask('question:budget');
-  const result=callVerificationBudgetTool(f.service,{metadata:f.metadata,arguments:{action:'get',executionId:'original:run'}});
+  const result=callVerificationBudgetTool(f.service,{context:f.metadata,arguments:{action:'get',executionId:'original:run'}});
   assert.equal(result.instructionId,'question:budget');assert.equal(result.budget,null);
   assert.equal(result.currentState.status,'not_started');assert.equal(result.currentState.used,0);
   assert.equal(result.currentState.remaining,1);

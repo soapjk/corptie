@@ -35,15 +35,13 @@ export class ExecutionChecklistService {
     if (task.archived || task.deletion_status || ["cancelled"].includes(task.lifecycle_state)) fail("CHECKLIST_TASK_INACTIVE");
     return task;
   }
-  scope(metadata) {
-    const logical = this.store.getLogicalSession(metadata?.sessionId)
-      ?? this.store.getLogicalSessionByLegacySessionId(metadata?.sessionId);
+  scope(context) {
+    const { metadata, binding } = context ?? {};
+    const logical = metadata?.logicalSessionId && this.store.getLogicalSession(metadata.logicalSessionId);
     const session = logical && this.store.getSession(logical.legacySessionId);
-    if (!session?.taskId || logical.activeBinding?.state !== "active"
-      || metadata.providerBindingId !== logical.activeBinding.bindingId
-      || (metadata.taskId && metadata.taskId !== session.taskId)) fail("CHECKLIST_SESSION_SCOPE_REQUIRED", 403);
+    if (!binding || !session?.taskId || metadata.taskId !== session.taskId) fail("CHECKLIST_SESSION_SCOPE_REQUIRED", 403);
     const task = this.task(session.taskId);
-    const delegation = coordinationDelegation(this.store,logical.logicalSessionId);
+    const delegation = binding.delegation;
     if (task.current_session_id !== session.id && !delegation) fail("CHECKLIST_SESSION_LEASE_CHANGED", 403);
     const ownerLogicalSessionId=delegation?.mainSessionId??logical.logicalSessionId;
     const operation=this.store.getRunningAgentTaskForSession(session.id);

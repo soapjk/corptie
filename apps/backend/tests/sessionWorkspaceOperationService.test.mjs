@@ -78,11 +78,11 @@ function addScopedSession(f, suffix, options = {}) {
   const workspaceId = addRepository(f.store, repositoryId);
   const work = f.store.createWork({
     id: `work:${suffix}`,
-    name: `Work ${suffix}`,
+    name: `Work_${suffix}`,
     contributorAgentIds: options.contributor === false ? [] : [agent.agentId],
     workspaceId
   });
-  const task = f.store.createTask({ workId: work.id, title: `Work ${suffix}` });
+  const task = f.store.createTask({ workId: work.id, title: `Work_${suffix}` });
   const providerSessionId = `provider:${suffix}`;
   const logicalSessionId = `logical:${suffix}`;
   f.store.createSession({

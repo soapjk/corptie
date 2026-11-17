@@ -99,12 +99,7 @@ test("applied domains require a matching applied revision and metadata favors th
     status: "applied", appliedVersion: 2, desiredVersion: 2, appliedDomains: [{ domainId: "git" }, "git"]
   }), ["git"]);
   const f = fixture();
-  const metadata = f.projection.resolveDynamicToolCallMetadata({
-    threadId: "thread:1", metadata: { logicalSessionId: "untrusted" }
-  });
+  const metadata = f.projection.sessionToolMetadata(f.session);
   assert.equal(metadata.logicalSessionId, "logical:1");
   assert.equal(metadata.providerBindingId, "binding:1");
-  f.store.getLogicalSessionByProviderThreadId = () => null;
-  assert.deepEqual(f.projection.resolveDynamicToolCallMetadata({ metadata: { purpose: "background" } }),
-    { purpose: "background" });
 });

@@ -164,6 +164,7 @@ export class ArtifactService {
         childDeliveryOperationId:input.childDeliveryOperationId };
     }
     const resolved = this.sessionAuthorizationResolver.resolve({
+      invocationContext: input.invocationContext,
       actorId: input.actorId,
       sessionId: input.sessionId,
       authenticatedLogicalSessionId: input.logicalSessionId,

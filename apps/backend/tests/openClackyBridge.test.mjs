@@ -134,7 +134,7 @@ test("OpenClacky bridge installs Session-scoped tools and executes calls with tr
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(toolCalls, [{
     actorId: "agent:owner",
-    metadata: { sessionId: "session:logical", sessionKind: "worker" },
+    evidence: { kind: "provider-session", providerId: "openclacky", providerSessionId: "clacky-tools" },
     tool: "corptie_scheduled_tasks_manage",
     arguments: { action: "create", schedule_type: "after", delay_seconds: 60 }
   }]);

@@ -14,9 +14,9 @@ export const verificationBudgetDynamicTools = [{ type: "function", name: "corpti
 export function callVerificationBudgetTool(service, input) {
   const args = input.arguments ?? {};
   if (args.action === "get") {
-    return { ...service.inspect(input.metadata,args), defaultLimit:service.defaultLimit(),defaultEnabled:service.defaultEnabled(),
+    return { ...service.inspect(input.context,args), defaultLimit:service.defaultLimit(),defaultEnabled:service.defaultEnabled(),
       workflow: "整条指令及其子任务的开发代码与测试代码全部完成后，统一提交 run；不要逐模块运行验证。原生 Shell 未受强制限制。" };
   }
   if (args.action !== "run") throw Object.assign(new Error("VERIFICATION_ACTION_INVALID"), { statusCode: 400 });
-  return service.execute(input.metadata, args);
+  return service.execute(input.context, args);
 }

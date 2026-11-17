@@ -13,6 +13,9 @@ import { buildCapabilityMap, normalizeDiscoveryText, rankDiscoveryCandidates, do
 
 export class ToolHostService {
   constructor(options = {}) {
+    this.resolveInvocation = options.resolveInvocation ?? (() => {
+      throw toolError("SESSION_TOOL_SCOPE_REQUIRED", "The Session Tool context resolver is unavailable.", 403);
+    });
     this.registry = options.registry;
     this.catalog = options.catalog;
     this.coordinator = options.coordinator ?? null;
@@ -169,6 +172,8 @@ export class ToolHostService {
   async execute(input = {}) {
     const started = performance.now();
     try {
+      input = this.resolveInvocation(input);
+      input.signal?.throwIfAborted();
       const result = await this.#execute(input);
       this.#recordToolCall(input, "success", performance.now() - started, null, result);
       return result;
@@ -183,6 +188,9 @@ export class ToolHostService {
     const entry = canonical ? this.catalog.entry(canonical) : null;
     const discovery = input.tool === TOOL_CATALOG_SEARCH || input.tool === TOOL_DOMAIN_LOAD;
     await this.assertExecutionAllowed?.({ ...input, executionEffect: discovery ? "read" : entry?.executionEffect ?? "write" });
+    const current = input.context?.revalidate();
+    if (current) input = { ...input, metadata: current.metadata, context: current };
+    input.signal?.throwIfAborted();
     if (canonical === "corptie_collaboration_tasks_delete_child" && this.requestRetiredChildDiscard) {
       const scope = exactScope(input);
       return this.requestRetiredChildDiscard({ ...input, scope,
@@ -365,6 +373,10 @@ export class ToolHostService {
   }
 
   appliedDefinitions(input = {}, surface = "generated_authenticated_mcp") {
+    return this.#appliedDefinitions(this.resolveInvocation(input), surface);
+  }
+
+  #appliedDefinitions(input, surface) {
     if (!this.coordinator) throw toolError("TOOL_HOST_COORDINATOR_REQUIRED", "The authoritative Tool Host coordinator is unavailable.");
     const scope = exactScope(input);
     const record = this.coordinator.store.getSessionToolCatalogMaterialization(
@@ -395,6 +407,7 @@ export class ToolHostService {
   async observeGeneratedMcpToolsList(input = {}) {
     this.#recordMcpObservation(input, "received");
     try {
+      input = this.resolveInvocation(input);
       const result = await this.#observeGeneratedMcpToolsList(input);
       this.#recordMcpObservation(input, "accepted", null, result);
       return result;
@@ -436,10 +449,15 @@ export class ToolHostService {
       desiredVersion: input.desiredVersion,
       observationId: input.observationId
     });
-    const applied = this.appliedDefinitions(input, "generated_authenticated_mcp");
-    const skillTools = applied.tools.some(tool => tool.name === TOOL_RESTRICTED_GATEWAY) ? [] : this.skillMcpGateway
-      ? await this.skillMcpGateway.definitions(input)
-      : [];
+    const current = input.context?.revalidate();
+    if (current) input = { ...input, metadata: current.metadata, context: current };
+    const applied = this.#appliedDefinitions(input, "generated_authenticated_mcp");
+    let skillTools = [];
+    if (!applied.tools.some(tool => tool.name === TOOL_RESTRICTED_GATEWAY) && this.skillMcpGateway) {
+      skillTools = await this.skillMcpGateway.definitions(input);
+      const current = input.context?.revalidate();
+      if (current) input = { ...input, metadata: current.metadata, context: current };
+    }
     const names = new Set(applied.tools.map((tool) => tool.name.toLocaleLowerCase()));
     for (const tool of skillTools) {
       const key = tool.name.toLocaleLowerCase();
@@ -448,7 +466,7 @@ export class ToolHostService {
       }
       names.add(key);
     }
-    const revision = this.catalogRevision(input);
+    const revision = this.#catalogRevision(input);
     return Object.freeze({
       ...applied,
       revision,
@@ -457,6 +475,10 @@ export class ToolHostService {
   }
 
   catalogRevision(input = {}) {
+    return this.#catalogRevision(this.resolveInvocation(input));
+  }
+
+  #catalogRevision(input) {
     const scope = exactScope(input);
     const record = this.coordinator?.store.getSessionToolCatalogMaterialization(
       scope.logicalSessionId, scope.providerBindingId

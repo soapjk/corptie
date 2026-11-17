@@ -14,7 +14,7 @@ import { ToolHostMaterializationCoordinator } from "../src/application/toolHostM
 
 const scope = { actorId: "agent:test", metadata: { sessionId: "session:test" } };
 const createHostToolCatalog = (options) => composeCatalog({ getProjectCodeApplicationService: () => null,
-  validateProjectCodeHostRoute: () => {}, ...options });
+  ...options });
 test("registration domain is discoverable for MCP and Skill and shared across Providers", async () => {
   const catalog = createHostToolCatalog({});
   assert.match(searchableDomainText("integration-registry"), /mcp/i);

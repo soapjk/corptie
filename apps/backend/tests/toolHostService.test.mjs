@@ -24,7 +24,7 @@ test("Claude tools/list never eagerly connects or exposes assigned MCP schemas",
   const plan = buildToolExposurePlan({ catalog, desiredDomains: ["business"], capabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES });
   const record = { status: "applied", appliedVersion: "v1", desiredVersion: "v1", exposurePlan: plan, catalogVersion: catalog.snapshot().catalogVersion };
   let connections = 0;
-  const service = new ToolHostService({ registry: {}, catalog, coordinator: {
+  const service = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog, coordinator: {
     store: { getSessionToolCatalogMaterialization: () => record },
     observeGeneratedMcpToolsList: async () => record
   }, skillMcpGateway: { revision: () => "none", definitions: async () => { connections++; throw Error("must stay lazy"); } } });
@@ -40,7 +40,7 @@ test("discovery recovery is bounded, authorized and never turns catalog failure 
     { id: "memory", tools: memoryDynamicTools, execute: () => null },
     { id: "platform", tools: platformDynamicTools, authorizeDiscover: () => false, execute: () => null }
   ]);
-  const service = new ToolHostService({ registry: {}, catalog, coordinator: {
+  const service = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog, coordinator: {
     search: async () => { if (fail) throw Object.assign(new Error("offline"), { code: "CATALOG_OFFLINE" });
       return { domains: [], catalogVersion: "test" }; }
   } });
@@ -63,7 +63,7 @@ test("combined search ranks exact MCP names ahead of Host results and preserves 
   const mcp = { domainId: "mcp:target", recommendedTool: "target", toolCount: 1,
     invocation: { expectedCatalogVersion: "mcp-version" },
     tools: [{ canonicalName: "target", inputSchema: { type: "object", properties: { id: { type: "string" } } } }] };
-  const service = new ToolHostService({ registry: {}, catalog: new HostToolCatalog([]),
+  const service = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: new HostToolCatalog([]),
     coordinator: { search: async () => ({ domains: [host] }) },
     skillMcpGateway: { search: async () => ({ domains: [mcp] }) } });
   const result = await service.execute({ metadata: { logicalSessionId: "logical:one", providerBindingId: "binding:one" },
@@ -76,7 +76,7 @@ test("combined search ranks exact MCP names ahead of Host results and preserves 
 test("combined search preserves an exact canonical alias returned by Host discovery", async () => {
   const domain = { domainId: "memory", recommendedTool: "canonical_lookup", toolCount: 1,
     tools: [{ canonicalName: "canonical_lookup", aliases: ["old_lookup"], inputSchema: { type: "object" } }] };
-  const service = new ToolHostService({ registry: {}, catalog: new HostToolCatalog([]),
+  const service = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: new HostToolCatalog([]),
     coordinator: { search: async () => ({ domains: [domain] }) } });
   const result = await service.execute({ metadata: { logicalSessionId: "logical:one", providerBindingId: "binding:one" },
     tool: "corptie_tool_catalog_search", arguments: { intent: "old_lookup", domain_hint: "wrong" } });
@@ -101,7 +101,7 @@ test("prepared Session confirmation accepts only its exact applied generation an
         appliedVersion: expected.desiredVersion, appliedCatalogVersion: expected.desiredCatalogVersion,
         providerReceipt: { appliedExposurePlanHash: expected.exposurePlan.exposurePlanHash }
       };
-      const service = new ToolHostService({
+      const service = new ToolHostService({ resolveInvocation: input => input,
         registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
         coordinator: {
           store: { getSessionToolCatalogMaterialization: () => current },
@@ -133,7 +133,7 @@ test("prepared confirmation rejects another desired, catalog, exposure or bindin
         providerReceipt: { appliedExposurePlanHash: expected.exposurePlan.exposurePlanHash },
         ...patch
       };
-      const service = new ToolHostService({
+      const service = new ToolHostService({ resolveInvocation: input => input,
         registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
         coordinator: {
           store: { getSessionToolCatalogMaterialization: () => current },
@@ -164,7 +164,7 @@ test("prepared confirmation requires matching applied catalog and exposure proof
         ...patch
       };
       const failures = [];
-      const service = new ToolHostService({
+      const service = new ToolHostService({ resolveInvocation: input => input,
         registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
         coordinator: {
           store: { getSessionToolCatalogMaterialization: () => current },
@@ -196,7 +196,7 @@ test("bootstrap attachment reuses the strict gate plan instead of recalculating 
     })
   ]);
   let current = record;
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry, catalog,
     coordinator: {
       store: { getSessionToolCatalogMaterialization: () => current },
@@ -225,7 +225,7 @@ test("generated MCP observation diagnostics report safe received/accepted/reject
   };
   let rejectObservation = false;
   let observations = 0;
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
     coordinator: {
       store: { getSessionToolCatalogMaterialization: () => record },
@@ -288,7 +288,7 @@ test("Tool Host attaches one product-owned catalog through a Provider capability
       }
     })
   ]);
-  const service = new ToolHostService({ registry, catalog });
+  const service = new ToolHostService({ resolveInvocation: input => input, registry, catalog });
   const prepared = await service.prepareSession("hosted", { actorId: "agent-one" });
 
   assert.equal(calls.length, 1);
@@ -318,7 +318,7 @@ test("domain_load returns the exact directly callable or restricted-gateway cont
       }
     })
   };
-  const service = new ToolHostService({ registry, catalog, coordinator });
+  const service = new ToolHostService({ resolveInvocation: input => input, registry, catalog, coordinator });
   const result = await service.execute({
     actorId: "agent:memory",
     metadata: { logicalSessionId: "logical:memory", providerBindingId: "binding:memory" },
@@ -346,7 +346,7 @@ test("restricted gateway accepts an older caller catalog version after the Sessi
       record: { appliedCatalogVersion: currentCatalogVersion }
     })
   };
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry([]), catalog, coordinator
   });
 
@@ -374,7 +374,7 @@ test("restricted gateway rejects an older caller version when the Session genera
     tools: memoryDynamicTools,
     execute: () => ({ ok: true })
   }]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry([]),
     catalog,
     coordinator: {
@@ -422,7 +422,7 @@ test("fixed Tool Host bootstrap discovers and calls hot-assigned Skill MCP tools
       return { content: [{ type: "text", text: "portfolio" }] };
     }
   };
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry([]),
     catalog: new HostToolCatalog([]),
     coordinator: {
@@ -459,7 +459,7 @@ test("Tool Host telemetry records business latency and aggregate schema failures
     tools: memoryDynamicTools,
     execute: () => ({ ok: true })
   }]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry([]),
     catalog,
     recordRuntimeEvent: (event) => events.push(event)
@@ -501,7 +501,7 @@ test("restricted gateway telemetry attributes project-code calls and fallback ev
       results: []
     })
   }]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry([]),
     catalog,
     coordinator: {
@@ -544,7 +544,7 @@ test("prospective replacement bindings preserve the explicitly requested Tool do
       }
     })
   ]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry,
     coordinator: {},
     catalog: new HostToolCatalog([{
@@ -574,7 +574,7 @@ test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact c
     [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH],
     { attachTools(attachment) { attachments.set(id, attachment); return { attached: true }; } }
   )));
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry,
     catalog: new HostToolCatalog([{
       id: "artifacts", tools: artifactDynamicTools,
@@ -633,7 +633,7 @@ test("Tool Host carries immutable Session scope metadata into authorization and 
   ], {
     attachTools(attachment) { calls.push(attachment); return attachment; }
   })]);
-  const service = new ToolHostService({ registry, catalog });
+  const service = new ToolHostService({ resolveInvocation: input => input, registry, catalog });
   const prepared = await service.prepareSession("hosted", {
     actorId: "assistant", sessionKind: "workChat", workId: "work:1"
   });
@@ -644,13 +644,13 @@ test("Tool Host carries immutable Session scope metadata into authorization and 
 
 test("Tool Host does not attach tools when a Provider does not declare support", async () => {
   const registry = new AgentProviderRegistry([provider("plain", [])]);
-  const service = new ToolHostService({ registry, catalog: new HostToolCatalog() });
+  const service = new ToolHostService({ resolveInvocation: input => input, registry, catalog: new HostToolCatalog() });
   assert.equal(await service.prepareSession("plain"), null);
 });
 
 test("Tool Host does not mutate an unsupported Provider for assigned Skill MCP dependencies", async () => {
   const registry = new AgentProviderRegistry([provider("plain", [])]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry,
     catalog: new HostToolCatalog(),
     skillMcpGateway: { revision: () => "assigned" }
@@ -665,7 +665,7 @@ test("Tool Host needs only its permanent attachment capability to proxy Skill MC
   ], {
     attachTools: (attachment) => attachment
   })]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry,
     catalog: new HostToolCatalog(),
     skillMcpGateway: { revision: () => "assigned" },
@@ -777,7 +777,7 @@ test("Tool Host keeps Provider-native MCP bindings stable for assigned Skill MCP
   ], {
     attachTools(attachment) { calls.push(attachment); return attachment; }
   })]);
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry,
     catalog: new HostToolCatalog(),
     skillMcpGateway: {
@@ -835,7 +835,7 @@ test("Codex, Claude, and OpenClacky Provider sessions receive the same provider-
       }
     }
   ));
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry(providers),
     catalog: new HostToolCatalog([{
       id: "memory",
@@ -868,7 +868,7 @@ test("Codex, Claude, and OpenClacky Tool Host attachments receive one platform-a
   const providers = ["codex-platform", "claude-platform", "openclacky-platform"].map((id) => provider(id, [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
     attachTools(attachment) { attachments.set(id, attachment); return { attached: true }; }
   }));
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry(providers),
     catalog: new HostToolCatalog([{ id: "platform", tools: platformDynamicTools, authorize: ({ actorId }) => actorId === "assistant", execute: () => ({}) }])
   });
@@ -885,7 +885,7 @@ test("Codex, Claude, and OpenClacky receive one provider-neutral Task read and c
   const providers = ids.map((id) => provider(id, [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
     attachTools(attachment) { attachments.set(id, attachment); return { attached: true }; }
   }));
-  const service = new ToolHostService({
+  const service = new ToolHostService({ resolveInvocation: input => input,
     registry: new AgentProviderRegistry(providers),
     catalog: new HostToolCatalog([{
       id: "task-acceptance", tools: taskAcceptanceDynamicTools, execute: () => ({})
@@ -919,7 +919,7 @@ test("Session creation passes a prepared Tool Host attachment without knowing Pr
       return { id: "native-session", title: "Created" };
     }
   })]);
-  const toolHostService = new ToolHostService({
+  const toolHostService = new ToolHostService({ resolveInvocation: input => input,
     registry,
     catalog: new HostToolCatalog([{
       id: "workspace",
@@ -947,7 +947,7 @@ test("Session creation requires an existing Agent actorId (no silent actor gener
     attachTools: (attachment) => ({ nativeIdentity: attachment.actorId }),
     createSession: () => ({ id: "native-session", title: "Created" })
   })]);
-  const toolHostService = new ToolHostService({
+  const toolHostService = new ToolHostService({ resolveInvocation: input => input,
     registry,
     catalog: new HostToolCatalog([{ id: "workspace", tools: [{ name: "corptie_list_workspaces" }], execute: () => ({}) }])
   });
@@ -965,7 +965,7 @@ test("Session creation requires an existing Agent actorId (no silent actor gener
 
 test('catalog change signal exposes pending desired generation rather than hiding it behind applied version', () => {
   const record = { desiredVersion: 'new', appliedVersion: 'old', status: 'refreshing' };
-  const service = new ToolHostService({ registry: {}, catalog: {}, coordinator: {
+  const service = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: {}, coordinator: {
     store: { getSessionToolCatalogMaterialization: () => record }
   } });
   assert.equal(service.catalogRevision({ metadata: {
@@ -976,7 +976,7 @@ test('catalog change signal exposes pending desired generation rather than hidin
 
 test("retired deletion calls stage user confirmation through the fixed gateway without catalog exposure", async () => {
   const calls = [];
-  const host = new ToolHostService({ registry: {}, catalog: { entry: () => null, execute() { assert.fail("must not execute retired tool"); } },
+  const host = new ToolHostService({ resolveInvocation: input => input, registry: {}, catalog: { entry: () => null, execute() { assert.fail("must not execute retired tool"); } },
     requestRetiredChildDiscard: async input => { calls.push(input); return { accepted: false, requiresUserConfirmation: true }; } });
   const metadata = { logicalSessionId: "logical:parent", providerBindingId: "binding:parent" };
   for (const input of [
