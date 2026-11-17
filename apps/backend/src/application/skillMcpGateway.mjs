@@ -27,6 +27,7 @@ export class SkillMcpGateway {
     this.activeCalls = new Map();
     this.clientCalls = new WeakMap();
     this.desktopCall = null;
+    this.desktopCleanupPending = new Map();
     this.stoppedTurns = new Set();
     this.timeoutMs = Number(options.timeoutMs ?? 10_000);
     this.computerUseTimeoutMs = options.computerUseTimeoutMs ?? 300_000;
@@ -149,7 +150,17 @@ export class SkillMcpGateway {
     const context = this.executionContext(input);
     const desktop = target.computerUse;
 
-    if (desktop && this.desktopCleanupError) throw this.desktopCleanupError;
+    if (desktop && this.desktopCleanupPending.size) {
+      if (this.desktopCall) throw gatewayError("MCP_SERVER_BUSY", "Desktop cleanup is still in progress.", 409);
+      await this.#recoverDesktopCleanup();
+      // Cleanup is asynchronous: the user may have disabled or replaced the
+      // Session while it ran. Never dispatch using the pre-cleanup authority.
+      this.assertSessionEnabled(input, target);
+      const current = this.executionContext(input);
+      if (["logicalSessionId", "providerBindingId", "turnId"].some(key => current[key] !== context[key])) {
+        throw gatewayError("MCP_INTERACTION_STALE", "The Session changed while desktop cleanup was pending.", 409);
+      }
+    }
     if (desktop && !this.computerUseSupport(input)) {
       throw gatewayError("COMPUTER_USE_PROVIDER_UNSUPPORTED", "This Provider does not support the required Computer Use result and approval protocol.", 409);
     }
@@ -198,7 +209,7 @@ export class SkillMcpGateway {
         // Cancel closes the runtime before allowing another call: late input must not leak into it.
         lease.retired = true;
         if (desktop) {
-          try { await target.client.close(); } catch (e) { this.desktopCleanupError = e; }
+          try { await this.#closeDesktop(target.client); } catch { /* Retain a retryable cleanup barrier. */ }
           lease.retired = false;
         } else {
           await this.#closeEntry(entry);
@@ -256,7 +267,7 @@ export class SkillMcpGateway {
             hook_event_name: reason, session_id: entry.context.providerSessionId, turn_id: turnId
           } }, undefined, { timeout: 1000 }).catch(() => {});
         }
-        try { await client.close(); } catch (e) { this.desktopCleanupError = e; throw e; }
+        await this.#closeDesktop(client);
       }
     }
   }
@@ -283,7 +294,32 @@ export class SkillMcpGateway {
     const entries = [...this.entries.values()];
     this.entries.clear();
     for (const call of this.activeCalls.values()) call.controller.abort();
-    await Promise.all(entries.flatMap((entry) => entry.clients.map((client) => client.close().catch(() => {}))));
+    await Promise.all(entries.flatMap((entry) => entry.clients.map((client) =>
+      (entry.computerUseClients.includes(client) ? this.#closeDesktop(client) : client.close()).catch(() => {}))));
+    await this.#recoverDesktopCleanup().catch(() => {});
+  }
+
+  async #closeDesktop(client) {
+    try {
+      await client.close();
+      this.desktopCleanupPending.delete(client);
+    } catch (cause) {
+      const error = gatewayError("COMPUTER_USE_CLEANUP_FAILED", "Private Computer Use cleanup has not been verified. Further desktop actions are blocked until cleanup succeeds; no action will be replayed.", 503);
+      error.cause = cause;
+      this.desktopCleanupPending.set(client, error);
+      throw error;
+    } finally {
+      this.desktopCleanupError = this.desktopCleanupPending.values().next().value ?? null;
+    }
+  }
+
+  async #recoverDesktopCleanup() {
+    if (this.desktopCleanupRecovery) return this.desktopCleanupRecovery;
+    const recovery = (async () => {
+      for (const client of this.desktopCleanupPending.keys()) await this.#closeDesktop(client);
+    })();
+    this.desktopCleanupRecovery = recovery;
+    try { await recovery; } finally { if (this.desktopCleanupRecovery === recovery) this.desktopCleanupRecovery = null; }
   }
 
   #emitRuntimeEvent(event) {
@@ -293,7 +329,8 @@ export class SkillMcpGateway {
 
   async #closeEntry(entry) {
     const lease = this.leases.get(entry);
-    lease.closePromise ??= Promise.all(entry.clients.map(client => client.close().catch(() => {})));
+    lease.closePromise ??= Promise.all(entry.clients.map(client =>
+      (entry.computerUseClients.includes(client) ? this.#closeDesktop(client) : client.close()).catch(() => {})));
     await lease.closePromise;
   }
 
