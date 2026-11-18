@@ -128,9 +128,13 @@ final class MainWindowPresentationState: ObservableObject {
 ///
 /// The gate patches the base Method and every loaded hosting class Method,
 /// then patches newly minted hosting classes on first use. Inside a
-/// `MainWindow` it drops every walk during a drag/live resize and coalesces
-/// the idle layout-driven flood to one walk per 100ms. Other windows and
-/// off-main-thread calls keep the original IMP.
+/// `MainWindow` it drops every walk except inside a short rebuild window
+/// opened by an explicit `recalculateKeyViewLoop()` (gesture end, activation,
+/// Tab). The idle SwiftUI preference flood therefore costs one ObjectIdentifier
+/// lookup and one lock, not an O(views) Tab-chain walk every 100ms. Class-name
+/// checks are cached per Class, so the hot path never re-runs `class_getName`
+/// or substring matching. Other windows and off-main-thread calls keep the
+/// original IMP.
 private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     static let shared = FocusBridgeKeyViewLoopGate()
 
@@ -148,9 +152,17 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     private let selector = NSSelectorFromString("_recursiveSetDefaultKeyViewLoop")
     private var isInstalled = false
     private var suppressUntil: TimeInterval = 0
-    private var lastAllowedWalkAt: TimeInterval = 0
+    private var rebuildWindowUntil: TimeInterval = 0
     private var baseMethod: Method?
     private var installedMethods: Set<OpaquePointer> = []
+    /// `class_getName` + `contains("NSHostingView")` is stable for a Class's
+    /// lifetime. Cache it so repeated walks only hash an ObjectIdentifier.
+    private var classHostingCache: [ObjectIdentifier: Bool] = [:]
+    /// objc_getClassList grows monotonically as SwiftUI realizes generic
+    /// hosting classes. Skip the full sweep when the class count is unchanged;
+    /// newly gained overrides on an existing class are still picked up by
+    /// `discoverIfNeeded` on the next walk.
+    private var lastScannedClassCount = 0
 
     private var seen = 0
     private var seenBase = 0
@@ -161,8 +173,8 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
 
     /// unified logging is not readable from an agent session on this machine,
     /// so mirror the counters into a plain file that can be inspected without
-    /// elevated privileges. One append per 200 entries keeps it off the hot
-    /// path.
+    /// elevated privileges. One append per 2,000 entries keeps the file I/O
+    /// off the walk hot path.
     private static let tracePath: String = {
         let directory = NSHomeDirectory() + "/Library/Logs/Corptie"
         try? FileManager.default.createDirectory(atPath: directory,
@@ -180,25 +192,25 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     }
 
     func clearSuppression() {
+        let deadline = Date().timeIntervalSinceReferenceDate + 0.25
         lock.lock()
         suppressUntil = 0
-        // Force the next walk through, so a settled layout always gets one
-        // real Tab-chain rebuild after a gesture.
-        lastAllowedWalkAt = 0
+        // Open a short rebuild window instead of unblocking one arbitrary
+        // walk: a real `recalculateKeyViewLoop()` fans out to every hosting
+        // root, so all of those walks must pass together.
+        if deadline > rebuildWindowUntil { rebuildWindowUntil = deadline }
         lock.unlock()
     }
 
     /// Gestures drop every walk. Outside a gesture SwiftUI still requests a
     /// full walk on every preferences change (thousands during startup), so
-    /// coalesce those to one per 100ms. Tab order only depends on the view
-    /// hierarchy, which does not change within that window.
+    /// only an explicit `recalculateKeyViewLoop()` opens a window in which
+    /// walks pass. Idle time costs no O(views) Tab-chain rebuild at all.
     private func shouldSuppressWalk(now: TimeInterval, inLiveResize: Bool) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if inLiveResize || now < suppressUntil { return true }
-        if now - lastAllowedWalkAt < 0.1 { return true }
-        lastAllowedWalkAt = now
-        return false
+        return now > rebuildWindowUntil
     }
 
     // MARK: - Installation
@@ -228,15 +240,17 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     private func patchLoadedHostingClasses() {
         let estimated = Int(objc_getClassList(nil, 0))
         guard estimated > 0 else { return }
+        lock.lock()
+        guard estimated > lastScannedClassCount else { lock.unlock(); return }
+        lastScannedClassCount = estimated
+        lock.unlock()
         let buffer = UnsafeMutablePointer<AnyClass>.allocate(capacity: estimated)
         buffer.initialize(repeating: NSObject.self, count: estimated)
         let list = AutoreleasingUnsafeMutablePointer<AnyClass>(buffer)
         let actual = Int(objc_getClassList(list, Int32(estimated)))
         for i in 0..<actual {
             let cls: AnyClass = buffer[i]
-            if String(cString: class_getName(cls)).contains("NSHostingView") {
-                patch(cls: cls)
-            }
+            if isHostingClass(cls) { patch(cls: cls) }
         }
         buffer.deinitialize(count: estimated)
         buffer.deallocate()
@@ -247,8 +261,23 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
     /// never escapes the gate.
     private func discoverIfNeeded(_ object: AnyObject) {
         guard let cls: AnyClass = object_getClass(object) else { return }
-        guard String(cString: class_getName(cls)).contains("NSHostingView") else { return }
+        guard isHostingClass(cls) else { return }
         patch(cls: cls)
+    }
+
+    /// Class names never change at runtime. Cache the string check so the
+    /// walk hot path only hashes an ObjectIdentifier under the lock.
+    private func isHostingClass(_ cls: AnyClass) -> Bool {
+        let id = ObjectIdentifier(cls)
+        lock.lock()
+        if let cached = classHostingCache[id] {
+            lock.unlock()
+            return cached
+        }
+        let result = String(cString: class_getName(cls)).contains("NSHostingView")
+        classHostingCache[id] = result
+        lock.unlock()
+        return result
     }
 
     private func patch(cls: AnyClass) {
@@ -315,7 +344,7 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
         lock.lock()
         seen += 1
         if isHosting { seenHosting += 1 } else { seenBase += 1 }
-        let shouldLog = seen % 200 == 0
+        let shouldLog = seen % 2_000 == 0
         let snapshot = (seen, seenBase, seenHosting, suppressed, installedMethods.count)
         lock.unlock()
         if shouldLog {
@@ -323,9 +352,10 @@ private final class FocusBridgeKeyViewLoopGate: @unchecked Sendable {
                 "kvl entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
             trace("entries=\(snapshot.0) base=\(snapshot.1) hosting=\(snapshot.2) suppressed=\(snapshot.3) patchedMethods=\(snapshot.4)")
             // SwiftUI realizes generic NSHostingView classes lazily. A
-            // startup-only sweep sees almost none of them, and first-use
-            // discovery can only run inside an already-patched IMP, so rescan
-            // on a fixed cadence and let Method-level dedup keep it cheap.
+            // startup-only sweep sees almost none of them; the class-count
+            // gate makes this cadence cheap (it returns immediately unless
+            // new classes appeared) while first-use discovery covers the
+            // rest on the next walk.
             patchLoadedHostingClasses()
         }
     }
@@ -356,9 +386,12 @@ class MainWindow: NSWindow {
     /// `NSHostingView` root — a content-view override is never on that path
     /// (a 90s interaction sample recorded zero calls into it).
     /// `FocusBridgeKeyViewLoopGate` intercepts the real entry points instead;
-    /// this window only supplies the gesture state and the settled rebuild.
+    /// this window supplies the gesture state and the explicit rebuild
+    /// moments (resize end, activation, Tab) that are the only times a
+    /// Tab-chain walk is worth its O(views) cost.
     private var keyViewLoopResizeObserver: NSObjectProtocol?
     private var keyViewLoopMoveObserver: NSObjectProtocol?
+    private var keyViewLoopActivationObserver: NSObjectProtocol?
 
     override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
                   backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
@@ -377,6 +410,17 @@ class MainWindow: NSWindow {
             MainActor.assumeIsolated {
                 FocusBridgeKeyViewLoopGate.shared.extendSuppression()
             }
+        }
+        // Activation is the moment a user is most likely to start Tab
+        // navigation, and the hierarchy may have changed while we were
+        // unfocused. Rebuild once here instead of on every idle preference
+        // change.
+        keyViewLoopActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: self,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recalculateKeyViewLoop() }
         }
         keyViewLoopResizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndLiveResizeNotification,
@@ -399,6 +443,9 @@ class MainWindow: NSWindow {
         if let keyViewLoopMoveObserver {
             NotificationCenter.default.removeObserver(keyViewLoopMoveObserver)
         }
+        if let keyViewLoopActivationObserver {
+            NotificationCenter.default.removeObserver(keyViewLoopActivationObserver)
+        }
     }
 
     override func recalculateKeyViewLoop() {
@@ -408,6 +455,12 @@ class MainWindow: NSWindow {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        // Tab is the one operation that actually consumes the key view loop.
+        // Rebuild just before AppKit handles it so navigation reflects the
+        // current hierarchy even without a resize or activation in between.
+        if event.type == .keyDown, event.keyCode == 48 { // kVK_Tab
+            recalculateKeyViewLoop()
+        }
         if event.type == .leftMouseDown, !isOverStandardWindowButton(event),
            compactWindowControls?.button(at: event.locationInWindow) == nil {
             MainWindowMouseActivation.prepare(event, window: self,

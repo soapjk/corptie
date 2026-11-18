@@ -62,14 +62,6 @@ export function createProviderModelCatalogLoaders({
 
   async function loadClaudeModels(options = {}) {
     const configured = claudeConnection();
-    if (configured?.model) {
-      claudeModelsCache = null;
-      // A custom gateway model is authoritative; SDK discovery may list unrelated official aliases.
-      return { currentModel: configured.model, currentReasoningLevel: null, models: [{
-        id: configured.model, name: configured.model, description: "",
-        defaultReasoningLevel: null, reasoningLevels: [], serviceTiers: []
-      }] };
-    }
     const nowMs = Date.now();
     const refresh = options.refresh === true;
     if (!refresh && claudeModelsCache && nowMs - claudeModelsCache.loadedAt < 5 * 60 * 1000) {
@@ -88,23 +80,46 @@ export function createProviderModelCatalogLoaders({
 
     try {
       const models = await warm.query((async function* () {})()).supportedModels();
+      const normalized = (Array.isArray(models) ? models : [])
+        .map((model) => ({
+          id: model.value || model.id,
+          name: model.displayName || model.display_name || model.value || model.id,
+          description: model.description || "",
+          defaultReasoningLevel: null,
+          reasoningLevels: Array.isArray(model.supportedEffortLevels)
+            ? model.supportedEffortLevels.filter(Boolean)
+            : [],
+          serviceTiers: []
+        }))
+        .filter((model) => model.id);
+      // A custom gateway advertises its own catalog through Claude Code discovery.
+      // Discovery also prepends built-in aliases and one "Custom model" entry derived
+      // from ANTHROPIC_MODEL; those are not switchable gateway ids. Keep the whole
+      // list for an unconfigured provider, and never publish an empty catalog if a
+      // future SDK changes the gateway marker.
+      const usesCustomGateway = Boolean(configured?.endpoint)
+        && configured.endpoint !== "https://api.anthropic.com";
+      const advertised = usesCustomGateway
+        ? normalized.filter((model) => /gateway/i.test(model.description))
+        : normalized;
+      const available = advertised.length ? advertised : normalized;
       const activeSession = store.listSessions({ archived: false })
         .find((session) => session.external?.provider === "claude-sdk" && session.external?.currentModel);
+      // configured.model and stored session models may hold a gateway display name
+      // instead of the id that setModel() accepts (e.g. "WorkBuddy Local/hy4free"
+      // vs. "anthropic/claude-ccr-…"). Resolve against discovery and fail closed:
+      // never publish a current model which the discovered catalog cannot resolve.
+      const resolveModelId = candidate => {
+        if (!candidate) return null;
+        return available.find((model) => model.id === candidate)?.id
+          ?? available.find((model) => model.name === candidate)?.id
+          ?? null;
+      };
       const payload = {
-        currentModel: activeSession?.external?.currentModel ?? null,
+        currentModel: resolveModelId(activeSession?.external?.currentModel)
+          ?? resolveModelId(configured?.model),
         currentReasoningLevel: null,
-        models: (Array.isArray(models) ? models : [])
-          .map((model) => ({
-            id: model.value || model.id,
-            name: model.displayName || model.display_name || model.value || model.id,
-            description: model.description || "",
-            defaultReasoningLevel: null,
-            reasoningLevels: Array.isArray(model.supportedEffortLevels)
-              ? model.supportedEffortLevels.filter(Boolean)
-              : [],
-            serviceTiers: []
-          }))
-          .filter((model) => model.id)
+        models: available
       };
       claudeModelsCache = { loadedAt: nowMs, payload };
       return payload;

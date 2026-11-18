@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createProviderModelCatalogLoaders } from "../src/adapters/providerModelCatalogLoaders.mjs";
 
-function fixture() {
+function fixture({ claudeConnection = null, claudeModels = null } = {}) {
   const calls = [];
   const runtime = {
-    query: () => ({ supportedModels: async () => [{ value: "claude-model", supportedEffortLevels: ["high", null] }] }),
+    query: () => ({ supportedModels: async () => claudeModels ?? [{ value: "claude-model", supportedEffortLevels: ["high", null] }] }),
     close: () => calls.push("close")
   };
   const loaders = createProviderModelCatalogLoaders({
@@ -25,6 +25,7 @@ function fixture() {
     readCodexDefaultConfig: async () => ({ model: "current", reasoningLevel: "high" }),
     defaultWorkspacePath: () => "/workspace",
     claudeCommand: () => "/runtime/claude",
+    claudeConnection: () => claudeConnection,
     startup: async () => { calls.push("startup"); return runtime; }
   });
   return { loaders, calls, runtime };
@@ -58,4 +59,46 @@ test("Claude discovery failure still closes the runtime and is not cached", asyn
   await assert.rejects(f.loaders.loadClaudeModels(), /unavailable/);
   await assert.rejects(f.loaders.loadClaudeModels(), /unavailable/);
   assert.deepEqual(f.calls, ["startup", "close", "startup", "close"]);
+});
+
+test("Claude custom gateway uses discovery instead of collapsing to one configured model", async () => {
+  const f = fixture({
+    claudeConnection: { endpoint: "http://127.0.0.1:3456", model: "Hunyuan Free" },
+    claudeModels: [
+      { value: "default", displayName: "Default", description: "Use the default model" },
+      { value: "Hunyuan Free", displayName: "Hunyuan Free", description: "Custom model" },
+      { value: "anthropic/claude-ccr-hunyuan", displayName: "Hunyuan Free", description: "From gateway" },
+      { value: "anthropic/claude-ccr-sonnet", displayName: "Claude Sonnet", description: "From gateway" }
+    ]
+  });
+  const result = await f.loaders.loadClaudeModels();
+  assert.deepEqual(result.models.map((model) => model.id), [
+    "anthropic/claude-ccr-hunyuan", "anthropic/claude-ccr-sonnet"
+  ]);
+  // A display name is resolved to the id the gateway actually accepts.
+  assert.equal(result.currentModel, "anthropic/claude-ccr-hunyuan");
+  assert.deepEqual(f.calls, ["startup", "close"]);
+});
+
+test("Claude catalog never publishes a current model absent from discovery", async () => {
+  const f = fixture({
+    claudeConnection: { endpoint: "http://127.0.0.1:3456", model: "stale-model" },
+    claudeModels: [
+      { value: "anthropic/claude-ccr-sonnet", displayName: "Claude Sonnet", description: "From gateway" }
+    ]
+  });
+  const result = await f.loaders.loadClaudeModels();
+  assert.equal(result.currentModel, null);
+  assert.deepEqual(result.models.map((model) => model.id), ["anthropic/claude-ccr-sonnet"]);
+});
+
+test("Claude catalog without a custom connection keeps built-in aliases", async () => {
+  const f = fixture({ claudeModels: [
+    { value: "claude-model", displayName: "Claude Model", description: "Built-in" },
+    { value: "sonnet", displayName: "Sonnet", description: "Built-in" },
+    { value: "anthropic/claude-ccr-sonnet", displayName: "Claude Sonnet", description: "From gateway" }
+  ] });
+  const result = await f.loaders.loadClaudeModels();
+  assert.equal(result.models.length, 3);
+  assert.equal(result.currentModel, "claude-model");
 });
