@@ -12,6 +12,7 @@ struct ComposerStatusSurface: View {
     let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
     let renderInputs: SessionPageRenderInputs?
+    var compact = false
 
     var body: some View {
         if let page = renderInputs {
@@ -19,8 +20,8 @@ struct ComposerStatusSurface: View {
                 readinessTitle: notReadyReason?.presentationTitle ?? L10n("Session Not Ready"),
                 readinessMessage: notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."),
                 readinessCode: notReadyReason?.code, executionState: status?.sharedExecutionState,
-                activity: page.restart?.text ?? activityStatus) {
-                    ChatUsageBar(sessionID: sessionID, usage: page.usage?.matching(provider: page.session.external?.provider, model: page.session.external?.currentModel), loadState: page.usageLoadState, inline: true, accountSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.account.read"),
+                activity: page.restart?.text ?? activityStatus, compact: compact) {
+                    ChatUsageBar(sessionID: sessionID, usage: page.usage?.matching(provider: page.session.external?.provider, model: page.session.external?.currentModel), loadState: page.usageLoadState, inline: true, compact: compact, accountSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.account.read"),
                         contextSupported: page.providers.first { $0.id == page.session.external?.provider }?.supports("usage.session.read"))
                 }
         } else {
@@ -37,6 +38,7 @@ struct ComposerModelSelectionSurface: View {
     let renderInputs: SessionPageRenderInputs?
     let maximumWidth: CGFloat
     let session: TaskSession?
+    var compact: Bool = false
 
     var body: some View {
         if let page = renderInputs {
@@ -44,8 +46,9 @@ struct ComposerModelSelectionSurface: View {
                 defaultReasoningLevel: page.defaultReasoning, loadingModels: page.loadingModels,
                 switchingModel: page.switchingModel, switchingReasoning: page.switchingReasoning,
                 backendClient: backendClient, maxWidth: maximumWidth, session: session,
-                activity: page.activity, renderInputs: page)
-        } else { CodexModelMenu(modelCatalog: modelCatalog, maxWidth: maximumWidth, session: session) }
+                activity: page.activity, renderInputs: page, compact: compact)
+        } else { CodexModelMenu(modelCatalog: modelCatalog, maxWidth: maximumWidth, session: session,
+            compact: compact) }
     }
 
 }

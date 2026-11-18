@@ -93,6 +93,7 @@ struct ChatUsageBar: View {
     var loadState: UsageLoadState = .ready
     var isDraft = false
     var inline = false
+    var compact = false
     var accountSupported: Bool? = nil
     var contextSupported: Bool? = nil
     @State private var isResetNoticePresented = false
@@ -155,16 +156,18 @@ struct ChatUsageBar: View {
             ConversationComposerUsageSlot {
                 SessionUsageItem(
                     icon: "text.alignleft",
-                    value: "\(L10n("Context used")) \(SessionUsagePolicy.percent(context.percent))%",
+                    value: "\(SessionUsagePolicy.percent(context.percent))%",
                     progress: context.percent / 100,
                     color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: context.percent)),
-                    numericValue: context.used
+                    numericValue: context.used, compact: compact
                 )
             }
             .help("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(context.used)) / \(SessionUsagePolicy.exactTokens(context.window))")
             .accessibilityLabel("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(context.used)) / \(SessionUsagePolicy.exactTokens(context.window))")
             .accessibilityIdentifier("conversation-usage-context")
-        } else if !isDraft {
+        } else if !isDraft, !UsagePlaceholderPolicy.isNoData(
+            supported: contextSupported, loading: usage == nil && loadState == .loading,
+            failed: loadState == .failed || usage?.contextLoadFailed == true) {
             Text(L10n(UsagePlaceholderPolicy.key(
                 context: true, supported: contextSupported, loading: usage == nil && loadState == .loading,
                 failed: loadState == .failed || usage?.contextLoadFailed == true)))
@@ -179,9 +182,10 @@ struct ChatUsageBar: View {
                 ConversationComposerUsageSlot {
                     SessionUsageItem(
                         icon: "bolt.fill",
-                        value: "\(L10n("Quota remaining")) \(SessionUsagePolicy.percent(remainingPercent))%",
+                        value: "\(SessionUsagePolicy.percent(remainingPercent))%",
                         progress: remainingPercent / 100,
-                        color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
+                        color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent)),
+                        compact: compact
                     )
                 }
             }
@@ -192,7 +196,9 @@ struct ChatUsageBar: View {
             .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
                 resetNoticePopover(usage: usage, window: window)
             }
-        } else {
+        } else if !UsagePlaceholderPolicy.isNoData(supported: accountSupported,
+            loading: usage == nil && loadState == .loading,
+            failed: loadState == .failed || usage?.accountLoadFailed == true) {
             Text(L10n(UsagePlaceholderPolicy.key(context: false, supported: accountSupported,
                 loading: usage == nil && loadState == .loading,
                 failed: loadState == .failed || usage?.accountLoadFailed == true)))
@@ -261,5 +267,12 @@ enum UsagePlaceholderPolicy {
         if failed { return context ? "上下文：加载失败" : "额度：刷新失败" }
         if loading { return context ? "上下文：加载中…" : "额度：加载中…" }
         return context ? "上下文：暂无数据" : "额度：暂无数据"
+    }
+
+    /// The final fallback of `key` — no value, but also not unsupported,
+    /// failing, or still loading. That "no data" case hides the whole element
+    /// instead of rendering a caption; the other three states stay visible.
+    static func isNoData(supported: Bool?, loading: Bool, failed: Bool) -> Bool {
+        supported != false && !failed && !loading
     }
 }

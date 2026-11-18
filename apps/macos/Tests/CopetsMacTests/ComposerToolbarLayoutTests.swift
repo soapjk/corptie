@@ -72,10 +72,15 @@ final class ComposerToolbarLayoutTests: XCTestCase {
             for state in [UsageLoadState.ready, .loading, .failed] {
                 for snapshot in [data, nil] as [SessionUsageResponse?] {
                     let usage = ChatUsageBar(sessionID: "fixture", usage: snapshot, loadState: state, inline: true)
-                    let image = try XCTUnwrap(ImageRenderer(content: usage.frame(width: width)).nsImage)
-                    // Existing usage slots reserve 32pt for interaction. Keep
-                    // that target while forbidding a second line/row of chrome.
-                    XCTAssertLessThanOrEqual(image.size.height, 32, "Usage must fit the existing toolbar interaction height")
+                    // "No data" hides the element entirely; loading / failure /
+                    // unsupported keep their caption but still fit one row.
+                    let showsNoData = snapshot == nil && state == .ready
+                    if showsNoData {
+                        XCTAssertNil(ImageRenderer(content: usage.frame(width: width)).nsImage,
+                            "No-data usage must not render a placeholder element")
+                    } else if let image = ImageRenderer(content: usage.frame(width: width)).nsImage {
+                        XCTAssertLessThanOrEqual(image.size.height, 32, "Usage must fit the existing toolbar interaction height")
+                    }
                     let status = ConversationComposerStatusRow(isReady: true, readinessTitle: "", readinessMessage: "",
                         readinessCode: nil, executionState: nil, activity: nil) { usage }.frame(width: width)
                     let statusImage = try XCTUnwrap(ImageRenderer(content: status).nsImage)
@@ -83,6 +88,31 @@ final class ComposerToolbarLayoutTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testCompactUsageAndStatusKeepOneToolbarRow() throws {
+        let data = try JSONDecoder().decode(SessionUsageResponse.self, from: Data(
+            #"{"account":{"available":true,"provider":"fixture","rateLimits":{"primary":{"usedPercent":25}}},"context":{"usedTokens":80,"contextWindow":100}}"#.utf8))
+        for width in [240.0, 340.0, 420.0] {
+            let usage = ChatUsageBar(sessionID: "fixture", usage: data, loadState: .ready,
+                inline: true, compact: true)
+            let usageImage = try XCTUnwrap(ImageRenderer(content: usage.frame(width: width)).nsImage)
+            XCTAssertLessThanOrEqual(usageImage.size.height, 32,
+                "Compact usage must stay on one 32pt toolbar row at \(width)pt")
+
+            let status = ConversationComposerStatusRow(isReady: true, readinessTitle: "", readinessMessage: "",
+                readinessCode: nil, executionState: .complete, activity: nil, compact: true) { usage }
+            let statusImage = try XCTUnwrap(ImageRenderer(content: status.frame(width: width)).nsImage)
+            XCTAssertLessThanOrEqual(statusImage.size.height, 32,
+                "Compact status must stay on one 32pt toolbar row at \(width)pt")
+        }
+    }
+
+    func testToolbarDensityHysteresisBand() {
+        // Collapse only below 520, restore only above 600; the 80pt gap keeps
+        // a live resize from flapping the composer between two densities.
+        XCTAssertLessThan(ComposerToolbarDensity.collapseBelow, ComposerToolbarDensity.restoreAbove)
+        XCTAssertEqual(ComposerToolbarDensity.restoreAbove - ComposerToolbarDensity.collapseBelow, 80)
     }
 
     private func buttons(in view: NSView) -> [NSButton] {

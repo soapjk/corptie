@@ -278,6 +278,8 @@ struct MainWindowResizeLayoutTests {
     @Test
     func windowMinimumSizeIsSumOfVisibleColumnMinimums() {
         // Navigation rail 64 + Work column 284 + transcript 360 + 12 padding.
+        // The toolbar folds to its icon-only compact form below this floor, so
+        // the `+` and placeholder stay inside the glass shell at 360pt.
         #expect(MainWindowMinimumSizePolicy.contentMinSize(
             workColumnCollapsed: false, navigationShowsLabels: false
         ) == NSSize(width: 720, height: 480))

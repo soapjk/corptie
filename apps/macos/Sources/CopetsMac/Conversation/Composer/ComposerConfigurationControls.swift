@@ -20,8 +20,10 @@ struct ComposerPermissionChoice: Equatable {
 }
 
 struct ComposerPermissionMenu: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let selection: ComposerPermissionChoice
     let disabled: Bool
+    var compact: Bool = false
     let select: (ComposerPermissionChoice) -> Void
     var body: some View {
         Menu {
@@ -34,12 +36,22 @@ struct ComposerPermissionMenu: View {
                 }
             }
         } label: {
-            Label(selection.title, systemImage: "shield")
-                .font(.system(size: 12)).lineLimit(1)
+            HStack(spacing: 4) {
+                Image(systemName: "shield")
+                if !compact {
+                    Text(selection.title)
+                        .lineLimit(1)
+                        .transition(.opacity)
+                }
+            }
+            .font(.system(size: 12))
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: compact)
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .fixedSize().disabled(disabled)
+        .help(selection.title)
         .accessibilityLabel(L10n("Permission"))
+        .accessibilityValue(selection.title)
     }
 }
 
@@ -47,6 +59,7 @@ struct SessionComposerPermissionControl: View {
     let session: TaskSession
     let backend: BackendClient
     let enabled: Bool
+    var compact: Bool = false
     @State private var saving = false
     @State private var error: String?
     var body: some View {
@@ -54,7 +67,8 @@ struct SessionComposerPermissionControl: View {
            session.actions?.updatePermissions?.reason != "CAPABILITY_UNSUPPORTED" {
             ComposerPermissionMenu(selection: .init(sandbox: session.external?.sandbox ?? "workspace-write",
                 approval: session.external?.approvalPolicy ?? "on-request"),
-                disabled: !enabled || saving || session.actions?.updatePermissions?.available != true) { choice in
+                disabled: !enabled || saving || session.actions?.updatePermissions?.available != true,
+                compact: compact) { choice in
                     guard !saving, enabled else { return }
                     saving = true
                     Task { @MainActor in

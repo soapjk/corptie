@@ -127,6 +127,9 @@ struct SessionMessageComposerSurface: View {
     @State private var selectedMentions: [ConversationMention] = []
     @State private var quickMessageRefresh = 0
     @State private var localQuickMessagePresentation = ComposerQuickMessagePresentation()
+    /// Driven by the toolbar's own width with hysteresis so a live resize
+    /// cannot flap between the two densities near the threshold.
+    @State private var toolbarCompact = false
     let quickMessagePresentation: ComposerQuickMessagePresentation?
     private var showsQuickMessages: Bool {
         get { (quickMessagePresentation ?? localQuickMessagePresentation).showsMessages }
@@ -324,7 +327,8 @@ struct SessionMessageComposerSurface: View {
         HStack(spacing: 8) {
             moreMenu
             ComposerStatusSurface(sessionID: sessionId, status: status, isReady: isReady,
-                notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs)
+                notReadyReason: notReadyReason, activityStatus: activityStatus, renderInputs: renderInputs,
+                compact: toolbarCompact)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onChange(of: "\(session?.external?.provider ?? ""):\(session?.external?.currentModel ?? "")") { _, _ in
                     guard acceptsPresentationUpdates, backendClient.selectedSession?.id == sessionId else { return }
@@ -332,19 +336,35 @@ struct SessionMessageComposerSurface: View {
                     Task { await backendClient.usageController.loadUsage(for: sessionId) }
                 }
             if let session {
-                SessionComposerPermissionControl(session: session, backend: backendClient, enabled: allowsActions && !sendingMessage)
+                SessionComposerPermissionControl(session: session, backend: backendClient,
+                    enabled: allowsActions && !sendingMessage, compact: toolbarCompact)
             }
             ComposerActionSurface(showsModel: allowsModelSwitch && canSwitchModel,
                                   showsStop: showsStopControl) {
                 ComposerModelSelectionSurface(modelCatalog: modelCatalog, backendClient: backendClient,
-                    renderInputs: renderInputs, maximumWidth: modelMenuMaxWidth, session: session)
+                    renderInputs: renderInputs, maximumWidth: modelMenuMaxWidth, session: session,
+                    compact: toolbarCompact)
             } stop: {
                 stopButton(compact: false)
             } send: {
                 sendButton
             }
         }
+        .background(ComposerToolbarWidthReader { width in
+            updateToolbarCompact(width)
+        })
         .accessibilityIdentifier("conversation-composer-toolbar")
+    }
+
+    /// Collapse below `collapseBelow`, restore only above `restoreAbove`.
+    /// The gap is the hysteresis band that keeps a live resize from flapping.
+    private func updateToolbarCompact(_ width: CGFloat) {
+        guard width.isFinite, width > 0 else { return }
+        if toolbarCompact {
+            if width > ComposerToolbarDensity.restoreAbove { toolbarCompact = false }
+        } else if width < ComposerToolbarDensity.collapseBelow {
+            toolbarCompact = true
+        }
     }
 
     private var showsStopControl: Bool {
@@ -674,6 +694,37 @@ struct SessionMessageComposerSurface: View {
 
     private var modelMenuMaxWidth: CGFloat {
         176
+    }
+}
+
+/// Widths at which the composer toolbar folds / unfolds its low-value captions.
+/// The 80pt band is hysteresis: a drag crossing the boundary once does not
+/// oscillate the layout while the pointer hovers near the threshold.
+enum ComposerToolbarDensity {
+    static let collapseBelow: CGFloat = 520
+    static let restoreAbove: CGFloat = 600
+}
+
+/// Reads only the toolbar's own width and emits it on change, so the whole
+/// composer body is not invalidated on every pixel of a live resize. The zero
+/// frame during the first layout is ignored by the caller.
+private struct ComposerToolbarWidthReader: View {
+    let onChange: (CGFloat) -> Void
+    @State private var lastWidth: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .allowsHitTesting(false)
+                .onAppear { emit(proxy.size.width) }
+                .onChange(of: proxy.size.width) { _, width in emit(width) }
+        }
+    }
+
+    private func emit(_ width: CGFloat) {
+        guard width > 0, abs(width - lastWidth) >= 1 else { return }
+        lastWidth = width
+        onChange(width)
     }
 }
 

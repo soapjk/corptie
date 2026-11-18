@@ -14,13 +14,14 @@ struct CodexModelMenu: View {
     let maxWidth: CGFloat
     let session: TaskSession?
     var activity: ConversationDetailPresentationActivity? = nil
+    var compact: Bool = false
     var body: some View {
         SessionModelMenuSurface(models: modelCatalog.models(for: session?.external?.provider),
             defaultModelID: modelCatalog.defaultModel(for: session?.external?.provider),
             defaultReasoningLevel: modelCatalog.defaultReasoning(for: session?.external?.provider),
             loadingModels: modelCatalog.isLoadingCodexModels, switchingModel: commandState.isSwitchingModel,
             switchingReasoning: commandState.isSwitchingReasoning, backendClient: backendClient,
-            maxWidth: maxWidth, session: session, activity: activity)
+            maxWidth: maxWidth, session: session, activity: activity, compact: compact)
     }
 }
 
@@ -38,6 +39,8 @@ struct SessionModelMenuSurface: View {
     let session: TaskSession?
     var activity: ConversationDetailPresentationActivity? = nil
     var renderInputs: SessionPageRenderInputs? = nil
+    var compact: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var canAct: Bool {
         if let renderInputs { return renderInputs.actionSession(generation: renderInputs.activity.generation) != nil }
         return (activity?.allows(generation: activity?.generation ?? 0) ?? true)
@@ -140,16 +143,20 @@ struct SessionModelMenuSurface: View {
                 } else {
                     Image(systemName: "cpu").frame(width: 14, height: 14).accessibilityHidden(true)
                 }
-                ComposerModelMenuLabel(
-                    modelLabel: currentModelLabel,
-                    reasoningShortLabel: reasoningLabel(currentReasoningLevel),
-                    isBusy: switchingModel || switchingReasoning
-                        || loadingModels,
-                    maxWidth: max(0, maxWidth - 18),
-                    showsSurface: false, presentation: .regular,
-                    showsDisclosureIndicator: true
-                )
+                if !compact {
+                    ComposerModelMenuLabel(
+                        modelLabel: currentModelLabel,
+                        reasoningShortLabel: reasoningLabel(currentReasoningLevel),
+                        isBusy: switchingModel || switchingReasoning
+                            || loadingModels,
+                        maxWidth: max(0, maxWidth - 18),
+                        showsSurface: false, presentation: .regular,
+                        showsDisclosureIndicator: true
+                    )
+                    .transition(.opacity)
+                }
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: compact)
         }
         .buttonStyle(.plain)
         .menuIndicator(.hidden)

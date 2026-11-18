@@ -79,7 +79,14 @@ enum MainWindowMinimumSizePolicy {
     static let workColumnMinimumWidth: CGFloat = 284
     /// Conversation transcript plus composer. The optional 324pt detail rail
     /// is an overlay that hides itself in narrow viewports, so it is not part
-    /// of the floor: with only messages showing the window can get much smaller.
+    /// of the floor.
+    ///
+    /// Below `ComposerToolbarDensity.restoreAbove` the toolbar drops its
+    /// captions: usage percentage loses its ring caption, and permission /
+    /// model collapse to icon-only (both driven by `toolbarCompact`). That
+    /// compact form is what keeps the composer inside the glass shell at this
+    /// 360pt floor, so the window can shrink without clipping the `+` or the
+    /// editor placeholder.
     static let transcriptMinimumWidth: CGFloat = 360
     static let minimumContentHeight: CGFloat = 480
     /// Keep in sync with `MainWindowContentView`'s labelled rail width.

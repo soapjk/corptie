@@ -269,8 +269,13 @@ public struct SessionUsageItem: View {
     private let progress: Double
     private let color: Color
     private let numericValue: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(icon: String, value: String, progress: Double, color: Color, numericValue: Double? = nil) {
+    /// `compact` is retained for call-site compatibility only. The value is
+    /// now a short percentage shown in both densities, so it is never folded;
+    /// `help` on the host slot still carries the full description.
+    public init(icon: String, value: String, progress: Double, color: Color,
+                numericValue: Double? = nil, compact: Bool = false) {
         self.icon = icon
         self.value = value
         self.progress = progress
@@ -285,7 +290,7 @@ public struct SessionUsageItem: View {
                 .foregroundStyle(color)
                 .monospacedDigit()
                 .contentTransition(.numericText(value: numericValue))
-                .animation(.snappy(duration: 0.45), value: numericValue)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.45), value: numericValue)
         }
     }
 }
@@ -379,18 +384,23 @@ public struct ConversationComposerStatusRow<Usage: View>: View {
     public let executionState: SessionExecutionState?
     public let activity: String?
     private let usage: Usage
+    /// Narrow composer drops the execution-status caption but keeps the
+    /// readiness light, which is a distinct availability signal.
+    private let compact: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showingNotReadyReason = false
     @State private var showingActivity = false
 
     public init(isReady: Bool, readinessTitle: String, readinessMessage: String,
                 readinessCode: String?, executionState: SessionExecutionState?, activity: String?,
-                @ViewBuilder usage: () -> Usage) {
+                compact: Bool = false, @ViewBuilder usage: () -> Usage) {
         self.isReady = isReady
         self.readinessTitle = readinessTitle
         self.readinessMessage = readinessMessage
         self.readinessCode = readinessCode
         self.executionState = executionState
         self.activity = activity
+        self.compact = compact
         self.usage = usage()
     }
 
@@ -428,13 +438,19 @@ public struct ConversationComposerStatusRow<Usage: View>: View {
                 Button { showingActivity = true } label: {
                     Group {
                         if let executionState {
-                            SessionExecutionStatusText(state: executionState, label: Self.compactStatus(for: executionState))
+                            SessionExecutionStatusText(state: executionState,
+                                label: Self.compactStatus(for: executionState), compact: compact)
+                        } else if compact {
+                            Circle().fill(Color.secondary)
+                                .frame(width: 7, height: 7)
+                                .transition(.opacity.combined(with: .scale(scale: 0.6)))
                         } else {
                             Text(Self.compactStatus(for: nil))
+                                .transition(.opacity)
                         }
                     }
                     .lineLimit(1)
-                    .frame(minWidth: 32, minHeight: 32, alignment: .leading)
+                    .frame(minWidth: compact ? 8 : 32, minHeight: 32, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -461,5 +477,6 @@ public struct ConversationComposerStatusRow<Usage: View>: View {
         }
         .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(ComposerPalette.secondaryText)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: compact)
     }
 }

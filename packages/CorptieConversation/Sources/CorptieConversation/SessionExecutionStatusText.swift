@@ -6,12 +6,16 @@ public struct SessionExecutionStatusText: View {
     public let state: SessionExecutionState
     private let label: String
     private let tint: Color?
+    private let compact: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(state: SessionExecutionState, label: String? = nil, tint: Color? = nil) {
+    public init(state: SessionExecutionState, label: String? = nil, tint: Color? = nil,
+                compact: Bool = false) {
         self.state = state
         self.label = label ?? state.label
         self.tint = tint
+        self.compact = compact
     }
 
     private var statusColor: Color {
@@ -26,8 +30,20 @@ public struct SessionExecutionStatusText: View {
     }
 
     public var body: some View {
-        Text(label)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(statusColor)
+        Group {
+            if compact {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                    .accessibilityLabel(label)
+            } else {
+                Text(label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(statusColor)
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: compact)
     }
 }
